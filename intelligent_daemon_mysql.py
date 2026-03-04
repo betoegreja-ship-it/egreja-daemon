@@ -190,16 +190,30 @@ except ImportError:
     ALERTS_ENABLED = False
     logger.warning("AlertsManager não encontrado - alertas desabilitados")
 
+try:
+    from voice_alerts import VoiceAlertsManager
+    VOICE_ALERTS_ENABLED = True
+except ImportError:
+    VOICE_ALERTS_ENABLED = False
+    logger.warning("VoiceAlertsManager não encontrado - voice alerts desabilitados")
+
 def send_alerts_for_signals(b3_results, nyse_results):
-    """Envia alertas para sinais críticos"""
-    if not ALERTS_ENABLED:
+    """Envia alertas para sinais críticos (Texto + Voz)"""
+    if not ALERTS_ENABLED and not VOICE_ALERTS_ENABLED:
         return
     
-    alerts = AlertsManager()
+    alerts = AlertsManager() if ALERTS_ENABLED else None
+    voice_alerts = VoiceAlertsManager() if VOICE_ALERTS_ENABLED else None
     
     for signal in b3_results + nyse_results:
         if signal and 'score' in signal:
-            alerts.send_alert(signal)
+            # Alertas de texto (Telegram + Email + WhatsApp)
+            if alerts:
+                alerts.send_alert(signal)
+            
+            # Alertas de voz (Score muito crítico: > 85 ou < 15)
+            if voice_alerts:
+                voice_alerts.send_voice_alert(signal)
 
 # Modificar main() para chamar send_alerts
 def main():

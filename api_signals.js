@@ -4,14 +4,12 @@
  * GET /signals - Retorna últimos sinais
  * GET /health - Health check
  */
-
 import http from 'http';
 import mysql from 'mysql2/promise';
 import { URL } from 'url';
 
 const PORT = process.env.PORT || 3001;
 
-// Config MySQL
 const dbConfig = {
   host: process.env.MYSQLHOST || 'localhost',
   user: process.env.MYSQLUSER || 'root',
@@ -31,7 +29,6 @@ async function initDB() {
   try {
     pool = mysql.createPool(dbConfig);
     console.log(`✅ MySQL pool criado - Host: ${dbConfig.host}, DB: ${dbConfig.database}`);
-    // Test connection
     const conn = await pool.getConnection();
     await conn.ping();
     conn.release();
@@ -47,7 +44,7 @@ async function getSignals() {
     if (!pool) throw new Error('Pool not initialized');
     const conn = await pool.getConnection();
     const [rows] = await conn.query(
-      'SELECT symbol, market_type, price, score, signal, rsi, ema9, ema21, ema50, created_at FROM market_signals ORDER BY created_at DESC LIMIT 40'
+      'SELECT symbol, market_type, price, score, `signal`, rsi, ema9, ema21, ema50, created_at FROM market_signals ORDER BY created_at DESC LIMIT 40'
     );
     conn.release();
     return rows || [];
@@ -57,9 +54,7 @@ async function getSignals() {
   }
 }
 
-// HTTP Server
 const server = http.createServer(async (req, res) => {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Content-Type', 'application/json');
@@ -75,7 +70,6 @@ const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
   const pathname = parsedUrl.pathname;
 
-  // GET /signals
   if (pathname === '/signals' && req.method === 'GET') {
     const signals = await getSignals();
     res.writeHead(200);
@@ -99,7 +93,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /health
   if (pathname === '/health' && req.method === 'GET') {
     res.writeHead(200);
     res.end(JSON.stringify({
@@ -110,16 +103,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 404
   res.writeHead(404);
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
-// Start
 async function start() {
   try {
     await initDB();
-    
     server.listen(PORT, '0.0.0.0', () => {
       console.log(`\n===============================================`);
       console.log(`🚀 Egreja Signals API`);

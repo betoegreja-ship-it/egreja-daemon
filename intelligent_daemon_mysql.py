@@ -54,7 +54,7 @@ def ensure_tables():
     conn.commit()
     cursor.close()
     conn.close()
-    logger.info("✅ Tabela market_signals OK")
+    logger.info(" Tabela market_signals OK")
 
 def calculate_ema(prices, period):
     if len(prices) < period:
@@ -95,7 +95,7 @@ def fetch_brapi(symbols, market_type):
             if 'results' in data:
                 results.extend(data['results'])
         except Exception as e:
-            logger.error(f"❌ Brapi erro: {e}")
+            logger.error(f" Brapi erro: {e}")
         time.sleep(1)
     return results
 
@@ -109,7 +109,7 @@ def analyze_and_save(results, market_type):
             current_price = item.get('regularMarketPrice', 0)
             historical = item.get('historicalDataPrice', [])
             if not historical or len(historical) < 50:
-                logger.warning(f"⚠️ {symbol}: dados insuficientes ({len(historical)} candles)")
+                logger.warning(f" {symbol}: dados insuficientes ({len(historical)} candles)")
                 continue
             prices = [h['close'] for h in historical if h.get('close')]
             if len(prices) < 50:
@@ -141,9 +141,9 @@ def analyze_and_save(results, market_type):
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (symbol, market_type, current_price, score, signal, rsi, ema9, ema21, ema50))
             saved += 1
-            logger.info(f"✅ {symbol}: {signal} (score={score}, RSI={rsi:.1f}, price={current_price})")
+            logger.info(f" {symbol}: {signal} (score={score}, RSI={rsi:.1f}, price={current_price})")
         except Exception as e:
-            logger.error(f"❌ Erro {item.get('symbol','?')}: {e}")
+            logger.error(f" Erro {item.get('symbol','?')}: {e}")
     conn.commit()
     cursor.close()
     conn.close()
@@ -158,12 +158,14 @@ def main():
     while True:
         cycle += 1
         logger.info(f"\n[Ciclo {cycle}] 🚀 INICIANDO ANÁLISE")
-        logger.info("📊 B3 (20 ativos)...")
+        logger.info("B3 (20 ativos)...")
         b3_results = fetch_brapi(B3_STOCKS, 'B3')
         saved_b3 = analyze_and_save(b3_results, 'B3')
-        logger.info(f"✅ B3: {saved_b3} sinais salvos")
-        logger.info("📊 NYSE (20 ativos)...")
+        logger.info(f"B3: {saved_b3} sinais salvos")
+        logger.info("NYSE (20 ativos)...")
         nyse_results = fetch_brapi(NYSE_STOCKS, 'NYSE')
         saved_nyse = analyze_and_save(nyse_results, 'NYSE')
-        logger.info(f"✅ NYSE: {saved_nyse} sinais salvos")
+        logger.info(f"NYSE: {saved_nyse} sinais salvos")
         logger.info(f"Ciclo {cycle} completo! Total: {saved_b3 + saved_nyse} sinais")
+        logger.info("Aguardando 15 minutos...")
+        time.sleep(900)

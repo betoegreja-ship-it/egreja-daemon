@@ -1,20 +1,17 @@
 #!/bin/bash
-# Roda daemon Python + API Node.js em paralelo
-
 echo "=========================================="
-echo "🚀 Egreja Investment AI - FULL SYSTEM"
+echo "Egreja Investment AI - FULL SYSTEM"
 echo "=========================================="
 
-# Inicia daemon Python em background
-echo "Starting Python Daemon..."
-python -u intelligent_daemon_mysql.py 2>&1 &
-DAEMON_PID=$!
-echo "✓ Daemon PID: $DAEMON_PID"
-
-# Aguarda um pouco para daemon inicializar
-sleep 2
-
-# Inicia API Server (BLOQUEIA AQUI - importante para Railway)
+# Inicia Node.js em background
 echo "Starting API Server on port 3001..."
 export PORT=3001
-exec node api_signals.js
+node api_signals.js &
+NODE_PID=$!
+echo "Node PID: $NODE_PID"
+
+sleep 2
+
+# Inicia Python em foreground (para ver logs)
+echo "Starting Python Daemon..."
+python -u intelligent_daemon_mysql.py

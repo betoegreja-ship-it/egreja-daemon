@@ -136,7 +136,7 @@ def calculate_rsi(prices, period=14):
 def analyze_symbol(symbol, market_type):
     try:
         logger.debug(f"Baixando {symbol}...")
-        data = yf.download(symbol, period='100d', progress=False, quiet=True)
+        data = yf.download(symbol, period='100d', progress=False)
         
         if data.empty or len(data) < 50:
             logger.warning(f"  {symbol}: Dados insuficientes")

@@ -7,8 +7,7 @@ echo "=========================================="
 
 # Inicia daemon Python em background
 echo "Starting Python Daemon..."
-python intelligent_daemon_mysql.py &
-DAEMON_PID=$!
+python -u intelligent_daemon_mysql.py &DAEMON_PID=$!
 echo "✓ Daemon PID: $DAEMON_PID"
 
 # Aguarda um pouco para daemon inicializar

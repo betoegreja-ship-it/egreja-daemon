@@ -182,5 +182,53 @@ def main():
         logger.info("Aguardando 15 minutos...")
         time.sleep(900)
 
+# Integração de Alertas
+try:
+    from alerts_manager import AlertsManager
+    ALERTS_ENABLED = True
+except ImportError:
+    ALERTS_ENABLED = False
+    logger.warning("AlertsManager não encontrado - alertas desabilitados")
+
+def send_alerts_for_signals(b3_results, nyse_results):
+    """Envia alertas para sinais críticos"""
+    if not ALERTS_ENABLED:
+        return
+    
+    alerts = AlertsManager()
+    
+    for signal in b3_results + nyse_results:
+        if signal and 'score' in signal:
+            alerts.send_alert(signal)
+
+# Modificar main() para chamar send_alerts
+def main():
+    print("MAIN INICIANDO", flush=True)
+    logger.info("=" * 70)
+    logger.info("Egreja Investment AI - MYSQL VERSION")
+    logger.info("=" * 70)
+    ensure_tables()
+    cycle = 0
+    while True:
+        cycle += 1
+        logger.info(f"[Ciclo {cycle}] INICIANDO ANALISE")
+        logger.info("B3 (20 ativos)...")
+        b3_results = fetch_brapi(B3_STOCKS, 'B3')
+        saved_b3 = analyze_and_save(b3_results, 'B3')
+        logger.info(f"B3: {saved_b3} sinais salvos")
+        
+        logger.info("NYSE (20 ativos)...")
+        nyse_results = fetch_brapi(NYSE_STOCKS, 'NYSE')
+        saved_nyse = analyze_and_save(nyse_results, 'NYSE')
+        logger.info(f"NYSE: {saved_nyse} sinais salvos")
+        
+        # ENVIAR ALERTAS PARA SINAIS CRÍTICOS
+        logger.info("📢 Enviando alertas para sinais críticos...")
+        send_alerts_for_signals(b3_results, nyse_results)
+        
+        logger.info(f"Ciclo {cycle} completo! Total: {saved_b3 + saved_nyse} sinais")
+        logger.info("⏳ Aguardando 15 minutos...")
+        time.sleep(900)
+
 if __name__ == '__main__':
     main()

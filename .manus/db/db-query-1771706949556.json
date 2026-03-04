@@ -1,0 +1,110 @@
+{
+  "query": "SELECT id, symbol, recommendation, entry_price, quantity, status, created_at, \nTIMESTAMPDIFF(MINUTE, created_at, NOW()) as minutes_open\nFROM trades \nWHERE status = 'OPEN' \nORDER BY created_at DESC \nLIMIT 15;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 48pPh9xYP94hzUq.root --database 7RQABHEP2Bfkm28njawraw --execute SELECT id, symbol, recommendation, entry_price, quantity, status, created_at, \nTIMESTAMPDIFF(MINUTE, created_at, NOW()) as minutes_open\nFROM trades \nWHERE status = 'OPEN' \nORDER BY created_at DESC \nLIMIT 15;",
+  "rows": [
+    {
+      "id": "150010",
+      "symbol": "SOLUSDT",
+      "recommendation": "BUY",
+      "entry_price": "86.4",
+      "quantity": "1157.4074074074074",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:31:31",
+      "minutes_open": "77"
+    },
+    {
+      "id": "150002",
+      "symbol": "NEARUSDT",
+      "recommendation": "SELL",
+      "entry_price": "1.055",
+      "quantity": "94786.72985781991",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:29:51",
+      "minutes_open": "79"
+    },
+    {
+      "id": "150005",
+      "symbol": "DOTUSDT",
+      "recommendation": "BUY",
+      "entry_price": "1.364",
+      "quantity": "73313.78299120234",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:29:51",
+      "minutes_open": "79"
+    },
+    {
+      "id": "150004",
+      "symbol": "FLOKIUSDT",
+      "recommendation": "BUY",
+      "entry_price": "0.00003036",
+      "quantity": "3293807641.6337285",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:29:51",
+      "minutes_open": "79"
+    },
+    {
+      "id": "150009",
+      "symbol": "CRVUSDT",
+      "recommendation": "SELL",
+      "entry_price": "0.2436",
+      "quantity": "410509.03119868634",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:29:51",
+      "minutes_open": "79"
+    },
+    {
+      "id": "150006",
+      "symbol": "SHIBUSDT",
+      "recommendation": "BUY",
+      "entry_price": "0.00000644",
+      "quantity": "15527950310.559006",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:29:51",
+      "minutes_open": "79"
+    },
+    {
+      "id": "150007",
+      "symbol": "LINKUSDT",
+      "recommendation": "BUY",
+      "entry_price": "8.96",
+      "quantity": "11160.714285714284",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:29:51",
+      "minutes_open": "79"
+    },
+    {
+      "id": "150008",
+      "symbol": "XRPUSDT",
+      "recommendation": "BUY",
+      "entry_price": "1.4445",
+      "quantity": "69228.10661128418",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:29:51",
+      "minutes_open": "79"
+    },
+    {
+      "id": "150003",
+      "symbol": "SUSHIUSDT",
+      "recommendation": "BUY",
+      "entry_price": "0.2116",
+      "quantity": "472589.79206049145",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:29:51",
+      "minutes_open": "79"
+    },
+    {
+      "id": "150001",
+      "symbol": "UNIUSDT",
+      "recommendation": "BUY",
+      "entry_price": "3.638",
+      "quantity": "27487.63056624519",
+      "status": "OPEN",
+      "created_at": "2026-02-21 19:29:51",
+      "minutes_open": "79"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tsymbol\trecommendation\tentry_price\tquantity\tstatus\tcreated_at\tminutes_open\n150010\tSOLUSDT\tBUY\t86.4\t1157.4074074074074\tOPEN\t2026-02-21 19:31:31\t77\n150002\tNEARUSDT\tSELL\t1.055\t94786.72985781991\tOPEN\t2026-02-21 19:29:51\t79\n150005\tDOTUSDT\tBUY\t1.364\t73313.78299120234\tOPEN\t2026-02-21 19:29:51\t79\n150004\tFLOKIUSDT\tBUY\t0.00003036\t3293807641.6337285\tOPEN\t2026-02-21 19:29:51\t79\n150009\tCRVUSDT\tSELL\t0.2436\t410509.03119868634\tOPEN\t2026-02-21 19:29:51\t79\n150006\tSHIBUSDT\tBUY\t0.00000644\t15527950310.559006\tOPEN\t2026-02-21 19:29:51\t79\n150007\tLINKUSDT\tBUY\t8.96\t11160.714285714284\tOPEN\t2026-02-21 19:29:51\t79\n150008\tXRPUSDT\tBUY\t1.4445\t69228.10661128418\tOPEN\t2026-02-21 19:29:51\t79\n150003\tSUSHIUSDT\tBUY\t0.2116\t472589.79206049145\tOPEN\t2026-02-21 19:29:51\t79\n150001\tUNIUSDT\tBUY\t3.638\t27487.63056624519\tOPEN\t2026-02-21 19:29:51\t79\n",
+  "stderr": "",
+  "execution_time_ms": 85
+}

@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-02-18T12:32:18.757923",
+  "signal": {
+    "symbol": "ETH-USD/BTC-USD",
+    "signal": "HOLD",
+    "z_score": 1.0089174753816772,
+    "hedge_ratio": 1.5330101528983657,
+    "r_squared": 0.5231844735311216,
+    "half_life": 173.77852505059153,
+    "eth_price": 1992.1943359375,
+    "btc_price": 67494.21875,
+    "spread": -9.449770052576625,
+    "mean_spread": -9.661485448117153,
+    "std_spread": 0.20984411580385748,
+    "cointegrated": false,
+    "timestamp": "2026-02-18T12:32:18.757836"
+  },
+  "risk_metrics": {
+    "position_size": 19920.0,
+    "position_size_pct": 0.19920000000000002,
+    "stop_loss_distance": 0.5227390097729729,
+    "take_profit_distance": 0.2117153955405282,
+    "risk_reward_ratio": 0.40501166276547224,
+    "expected_profit": 2.1169474298212396
+  },
+  "recommendation": "\u26a0\ufe0f  N\u00c3O RECOMENDADO: Pares n\u00e3o cointegrados"
+}

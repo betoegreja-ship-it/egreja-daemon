@@ -1,0 +1,9 @@
+{
+  "query": "UPDATE trades\nSET status = 'CLOSED',\n    exit_price = entry_price,\n    pnl = 0,\n    closed_at = NOW(),\n    close_reason = 'MANUAL_RESET'\nWHERE status = 'OPEN'\nAND TIMESTAMPDIFF(MINUTE, created_at, NOW()) > 60;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 48pPh9xYP94hzUq.root --database 7RQABHEP2Bfkm28njawraw --execute UPDATE trades\nSET status = 'CLOSED',\n    exit_price = entry_price,\n    pnl = 0,\n    closed_at = NOW(),\n    close_reason = 'MANUAL_RESET'\nWHERE status = 'OPEN'\nAND TIMESTAMPDIFF(MINUTE, created_at, NOW()) > 60;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 61
+}

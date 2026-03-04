@@ -1,0 +1,34 @@
+[
+  {
+    "trade_id": "trade_1771452345.006287",
+    "symbol": "BTCUSDT",
+    "entry_price": 45000,
+    "exit_price": 45450,
+    "pnl": 450,
+    "pnl_pct": 1.0,
+    "duration": 0,
+    "success": true,
+    "timestamp": "2026-02-18T17:05:45.006301",
+    "analysis": {
+      "market_conditions": {},
+      "entry_reason": "UNKNOWN",
+      "exit_reason": "UNKNOWN"
+    }
+  },
+  {
+    "trade_id": "trade_1771452345.006847",
+    "symbol": "ETHUSDT",
+    "entry_price": 2500,
+    "exit_price": 2550,
+    "pnl": 50,
+    "pnl_pct": 2.0,
+    "duration": 0,
+    "success": true,
+    "timestamp": "2026-02-18T17:05:45.006856",
+    "analysis": {
+      "market_conditions": {},
+      "entry_reason": "UNKNOWN",
+      "exit_reason": "UNKNOWN"
+    }
+  }
+]

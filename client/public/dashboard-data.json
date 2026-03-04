@@ -1,0 +1,99 @@
+{
+  "timestamp": "2026-02-18T12:32:50.220262",
+  "summary": {
+    "totalOpportunities": 1,
+    "avgConfidence": 0.84,
+    "avgBacktestReturn": -0.050469129079298,
+    "avgSharpeRatio": -1.321175560845136
+  },
+  "opportunities": [
+    {
+      "id": "SLV",
+      "symbol": "SLV",
+      "strategy": "Mean Reversion",
+      "direction": "LONG",
+      "confidence": 0.84,
+      "zScore": -0.141,
+      "currentPrice": 70.52,
+      "rsi": 29.57,
+      "adx": 17.25,
+      "timestamp": "2026-02-18T00:00:00-05:00"
+    }
+  ],
+  "backtestResults": [
+    {
+      "symbol": "SPY",
+      "totalReturn": -0.014331534867410518,
+      "totalReturnPct": -1.4331534867410518,
+      "numTrades": 10,
+      "winRate": 0.8,
+      "sharpeRatio": -1.92346058554345,
+      "sortinoRatio": -2.350042440022737,
+      "maxDrawdown": 0.02988590972006089,
+      "maxDrawdownPct": 2.9885909720060893,
+      "calmarRatio": -0.5937684846246137
+    },
+    {
+      "symbol": "QQQ",
+      "totalReturn": -0.01308317706084228,
+      "totalReturnPct": -1.3083177060842281,
+      "numTrades": 13,
+      "winRate": 0.6923076923076923,
+      "sharpeRatio": -1.321805197393589,
+      "sortinoRatio": -1.6480690466090113,
+      "maxDrawdown": 0.03886407903231302,
+      "maxDrawdownPct": 3.8864079032313024,
+      "calmarRatio": -0.3395868070660991
+    },
+    {
+      "symbol": "GLD",
+      "totalReturn": -0.03971447635870369,
+      "totalReturnPct": -3.971447635870369,
+      "numTrades": 9,
+      "winRate": 0.7777777777777778,
+      "sharpeRatio": -1.2112452469656931,
+      "sortinoRatio": -1.625516662232413,
+      "maxDrawdown": 0.08187720516688944,
+      "maxDrawdownPct": 8.187720516688945,
+      "calmarRatio": -0.5862744926760562
+    },
+    {
+      "symbol": "SLV",
+      "totalReturn": -0.1347473280302355,
+      "totalReturnPct": -13.474732803023551,
+      "numTrades": 8,
+      "winRate": 0.625,
+      "sharpeRatio": -0.8281912134778129,
+      "sortinoRatio": -1.5915675572131356,
+      "maxDrawdown": 0.27850924058634796,
+      "maxDrawdownPct": 27.850924058634796,
+      "calmarRatio": -0.529819766729676
+    }
+  ],
+  "performanceHistory": [
+    {
+      "month": "Jan",
+      "return": 2.5
+    },
+    {
+      "month": "Feb",
+      "return": -1.2
+    },
+    {
+      "month": "Mar",
+      "return": 3.8
+    },
+    {
+      "month": "Apr",
+      "return": 1.5
+    },
+    {
+      "month": "May",
+      "return": -0.5
+    },
+    {
+      "month": "Jun",
+      "return": 4.2
+    }
+  ]
+}

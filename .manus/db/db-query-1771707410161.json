@@ -1,0 +1,80 @@
+{
+  "query": "SELECT id, symbol, recommendation, created_at,\nTIMESTAMPDIFF(MINUTE, created_at, NOW()) as minutos_atras\nFROM sofia_analyses \nORDER BY created_at DESC \nLIMIT 10;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 48pPh9xYP94hzUq.root --database 7RQABHEP2Bfkm28njawraw --execute SELECT id, symbol, recommendation, created_at,\nTIMESTAMPDIFF(MINUTE, created_at, NOW()) as minutos_atras\nFROM sofia_analyses \nORDER BY created_at DESC \nLIMIT 10;",
+  "rows": [
+    {
+      "id": "90202",
+      "symbol": "AAVEUSDT",
+      "recommendation": "BUY",
+      "created_at": "2026-02-20 05:59:01",
+      "minutos_atras": "2337"
+    },
+    {
+      "id": "90201",
+      "symbol": "UNIUSDT",
+      "recommendation": "HOLD",
+      "created_at": "2026-02-20 05:58:51",
+      "minutos_atras": "2337"
+    },
+    {
+      "id": "90200",
+      "symbol": "LINKUSDT",
+      "recommendation": "HOLD",
+      "created_at": "2026-02-20 05:58:41",
+      "minutos_atras": "2338"
+    },
+    {
+      "id": "90199",
+      "symbol": "AVAXUSDT",
+      "recommendation": "BUY",
+      "created_at": "2026-02-20 05:58:25",
+      "minutos_atras": "2338"
+    },
+    {
+      "id": "90198",
+      "symbol": "LTCUSDT",
+      "recommendation": "HOLD",
+      "created_at": "2026-02-20 05:58:11",
+      "minutos_atras": "2338"
+    },
+    {
+      "id": "90197",
+      "symbol": "MATICUSDT",
+      "recommendation": "HOLD",
+      "created_at": "2026-02-20 05:58:01",
+      "minutos_atras": "2338"
+    },
+    {
+      "id": "90196",
+      "symbol": "DOTUSDT",
+      "recommendation": "SELL",
+      "created_at": "2026-02-20 05:57:45",
+      "minutos_atras": "2339"
+    },
+    {
+      "id": "90195",
+      "symbol": "SOLUSDT",
+      "recommendation": "BUY",
+      "created_at": "2026-02-20 05:57:31",
+      "minutos_atras": "2339"
+    },
+    {
+      "id": "90194",
+      "symbol": "XRPUSDT",
+      "recommendation": "HOLD",
+      "created_at": "2026-02-20 05:57:11",
+      "minutos_atras": "2339"
+    },
+    {
+      "id": "90193",
+      "symbol": "ADAUSDT",
+      "recommendation": "HOLD",
+      "created_at": "2026-02-20 05:56:55",
+      "minutos_atras": "2339"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tsymbol\trecommendation\tcreated_at\tminutos_atras\n90202\tAAVEUSDT\tBUY\t2026-02-20 05:59:01\t2337\n90201\tUNIUSDT\tHOLD\t2026-02-20 05:58:51\t2337\n90200\tLINKUSDT\tHOLD\t2026-02-20 05:58:41\t2338\n90199\tAVAXUSDT\tBUY\t2026-02-20 05:58:25\t2338\n90198\tLTCUSDT\tHOLD\t2026-02-20 05:58:11\t2338\n90197\tMATICUSDT\tHOLD\t2026-02-20 05:58:01\t2338\n90196\tDOTUSDT\tSELL\t2026-02-20 05:57:45\t2339\n90195\tSOLUSDT\tBUY\t2026-02-20 05:57:31\t2339\n90194\tXRPUSDT\tHOLD\t2026-02-20 05:57:11\t2339\n90193\tADAUSDT\tHOLD\t2026-02-20 05:56:55\t2339\n",
+  "stderr": "",
+  "execution_time_ms": 48
+}

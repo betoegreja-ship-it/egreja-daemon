@@ -1,0 +1,59 @@
+{
+  "timestamp": "2026-02-18T12:32:41.055704",
+  "results": [
+    {
+      "symbol": "QQQ",
+      "strategy": "Mean Reversion",
+      "total_return": 0.028179022986248893,
+      "sharpe_ratio": 0.24210604930907806,
+      "max_drawdown": -0.15685165003661536,
+      "num_trades": 4,
+      "final_value": 102817.90229862489
+    },
+    {
+      "symbol": "SPY",
+      "strategy": "Mean Reversion",
+      "total_return": 0.011278658692219033,
+      "sharpe_ratio": 0.14940091099702804,
+      "max_drawdown": -0.13724668704268442,
+      "num_trades": 4,
+      "final_value": 101127.8658692219
+    },
+    {
+      "symbol": "GLD",
+      "strategy": "Mean Reversion",
+      "total_return": 0.04645547496010782,
+      "sharpe_ratio": 1.0086695738912634,
+      "max_drawdown": -0.03715121298659409,
+      "num_trades": 2,
+      "final_value": 104645.54749601078
+    },
+    {
+      "symbol": "SLV",
+      "strategy": "Mean Reversion",
+      "total_return": 0.4150231886716935,
+      "sharpe_ratio": 2.55513749280772,
+      "max_drawdown": -0.06250000986831876,
+      "num_trades": 5,
+      "final_value": 141502.31886716935
+    },
+    {
+      "symbol": "QQQ/SPY",
+      "strategy": "Pairs Trading",
+      "total_return": 0.022581901813340226,
+      "sharpe_ratio": 0.8306498582706701,
+      "max_drawdown": -0.013442296071818273,
+      "num_trades": 4,
+      "final_value": 102258.19018133402
+    },
+    {
+      "symbol": "GLD/SLV",
+      "strategy": "Pairs Trading",
+      "total_return": NaN,
+      "sharpe_ratio": 0.0,
+      "max_drawdown": NaN,
+      "num_trades": 0,
+      "final_value": NaN
+    }
+  ]
+}

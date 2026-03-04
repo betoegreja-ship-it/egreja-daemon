@@ -1,0 +1,9 @@
+{
+  "query": "UPDATE trades t1\nJOIN (\n  SELECT id, symbol, entry_price, quantity, recommendation\n  FROM trades\n  WHERE status = 'OPEN'\n) t2 ON t1.id = t2.id\nSET t1.status = 'CLOSED',\n    t1.exit_price = t2.entry_price,\n    t1.pnl = 0,\n    t1.pnl_percent = 0,\n    t1.closed_at = NOW();",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 48pPh9xYP94hzUq.root --database 7RQABHEP2Bfkm28njawraw --execute UPDATE trades t1\nJOIN (\n  SELECT id, symbol, entry_price, quantity, recommendation\n  FROM trades\n  WHERE status = 'OPEN'\n) t2 ON t1.id = t2.id\nSET t1.status = 'CLOSED',\n    t1.exit_price = t2.entry_price,\n    t1.pnl = 0,\n    t1.pnl_percent = 0,\n    t1.closed_at = NOW();",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 61
+}

@@ -1,0 +1,26 @@
+{
+  "query": "\n-- Primeiro, vamos ver quais são as trades abertas\nSELECT id, symbol, entry_price, quantity, recommendation, opened_at \nFROM trades \nWHERE status = 'OPEN' \nORDER BY opened_at ASC;\n",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 48pPh9xYP94hzUq.root --database 7RQABHEP2Bfkm28njawraw --execute \n-- Primeiro, vamos ver quais são as trades abertas\nSELECT id, symbol, entry_price, quantity, recommendation, opened_at \nFROM trades \nWHERE status = 'OPEN' \nORDER BY opened_at ASC;\n",
+  "rows": [
+    {
+      "id": "120020",
+      "symbol": "FLOKIUSDT",
+      "entry_price": "0.00002986",
+      "quantity": "3348961821.8352313",
+      "recommendation": "BUY",
+      "opened_at": "2026-02-20 04:30:22"
+    },
+    {
+      "id": "120021",
+      "symbol": "SHIBUSDT",
+      "entry_price": "0.00000619",
+      "quantity": "16155088852.988691",
+      "recommendation": "BUY",
+      "opened_at": "2026-02-20 05:19:29"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tsymbol\tentry_price\tquantity\trecommendation\topened_at\n120020\tFLOKIUSDT\t0.00002986\t3348961821.8352313\tBUY\t2026-02-20 04:30:22\n120021\tSHIBUSDT\t0.00000619\t16155088852.988691\tBUY\t2026-02-20 05:19:29\n",
+  "stderr": "",
+  "execution_time_ms": 59
+}

@@ -1,0 +1,9 @@
+{
+  "query": "ALTER TABLE trades ADD COLUMN trailing_stop_price DECIMAL(20, 8) NULL AFTER exit_price;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 48pPh9xYP94hzUq.root --database 7RQABHEP2Bfkm28njawraw --execute ALTER TABLE trades ADD COLUMN trailing_stop_price DECIMAL(20, 8) NULL AFTER exit_price;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 271
+}

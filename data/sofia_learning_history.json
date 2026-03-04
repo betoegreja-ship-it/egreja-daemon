@@ -1,0 +1,453 @@
+{
+  "ETHUSDT": {
+    "trades": [
+      {
+        "id": "cc715552",
+        "symbol": "ETHUSDT",
+        "recommendation": "SELL",
+        "entry_price": 2500,
+        "exit_price": 2526.8926529901973,
+        "quantity": 1.0,
+        "pnl": 26.892652990197348,
+        "pnl_percent": 1.0757061196078939,
+        "confidence": 58.0,
+        "profit_target": 2450.0,
+        "stop_loss": 2537.4999999999995,
+        "executed_at": "2026-02-18T18:48:09.095402",
+        "status": "CLOSED"
+      },
+      {
+        "id": "ETHUSDT_1771458531.03732",
+        "symbol": "ETHUSDT",
+        "recommendation": "SELL",
+        "entry_price": 1956.23,
+        "exit_price": 1925.1860565445263,
+        "quantity": 1.0,
+        "pnl": -31.04394345547371,
+        "pnl_percent": -1.5869270717386867,
+        "confidence": 95,
+        "profit_target": 1907.32425,
+        "stop_loss": 2005.13575,
+        "executed_at": "2026-02-18T18:48:51.037332",
+        "status": "CLOSED",
+        "forced": false
+      },
+      {
+        "id": "ETHUSDT_1771458534.547319",
+        "symbol": "ETHUSDT",
+        "recommendation": "SELL",
+        "entry_price": 1956.23,
+        "exit_price": 1958.7577357771788,
+        "quantity": 1.0,
+        "pnl": 2.5277357771788047,
+        "pnl_percent": 0.12921465150717476,
+        "confidence": 95,
+        "profit_target": 1907.32425,
+        "stop_loss": 2005.13575,
+        "executed_at": "2026-02-18T18:48:54.547330",
+        "status": "CLOSED",
+        "forced": true
+      },
+      {
+        "symbol": "ETHUSDT",
+        "recommendation": "SELL",
+        "pnl": -4563.304882042307,
+        "success": false
+      },
+      {
+        "symbol": "ETHUSDT",
+        "recommendation": "SELL",
+        "pnl": -4060.493899387964,
+        "success": false
+      },
+      {
+        "symbol": "ETHUSDT",
+        "recommendation": "SELL",
+        "pnl": 7391.958338723226,
+        "success": true
+      },
+      {
+        "symbol": "ETHUSDT",
+        "recommendation": "SELL",
+        "pnl": 6268.6971815734405,
+        "success": true
+      }
+    ],
+    "total_pnl": 5035.233184178298,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:14.074386"
+  },
+  "BTCUSDT": {
+    "trades": [
+      {
+        "id": "BTCUSDT_1771458531.538056",
+        "symbol": "BTCUSDT",
+        "recommendation": "SELL",
+        "entry_price": 66490.51,
+        "exit_price": 67099.93601271385,
+        "quantity": 1.0,
+        "pnl": 609.426012713855,
+        "pnl_percent": 0.9165608937483786,
+        "confidence": 58.0,
+        "profit_target": 65160.699799999995,
+        "stop_loss": 67487.86764999999,
+        "executed_at": "2026-02-18T18:48:51.538082",
+        "status": "CLOSED",
+        "forced": false
+      },
+      {
+        "id": "BTCUSDT_1771458535.048672",
+        "symbol": "BTCUSDT",
+        "recommendation": "SELL",
+        "entry_price": 66490.51,
+        "exit_price": 66525.41428734164,
+        "quantity": 1.0,
+        "pnl": 34.90428734164743,
+        "pnl_percent": 0.05249514154974512,
+        "confidence": 58.0,
+        "profit_target": 65160.699799999995,
+        "stop_loss": 67487.86764999999,
+        "executed_at": "2026-02-18T18:48:55.048706",
+        "status": "CLOSED",
+        "forced": true
+      },
+      {
+        "symbol": "BTCUSDT",
+        "recommendation": "SELL",
+        "pnl": 8546.337624175892,
+        "success": true
+      },
+      {
+        "symbol": "BTCUSDT",
+        "recommendation": "SELL",
+        "pnl": -4592.061732945555,
+        "success": false
+      },
+      {
+        "symbol": "BTCUSDT",
+        "recommendation": "SELL",
+        "pnl": 6065.985227540862,
+        "success": true
+      },
+      {
+        "symbol": "BTCUSDT",
+        "recommendation": "SELL",
+        "pnl": 7909.020143568874,
+        "success": true
+      }
+    ],
+    "total_pnl": 18573.611562395577,
+    "accuracy": 0,
+    "last_updated": "2026-02-18T22:40:28.500817"
+  },
+  "BNBUSDT": {
+    "trades": [
+      {
+        "id": "BNBUSDT_1771458532.039289",
+        "symbol": "BNBUSDT",
+        "recommendation": "SELL",
+        "entry_price": 605.48,
+        "exit_price": 602.2974758706906,
+        "quantity": 1.0,
+        "pnl": -3.1825241293093995,
+        "pnl_percent": -0.5256200253203077,
+        "confidence": 58.0,
+        "profit_target": 593.3704,
+        "stop_loss": 614.5622,
+        "executed_at": "2026-02-18T18:48:52.039326",
+        "status": "CLOSED",
+        "forced": false
+      },
+      {
+        "id": "BNBUSDT_1771458535.551021",
+        "symbol": "BNBUSDT",
+        "recommendation": "SELL",
+        "entry_price": 605.48,
+        "exit_price": 596.3967559679785,
+        "quantity": 1.0,
+        "pnl": -9.083244032021526,
+        "pnl_percent": -1.500172430471944,
+        "confidence": 58.0,
+        "profit_target": 593.3704,
+        "stop_loss": 614.5622,
+        "executed_at": "2026-02-18T18:48:55.551045",
+        "status": "CLOSED",
+        "forced": true
+      },
+      {
+        "symbol": "BNBUSDT",
+        "recommendation": "SELL",
+        "pnl": -4103.679402267682,
+        "success": false
+      },
+      {
+        "symbol": "BNBUSDT",
+        "recommendation": "SELL",
+        "pnl": -4916.832962571764,
+        "success": false
+      },
+      {
+        "symbol": "BNBUSDT",
+        "recommendation": "SELL",
+        "pnl": -5069.4411000688815,
+        "success": false
+      }
+    ],
+    "total_pnl": -14102.21923306966,
+    "accuracy": 0,
+    "last_updated": "2026-02-18T22:40:28.610347"
+  },
+  "ADAUSDT": {
+    "trades": [
+      {
+        "id": "ADAUSDT_1771458532.541329",
+        "symbol": "ADAUSDT",
+        "recommendation": "SELL",
+        "entry_price": 0.2738,
+        "exit_price": 0.27815677920342063,
+        "quantity": 1.0,
+        "pnl": 0.0043567792034206465,
+        "pnl_percent": 1.591226882184312,
+        "confidence": 58.0,
+        "profit_target": 0.268324,
+        "stop_loss": 0.27790699999999996,
+        "executed_at": "2026-02-18T18:48:52.541354",
+        "status": "CLOSED",
+        "forced": false
+      },
+      {
+        "symbol": "ADAUSDT",
+        "recommendation": "SELL",
+        "pnl": 7987.05226581213,
+        "success": true
+      },
+      {
+        "symbol": "ADAUSDT",
+        "recommendation": "SELL",
+        "pnl": 7613.720904981201,
+        "success": true
+      },
+      {
+        "symbol": "ADAUSDT",
+        "recommendation": "SELL",
+        "pnl": 8075.773668922065,
+        "success": true
+      },
+      {
+        "symbol": "ADAUSDT",
+        "recommendation": "SELL",
+        "pnl": -5135.335708813935,
+        "success": false
+      }
+    ],
+    "total_pnl": 18541.215487680664,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:14.684203"
+  },
+  "XRPUSDT": {
+    "trades": [
+      {
+        "id": "XRPUSDT_1771458533.042601",
+        "symbol": "XRPUSDT",
+        "recommendation": "SELL",
+        "entry_price": 1.4198,
+        "exit_price": 1.405840489785286,
+        "quantity": 1.0,
+        "pnl": -0.013959510214713866,
+        "pnl_percent": -0.9832025788641969,
+        "confidence": 58.0,
+        "profit_target": 1.3914039999999999,
+        "stop_loss": 1.4410969999999999,
+        "executed_at": "2026-02-18T18:48:53.042626",
+        "status": "CLOSED",
+        "forced": false
+      },
+      {
+        "symbol": "XRPUSDT",
+        "recommendation": "SELL",
+        "pnl": 7979.211529525389,
+        "success": true
+      },
+      {
+        "symbol": "XRPUSDT",
+        "recommendation": "SELL",
+        "pnl": -3350.519934857179,
+        "success": false
+      },
+      {
+        "symbol": "XRPUSDT",
+        "recommendation": "SELL",
+        "pnl": -4142.572527257856,
+        "success": false
+      },
+      {
+        "symbol": "XRPUSDT",
+        "recommendation": "SELL",
+        "pnl": 8163.743585978573,
+        "success": true
+      }
+    ],
+    "total_pnl": 8649.848693878714,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:15.180376"
+  },
+  "LTCUSDT": {
+    "trades": [
+      {
+        "id": "LTCUSDT_1771458533.5439",
+        "symbol": "LTCUSDT",
+        "recommendation": "SELL",
+        "entry_price": 53.32,
+        "exit_price": 52.59424238519238,
+        "quantity": 1.0,
+        "pnl": -0.7257576148076197,
+        "pnl_percent": -1.361135811717216,
+        "confidence": 58.0,
+        "profit_target": 52.2536,
+        "stop_loss": 54.1198,
+        "executed_at": "2026-02-18T18:48:53.543927",
+        "status": "CLOSED",
+        "forced": false
+      },
+      {
+        "symbol": "LTCUSDT",
+        "recommendation": "SELL",
+        "pnl": 8505.981990472072,
+        "success": true
+      },
+      {
+        "symbol": "LTCUSDT",
+        "recommendation": "SELL",
+        "pnl": 7799.641652137011,
+        "success": true
+      },
+      {
+        "symbol": "LTCUSDT",
+        "recommendation": "SELL",
+        "pnl": -4661.366867876782,
+        "success": false
+      },
+      {
+        "symbol": "LTCUSDT",
+        "recommendation": "SELL",
+        "pnl": -4646.2387302318175,
+        "success": false
+      }
+    ],
+    "total_pnl": 6997.292286885676,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:15.674115"
+  },
+  "DOGEUSDT": {
+    "trades": [
+      {
+        "id": "DOGEUSDT_1771458534.045672",
+        "symbol": "DOGEUSDT",
+        "recommendation": "SELL",
+        "entry_price": 0.09846,
+        "exit_price": 0.09793317257513023,
+        "quantity": 1.0,
+        "pnl": -0.0005268274248697719,
+        "pnl_percent": -0.535067463812484,
+        "confidence": 58.0,
+        "profit_target": 0.0964908,
+        "stop_loss": 0.0999369,
+        "executed_at": "2026-02-18T18:48:54.045699",
+        "status": "CLOSED",
+        "forced": false
+      },
+      {
+        "symbol": "DOGEUSDT",
+        "recommendation": "SELL",
+        "pnl": -5772.1447564516975,
+        "success": false
+      },
+      {
+        "symbol": "DOGEUSDT",
+        "recommendation": "SELL",
+        "pnl": -3421.7814817082894,
+        "success": false
+      },
+      {
+        "symbol": "DOGEUSDT",
+        "recommendation": "SELL",
+        "pnl": 8473.80305727646,
+        "success": true
+      },
+      {
+        "symbol": "DOGEUSDT",
+        "recommendation": "SELL",
+        "pnl": 8832.186444905185,
+        "success": true
+      }
+    ],
+    "total_pnl": 8112.062737194234,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:16.168248"
+  },
+  "DOTUSDT": {
+    "trades": [
+      {
+        "symbol": "DOTUSDT",
+        "recommendation": "SELL",
+        "pnl": -4322.962502914772,
+        "success": false
+      }
+    ],
+    "total_pnl": -4322.962502914772,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:16.880084"
+  },
+  "LINKUSDT": {
+    "trades": [
+      {
+        "symbol": "LINKUSDT",
+        "recommendation": "SELL",
+        "pnl": -5812.730052185629,
+        "success": false
+      }
+    ],
+    "total_pnl": -5812.730052185629,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:17.500301"
+  },
+  "ATOMUSDT": {
+    "trades": [
+      {
+        "symbol": "ATOMUSDT",
+        "recommendation": "SELL",
+        "pnl": -3970.267923626305,
+        "success": false
+      }
+    ],
+    "total_pnl": -3970.267923626305,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:17.996157"
+  },
+  "UNIUSDT": {
+    "trades": [
+      {
+        "symbol": "UNIUSDT",
+        "recommendation": "SELL",
+        "pnl": 6752.779513450636,
+        "success": true
+      }
+    ],
+    "total_pnl": 6752.779513450636,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:18.482123"
+  },
+  "FILUSDT": {
+    "trades": [
+      {
+        "symbol": "FILUSDT",
+        "recommendation": "SELL",
+        "pnl": -4036.7336666895344,
+        "success": false
+      }
+    ],
+    "total_pnl": -4036.7336666895344,
+    "accuracy": 0,
+    "last_updated": "2026-02-19T18:19:18.972067"
+  }
+}

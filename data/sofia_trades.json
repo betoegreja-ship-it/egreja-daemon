@@ -1,0 +1,17 @@
+[
+  {
+    "id": "cc715552",
+    "symbol": "ETHUSDT",
+    "recommendation": "SELL",
+    "entry_price": 2500,
+    "exit_price": 2526.8926529901973,
+    "quantity": 1.0,
+    "pnl": 26.892652990197348,
+    "pnl_percent": 1.0757061196078939,
+    "confidence": 58.0,
+    "profit_target": 2450.0,
+    "stop_loss": 2537.4999999999995,
+    "executed_at": "2026-02-18T18:48:09.095402",
+    "status": "CLOSED"
+  }
+]

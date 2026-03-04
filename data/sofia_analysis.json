@@ -1,0 +1,22 @@
+{
+  "FILUSDT": {
+    "symbol": "FILUSDT",
+    "recommendation": "SELL",
+    "confidence": 58.0,
+    "reasoning": [
+      "Tend\u00eancia negativa (-1.19%)",
+      "Volatilidade elevada (5.26%)",
+      "Risco de queda identificado",
+      "Hist\u00f3rico de acur\u00e1cia: 50.0%"
+    ],
+    "profit_target": 0.89474,
+    "stop_loss": 0.9266949999999999,
+    "current_price": 0.913,
+    "volatility": 5.257270693512297,
+    "momentum": -1.19,
+    "accuracy": 0,
+    "win_rate": 0,
+    "avg_profit": 0,
+    "timestamp": "2026-02-19T18:19:18.644234"
+  }
+}

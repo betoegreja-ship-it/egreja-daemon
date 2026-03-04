@@ -1,0 +1,15 @@
+{
+  "query": "SELECT COUNT(*) as total, \nMAX(created_at) as ultima_analise,\nTIMESTAMPDIFF(MINUTE, MAX(created_at), NOW()) as minutos_atras\nFROM sofia_analyses;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 48pPh9xYP94hzUq.root --database 7RQABHEP2Bfkm28njawraw --execute SELECT COUNT(*) as total, \nMAX(created_at) as ultima_analise,\nTIMESTAMPDIFF(MINUTE, MAX(created_at), NOW()) as minutos_atras\nFROM sofia_analyses;",
+  "rows": [
+    {
+      "total": "237",
+      "ultima_analise": "2026-02-20 05:59:01",
+      "minutos_atras": "2337"
+    }
+  ],
+  "messages": [],
+  "stdout": "total\tultima_analise\tminutos_atras\n237\t2026-02-20 05:59:01\t2337\n",
+  "stderr": "",
+  "execution_time_ms": 56
+}

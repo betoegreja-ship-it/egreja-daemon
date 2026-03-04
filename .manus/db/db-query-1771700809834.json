@@ -1,0 +1,50 @@
+{
+  "query": "\nSELECT id, symbol, recommendation, confidence, \n       LEFT(market_data, 100) as market_data_preview,\n       created_at\nFROM sofia_analyses \nORDER BY created_at DESC \nLIMIT 5;\n",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 48pPh9xYP94hzUq.root --database 7RQABHEP2Bfkm28njawraw --execute \nSELECT id, symbol, recommendation, confidence, \n       LEFT(market_data, 100) as market_data_preview,\n       created_at\nFROM sofia_analyses \nORDER BY created_at DESC \nLIMIT 5;\n",
+  "rows": [
+    {
+      "id": "90202",
+      "symbol": "AAVEUSDT",
+      "recommendation": "BUY",
+      "confidence": "85",
+      "market_data_preview": "{\"price\": 124.46, \"score\": 91, \"ema_9\": 122.49198912433447, \"ema_21\": 122.73752317186057, \"ema_50\": ",
+      "created_at": "2026-02-20 05:59:01"
+    },
+    {
+      "id": "90201",
+      "symbol": "UNIUSDT",
+      "recommendation": "HOLD",
+      "confidence": "49",
+      "market_data_preview": "{\"price\": 500.0, \"score\": 53, \"ema_9\": 499.6298093605043, \"ema_21\": 500.3474337812538, \"ema_50\": 494",
+      "created_at": "2026-02-20 05:58:51"
+    },
+    {
+      "id": "90200",
+      "symbol": "LINKUSDT",
+      "recommendation": "HOLD",
+      "confidence": "43",
+      "market_data_preview": "{\"price\": 500.0, \"score\": 45, \"ema_9\": 503.78206792541556, \"ema_21\": 490.1395529308227, \"ema_50\": 50",
+      "created_at": "2026-02-20 05:58:41"
+    },
+    {
+      "id": "90199",
+      "symbol": "AVAXUSDT",
+      "recommendation": "BUY",
+      "confidence": "81",
+      "market_data_preview": "{\"price\": 500.0, \"score\": 75, \"ema_9\": 494.41137437877916, \"ema_21\": 481.79684410154186, \"ema_50\": 4",
+      "created_at": "2026-02-20 05:58:25"
+    },
+    {
+      "id": "90198",
+      "symbol": "LTCUSDT",
+      "recommendation": "HOLD",
+      "confidence": "43",
+      "market_data_preview": "{\"price\": 500.0, \"score\": 45, \"ema_9\": 501.85894206926207, \"ema_21\": 499.8486390284346, \"ema_50\": 48",
+      "created_at": "2026-02-20 05:58:11"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tsymbol\trecommendation\tconfidence\tmarket_data_preview\tcreated_at\n90202\tAAVEUSDT\tBUY\t85\t{\"price\": 124.46, \"score\": 91, \"ema_9\": 122.49198912433447, \"ema_21\": 122.73752317186057, \"ema_50\": \t2026-02-20 05:59:01\n90201\tUNIUSDT\tHOLD\t49\t{\"price\": 500.0, \"score\": 53, \"ema_9\": 499.6298093605043, \"ema_21\": 500.3474337812538, \"ema_50\": 494\t2026-02-20 05:58:51\n90200\tLINKUSDT\tHOLD\t43\t{\"price\": 500.0, \"score\": 45, \"ema_9\": 503.78206792541556, \"ema_21\": 490.1395529308227, \"ema_50\": 50\t2026-02-20 05:58:41\n90199\tAVAXUSDT\tBUY\t81\t{\"price\": 500.0, \"score\": 75, \"ema_9\": 494.41137437877916, \"ema_21\": 481.79684410154186, \"ema_50\": 4\t2026-02-20 05:58:25\n90198\tLTCUSDT\tHOLD\t43\t{\"price\": 500.0, \"score\": 45, \"ema_9\": 501.85894206926207, \"ema_21\": 499.8486390284346, \"ema_50\": 48\t2026-02-20 05:58:11\n",
+  "stderr": "",
+  "execution_time_ms": 59
+}

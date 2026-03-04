@@ -1,0 +1,21 @@
+{
+  "created_at": "2026-02-18T13:59:19.294602",
+  "simulations": [
+    {
+      "timestamp": "2026-02-18T13:59:22.073525",
+      "type": "daily_simulation",
+      "backtests": [],
+      "improvements": [],
+      "new_strategies": []
+    },
+    {
+      "timestamp": "2026-02-18T13:59:55.399875",
+      "type": "daily_simulation",
+      "backtests": [],
+      "improvements": [],
+      "new_strategies": []
+    }
+  ],
+  "improvements": [],
+  "best_strategies": []
+}

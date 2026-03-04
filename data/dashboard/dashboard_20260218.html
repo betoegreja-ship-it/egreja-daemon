@@ -1,0 +1,350 @@
+
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>ArbitrageAI - Dashboard Diário</title>
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+                
+                body {
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: #333;
+                    padding: 20px;
+                    min-height: 100vh;
+                }
+                
+                .container {
+                    max-width: 1400px;
+                    margin: 0 auto;
+                }
+                
+                .header {
+                    background: white;
+                    padding: 30px;
+                    border-radius: 10px;
+                    margin-bottom: 30px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                }
+                
+                .header h1 {
+                    color: #667eea;
+                    margin-bottom: 10px;
+                    font-size: 2.5em;
+                }
+                
+                .header p {
+                    color: #666;
+                    font-size: 1.1em;
+                }
+                
+                .metrics-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    gap: 20px;
+                    margin-bottom: 30px;
+                }
+                
+                .metric-card {
+                    background: white;
+                    padding: 25px;
+                    border-radius: 10px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                    border-left: 5px solid #667eea;
+                }
+                
+                .metric-card.positive {
+                    border-left-color: #4caf50;
+                }
+                
+                .metric-card.negative {
+                    border-left-color: #f44336;
+                }
+                
+                .metric-label {
+                    color: #999;
+                    font-size: 0.9em;
+                    text-transform: uppercase;
+                    letter-spacing: 1px;
+                    margin-bottom: 10px;
+                }
+                
+                .metric-value {
+                    font-size: 2em;
+                    font-weight: bold;
+                    color: #333;
+                }
+                
+                .metric-value.positive {
+                    color: #4caf50;
+                }
+                
+                .metric-value.negative {
+                    color: #f44336;
+                }
+                
+                .metric-subtext {
+                    color: #999;
+                    font-size: 0.85em;
+                    margin-top: 5px;
+                }
+                
+                .section {
+                    background: white;
+                    padding: 30px;
+                    border-radius: 10px;
+                    margin-bottom: 30px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                }
+                
+                .section h2 {
+                    color: #667eea;
+                    margin-bottom: 20px;
+                    font-size: 1.5em;
+                    border-bottom: 2px solid #667eea;
+                    padding-bottom: 10px;
+                }
+                
+                .stats-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                }
+                
+                .stats-table th {
+                    background: #f5f5f5;
+                    padding: 12px;
+                    text-align: left;
+                    font-weight: 600;
+                    color: #667eea;
+                }
+                
+                .stats-table td {
+                    padding: 12px;
+                    border-bottom: 1px solid #eee;
+                }
+                
+                .stats-table tr:hover {
+                    background: #f9f9f9;
+                }
+                
+                .alert-item {
+                    padding: 15px;
+                    margin-bottom: 10px;
+                    border-radius: 5px;
+                    border-left: 4px solid #667eea;
+                }
+                
+                .alert-item.opportunity {
+                    background: #e8f5e9;
+                    border-left-color: #4caf50;
+                }
+                
+                .alert-item.trade {
+                    background: #e3f2fd;
+                    border-left-color: #2196f3;
+                }
+                
+                .alert-item.error {
+                    background: #ffebee;
+                    border-left-color: #f44336;
+                }
+                
+                .alert-time {
+                    color: #999;
+                    font-size: 0.85em;
+                }
+                
+                .footer {
+                    background: white;
+                    padding: 20px;
+                    border-radius: 10px;
+                    text-align: center;
+                    color: #999;
+                    font-size: 0.9em;
+                }
+                
+                .status-badge {
+                    display: inline-block;
+                    padding: 5px 10px;
+                    border-radius: 20px;
+                    font-size: 0.85em;
+                    font-weight: 600;
+                }
+                
+                .status-active {
+                    background: #4caf50;
+                    color: white;
+                }
+                
+                .status-idle {
+                    background: #ff9800;
+                    color: white;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🚀 ArbitrageAI - Dashboard Diário</h1>
+                    <p>Resultados de Trading em Tempo Real | 2026-02-18</p>
+                </div>
+                
+                <div class="metrics-grid">
+                    <div class="metric-card positive">
+                        <div class="metric-label">P&L Diário</div>
+                        <div class="metric-value positive">
+                            $0.00
+                        </div>
+                        <div class="metric-subtext">
+                            0.00% do capital
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-label">Taxa de Acerto</div>
+                        <div class="metric-value negative">
+                            0.0%
+                        </div>
+                        <div class="metric-subtext">
+                            0W / 0L
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-label">Oportunidades</div>
+                        <div class="metric-value">0</div>
+                        <div class="metric-subtext">
+                            0 executadas
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-label">Capital Restante</div>
+                        <div class="metric-value">
+                            $0
+                        </div>
+                        <div class="metric-subtext">
+                            0 posições abertas
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h2>📊 Resumo de Performance</h2>
+                    <table class="stats-table">
+                        <tr>
+                            <th>Métrica</th>
+                            <th>Valor</th>
+                        </tr>
+                        <tr>
+                            <td>Ciclos Completados</td>
+                            <td><strong>5</strong></td>
+                        </tr>
+                        <tr>
+                            <td>Total de Oportunidades</td>
+                            <td><strong>0</strong></td>
+                        </tr>
+                        <tr>
+                            <td>Trades Executados</td>
+                            <td><strong>0</strong></td>
+                        </tr>
+                        <tr>
+                            <td>Trades Fechados</td>
+                            <td><strong>0</strong></td>
+                        </tr>
+                        <tr>
+                            <td>Trades Vencedores</td>
+                            <td><strong style="color: #4caf50;">0</strong></td>
+                        </tr>
+                        <tr>
+                            <td>Trades Perdedores</td>
+                            <td><strong style="color: #f44336;">0</strong></td>
+                        </tr>
+                        <tr>
+                            <td>Perda Diária</td>
+                            <td><strong style="color: #f44336;">$0.00</strong></td>
+                        </tr>
+                    </table>
+                </div>
+                
+                <div class="section">
+                    <h2>🔔 Alertas Recentes</h2>
+                    <div>
+        
+                    <div class="alert-item trade">
+                        <strong>✅ Trade Fechado: ETHUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.537964</div>
+                        <p>P&L: $65.47 (0.62%) | Razão: TAKE_PROFIT</p>
+                    </div>
+                    
+                    <div class="alert-item trade">
+                        <strong>✅ Trade Fechado: ADAUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.538429</div>
+                        <p>P&L: $-74.99 (-1.62%) | Razão: TAKE_PROFIT</p>
+                    </div>
+                    
+                    <div class="alert-item opportunity">
+                        <strong>🎯 Oportunidade: ADAUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.539600</div>
+                        <p>Sinal: SELL | Confiança: 86.2%</p>
+                    </div>
+                    
+                    <div class="alert-item opportunity">
+                        <strong>🎯 Oportunidade: BNBUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.540105</div>
+                        <p>Sinal: SELL | Confiança: 90.2%</p>
+                    </div>
+                    
+                    <div class="alert-item opportunity">
+                        <strong>🎯 Oportunidade: XRPUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.540664</div>
+                        <p>Sinal: SELL | Confiança: 83.3%</p>
+                    </div>
+                    
+                    <div class="alert-item opportunity">
+                        <strong>🎯 Oportunidade: ETHUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.541207</div>
+                        <p>Sinal: BUY | Confiança: 83.8%</p>
+                    </div>
+                    
+                    <div class="alert-item opportunity">
+                        <strong>🎯 Oportunidade: BTCUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.541729</div>
+                        <p>Sinal: SELL | Confiança: 79.0%</p>
+                    </div>
+                    
+                    <div class="alert-item trade">
+                        <strong>✅ Trade Executado: ADAUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.542268</div>
+                        <p>SELL | Preço: $4,031.76 | Qtd: 0.8982</p>
+                    </div>
+                    
+                    <div class="alert-item trade">
+                        <strong>✅ Trade Executado: BNBUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.542829</div>
+                        <p>SELL | Preço: $23,280.68 | Qtd: 0.4562</p>
+                    </div>
+                    
+                    <div class="alert-item trade">
+                        <strong>✅ Trade Fechado: ADAUSDT</strong>
+                        <div class="alert-time">2026-02-18T14:11:33.543449</div>
+                        <p>P&L: $37.72 (1.04%) | Razão: TAKE_PROFIT</p>
+                    </div>
+                    
+                    </div>
+                </div>
+                
+                <div class="footer">
+                    <p>ArbitrageAI v2 | Sistema de Trading Automático Profissional</p>
+                    <p>Última atualização: 2026-02-18 14:11:33</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        

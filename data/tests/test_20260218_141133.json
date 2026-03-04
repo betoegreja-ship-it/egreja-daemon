@@ -1,0 +1,216 @@
+{
+  "start_time": "2026-02-18T14:11:33.532662",
+  "cycles": [
+    {
+      "cycle_num": 1,
+      "timestamp": "2026-02-18T14:11:33.532973",
+      "opportunities": [
+        {
+          "symbol": "BNBUSDT",
+          "signal": "SELL",
+          "confidence": 0.7213898059475446,
+          "price": 9254.509584286401
+        }
+      ],
+      "trades": [],
+      "alerts": [],
+      "summary": {
+        "opportunities_found": 1,
+        "trades_executed": 0,
+        "trades_closed": 0,
+        "cycle_pnl": 0,
+        "daily_summary": {
+          "total_pnl": 0,
+          "total_pnl_pct": 0.0,
+          "win_trades": 0,
+          "loss_trades": 0,
+          "win_rate": 49.18071431900032,
+          "open_positions": 0,
+          "daily_loss": 0,
+          "remaining_capital": 1000000
+        }
+      }
+    },
+    {
+      "cycle_num": 2,
+      "timestamp": "2026-02-18T14:11:33.534103",
+      "opportunities": [
+        {
+          "symbol": "BNBUSDT",
+          "signal": "SELL",
+          "confidence": 0.7789236579145353,
+          "price": 166.56811252689926
+        },
+        {
+          "symbol": "ETHUSDT",
+          "signal": "SELL",
+          "confidence": 0.8943365536253965,
+          "price": 14110.735538306295
+        },
+        {
+          "symbol": "ADAUSDT",
+          "signal": "SELL",
+          "confidence": 0.8336350759137451,
+          "price": 43784.126701234636
+        },
+        {
+          "symbol": "BTCUSDT",
+          "signal": "SELL",
+          "confidence": 0.7069608799906246,
+          "price": 6391.579502961637
+        }
+      ],
+      "trades": [
+        {
+          "symbol": "BNBUSDT",
+          "side": "SELL",
+          "entry_price": 166.56811252689926,
+          "quantity": 0.19830177998613419,
+          "stop_loss": 169.89947477743723,
+          "take_profit": 158.2397069005543,
+          "position_value": 33.03075320301482
+        },
+        {
+          "symbol": "ETHUSDT",
+          "side": "SELL",
+          "entry_price": 14110.735538306295,
+          "quantity": 0.7507626816317916,
+          "stop_loss": 14392.95024907242,
+          "take_profit": 13405.19876139098,
+          "position_value": 10593.813652535857
+        },
+        {
+          "symbol": "ADAUSDT",
+          "side": "SELL",
+          "entry_price": 43784.126701234636,
+          "quantity": 0.10550209653377346,
+          "stop_loss": 44659.80923525933,
+          "take_profit": 41594.920366172904,
+          "position_value": 4619.317161880625
+        },
+        {
+          "symbol": "BTCUSDT",
+          "side": "SELL",
+          "entry_price": 6391.579502961637,
+          "quantity": 0.8469723539784354,
+          "stop_loss": 6519.41109302087,
+          "take_profit": 6072.000527813555,
+          "position_value": 5413.491137263736
+        }
+      ],
+      "alerts": [],
+      "summary": {
+        "opportunities_found": 4,
+        "trades_executed": 4,
+        "trades_closed": 3,
+        "cycle_pnl": -9.707973195858287,
+        "daily_summary": {
+          "total_pnl": -9.707973195858287,
+          "total_pnl_pct": -0.0009707973195858287,
+          "win_trades": 0,
+          "loss_trades": 1,
+          "win_rate": 48.32026425765562,
+          "open_positions": 1,
+          "daily_loss": 9.707973195858287,
+          "remaining_capital": 999990.2920268042
+        }
+      }
+    },
+    {
+      "cycle_num": 3,
+      "timestamp": "2026-02-18T14:11:33.539544",
+      "opportunities": [
+        {
+          "symbol": "ADAUSDT",
+          "signal": "SELL",
+          "confidence": 0.8619173739137114,
+          "price": 4031.760344508812
+        },
+        {
+          "symbol": "BNBUSDT",
+          "signal": "SELL",
+          "confidence": 0.9017446710692901,
+          "price": 23280.682004289683
+        },
+        {
+          "symbol": "XRPUSDT",
+          "signal": "SELL",
+          "confidence": 0.833077884582686,
+          "price": 47050.19423654765
+        },
+        {
+          "symbol": "ETHUSDT",
+          "signal": "BUY",
+          "confidence": 0.8380670351559836,
+          "price": 47001.36384436226
+        },
+        {
+          "symbol": "BTCUSDT",
+          "signal": "SELL",
+          "confidence": 0.7900366331369465,
+          "price": 28572.15485818509
+        }
+      ],
+      "trades": [
+        {
+          "symbol": "ADAUSDT",
+          "side": "SELL",
+          "entry_price": 4031.760344508812,
+          "quantity": 0.8981773285896204,
+          "stop_loss": 4112.395551398989,
+          "take_profit": 3830.1723272833715,
+          "position_value": 3621.2357357444926
+        },
+        {
+          "symbol": "BNBUSDT",
+          "side": "SELL",
+          "entry_price": 23280.682004289683,
+          "quantity": 0.45624777865425703,
+          "stop_loss": 23746.295644375477,
+          "take_profit": 22116.6479040752,
+          "position_value": 10621.759450013304
+        }
+      ],
+      "alerts": [],
+      "summary": {
+        "opportunities_found": 5,
+        "trades_executed": 2,
+        "trades_closed": 1,
+        "cycle_pnl": 37.7244505812719,
+        "daily_summary": {
+          "total_pnl": 37.7244505812719,
+          "total_pnl_pct": 0.0037724450581271907,
+          "win_trades": 1,
+          "loss_trades": 0,
+          "win_rate": 75.00137356317114,
+          "open_positions": 1,
+          "daily_loss": 0,
+          "remaining_capital": 1000000
+        }
+      }
+    }
+  ],
+  "total_trades": 6,
+  "total_pnl": 28.016477385413616,
+  "end_time": "2026-02-18T14:11:33.545526",
+  "dashboard": {
+    "metrics": {
+      "date": "2026-02-18",
+      "total_opportunities": 0,
+      "total_trades_executed": 0,
+      "total_trades_closed": 0,
+      "total_pnl": 0,
+      "total_pnl_pct": 0,
+      "win_trades": 0,
+      "loss_trades": 0,
+      "win_rate": 0,
+      "open_positions": 0,
+      "daily_loss": 0,
+      "remaining_capital": 0,
+      "cycles_completed": 5
+    },
+    "html_file": "data/dashboard/dashboard_20260218.html",
+    "json_file": "data/dashboard/metrics_20260218.json",
+    "alerts_count": 24
+  }
+}

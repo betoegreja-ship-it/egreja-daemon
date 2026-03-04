@@ -1,0 +1,60 @@
+{
+  "crypto": {
+    "BTCUSDT": {
+      "price": 66385.16,
+      "timestamp": "2026-02-18T17:06:29.045417",
+      "source": "BINANCE"
+    },
+    "ETHUSDT": {
+      "price": 1945.91,
+      "timestamp": "2026-02-18T17:06:29.045447",
+      "source": "BINANCE"
+    },
+    "BNBUSDT": {
+      "price": 604.71,
+      "timestamp": "2026-02-18T17:06:29.045470",
+      "source": "BINANCE"
+    },
+    "ADAUSDT": {
+      "price": 0.2737,
+      "timestamp": "2026-02-18T17:06:29.045499",
+      "source": "BINANCE"
+    },
+    "XRPUSDT": {
+      "price": 1.4217,
+      "timestamp": "2026-02-18T17:06:29.045503",
+      "source": "BINANCE"
+    }
+  },
+  "stocks_br": {
+    "PETR4": {
+      "price": 37.19,
+      "change": 0.3,
+      "change_pct": 0.81,
+      "high_52w": 38.58,
+      "low_52w": 28.86,
+      "volume": 32276700.0,
+      "source": "BRAPI"
+    },
+    "VALE3": {
+      "price": 83.92,
+      "change": -3.11,
+      "change_pct": -3.57,
+      "high_52w": 91.62,
+      "low_52w": 48.77,
+      "volume": 20898700.0,
+      "source": "BRAPI"
+    },
+    "ITUB4": {
+      "price": 47.99,
+      "change": 0.22,
+      "change_pct": 0.46,
+      "high_52w": 49.67,
+      "low_52w": 28.21804054,
+      "volume": 23368500.0,
+      "source": "BRAPI"
+    }
+  },
+  "stocks_intl": {},
+  "timestamp": "2026-02-18T17:06:31.037864"
+}

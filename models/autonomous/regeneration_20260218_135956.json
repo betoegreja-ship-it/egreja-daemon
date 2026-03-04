@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-02-18T13:59:56.588213",
+  "optimizations": [],
+  "new_parameters": {
+    "rsi_threshold": 25,
+    "z_score_threshold": 2.5,
+    "confidence_threshold": 0.7,
+    "position_size": 0.015
+  },
+  "status": "success"
+}

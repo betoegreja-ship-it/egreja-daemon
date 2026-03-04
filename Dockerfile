@@ -14,8 +14,7 @@ RUN pip install -r requirements.txt
 
 # Instalar dependências Node.js
 COPY package*.json ./
-RUN npm install
-
+RUN npm install --legacy-peer-deps
 # Copiar código
 COPY . .
 

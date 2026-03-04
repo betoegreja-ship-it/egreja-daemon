@@ -62,7 +62,7 @@ class MySQLManager:
             market_type VARCHAR(10),
             price DECIMAL(20, 8),
             score INT,
-            signal VARCHAR(50),
+            `signal` VARCHAR(50),
             rsi DECIMAL(10, 2),
             ema9 DECIMAL(20, 8),
             ema21 DECIMAL(20, 8),
@@ -81,7 +81,7 @@ class MySQLManager:
         cursor = self.conn.cursor()
         sql = """
         INSERT INTO market_signals 
-        (symbol, market_type, price, score, signal, rsi, ema9, ema21, ema50)
+        (symbol, market_type, price, score, `signal`, rsi, ema9, ema21, ema50)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         params = (

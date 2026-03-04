@@ -1,2 +1,1 @@
-web: PORT=3001 node api_signals.js
-worker: bash run_all.sh
+web: bash -c 'PORT=3001 node api_signals.js & python intelligent_daemon_mysql.py'

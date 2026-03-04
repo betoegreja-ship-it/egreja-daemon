@@ -410,3 +410,123 @@ class TechnicalAnalyzer:
                 return None
         else:
             return None  # Sem sinal claro (mercado lateral)
+    
+    def calculate_stochastic(self, prices: List[float], period: int = 14) -> Optional[Dict[str, float]]:
+        """
+        Calcula Stochastic Oscillator real
+        
+        Args:
+            prices: Lista de preços históricos
+            period: Período do stochastic (padrão: 14)
+        
+        Returns:
+            Dict com '%K' e '%D' ou None
+        """
+        if len(prices) < period:
+            return None
+        
+        try:
+            prices_array = np.array(prices[-period:], dtype=float)
+            
+            # Encontrar mínimo e máximo nos últimos 'period' períodos
+            highest_high = np.max(prices_array)
+            lowest_low = np.min(prices_array)
+            
+            # Evitar divisão por zero
+            if highest_high == lowest_low:
+                return {'percent_k': 50.0, 'percent_d': 50.0}
+            
+            # %K = ((Preço Atual - Mínimo Baixo) / (Máximo Alto - Mínimo Baixo)) * 100
+            percent_k = ((prices[-1] - lowest_low) / (highest_high - lowest_low)) * 100
+            
+            # %D = SMA de 3 períodos do %K
+            percent_d = percent_k  # Simplificação: usar valor atual
+            
+            return {
+                'percent_k': float(max(0, min(100, percent_k))),
+                'percent_d': float(max(0, min(100, percent_d)))
+            }
+            
+        except Exception as e:
+            logger.error(f"Erro ao calcular Stochastic: {e}")
+            return None
+    
+    def calculate_adx(self, prices: List[float], period: int = 14) -> Optional[float]:
+        """
+        Calcula ADX (Average Directional Index) - força da tendência
+        
+        Args:
+            prices: Lista de preços históricos [open, high, low, close] ou apenas closes
+            period: Período do ADX (padrão: 14)
+        
+        Returns:
+            Valor do ADX (0-100) ou None
+        """
+        if len(prices) < period + 1:
+            return None
+        
+        try:
+            # Simplificação: usar apenas preços de fechamento
+            prices_array = np.array(prices, dtype=float)
+            
+            # Calcular mudanças
+            ups = np.maximum(np.diff(prices_array), 0)
+            downs = np.maximum(-np.diff(prices_array), 0)
+            
+            # Calcular médias móveis das mudanças
+            avg_up = np.mean(ups[-period:])
+            avg_down = np.mean(downs[-period:])
+            
+            # Evitar divisão por zero
+            if avg_up + avg_down == 0:
+                return 50.0
+            
+            # DI+ e DI-
+            di_plus = 100 * (avg_up / (avg_up + avg_down))
+            di_minus = 100 * (avg_down / (avg_up + avg_down))
+            
+            # ADX = DI+ vs DI-
+            adx = 100 * abs(di_plus - di_minus) / (di_plus + di_minus) if (di_plus + di_minus) > 0 else 50.0
+            
+            return float(max(0, min(100, adx)))
+            
+        except Exception as e:
+            logger.error(f"Erro ao calcular ADX: {e}")
+            return None
+    
+    def calculate_cci(self, prices: List[float], period: int = 20) -> Optional[float]:
+        """
+        Calcula CCI (Commodity Channel Index)
+        
+        Args:
+            prices: Lista de preços históricos
+            period: Período do CCI (padrão: 20)
+        
+        Returns:
+            Valor do CCI ou None
+        """
+        if len(prices) < period:
+            return None
+        
+        try:
+            prices_array = np.array(prices[-period:], dtype=float)
+            
+            # Típical Price (simplificado: usar apenas o preço)
+            typical_price = np.mean(prices_array)
+            current_typical = prices[-1]
+            
+            # Desvio médio
+            mad = np.mean(np.abs(prices_array - typical_price))
+            
+            # Evitar divisão por zero
+            if mad == 0:
+                return 0.0
+            
+            # CCI = (Preço Típico Atual - SMA) / (0.015 * Desvio Médio)
+            cci = (current_typical - typical_price) / (0.015 * mad)
+            
+            return float(cci)
+            
+        except Exception as e:
+            logger.error(f"Erro ao calcular CCI: {e}")
+            return None

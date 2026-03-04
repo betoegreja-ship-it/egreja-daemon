@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Alerts Manager
-Envia alertas para Telegram, Slack e Discord quando há sinais relevantes
+Alerts Manager - Telegram, Email, WhatsApp
+Envia alertas quando há sinais relevantes (score > 80 ou < 20)
 """
 
 import os
@@ -15,11 +15,15 @@ class AlertsManager:
         self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
         self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
         
-        # Slack
-        self.slack_webhook = os.getenv('SLACK_WEBHOOK_URL', '')
+        # Email (Resend)
+        self.resend_api_key = os.getenv('RESEND_API_KEY', '')
+        self.email_to = 'betoegreja@gmail.com'
         
-        # Discord
-        self.discord_webhook = os.getenv('DISCORD_WEBHOOK_URL', '')
+        # WhatsApp (Twilio)
+        self.twilio_account_sid = os.getenv('TWILIO_ACCOUNT_SID', '')
+        self.twilio_auth_token = os.getenv('TWILIO_AUTH_TOKEN', '')
+        self.twilio_whatsapp_from = os.getenv('TWILIO_WHATSAPP_NUMBER', '')
+        self.whatsapp_to = os.getenv('WHATSAPP_TO_NUMBER', '+5511948600022')  # Seu WhatsApp
     
     def send_telegram_alert(self, signal):
         """Envia alerta para Telegram quando score > 80 ou < 20"""
@@ -58,131 +62,98 @@ Hora: {datetime.now().strftime('%H:%M:%S')}
             print(f"❌ Erro Telegram: {e}")
             return False
     
-    def send_slack_alert(self, signal):
-        """Envia alerta para Slack via webhook"""
+    def send_email_alert(self, signal):
+        """Envia alerta por email via Resend"""
         try:
-            if not self.slack_webhook:
+            if not self.resend_api_key:
                 return False
             
-            # Determinar cor
-            color = "#00ff00" if signal['score'] > 60 else "#ff0000" if signal['score'] < 40 else "#ffff00"
+            emoji = "🟢" if "COMPRA" in signal['signal'] else "🔴" if "VENDA" in signal['signal'] else "🟡"
             
-            payload = {
-                "attachments": [
-                    {
-                        "color": color,
-                        "title": f"{signal['symbol']} - {signal['market_type']}",
-                        "text": signal['signal'],
-                        "fields": [
-                            {
-                                "title": "Score",
-                                "value": f"{signal['score']}/100",
-                                "short": True
-                            },
-                            {
-                                "title": "Preço",
-                                "value": f"${signal['price']:.2f}",
-                                "short": True
-                            },
-                            {
-                                "title": "RSI",
-                                "value": f"{signal['rsi']:.1f}",
-                                "short": True
-                            },
-                            {
-                                "title": "EMA9 > EMA21 > EMA50",
-                                "value": f"{signal['ema9']:.2f} > {signal['ema21']:.2f} > {signal['ema50']:.2f}",
-                                "short": False
-                            }
-                        ],
-                        "footer": "Egreja Investment AI",
-                        "ts": int(datetime.now().timestamp())
-                    }
-                ]
+            url = "https://api.resend.com/emails"
+            headers = {
+                "Authorization": f"Bearer {self.resend_api_key}",
+                "Content-Type": "application/json"
             }
             
-            response = requests.post(self.slack_webhook, json=payload)
+            data = {
+                "from": "Nina <ninaegreja@gmail.com>",
+                "to": self.email_to,
+                "subject": f"{emoji} {signal['symbol']} - Score {signal['score']}/100",
+                "html": f"""
+                <h2>{emoji} Alerta: {signal['symbol']} ({signal['market_type']})</h2>
+                <p><strong>Sinal:</strong> {signal['signal']}</p>
+                <p><strong>Score:</strong> {signal['score']}/100</p>
+                <p><strong>Preço:</strong> ${signal['price']:.2f}</p>
+                <p><strong>RSI:</strong> {signal['rsi']:.1f}</p>
+                <p><strong>EMAs:</strong> 9:{signal['ema9']:.2f} > 21:{signal['ema21']:.2f} > 50:{signal['ema50']:.2f}</p>
+                <hr>
+                <p>Egreja Investment AI</p>
+                """
+            }
+            
+            response = requests.post(url, json=data, headers=headers)
             return response.status_code == 200
         
         except Exception as e:
-            print(f"❌ Erro Slack: {e}")
+            print(f"❌ Erro Email: {e}")
             return False
     
-    def send_discord_alert(self, signal):
-        """Envia alerta para Discord via webhook"""
+    def send_whatsapp_alert(self, signal):
+        """Envia alerta via WhatsApp (Twilio)"""
         try:
-            if not self.discord_webhook:
+            if not self.twilio_account_sid or not self.twilio_auth_token:
                 return False
             
-            # Emojis
             emoji = "🟢" if "COMPRA" in signal['signal'] else "🔴" if "VENDA" in signal['signal'] else "🟡"
             
-            # Cor baseada no score
-            color = 65280 if signal['score'] > 60 else 16711680 if signal['score'] < 40 else 16776960  # Verde, Vermelho, Amarelo
+            message = f"""{emoji} {signal['symbol']} - {signal['market_type']}
+
+Sinal: {signal['signal']}
+Score: {signal['score']}/100
+Preço: ${signal['price']:.2f}
+RSI: {signal['rsi']:.1f}
+
+Hora: {datetime.now().strftime('%H:%M:%S')}"""
             
-            embed = {
-                "title": f"{emoji} {signal['symbol']} - {signal['market_type']}",
-                "description": signal['signal'],
-                "color": color,
-                "fields": [
-                    {
-                        "name": "Score",
-                        "value": f"{signal['score']}/100",
-                        "inline": True
-                    },
-                    {
-                        "name": "Preço",
-                        "value": f"${signal['price']:.2f}",
-                        "inline": True
-                    },
-                    {
-                        "name": "RSI",
-                        "value": f"{signal['rsi']:.1f}",
-                        "inline": True
-                    },
-                    {
-                        "name": "EMAs",
-                        "value": f"9: {signal['ema9']:.2f}\n21: {signal['ema21']:.2f}\n50: {signal['ema50']:.2f}",
-                        "inline": False
-                    }
-                ],
-                "footer": {
-                    "text": "Egreja Investment AI"
-                },
-                "timestamp": datetime.now().isoformat()
+            url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_account_sid}/Messages.json"
+            auth = (self.twilio_account_sid, self.twilio_auth_token)
+            
+            data = {
+                "From": self.twilio_whatsapp_from,
+                "To": self.whatsapp_to,
+                "Body": message
             }
             
-            payload = {"embeds": [embed]}
-            
-            response = requests.post(self.discord_webhook, json=payload)
-            return response.status_code in [200, 204]
+            response = requests.post(url, data=data, auth=auth)
+            return response.status_code == 201
         
         except Exception as e:
-            print(f"❌ Erro Discord: {e}")
+            print(f"❌ Erro WhatsApp: {e}")
             return False
     
     def send_alert(self, signal):
-        """Envia alerta para todos os canais configurados se score > 80 ou < 20"""
+        """Envia alerta para Telegram, Email e WhatsApp se score > 80 ou < 20"""
         score = signal.get('score', 0)
         
         # Só alerta se score é muito alto (compra) ou muito baixo (venda)
         if score < 20 or score > 80:
             print(f"\n🚨 ALERTA: {signal['symbol']} - Score {score}/100")
             
-            # Telegram
+            # Telegram (prioritário)
             if self.telegram_token and self.telegram_chat_id:
                 if self.send_telegram_alert(signal):
                     print(f"✅ Alerta Telegram enviado")
             
-            # Slack
-            if self.slack_webhook:
-                if self.send_slack_alert(signal):
-                    print(f"✅ Alerta Slack enviado")
+            # Email
+            if self.resend_api_key:
+                if self.send_email_alert(signal):
+                    print(f"✅ Alerta Email enviado")
             
-            # Discord
-            if self.discord_webhook:
-                if self.send_discord_alert(signal):
-                    print(f"✅ Alerta Discord enviado")
+            # WhatsApp
+            if self.twilio_account_sid and self.twilio_auth_token:
+                if self.send_whatsapp_alert(signal):
+                    print(f"✅ Alerta WhatsApp enviado")
 
 # Função para testar
 def test_alerts():
@@ -199,8 +170,13 @@ def test_alerts():
         'ema50': 245.80
     }
     
+    print("🧪 Testando alertas...")
+    print("Canais disponíveis: Telegram, Email, WhatsApp\n")
+    
     manager = AlertsManager()
     manager.send_alert(test_signal)
+    
+    print("\n✅ Teste concluído!")
 
 if __name__ == '__main__':
     test_alerts()

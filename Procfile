@@ -1,1 +1,1 @@
-worker: python intelligent_daemon_v2.py
+worker: python intelligent_daemon_simple.py

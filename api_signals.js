@@ -5,9 +5,9 @@
  * GET /health - Health check
  */
 
-const http = require('http');
-const mysql = require('mysql2/promise');
-const url = require('url');
+import http from 'http';
+import mysql from 'mysql2/promise';
+import { URL } from 'url';
 
 const PORT = process.env.PORT || 3001;
 
@@ -17,7 +17,12 @@ const dbConfig = {
   user: process.env.MYSQLUSER || 'root',
   password: process.env.MYSQLPASSWORD || '',
   database: process.env.MYSQLDATABASE || 'railway',
-  port: parseInt(process.env.MYSQLPORT || '3306')
+  port: parseInt(process.env.MYSQLPORT || '3306'),
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelayMs: 0
 };
 
 let pool = null;
@@ -25,7 +30,12 @@ let pool = null;
 async function initDB() {
   try {
     pool = mysql.createPool(dbConfig);
-    console.log(`✅ MySQL pool criado`);
+    console.log(`✅ MySQL pool criado - Host: ${dbConfig.host}, DB: ${dbConfig.database}`);
+    // Test connection
+    const conn = await pool.getConnection();
+    await conn.ping();
+    conn.release();
+    console.log(`✅ MySQL conexão testada com sucesso`);
   } catch (err) {
     console.error(`❌ MySQL pool erro:`, err.message);
     throw err;
@@ -40,7 +50,7 @@ async function getSignals() {
       'SELECT symbol, market_type, price, score, signal, rsi, ema9, ema21, ema50, created_at FROM market_signals ORDER BY created_at DESC LIMIT 40'
     );
     conn.release();
-    return rows;
+    return rows || [];
   } catch (err) {
     console.error('Query error:', err.message);
     return [];
@@ -62,7 +72,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const parsedUrl = url.parse(req.url, true);
+  const parsedUrl = new URL(req.url || '/', `http://${req.headers.host}`);
   const pathname = parsedUrl.pathname;
 
   // GET /signals
@@ -107,23 +117,25 @@ const server = http.createServer(async (req, res) => {
 
 // Start
 async function start() {
-  await initDB();
-  
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n===============================================`);
-    console.log(`🚀 Egreja Signals API`);
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Endpoints:`);
-    console.log(`  GET /signals  - Latest market signals from MySQL`);
-    console.log(`  GET /health   - Health check`);
-    console.log(`===============================================\n`);
-  });
+  try {
+    await initDB();
+    
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`\n===============================================`);
+      console.log(`🚀 Egreja Signals API`);
+      console.log(`Server running on port ${PORT}`);
+      console.log(`Endpoints:`);
+      console.log(`  GET /signals  - Latest market signals from MySQL`);
+      console.log(`  GET /health   - Health check`);
+      console.log(`===============================================\n`);
+    });
+  } catch (err) {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  }
 }
 
-start().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+start();
 
 process.on('SIGTERM', () => {
   console.log('\n👋 Server shutting down...');

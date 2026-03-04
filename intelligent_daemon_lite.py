@@ -164,11 +164,25 @@ def run_analysis():
 
 
 if __name__ == '__main__':
-    logger.info("🚀 Egreja Investment AI - LITE MODE")
+    logger.info("🚀 Egreja Investment AI - LITE MODE (DAEMON)")
     logger.info("=" * 60)
     
-    # Executar análise
-    results = run_analysis()
-    
-    logger.info("\n✅ Análise concluída!")
-    logger.info(f"Total de sinais gerados: {len(results['signals'])}")
+    # Loop contínuo (roda a cada 15 minutos)
+    while True:
+        try:
+            # Executar análise
+            results = run_analysis()
+            
+            logger.info(f"\n✅ Análise concluída! ({datetime.now().strftime('%H:%M:%S')})")
+            logger.info(f"Total de sinais gerados: {len(results['signals'])}")
+            
+            # Esperar 15 minutos antes da próxima análise
+            logger.info("⏳ Próxima análise em 15 minutos...\n")
+            import time
+            time.sleep(900)  # 15 minutos
+            
+        except Exception as e:
+            logger.error(f"❌ Erro na análise: {e}")
+            logger.info("⏳ Tentando novamente em 5 minutos...")
+            import time
+            time.sleep(300)  # 5 minutos

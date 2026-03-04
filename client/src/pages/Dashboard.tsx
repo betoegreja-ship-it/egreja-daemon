@@ -32,22 +32,66 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Carregar dados do JSON
-    Promise.all([
-      fetch('/dashboard-data.json').then(r => r.json()),
-      fetch('/backtest-results.json').then(r => r.json()),
-      fetch('/crypto-signal.json').then(r => r.json())
-    ])
-      .then(([dashData, backtestData, cryptoData]) => {
-        setOpportunities(dashData.opportunities || []);
-        setBacktestResults(backtestData.results || []);
-        setCryptoSignal(cryptoData);
+    // Carregar sinais do API (daemon no Railway)
+    async function loadData() {
+      try {
+        // Primeiro tenta carregar do /api/signals (novo)
+        const signalsResponse = await fetch('/api/signals');
+        const signalsData = await signalsResponse.json();
+        
+        if (signalsData.signals && signalsData.signals.length > 0) {
+          // Converter sinais do daemon em opportunities
+          const opp: Opportunity[] = signalsData.signals.map((s: any, idx: number) => ({
+            id: `${s.symbol}-${idx}`,
+            symbol: s.symbol,
+            strategy: s.market_type === 'B3' ? 'B3 Mean Reversion' : 'NYSE Momentum',
+            direction: s.signal.includes('COMPRA') ? 'LONG' : s.signal.includes('VENDA') ? 'SHORT' : 'NEUTRAL',
+            confidence: s.score,
+            zScore: (s.score - 50) / 10,
+            currentPrice: s.price,
+            timestamp: s.created_at || new Date().toISOString()
+          }));
+          
+          setOpportunities(opp);
+          setCryptoSignal({
+            portfolio_value: signalsData.portfolio_value || 1000000,
+            pnl: signalsData.pnl || 0,
+            win_rate: signalsData.win_rate || 50
+          });
+        }
+        
+        // Fallback: tenta carregar dados estáticos
+        Promise.all([
+          fetch('/backtest-results.json').then(r => r.json()),
+          fetch('/crypto-signal.json').then(r => r.json())
+        ]).then(([backtestData, cryptoData]) => {
+          setBacktestResults(backtestData.results || []);
+        }).catch(() => {});
+        
+      } catch (err) {
+        console.error('Erro ao carregar sinais:', err);
+        // Fallback para dados estáticos
+        Promise.all([
+          fetch('/dashboard-data.json').then(r => r.json()),
+          fetch('/backtest-results.json').then(r => r.json()),
+          fetch('/crypto-signal.json').then(r => r.json())
+        ])
+          .then(([dashData, backtestData, cryptoData]) => {
+            setOpportunities(dashData.opportunities || []);
+            setBacktestResults(backtestData.results || []);
+            setCryptoSignal(cryptoData);
+          })
+          .catch(e => console.error('Erro ao carregar fallback:', e));
+      } finally {
         setLoading(false);
-      })
-      .catch(err => {
-        console.error('Erro ao carregar dados:', err);
-        setLoading(false);
-      });
+      }
+    }
+    
+    loadData();
+    
+    // Atualizar a cada 2 minutos
+    const interval = setInterval(loadData, 120000);
+    return () => clearInterval(interval);
   }, []);
 
   const performanceData = [

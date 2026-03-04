@@ -166,4 +166,4 @@ def main():
         nyse_results = fetch_brapi(NYSE_STOCKS, 'NYSE')
         saved_nyse = analyze_and_save(nyse_results, 'NYSE')
         logger.info(f"✅ NYSE: {saved_nyse} sinais salvos")
-        logger.info(f"✅ Ciclo {cycle}
+        logger.info(f"Ciclo {cycle} completo! Total: {saved_b3 + saved_nyse} sinais")

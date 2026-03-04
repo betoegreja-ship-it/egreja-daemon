@@ -1,3 +1,6 @@
+import sys
+print("PYTHON INICIANDO", flush=True)
+sys.stdout.flush()
 #!/usr/bin/env python3
 import os
 import time

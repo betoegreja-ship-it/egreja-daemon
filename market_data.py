@@ -40,32 +40,52 @@ CRYPTO_SYMBOLS = [
     'SHIBUSDT', 'PEPEUSDT', 'NEARUSDT', 'ALGOUSDT', 'VETUSDT'
 ]
 
-# Ações B3 (Brasil)
+# Ações B3 (Brasil) - 20 Principais da Watchlist do Beto
 B3_STOCKS = [
+    'EQTL3.SA',  # Equatorial ON
+    'ITUB4.SA',  # Itaú Unibanco
+    'EMBJ3.SA',  # Embraer
+    'WEGE3.SA',  # WEG
+    'BPAC11.SA', # BTG Pactual
+    'BBDC4.SA',  # Bradesco
     'PETR4.SA',  # Petrobras
     'VALE3.SA',  # Vale
-    'ITUB4.SA',  # Itaú
-    'BBDC4.SA',  # Bradesco
-    'ABEV3.SA',  # Ambev
-    'WEGE3.SA',  # WEG
-    'RENT3.SA',  # Localiza
-    'MGLU3.SA',  # Magazine Luiza
+    'BRAP4.SA',  # Bradespar
+    'NATU3.SA',  # Natura
+    'JBSS32.SA', # JBS NV BDR
     'BBAS3.SA',  # Banco do Brasil
-    'ELET3.SA'   # Eletrobras
+    'PRIO3.SA',  # Prio (HRT)
+    'POMO4.SA',  # Marcopolo
+    'CPFE3.SA',  # CPFL Energia
+    'HBRE3.SA',  # HBR Realty
+    'VTRU3.SA',  # Vitru
+    'ANIM3.SA',  # Anima
+    'ALPA4.SA',  # Alpargatas
+    'RENT3.SA'   # Localiza
 ]
 
-# Ações NYSE (EUA)
+# Ações NYSE (EUA) - 20 Principais + BDRs monitorados pelo Beto
 NYSE_STOCKS = [
-    'AAPL',   # Apple
-    'MSFT',   # Microsoft
-    'GOOGL',  # Google
-    'AMZN',   # Amazon
-    'TSLA',   # Tesla
-    'NVDA',   # Nvidia
-    'META',   # Meta
-    'NFLX',   # Netflix
-    'AMD',    # AMD
-    'BABA'    # Alibaba
+    'AAPL',      # Apple
+    'MSFT',      # Microsoft
+    'GOOGL',     # Google
+    'AMZN',      # Amazon
+    'TSLA',      # Tesla
+    'NVDA',      # Nvidia
+    'META',      # Meta
+    'NFLX',      # Netflix
+    'AMD',       # AMD
+    'BABA',      # Alibaba
+    'JPM',       # JPMorgan
+    'GS',        # Goldman Sachs
+    'C',         # Citigroup
+    'BLK',       # BlackRock
+    'SCHW',      # Charles Schwab
+    'V',         # Visa
+    'MA',        # Mastercard
+    'JNJ',       # Johnson & Johnson
+    'UNH',       # UnitedHealth
+    'ABBV'       # AbbVie
 ]
 
 def is_market_open(symbol: str) -> bool:

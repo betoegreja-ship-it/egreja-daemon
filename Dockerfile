@@ -2,38 +2,32 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Instalar Python e dependências
-RUN apk add --no-cache python3 py3-pip
+# Instalar Python e dependências do sistema
+RUN apk add --no-cache python3 py3-pip bash
+
+# Copiar requirements Python primeiro (melhor cache)
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copiar package.json e instalar dependências Node
 COPY package.json package-lock.json* pnpm-lock.yaml* ./
 RUN npm install --legacy-peer-deps --production 2>/dev/null || npm install --force --production
 
-# Copiar requirements Python
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
-
-# Copiar código
+# Copiar código da aplicação
 COPY api_signals.js .
 COPY intelligent_daemon_mysql.py .
 COPY technical_analysis.py .
 COPY market_data.py .
 COPY trade_signals.py .
+COPY entrypoint.sh .
+RUN chmod +x /app/entrypoint.sh
 
 # Expose port 3001
 EXPOSE 3001
 
-# Run both processes via shell script
-RUN echo '#!/bin/sh\n\
-echo "Starting API Server on port 3001..."\n\
-PORT=3001 node api_signals.js &\n\
-API_PID=$!\n\
-\n\
-echo "Starting Python Daemon..."\n\
-python3 intelligent_daemon_mysql.py &\n\
-DAEMON_PID=$!\n\
-\n\
-trap "kill $DAEMON_PID $API_PID 2>/dev/null" SIGTERM SIGINT\n\
-wait' > /app/start.sh && chmod +x /app/start.sh
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3001/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
-CMD ["/app/start.sh"]
+# Run via entrypoint
+CMD ["/app/entrypoint.sh"]

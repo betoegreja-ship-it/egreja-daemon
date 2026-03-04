@@ -1,14 +1,19 @@
 import sys
-print("PYTHON INICIANDO", flush=True)
-sys.stdout.flush()
-#!/usr/bin/env python3
+print("1 sys ok", flush=True)
 import os
+print("2 os ok", flush=True)
 import time
+print("3 time ok", flush=True)
 import logging
+print("4 logging ok", flush=True)
 import requests
+print("5 requests ok", flush=True)
 import numpy as np
+print("6 numpy ok", flush=True)
 import mysql.connector
+print("7 mysql ok", flush=True)
 from datetime import datetime
+print("8 datetime ok", flush=True)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -57,7 +62,7 @@ def ensure_tables():
     conn.commit()
     cursor.close()
     conn.close()
-    logger.info(" Tabela market_signals OK")
+    logger.info("Tabela market_signals OK")
 
 def calculate_ema(prices, period):
     if len(prices) < period:
@@ -86,19 +91,22 @@ def fetch_brapi(symbols, market_type):
     chunk_size = 10
     for i in range(0, len(symbols), chunk_size):
         chunk = symbols[i:i+chunk_size]
-        tickers = ','.join(chunk)
         if market_type == 'B3':
-            tickers_sa = ','.join([s + '.SA' if not s.endswith('.SA') else s for s in chunk])
-            url = f'https://brapi.dev/api/quote/{tickers_sa}?range=3mo&interval=1d&token={BRAPI_TOKEN}'
+            tickers = ','.join([s + '.SA' for s in chunk])
         else:
-            url = f'https://brapi.dev/api/quote/{tickers}?range=3mo&interval=1d&token={BRAPI_TOKEN}'
+            tickers = ','.join(chunk)
+        url = f'https://brapi.dev/api/quote/{tickers}?range=3mo&interval=1d&token={BRAPI_TOKEN}'
         try:
+            logger.info(f"Buscando: {url}")
             resp = requests.get(url, timeout=30)
             data = resp.json()
             if 'results' in data:
                 results.extend(data['results'])
+                logger.info(f"Recebidos {len(data['results'])} resultados")
+            else:
+                logger.warning(f"Resposta sem results: {data}")
         except Exception as e:
-            logger.error(f" Brapi erro: {e}")
+            logger.error(f"Brapi erro: {e}")
         time.sleep(1)
     return results
 
@@ -112,7 +120,7 @@ def analyze_and_save(results, market_type):
             current_price = item.get('regularMarketPrice', 0)
             historical = item.get('historicalDataPrice', [])
             if not historical or len(historical) < 50:
-                logger.warning(f" {symbol}: dados insuficientes ({len(historical)} candles)")
+                logger.warning(f"{symbol}: dados insuficientes ({len(historical)} candles)")
                 continue
             prices = [h['close'] for h in historical if h.get('close')]
             if len(prices) < 50:
@@ -139,28 +147,29 @@ def analyze_and_save(results, market_type):
             else:
                 signal = 'MANTER'
             cursor.execute("""
-                INSERT INTO market_signals 
+                INSERT INTO market_signals
                 (symbol, market_type, price, score, `signal`, rsi, ema9, ema21, ema50)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (symbol, market_type, current_price, score, signal, rsi, ema9, ema21, ema50))
             saved += 1
-            logger.info(f" {symbol}: {signal} (score={score}, RSI={rsi:.1f}, price={current_price})")
+            logger.info(f"{symbol}: {signal} score={score} RSI={rsi:.1f} price={current_price}")
         except Exception as e:
-            logger.error(f" Erro {item.get('symbol','?')}: {e}")
+            logger.error(f"Erro {item.get('symbol','?')}: {e}")
     conn.commit()
     cursor.close()
     conn.close()
     return saved
 
 def main():
+    print("MAIN INICIANDO", flush=True)
     logger.info("=" * 70)
-    logger.info("🚀 Egreja Investment AI - MYSQL VERSION")
+    logger.info("Egreja Investment AI - MYSQL VERSION")
     logger.info("=" * 70)
     ensure_tables()
     cycle = 0
     while True:
         cycle += 1
-        logger.info(f"\n[Ciclo {cycle}] 🚀 INICIANDO ANÁLISE")
+        logger.info(f"[Ciclo {cycle}] INICIANDO ANALISE")
         logger.info("B3 (20 ativos)...")
         b3_results = fetch_brapi(B3_STOCKS, 'B3')
         saved_b3 = analyze_and_save(b3_results, 'B3')
@@ -172,3 +181,6 @@ def main():
         logger.info(f"Ciclo {cycle} completo! Total: {saved_b3 + saved_nyse} sinais")
         logger.info("Aguardando 15 minutos...")
         time.sleep(900)
+
+if __name__ == '__main__':
+    main()

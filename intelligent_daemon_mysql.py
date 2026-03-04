@@ -88,7 +88,7 @@ def calculate_rsi(prices, period=14):
 
 def fetch_brapi(symbols, market_type):
     results = []
-    chunk_size = 10
+    chunk_size = 1
     for i in range(0, len(symbols), chunk_size):
         chunk = symbols[i:i+chunk_size]
         if market_type == 'B3':

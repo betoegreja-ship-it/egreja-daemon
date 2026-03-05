@@ -16,3 +16,5 @@ schedule>=1.2.0
 twilio>=8.10.0
 APScheduler>=3.10.0
 pytz>=2023.3.post1
+websockets>=10.0
+pydub>=0.25.0

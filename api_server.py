@@ -74,12 +74,203 @@ def get_db():
         print(f"MySQL error: {e}")
         return None
 
+def init_trades_tables():
+    """Create trades tables and load open trades back into memory on restart"""
+    global stocks_capital, crypto_capital, arbi_capital, stocks_open, crypto_open, arbi_open, stocks_closed, crypto_closed, arbi_closed
+    conn = get_db()
+    if not conn: return
+    try:
+        cursor = conn.cursor()
+        # Stocks & crypto trades table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id            VARCHAR(40) PRIMARY KEY,
+                symbol        VARCHAR(20),
+                market        VARCHAR(10),
+                asset_type    VARCHAR(15),
+                direction     VARCHAR(5),
+                entry_price   DECIMAL(18,6),
+                exit_price    DECIMAL(18,6),
+                current_price DECIMAL(18,6),
+                quantity      DECIMAL(20,6),
+                position_value DECIMAL(18,2),
+                pnl           DECIMAL(18,2) DEFAULT 0,
+                pnl_pct       DECIMAL(10,4) DEFAULT 0,
+                peak_pnl_pct  DECIMAL(10,4) DEFAULT 0,
+                score         INT,
+                signal        VARCHAR(10),
+                status        VARCHAR(10) DEFAULT 'OPEN',
+                close_reason  VARCHAR(20),
+                from_watchlist TINYINT(1) DEFAULT 0,
+                opened_at     DATETIME,
+                closed_at     DATETIME,
+                extensions    INT DEFAULT 0
+            )
+        """)
+        # Arbi trades table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS arbi_trades (
+                id            VARCHAR(40) PRIMARY KEY,
+                pair_id       VARCHAR(40),
+                name          VARCHAR(40),
+                leg_a         VARCHAR(20),
+                leg_b         VARCHAR(20),
+                mkt_a         VARCHAR(10),
+                mkt_b         VARCHAR(10),
+                direction     VARCHAR(10),
+                buy_leg       VARCHAR(20),
+                buy_mkt       VARCHAR(10),
+                short_leg     VARCHAR(20),
+                short_mkt     VARCHAR(10),
+                entry_spread  DECIMAL(10,4),
+                current_spread DECIMAL(10,4),
+                position_size DECIMAL(18,2),
+                pnl           DECIMAL(18,2) DEFAULT 0,
+                pnl_pct       DECIMAL(10,4) DEFAULT 0,
+                peak_pnl_pct  DECIMAL(10,4) DEFAULT 0,
+                fx_rate       DECIMAL(10,4),
+                status        VARCHAR(10) DEFAULT 'OPEN',
+                close_reason  VARCHAR(20),
+                opened_at     DATETIME,
+                closed_at     DATETIME,
+                extensions    INT DEFAULT 0
+            )
+        """)
+
+        # ── Load open trades back into memory ──
+        cursor.execute("SELECT * FROM trades WHERE status='OPEN'")
+        open_rows = cursor.fetchall()
+        stocks_open_loaded = 0
+        crypto_open_loaded = 0
+        for r in open_rows:
+            trade = {k: (v.isoformat() if isinstance(v, datetime) else
+                        float(v) if isinstance(v, __import__('decimal').Decimal) else v)
+                     for k, v in r.items()}
+            trade.setdefault('pnl_history', [])
+            trade.setdefault('peak_pnl_pct', 0)
+            trade.setdefault('extensions', 0)
+            if trade['asset_type'] == 'stock':
+                stocks_open.append(trade)
+                stocks_capital -= trade['position_value']
+                stocks_open_loaded += 1
+            elif trade['asset_type'] == 'crypto':
+                crypto_open.append(trade)
+                crypto_capital -= trade['position_value']
+                crypto_open_loaded += 1
+
+        # ── Load closed history ──
+        cursor.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT 200")
+        closed_rows = cursor.fetchall()
+        for r in closed_rows:
+            trade = {k: (v.isoformat() if isinstance(v, datetime) else
+                        float(v) if isinstance(v, __import__('decimal').Decimal) else v)
+                     for k, v in r.items()}
+            if trade['asset_type'] == 'stock':
+                stocks_closed.append(trade)
+            elif trade['asset_type'] == 'crypto':
+                crypto_closed.append(trade)
+
+        # ── Load open arbi trades ──
+        cursor.execute("SELECT * FROM arbi_trades WHERE status='OPEN'")
+        arbi_open_rows = cursor.fetchall()
+        for r in arbi_open_rows:
+            trade = {k: (v.isoformat() if isinstance(v, datetime) else
+                        float(v) if isinstance(v, __import__('decimal').Decimal) else v)
+                     for k, v in r.items()}
+            trade.setdefault('pnl_history', [])
+            trade.setdefault('peak_pnl_pct', 0)
+            trade.setdefault('extensions', 0)
+            arbi_open.append(trade)
+            arbi_capital -= trade['position_size']
+
+        # ── Load closed arbi history ──
+        cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT 200")
+        arbi_closed_rows = cursor.fetchall()
+        for r in arbi_closed_rows:
+            trade = {k: (v.isoformat() if isinstance(v, datetime) else
+                        float(v) if isinstance(v, __import__('decimal').Decimal) else v)
+                     for k, v in r.items()}
+            arbi_closed.append(trade)
+
+        cursor.close(); conn.close()
+        print(f"📂 Trades loaded: {stocks_open_loaded} stocks open, {crypto_open_loaded} crypto open, {len(arbi_open_rows)} arbi open")
+        print(f"📂 History: {len(stocks_closed)} stocks, {len(crypto_closed)} crypto, {len(arbi_closed)} arbi closed")
+    except Exception as e:
+        print(f"Trades table init error: {e}")
+
+def db_save_trade(trade):
+    """Insert or update a trade in MySQL"""
+    conn = get_db()
+    if not conn: return
+    try:
+        cursor = conn.cursor()
+        t = trade
+        cursor.execute("""
+            INSERT INTO trades (id, symbol, market, asset_type, direction,
+                entry_price, exit_price, current_price, quantity, position_value,
+                pnl, pnl_pct, peak_pnl_pct, score, signal, status, close_reason,
+                from_watchlist, opened_at, closed_at, extensions)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+                current_price=VALUES(current_price), pnl=VALUES(pnl),
+                pnl_pct=VALUES(pnl_pct), peak_pnl_pct=VALUES(peak_pnl_pct),
+                status=VALUES(status), close_reason=VALUES(close_reason),
+                exit_price=VALUES(exit_price), closed_at=VALUES(closed_at),
+                extensions=VALUES(extensions)
+        """, (
+            t.get('id'), t.get('symbol'), t.get('market'), t.get('asset_type'), t.get('direction'),
+            t.get('entry_price'), t.get('exit_price'), t.get('current_price'),
+            t.get('quantity'), t.get('position_value'),
+            t.get('pnl',0), t.get('pnl_pct',0), t.get('peak_pnl_pct',0),
+            t.get('score'), t.get('signal'), t.get('status','OPEN'), t.get('close_reason'),
+            1 if t.get('from_watchlist') else 0,
+            t.get('opened_at'), t.get('closed_at'), t.get('extensions',0)
+        ))
+        cursor.close(); conn.close()
+    except Exception as e:
+        print(f"db_save_trade error: {e}")
+
+def db_save_arbi_trade(trade):
+    """Insert or update an arbi trade in MySQL"""
+    conn = get_db()
+    if not conn: return
+    try:
+        cursor = conn.cursor()
+        t = trade
+        cursor.execute("""
+            INSERT INTO arbi_trades (id, pair_id, name, leg_a, leg_b, mkt_a, mkt_b,
+                direction, buy_leg, buy_mkt, short_leg, short_mkt,
+                entry_spread, current_spread, position_size,
+                pnl, pnl_pct, peak_pnl_pct, fx_rate,
+                status, close_reason, opened_at, closed_at, extensions)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+                current_spread=VALUES(current_spread), pnl=VALUES(pnl),
+                pnl_pct=VALUES(pnl_pct), peak_pnl_pct=VALUES(peak_pnl_pct),
+                status=VALUES(status), close_reason=VALUES(close_reason),
+                closed_at=VALUES(closed_at), extensions=VALUES(extensions)
+        """, (
+            t.get('id'), t.get('pair_id'), t.get('name'),
+            t.get('leg_a'), t.get('leg_b'), t.get('mkt_a'), t.get('mkt_b'),
+            t.get('direction'), t.get('buy_leg'), t.get('buy_mkt'),
+            t.get('short_leg'), t.get('short_mkt'),
+            t.get('entry_spread'), t.get('current_spread'), t.get('position_size'),
+            t.get('pnl',0), t.get('pnl_pct',0), t.get('peak_pnl_pct',0),
+            t.get('fx_rate'), t.get('status','OPEN'), t.get('close_reason'),
+            t.get('opened_at'), t.get('closed_at'), t.get('extensions',0)
+        ))
+        cursor.close(); conn.close()
+    except Exception as e:
+        print(f"db_save_arbi_trade error: {e}")
+
+
+
 def test_db():
     c = get_db()
     if c: c.close(); return True
     return False
 
-# ── State ──────────────────────────────────────────────
+
 stocks_capital = INITIAL_CAPITAL_STOCKS
 crypto_capital = INITIAL_CAPITAL_CRYPTO
 stocks_open    = []
@@ -278,6 +469,7 @@ def monitor_trades():
                         c.update({'exit_price':trade['current_price'],'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         stocks_closed.insert(0, c)
                         to_close.append(trade['id'])
+                        threading.Thread(target=db_save_trade, args=(c,), daemon=True).start()
                         threading.Thread(target=alert_trade_closed, args=(c,), daemon=True).start()
 
                 stocks_open[:] = [t for t in stocks_open if t['id'] not in to_close]
@@ -325,6 +517,7 @@ def monitor_trades():
                         c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         crypto_closed.insert(0, c)
                         to_close_c.append(trade['id'])
+                        threading.Thread(target=db_save_trade, args=(c,), daemon=True).start()
                         threading.Thread(target=alert_trade_closed, args=(c,), daemon=True).start()
 
                 crypto_open[:] = [t for t in crypto_open if t['id'] not in to_close_c]
@@ -349,14 +542,17 @@ def auto_trade_crypto():
                         print(f"Crypto skip {sym}: no price cached")
                         continue
                     score = random.randint(30, 95)
-                    # LONG if score >= 70, SHORT if score <= 45
+                    # Direction purely by score conviction — sem randomness artificial
                     if score >= 70:
                         direction = 'LONG'
                     elif score <= 45:
                         direction = 'SHORT'
                     else:
                         continue  # MANTER — no trade
-                    pos = min(crypto_capital * 0.05, MAX_POSITION_CRYPTO)
+                    # Position size proportional to score conviction (5–10% of capital)
+                    score_factor = min(abs(score - 50) / 50.0, 1.0)
+                    pct = 0.05 + score_factor * 0.05   # 5% base + até 5% extra
+                    pos = min(crypto_capital * pct, MAX_POSITION_CRYPTO)
                     if pos <= 0 or crypto_capital < pos:
                         print(f"Crypto skip {sym}: insufficient capital ${crypto_capital:.0f}")
                         continue
@@ -381,6 +577,7 @@ def auto_trade_crypto():
                     crypto_open.append(trade)
                     open_syms.add(display)
                     opened += 1
+                    threading.Thread(target=db_save_trade, args=(trade,), daemon=True).start()
                 if opened:
                     print(f"Crypto: opened {opened} new trades, capital=${crypto_capital:.0f}")
         except Exception as e:
@@ -446,10 +643,10 @@ def signals():
                     threading.Thread(target=alert_signal, args=(dict(sig),), daemon=True).start()
 
                 # Only open trades during market hours
-                # LONG if COMPRA score>=70, SHORT if score<=40 (sell signal or low score)
+                # LONG if COMPRA score>=70, SHORT if score<50 (bearish conviction)
                 signal_val = sig.get('signal','')
                 is_long  = score >= 70 and signal_val == 'COMPRA'
-                is_short = score <= 40 and signal_val in ('VENDA', 'COMPRA')  # low score = bearish
+                is_short = score < 50  and signal_val in ('VENDA', 'COMPRA')
                 if not (is_long or is_short):
                     continue
                 if not market_open_for(mkt):
@@ -459,7 +656,10 @@ def signals():
                 if price <= 0: continue
                 direction = 'LONG' if is_long else 'SHORT'
                 sig['signal'] = 'COMPRA' if is_long else 'VENDA'
-                pos = min(stocks_capital*0.05, MAX_POSITION_STOCKS)
+                # Position size proportional to score strength (8-15% of capital)
+                score_factor = min((abs(score - 50) / 50), 1.0)  # 0.0 at score=50, 1.0 at 0 or 100
+                pct = 0.08 + score_factor * 0.07   # 8% to 15% based on conviction
+                pos = min(stocks_capital * pct, MAX_POSITION_STOCKS)
                 qty = int(pos / price)
                 if qty > 0 and stocks_capital >= price*qty:
                     stocks_capital -= price*qty
@@ -481,6 +681,7 @@ def signals():
                         'status': 'OPEN'
                     })
                     open_syms.add(sig['symbol'])
+                    threading.Thread(target=db_save_trade, args=(stocks_open[-1],), daemon=True).start()
 
         # Crypto signals
         crypto_signals = []
@@ -551,6 +752,7 @@ def signals():
                                 'opened_at':     datetime.utcnow().isoformat(),
                                 'status':        'OPEN'
                             })
+                            threading.Thread(target=db_save_trade, args=(stocks_open[-1],), daemon=True).start()
                             print(f"Watchlist trade opened: {sym} {direction} score={score}")
                 if score >= ALERT_MIN_SCORE:
                     threading.Thread(target=alert_signal, args=(dict(sig),), daemon=True).start()
@@ -1126,6 +1328,7 @@ def arbi_scan_loop():
                                 'asset_type': 'arbitrage'
                             }
                             arbi_open.append(trade)
+                            threading.Thread(target=db_save_arbi_trade, args=(trade,), daemon=True).start()
                             # Alert
                             msg = (
                                 f"⚡ *Arbitrage Aberta — Egreja AI*\n"
@@ -1195,6 +1398,7 @@ def arbi_monitor_loop():
                         c.update({'closed_at': now.isoformat(), 'close_reason': reason, 'status': 'CLOSED'})
                         arbi_closed.insert(0, c)
                         to_close.append(trade['id'])
+                        threading.Thread(target=db_save_arbi_trade, args=(c,), daemon=True).start()
                         msg = (
                             f"{'✅' if trade['pnl']>=0 else '🔴'} *Arbi Fechado — Egreja AI*\n"
                             f"*{trade['name']}* ({trade['mkt_a']}↔{trade['mkt_b']})\n"
@@ -1267,5 +1471,6 @@ if __name__ == '__main__':
     fetch_crypto_prices()
     fetch_fx_rates()
     init_watchlist_table()
+    init_trades_tables()
     app.run(host='0.0.0.0', port=port, debug=False)
 

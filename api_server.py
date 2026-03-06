@@ -374,22 +374,57 @@ def alert_trade_closed(trade: dict):
     threading.Thread(target=send_whatsapp, args=(msg,), daemon=True).start()
 
 # ── Binance Prices ─────────────────────────────────────
+CRYPTO_COINGECKO_IDS = {
+    'BTCUSDT':'bitcoin','ETHUSDT':'ethereum','BNBUSDT':'binancecoin',
+    'SOLUSDT':'solana','XRPUSDT':'ripple','ADAUSDT':'cardano',
+    'DOGEUSDT':'dogecoin','AVAXUSDT':'avalanche-2','TRXUSDT':'tron',
+    'DOTUSDT':'polkadot','LINKUSDT':'chainlink','MATICUSDT':'matic-network',
+    'LTCUSDT':'litecoin','UNIUSDT':'uniswap','ATOMUSDT':'cosmos',
+    'XLMUSDT':'stellar','BCHUSDT':'bitcoin-cash','NEARUSDT':'near',
+    'APTUSDT':'aptos','ARBUSDT':'arbitrum'
+}
+
 def fetch_crypto_prices():
+    """Fetch crypto prices via CoinGecko (no API key needed, no datacenter block)"""
     try:
-        r = requests.get('https://api.binance.com/api/v3/ticker/price', timeout=8)
+        ids = ','.join(CRYPTO_COINGECKO_IDS.values())
+        r = requests.get(
+            f'https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd',
+            headers={'User-Agent': 'Mozilla/5.0'}, timeout=10
+        )
         if r.status_code == 200:
-            data = {i['symbol']: float(i['price']) for i in r.json()}
+            data = r.json()
+            id_to_sym = {v: k for k, v in CRYPTO_COINGECKO_IDS.items()}
             with state_lock:
-                for sym in CRYPTO_SYMBOLS:
-                    if sym in data:
-                        crypto_prices[sym] = data[sym]
+                for cg_id, prices in data.items():
+                    sym = id_to_sym.get(cg_id)
+                    if sym and 'usd' in prices:
+                        crypto_prices[sym] = float(prices['usd'])
+            print(f"CoinGecko: updated {len(data)} prices")
+            return
     except Exception as e:
-        print(f"Binance error: {e}")
+        print(f"CoinGecko error: {e}")
+    # Fallback: Yahoo Finance for each symbol
+    try:
+        for sym in CRYPTO_SYMBOLS[:5]:  # top 5 only as fallback
+            display = sym.replace('USDT','') + '-USD'
+            r = requests.get(
+                f'https://query1.finance.yahoo.com/v8/finance/chart/{display}?interval=1m&range=1d',
+                headers={'User-Agent': 'Mozilla/5.0'}, timeout=5
+            )
+            if r.status_code == 200:
+                price = r.json()['chart']['result'][0]['meta'].get('regularMarketPrice', 0)
+                if price:
+                    with state_lock:
+                        crypto_prices[sym] = float(price)
+            time.sleep(0.5)
+    except Exception as e:
+        print(f"Yahoo crypto fallback error: {e}")
 
 def crypto_price_loop():
     while True:
         fetch_crypto_prices()
-        time.sleep(30)
+        time.sleep(60)  # CoinGecko free tier: ~50 calls/min, 1 call/min is safe
 
 # ── Period P&L ─────────────────────────────────────────
 def calc_period_pnl(trades, days):

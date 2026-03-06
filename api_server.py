@@ -325,11 +325,14 @@ stocks_closed  = []
 crypto_open    = []
 crypto_closed  = []
 crypto_prices  = {}
+stock_prices   = {}
 trade_counter  = [1]
 state_lock     = threading.Lock()
+id_lock        = threading.Lock()  # dedicated lock — never nested inside state_lock
 
 def gen_id(prefix='TRD'):
-    with state_lock:
+    """Uses id_lock (not state_lock) to prevent deadlock when called inside state_lock blocks"""
+    with id_lock:
         tid = f"{prefix}-{int(time.time())}-{trade_counter[0]}"
         trade_counter[0] += 1
         return tid
@@ -693,10 +696,7 @@ def auto_trade_crypto():
             print(f"Crypto auto-trade error: {e}")
 
 # Start background threads
-threading.Thread(target=crypto_price_loop, daemon=True).start()
-threading.Thread(target=stock_price_loop, daemon=True).start()
-threading.Thread(target=monitor_trades, daemon=True).start()
-threading.Thread(target=auto_trade_crypto, daemon=True).start()
+# Background threads started in __main__ after initialization
 
 # ── Routes ─────────────────────────────────────────────
 @app.route('/')
@@ -1550,8 +1550,7 @@ def arbi_monitor_loop():
             print(f"Arbi monitor error: {e}")
 
 # Start arbitrage threads
-threading.Thread(target=arbi_scan_loop,    daemon=True).start()
-threading.Thread(target=arbi_monitor_loop, daemon=True).start()
+# (arbi threads also started in __main__)
 
 # ── Arbitrage Routes ───────────────────────────────────
 @app.route('/arbitrage/spreads')
@@ -1605,9 +1604,18 @@ if __name__ == '__main__':
     print(f"📈 Stocks: ${INITIAL_CAPITAL_STOCKS/1e6:.0f}M | Crypto: ${INITIAL_CAPITAL_CRYPTO/1e6:.0f}M | Arbi: ${ARBI_CAPITAL/1e3:.0f}K")
     print(f"📱 Alerts: {'ENABLED → '+TWILIO_TO if ALERTS_ENABLED else 'DISABLED'}")
     print(f"⏰ B3: {is_b3_open()} | NYSE: {is_nyse_open()}")
+    # Initialize data FIRST before starting threads
     fetch_crypto_prices()
     fetch_fx_rates()
     init_watchlist_table()
     init_trades_tables()
+    # Start background threads AFTER state is restored
+    threading.Thread(target=crypto_price_loop,  daemon=True).start()
+    threading.Thread(target=stock_price_loop,   daemon=True).start()
+    threading.Thread(target=monitor_trades,     daemon=True).start()
+    threading.Thread(target=auto_trade_crypto,  daemon=True).start()
+    threading.Thread(target=arbi_scan_loop,     daemon=True).start()
+    threading.Thread(target=arbi_monitor_loop,  daemon=True).start()
+    print("✅ All background threads started")
     app.run(host='0.0.0.0', port=port, debug=False)
 

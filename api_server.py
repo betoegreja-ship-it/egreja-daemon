@@ -374,57 +374,76 @@ def alert_trade_closed(trade: dict):
     threading.Thread(target=send_whatsapp, args=(msg,), daemon=True).start()
 
 # ── Binance Prices ─────────────────────────────────────
-CRYPTO_COINGECKO_IDS = {
-    'BTCUSDT':'bitcoin','ETHUSDT':'ethereum','BNBUSDT':'binancecoin',
-    'SOLUSDT':'solana','XRPUSDT':'ripple','ADAUSDT':'cardano',
-    'DOGEUSDT':'dogecoin','AVAXUSDT':'avalanche-2','TRXUSDT':'tron',
-    'DOTUSDT':'polkadot','LINKUSDT':'chainlink','MATICUSDT':'matic-network',
-    'LTCUSDT':'litecoin','UNIUSDT':'uniswap','ATOMUSDT':'cosmos',
-    'XLMUSDT':'stellar','BCHUSDT':'bitcoin-cash','NEARUSDT':'near',
-    'APTUSDT':'aptos','ARBUSDT':'arbitrum'
-}
+FMP_CRYPTO_SYMBOLS = [
+    'BTCUSD','ETHUSD','BNBUSD','SOLUSD','XRPUSD',
+    'ADAUSD','DOGEUSD','AVAXUSD','TRXUSD','DOTUSD',
+    'LINKUSD','MATICUSD','LTCUSD','UNIUSD','ATOMUSD',
+    'XLMUSD','BCHUSD','NEARUSD','APTUSD','ARBUSD'
+]
+# Maps FMP symbol → internal USDT symbol
+FMP_TO_INTERNAL = {s: s.replace('USD','USDT') for s in FMP_CRYPTO_SYMBOLS}
+
+# Stores 24h change % per symbol
+crypto_momentum = {}
 
 def fetch_crypto_prices():
-    """Fetch crypto prices via CoinGecko (no API key needed, no datacenter block)"""
+    """Fetch crypto prices via FMP (same API key already in use, no restrictions)"""
     try:
-        ids = ','.join(CRYPTO_COINGECKO_IDS.values())
+        syms = ','.join(FMP_CRYPTO_SYMBOLS)
         r = requests.get(
-            f'https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd',
-            headers={'User-Agent': 'Mozilla/5.0'}, timeout=10
+            f'https://financialmodelingprep.com/api/v3/quote/{syms}',
+            params={'apikey': FMP_KEY}, timeout=10
         )
         if r.status_code == 200:
             data = r.json()
-            id_to_sym = {v: k for k, v in CRYPTO_COINGECKO_IDS.items()}
-            with state_lock:
-                for cg_id, prices in data.items():
-                    sym = id_to_sym.get(cg_id)
-                    if sym and 'usd' in prices:
-                        crypto_prices[sym] = float(prices['usd'])
-            print(f"CoinGecko: updated {len(data)} prices")
-            return
+            if isinstance(data, list) and data:
+                updated = 0
+                with state_lock:
+                    for asset in data:
+                        fmp_sym = asset.get('symbol','')
+                        internal = FMP_TO_INTERNAL.get(fmp_sym)
+                        price = float(asset.get('price') or 0)
+                        change_pct = float(asset.get('changesPercentage') or 0)
+                        if internal and price > 0:
+                            crypto_prices[internal] = price
+                            crypto_momentum[internal] = change_pct
+                            updated += 1
+                if updated:
+                    print(f"FMP crypto: updated {updated} prices")
+                    return
     except Exception as e:
-        print(f"CoinGecko error: {e}")
-    # Fallback: Yahoo Finance for each symbol
+        print(f"FMP crypto error: {e}")
+    # Fallback: CoinCap
     try:
-        for sym in CRYPTO_SYMBOLS[:5]:  # top 5 only as fallback
-            display = sym.replace('USDT','') + '-USD'
-            r = requests.get(
-                f'https://query1.finance.yahoo.com/v8/finance/chart/{display}?interval=1m&range=1d',
-                headers={'User-Agent': 'Mozilla/5.0'}, timeout=5
-            )
-            if r.status_code == 200:
-                price = r.json()['chart']['result'][0]['meta'].get('regularMarketPrice', 0)
-                if price:
-                    with state_lock:
-                        crypto_prices[sym] = float(price)
-            time.sleep(0.5)
+        COINCAP_IDS = {
+            'BTCUSDT':'bitcoin','ETHUSDT':'ethereum','BNBUSDT':'binance-coin',
+            'SOLUSDT':'solana','XRPUSDT':'xrp','ADAUSDT':'cardano',
+            'DOGEUSDT':'dogecoin','AVAXUSDT':'avalanche','TRXUSDT':'tron',
+            'DOTUSDT':'polkadot','LINKUSDT':'chainlink','MATICUSDT':'polygon',
+            'LTCUSDT':'litecoin','UNIUSDT':'uniswap','ATOMUSDT':'cosmos',
+            'XLMUSDT':'stellar','BCHUSDT':'bitcoin-cash','NEARUSDT':'near-protocol',
+            'APTUSDT':'aptos','ARBUSDT':'arbitrum'
+        }
+        ids = ','.join(COINCAP_IDS.values())
+        r = requests.get(f'https://api.coincap.io/v2/assets?ids={ids}&limit=20',
+                         headers={'Accept':'application/json'}, timeout=10)
+        if r.status_code == 200:
+            id_to_sym = {v: k for k,v in COINCAP_IDS.items()}
+            with state_lock:
+                for a in r.json().get('data',[]):
+                    sym = id_to_sym.get(a['id'])
+                    price = float(a.get('priceUsd') or 0)
+                    if sym and price > 0:
+                        crypto_prices[sym] = price
+                        crypto_momentum[sym] = float(a.get('changePercent24Hr') or 0)
+            print(f"CoinCap fallback: updated prices")
     except Exception as e:
-        print(f"Yahoo crypto fallback error: {e}")
+        print(f"CoinCap fallback error: {e}")
 
 def crypto_price_loop():
     while True:
         fetch_crypto_prices()
-        time.sleep(60)  # CoinGecko free tier: ~50 calls/min, 1 call/min is safe
+        time.sleep(10)  # Update every 10s for near real-time
 
 # ── Period P&L ─────────────────────────────────────────
 def calc_period_pnl(trades, days):
@@ -451,7 +470,7 @@ def is_momentum_positive(trade):
 def monitor_trades():
     global stocks_capital, crypto_capital
     while True:
-        time.sleep(30)
+        time.sleep(5)  # Update P&L every 5s
         try:
             with state_lock:
                 now = datetime.utcnow()
@@ -576,14 +595,15 @@ def auto_trade_crypto():
                     if price <= 0:
                         print(f"Crypto skip {sym}: no price cached")
                         continue
-                    score = random.randint(30, 95)
-                    # Direction purely by score conviction — sem randomness artificial
-                    if score >= 70:
-                        direction = 'LONG'
-                    elif score <= 45:
-                        direction = 'SHORT'
-                    else:
-                        continue  # MANTER — no trade
+                    # Use real 24h momentum to determine direction
+                    change_24h = crypto_momentum.get(sym, 0)
+                    strength = abs(change_24h)
+                    if strength < 0.5:
+                        continue  # sem convicção suficiente — MANTER
+                    direction = 'LONG' if change_24h > 0 else 'SHORT'
+                    # Score based on strength of momentum (50-95)
+                    score = min(50 + int(strength * 5), 95)
+                    if direction == 'SHORT': score = 100 - score  # invert for display
                     # Position size proportional to score conviction (5–10% of capital)
                     score_factor = min(abs(score - 50) / 50.0, 1.0)
                     pct = 0.05 + score_factor * 0.05   # 5% base + até 5% extra
@@ -815,6 +835,29 @@ def crypto_prices_route():
             for sym,p in crypto_prices.items()
         }
     return jsonify({'prices': prices, 'count': len(prices)})
+
+@app.route('/prices/live')
+def prices_live():
+    """Fast endpoint — returns only current prices + PnL for open trades. Poll every 5s."""
+    with state_lock:
+        trades = [
+            {
+                'id':            t['id'],
+                'symbol':        t['symbol'],
+                'current_price': t.get('current_price', t.get('entry_price', 0)),
+                'pnl':           t.get('pnl', 0),
+                'pnl_pct':       t.get('pnl_pct', 0),
+                'peak_pnl_pct':  t.get('peak_pnl_pct', 0),
+                'direction':     t.get('direction', 'LONG'),
+            }
+            for t in (stocks_open + crypto_open)
+        ]
+        crypto_snap = dict(crypto_prices)
+    return jsonify({
+        'timestamp': datetime.utcnow().isoformat(),
+        'trades': trades,
+        'crypto_prices': {k.replace('USDT',''): v for k, v in crypto_snap.items()},
+    })
 
 @app.route('/trades/open')
 def trades_open():
@@ -1397,12 +1440,14 @@ def arbi_monitor_loop():
                         trade['current_spread'] = spread_data['spread_pct']
                         trade['price_a_now'] = spread_data['price_a_usd']
                         trade['price_b_now'] = spread_data['price_b_usd']
-                        # P&L = spread convergence as % of position
-                        entry_abs = abs(trade['entry_spread'])
-                        curr_abs  = abs(trade['current_spread'])
-                        convergence = entry_abs - curr_abs   # positive = converging
-                        trade['pnl']     = round(convergence / 100 * trade['position_size'], 2)
-                        trade['pnl_pct'] = round(convergence, 2)
+                        # P&L: entry_spread was the gap when we opened.
+                        # We profit when the spread CONVERGES (gets smaller)
+                        # Each 1% of convergence = 1% of position_size profit
+                        entry_abs = abs(float(trade['entry_spread']))
+                        curr_abs  = abs(float(trade['current_spread']))
+                        convergence_pct = entry_abs - curr_abs  # positive = converging = profit
+                        trade['pnl_pct'] = round(convergence_pct, 4)
+                        trade['pnl']     = round(convergence_pct / 100 * float(trade['position_size']), 2)
 
                     # Update peak profit
                     trade['peak_pnl_pct'] = round(max(trade.get('peak_pnl_pct', 0), trade['pnl_pct']), 2)

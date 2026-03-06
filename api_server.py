@@ -26,6 +26,20 @@ INITIAL_CAPITAL_STOCKS = float(os.environ.get('INITIAL_CAPITAL_STOCKS', 9_000_00
 INITIAL_CAPITAL_CRYPTO = float(os.environ.get('INITIAL_CAPITAL_CRYPTO', 1_000_000))
 MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 450_000))
 MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO',  50_000))
+FMP_API_KEY            = os.environ.get('FMP_API_KEY', 'VZ0Dp4qZpJfkLOaOOrhWbVDa6KAI6OPT')
+DASHBOARD_API_KEY      = os.environ.get('DASHBOARD_API_KEY', '')  # set in Railway to protect routes
+
+@app.before_request
+def require_api_key():
+    """Protect all routes with optional API key — only enforced if DASHBOARD_API_KEY is set"""
+    if not DASHBOARD_API_KEY:
+        return  # No key configured → open (dev mode)
+    # Always allow health/CORS preflight
+    if request.method == 'OPTIONS' or request.path in ['/', '/health']:
+        return
+    key = request.headers.get('x-api-key') or request.args.get('api_key', '')
+    if key != DASHBOARD_API_KEY:
+        return jsonify({'error': 'unauthorized'}), 401
 
 # ── Twilio WhatsApp ────────────────────────────────────
 TWILIO_SID    = os.environ.get('TWILIO_ACCOUNT_SID', '')
@@ -74,14 +88,45 @@ def get_db():
         print(f"MySQL error: {e}")
         return None
 
+# ── Stock price cache (updated by background loop) ─────
+stock_prices = {}  # symbol → current price
+
+def fetch_stock_prices():
+    """Fetch real-time prices for all open stock positions via Yahoo Finance"""
+    with state_lock:
+        syms = list({t['symbol'] for t in stocks_open})
+    if not syms:
+        return
+    for sym in syms:
+        try:
+            yahoo_sym = sym + '.SA' if not sym.endswith('.SA') and len(sym) <= 6 and sym.isalpha() or sym[-1].isdigit() else sym
+            r = requests.get(
+                f'https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}?interval=1m&range=1d',
+                headers={'User-Agent': 'Mozilla/5.0'}, timeout=5
+            )
+            if r.status_code == 200:
+                meta = r.json()['chart']['result'][0]['meta']
+                price = float(meta.get('regularMarketPrice') or 0)
+                if price > 0:
+                    with state_lock:
+                        stock_prices[sym] = price
+            time.sleep(0.2)
+        except Exception as e:
+            pass  # Keep last known price
+
+def stock_price_loop():
+    while True:
+        fetch_stock_prices()
+        time.sleep(15)  # Update every 15s
+
 def init_trades_tables():
     """Create trades tables and load open trades back into memory on restart"""
     global stocks_capital, crypto_capital, arbi_capital, stocks_open, crypto_open, arbi_open, stocks_closed, crypto_closed, arbi_closed
     conn = get_db()
     if not conn: return
     try:
-        cursor = conn.cursor()
-        # Stocks & crypto trades table
+        cursor = conn.cursor(dictionary=True)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS trades (
                 id            VARCHAR(40) PRIMARY KEY,
@@ -203,7 +248,7 @@ def db_save_trade(trade):
     conn = get_db()
     if not conn: return
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
         t = trade
         cursor.execute("""
             INSERT INTO trades (id, symbol, market, asset_type, direction,
@@ -226,6 +271,7 @@ def db_save_trade(trade):
             1 if t.get('from_watchlist') else 0,
             t.get('opened_at'), t.get('closed_at'), t.get('extensions',0)
         ))
+        conn.commit()
         cursor.close(); conn.close()
     except Exception as e:
         print(f"db_save_trade error: {e}")
@@ -235,7 +281,7 @@ def db_save_arbi_trade(trade):
     conn = get_db()
     if not conn: return
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
         t = trade
         cursor.execute("""
             INSERT INTO arbi_trades (id, pair_id, name, leg_a, leg_b, mkt_a, mkt_b,
@@ -259,6 +305,7 @@ def db_save_arbi_trade(trade):
             t.get('fx_rate'), t.get('status','OPEN'), t.get('close_reason'),
             t.get('opened_at'), t.get('closed_at'), t.get('extensions',0)
         ))
+        conn.commit()
         cursor.close(); conn.close()
     except Exception as e:
         print(f"db_save_arbi_trade error: {e}")
@@ -282,21 +329,30 @@ trade_counter  = [1]
 state_lock     = threading.Lock()
 
 def gen_id(prefix='TRD'):
-    tid = f"{prefix}-{int(time.time())}-{trade_counter[0]}"
-    trade_counter[0] += 1
-    return tid
+    with state_lock:
+        tid = f"{prefix}-{int(time.time())}-{trade_counter[0]}"
+        trade_counter[0] += 1
+        return tid
 
 # ── Market Hours ───────────────────────────────────────
 def is_b3_open():
-    """B3: Seg-Sex 10h00–17h00 BRT (UTC-3)"""
-    now = datetime.utcnow() - timedelta(hours=3)
+    """B3: Seg-Sex 10h00–17h00 BRT — uses zoneinfo for DST correctness"""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+    except Exception:
+        now = datetime.utcnow() - timedelta(hours=3)
     if now.weekday() >= 5: return False
     h = now.hour + now.minute / 60.0
     return 10.0 <= h < 17.0
 
 def is_nyse_open():
-    """NYSE/NASDAQ: Seg-Sex 9h30–16h00 EST (UTC-5)"""
-    now = datetime.utcnow() - timedelta(hours=5)
+    """NYSE/NASDAQ: Seg-Sex 9h30–16h00 ET — uses zoneinfo for DST correctness"""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        now = datetime.utcnow() - timedelta(hours=5)
     if now.weekday() >= 5: return False
     h = now.hour + now.minute / 60.0
     return 9.5 <= h < 16.0
@@ -392,7 +448,7 @@ def fetch_crypto_prices():
         syms = ','.join(FMP_CRYPTO_SYMBOLS)
         r = requests.get(
             f'https://financialmodelingprep.com/api/v3/quote/{syms}',
-            params={'apikey': FMP_KEY}, timeout=10
+            params={'apikey': FMP_API_KEY}, timeout=10
         )
         if r.status_code == 200:
             data = r.json()
@@ -413,32 +469,29 @@ def fetch_crypto_prices():
                     return
     except Exception as e:
         print(f"FMP crypto error: {e}")
-    # Fallback: CoinCap
+    # Fallback: Yahoo Finance (works on Railway)
     try:
-        COINCAP_IDS = {
-            'BTCUSDT':'bitcoin','ETHUSDT':'ethereum','BNBUSDT':'binance-coin',
-            'SOLUSDT':'solana','XRPUSDT':'xrp','ADAUSDT':'cardano',
-            'DOGEUSDT':'dogecoin','AVAXUSDT':'avalanche','TRXUSDT':'tron',
-            'DOTUSDT':'polkadot','LINKUSDT':'chainlink','MATICUSDT':'polygon',
-            'LTCUSDT':'litecoin','UNIUSDT':'uniswap','ATOMUSDT':'cosmos',
-            'XLMUSDT':'stellar','BCHUSDT':'bitcoin-cash','NEARUSDT':'near-protocol',
-            'APTUSDT':'aptos','ARBUSDT':'arbitrum'
-        }
-        ids = ','.join(COINCAP_IDS.values())
-        r = requests.get(f'https://api.coincap.io/v2/assets?ids={ids}&limit=20',
-                         headers={'Accept':'application/json'}, timeout=10)
-        if r.status_code == 200:
-            id_to_sym = {v: k for k,v in COINCAP_IDS.items()}
-            with state_lock:
-                for a in r.json().get('data',[]):
-                    sym = id_to_sym.get(a['id'])
-                    price = float(a.get('priceUsd') or 0)
-                    if sym and price > 0:
+        updated = 0
+        for sym in CRYPTO_SYMBOLS:
+            display = sym.replace('USDT', '') + '-USD'
+            r = requests.get(
+                f'https://query1.finance.yahoo.com/v8/finance/chart/{display}?interval=1d&range=1d',
+                headers={'User-Agent': 'Mozilla/5.0'}, timeout=5
+            )
+            if r.status_code == 200:
+                meta = r.json()['chart']['result'][0]['meta']
+                price = float(meta.get('regularMarketPrice') or 0)
+                prev  = float(meta.get('chartPreviousClose') or 0)
+                if price > 0:
+                    with state_lock:
                         crypto_prices[sym] = price
-                        crypto_momentum[sym] = float(a.get('changePercent24Hr') or 0)
-            print(f"CoinCap fallback: updated prices")
+                        crypto_momentum[sym] = round((price/prev - 1)*100, 2) if prev > 0 else 0
+                    updated += 1
+            time.sleep(0.3)
+        if updated:
+            print(f"Yahoo crypto fallback: updated {updated} prices")
     except Exception as e:
-        print(f"CoinCap fallback error: {e}")
+        print(f"Yahoo crypto fallback error: {e}")
 
 def crypto_price_loop():
     while True:
@@ -479,9 +532,10 @@ def monitor_trades():
                 to_close = []
                 for trade in stocks_open:
                     age_h = (now - datetime.fromisoformat(trade['opened_at'])).total_seconds() / 3600
-                    trade['current_price'] = round(
-                        trade['entry_price'] * (1 + (random.random()-0.48)*0.01*max(age_h,0.1)), 4
-                    )
+                    # Use real price from cache, fall back to last known price
+                    real_price = stock_prices.get(trade['symbol'], trade['current_price'])
+                    if real_price > 0:
+                        trade['current_price'] = round(real_price, 4)
                     if trade.get('direction') == 'SHORT':
                         trade['pnl']     = round((trade['entry_price']-trade['current_price'])*trade['quantity'], 2)
                         trade['pnl_pct'] = round((trade['entry_price']/trade['current_price']-1)*100, 2)
@@ -640,6 +694,7 @@ def auto_trade_crypto():
 
 # Start background threads
 threading.Thread(target=crypto_price_loop, daemon=True).start()
+threading.Thread(target=stock_price_loop, daemon=True).start()
 threading.Thread(target=monitor_trades, daemon=True).start()
 threading.Thread(target=auto_trade_crypto, daemon=True).start()
 
@@ -977,7 +1032,7 @@ def init_watchlist_table():
     conn = get_db()
     if not conn: return
     try:
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS watchlist (
                 symbol    VARCHAR(30) PRIMARY KEY,
@@ -1145,11 +1200,12 @@ def watchlist_add():
         conn = get_db()
         if conn:
             try:
-                cursor = conn.cursor()
+                cursor = conn.cursor(dictionary=True)
                 cursor.execute(
                     "INSERT IGNORE INTO watchlist (symbol, market) VALUES (%s, %s)",
                     (symbol, market)
                 )
+                conn.commit()
                 cursor.close(); conn.close()
             except Exception as e:
                 print(f"Watchlist add DB error: {e}")
@@ -1166,8 +1222,9 @@ def watchlist_remove():
         conn = get_db()
         if conn:
             try:
-                cursor = conn.cursor()
+                cursor = conn.cursor(dictionary=True)
                 cursor.execute("DELETE FROM watchlist WHERE symbol = %s", (symbol,))
+                conn.commit()
                 cursor.close(); conn.close()
             except Exception as e:
                 print(f"Watchlist remove DB error: {e}")

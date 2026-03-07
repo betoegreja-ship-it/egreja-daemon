@@ -233,7 +233,7 @@ def _get_pool():
             pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
             pool_cfg.pop('connection_timeout', None)
             _db_pool = MySQLConnectionPool(
-                pool_name='egreja', pool_size=10,
+                pool_name='egreja', pool_size=20,
                 autocommit=True, connection_timeout=10,
                 **pool_cfg)
             log.info('[v10.7] MySQL connection pool inicializado (size=10)')
@@ -1504,7 +1504,7 @@ def _db_save_signal_event(event: dict):
     try:
         c = conn.cursor()
         c.execute("""INSERT INTO signal_events (
-            signal_id, feature_hash, symbol, asset_type, market_type, signal, raw_score,
+            signal_id, feature_hash, symbol, asset_type, market_type, `signal`, raw_score,
             learning_confidence, confidence_band, price, signal_created_at,
             market_regime_mode, market_regime_volatility, market_open, trade_open,
             rsi, ema9, ema21, ema50, rsi_bucket, score_bucket, change_pct_bucket,
@@ -1649,7 +1649,7 @@ def _db_save_shadow_decision(shadow: dict):
     try:
         c = conn.cursor()
         c.execute("""INSERT IGNORE INTO shadow_decisions (
-            shadow_id, signal_id, symbol, signal, price_at_signal,
+            shadow_id, signal_id, symbol, `signal`, price_at_signal,
             not_executed_reason, hypothetical_entry, evaluation_status,
             created_at, payload_json)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
@@ -1657,9 +1657,11 @@ def _db_save_shadow_decision(shadow: dict):
              shadow['signal'], shadow['price_at_signal'],
              shadow['not_executed_reason'], shadow['hypothetical_entry'],
              shadow['evaluation_status'], shadow['created_at'], shadow['payload_json']))
-        conn.commit(); c.close(); conn.close()
+        c.close()
     except Exception as e:
         log.error(f'_db_save_shadow_decision: {e}')
+    finally:
+        conn.close()   # [v10.7] sempre devolve ao pool
 
 def _db_log_learning_audit(event_type: str, entity_id: str, payload: dict):
     conn = get_db()

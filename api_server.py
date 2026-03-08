@@ -2145,7 +2145,7 @@ def _db_save_trade(trade):
             except: pass
         cursor.execute("""INSERT INTO trades (id,symbol,market,asset_type,direction,
             entry_price,exit_price,current_price,quantity,position_value,
-            pnl,pnl_pct,peak_pnl_pct,score,signal,status,close_reason,
+            pnl,pnl_pct,peak_pnl_pct,score,`signal`,status,close_reason,
             from_watchlist,order_id,opened_at,closed_at,extensions,
             signal_id,feature_hash,learning_confidence,insight_summary,learning_version,features_json)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)

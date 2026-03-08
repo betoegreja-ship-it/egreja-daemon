@@ -1930,7 +1930,7 @@ def init_all_tables():
             entry_price DECIMAL(18,6), exit_price DECIMAL(18,6), current_price DECIMAL(18,6),
             quantity DECIMAL(20,6), position_value DECIMAL(18,2),
             pnl DECIMAL(18,2) DEFAULT 0, pnl_pct DECIMAL(10,4) DEFAULT 0,
-            peak_pnl_pct DECIMAL(10,4) DEFAULT 0, score INT, signal VARCHAR(10),
+            peak_pnl_pct DECIMAL(10,4) DEFAULT 0, score INT, `signal` VARCHAR(10),
             status VARCHAR(10) DEFAULT 'OPEN', close_reason VARCHAR(20),
             from_watchlist TINYINT(1) DEFAULT 0, order_id VARCHAR(40),
             opened_at DATETIME, closed_at DATETIME, extensions INT DEFAULT 0,
@@ -1983,7 +1983,7 @@ def init_all_tables():
         cursor.execute("""CREATE TABLE IF NOT EXISTS signal_events (
             signal_id VARCHAR(40) PRIMARY KEY,
             feature_hash VARCHAR(20), symbol VARCHAR(20), asset_type VARCHAR(15),
-            market_type VARCHAR(10), signal VARCHAR(10), raw_score DECIMAL(6,2),
+            market_type VARCHAR(10), `signal` VARCHAR(10), raw_score DECIMAL(6,2),
             learning_confidence DECIMAL(6,2), confidence_band VARCHAR(10),
             price DECIMAL(18,6), signal_created_at DATETIME,
             market_regime_mode VARCHAR(20), market_regime_volatility VARCHAR(10),
@@ -2027,7 +2027,7 @@ def init_all_tables():
         # ── [L-8] Shadow Decisions ────────────────────────────────────────
         cursor.execute("""CREATE TABLE IF NOT EXISTS shadow_decisions (
             shadow_id VARCHAR(40) PRIMARY KEY,
-            signal_id VARCHAR(40), symbol VARCHAR(20), signal VARCHAR(10),
+            signal_id VARCHAR(40), symbol VARCHAR(20), `signal` VARCHAR(10),
             price_at_signal DECIMAL(18,6), not_executed_reason VARCHAR(30),
             hypothetical_entry DECIMAL(18,6), hypothetical_exit DECIMAL(18,6) NULL,
             hypothetical_pnl DECIMAL(18,4) NULL, hypothetical_pnl_pct DECIMAL(10,4) NULL,

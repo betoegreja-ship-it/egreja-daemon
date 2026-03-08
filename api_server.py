@@ -4043,19 +4043,18 @@ def stats():
         d_pnl=calc_period_pnl(all_cl,1); w_pnl=calc_period_pnl(all_cl,7)
         m_pnl=calc_period_pnl(all_cl,30); y_pnl=calc_period_pnl(all_cl,365)
     st=sc+s_val; ct=cc+c_val
-    # [V9-4] core_portfolio_value = stocks+crypto apenas (arbi é segregado, não entra)
-    core_total=round(st+ct,2); arbi_total=round(ac,2)
-    initial_global=INITIAL_CAPITAL_STOCKS+INITIAL_CAPITAL_CRYPTO
+    core_total=round(st+ct,2); arbi_total=round(ac+a_op,2)
+    initial_global=INITIAL_CAPITAL_STOCKS+INITIAL_CAPITAL_CRYPTO+ARBI_CAPITAL
     total_cl_n=len(stocks_closed)+len(crypto_closed); total_win=s_win+c_win
     return jsonify({
         # ─── GLOBAL (stocks + crypto) — arbi NÃO entra aqui ────
         'initial_capital':initial_global,
-        'core_portfolio_value':core_total,        # [V9-4] nome claro: só stocks+crypto
-        'total_portfolio_value':core_total,        # alias backward-compat
+        'core_portfolio_value':core_total,
+        'total_portfolio_value':round(core_total+arbi_total,2),
         'open_positions_value':round(s_val+c_val,2),'current_capital':round(sc+cc,2),
-        'total_pnl':round(s_op+s_cl+c_op+c_cl,2),
-        'open_pnl':round(s_op+c_op,2),'closed_pnl':round(s_cl+c_cl,2),
-        'gain_percent':round((core_total-initial_global)/initial_global*100,2),
+        'total_pnl':round(s_op+s_cl+c_op+c_cl+a_op+a_cl,2),
+        'open_pnl':round(s_op+c_op+a_op,2),'closed_pnl':round(s_cl+c_cl+a_cl,2),
+        'gain_percent':round((core_total+arbi_total-initial_global)/initial_global*100,2),
         'open_trades':len(stocks_open)+len(crypto_open),
         'closed_trades':total_cl_n,'winning_trades':total_win,
         'win_rate':round(total_win/total_cl_n*100,1) if total_cl_n>0 else 0,

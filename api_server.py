@@ -3991,6 +3991,26 @@ def prices_live():
         crypto_snap={k.replace('USDT',''):v for k,v in crypto_prices.items()}
     return jsonify({'timestamp':datetime.utcnow().isoformat(),'trades':trades,'crypto_prices':crypto_snap})
 
+
+@app.route('/prices/crypto')
+def prices_crypto():
+    with state_lock:
+        result = {}
+        for sym, data in crypto_tickers.items():
+            clean = sym.replace('USDT','')
+            result[clean] = {
+                'price': data.get('price', 0),
+                'change_24h': data.get('change_pct', 0),
+                'high_24h': data.get('high_24h', 0),
+                'low_24h': data.get('low_24h', 0),
+            }
+        trades = [{'id':t['id'],'symbol':t['symbol'],
+            'current_price':t.get('current_price',t.get('entry_price',0)),
+            'pnl':t.get('pnl',0),'pnl_pct':t.get('pnl_pct',0),
+            'direction':t.get('direction','LONG')}
+            for t in crypto_open]
+    return jsonify({'prices': result, 'trades': trades, 'ts': datetime.utcnow().isoformat()})
+
 @app.route('/trades/open')
 def trades_open():
     with state_lock: data=stocks_open+crypto_open

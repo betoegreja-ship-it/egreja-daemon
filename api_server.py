@@ -3964,13 +3964,17 @@ def signals():
                     score = base if change_24h > 0 else (100 - base)
                 signal = 'COMPRA' if score >= 70 else ('VENDA' if score <= 30 else 'MANTER')
 
+            kd = klines_data if (ticker_data and klines_data) else _get_cached_candles(f'klines:{sym}', ttl_min=60) or {}
             crypto_signals.append({
                 'symbol':display,'price':price,'signal':signal,'score':score,
                 'market_type':'CRYPTO','asset_type':'crypto',
                 'name':CRYPTO_NAMES.get(sym,display),'rsi':round(max(10,min(90,50+change_24h*3)),1),
                 'change_24h':round(change_24h,2),'ema50_real':False,'rsi_real':False,
-                'atr_pct':   crypto_tickers.get(sym,{}).get('atr_pct', 0.0),      # [v10.5-3]
-                'vol_ratio': crypto_tickers.get(sym,{}).get('vol_ratio', 0.0),     # [v10.5-3]
+                'atr_pct':   crypto_tickers.get(sym,{}).get('atr_pct', 0.0),
+                'vol_ratio': crypto_tickers.get(sym,{}).get('vol_ratio', 0.0),
+                'ema9':  round(kd.get('ema9',  price), 2),
+                'ema21': round(kd.get('ema21', price), 2),
+                'ema50': round(kd.get('ema50', price), 2),
                 'created_at':datetime.utcnow().isoformat(),'trade_open':display in open_crypto_syms
             })
         all_signals=rows+crypto_signals

@@ -3985,6 +3985,7 @@ def signals():
                 sig['ema9']=cached.get('ema9',sig.get('ema9',0)); sig['ema21']=cached.get('ema21',sig.get('ema21',0))
                 sig['ema50']=cached.get('ema50',sig.get('ema50',0))
                 sig['ema50_real']=cached.get('ema50_real',False); sig['rsi_real']=cached.get('rsi_real',False)
+                sig['change_24h']=cached.get('change_pct',0)
         crypto_signals=[]
         for sym in CRYPTO_SYMBOLS:
             display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)

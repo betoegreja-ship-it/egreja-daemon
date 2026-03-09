@@ -2678,9 +2678,9 @@ def _upsert_market_signals_from_cache():
             # Detecta mercado
             if sym in [s.replace('.SA','') for s in STOCK_SYMBOLS_B3]: mkt = 'B3'
             else: mkt = 'NYSE'
-            cursor.execute("""INSERT INTO market_signals (symbol,market_type,price,score,signal,rsi,ema9,ema21,ema50)
+            cursor.execute("""INSERT INTO market_signals (symbol,market_type,price,score,`signal`,rsi,ema9,ema21,ema50)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON DUPLICATE KEY UPDATE price=%s,score=%s,signal=%s,rsi=%s,ema9=%s,ema21=%s,ema50=%s,created_at=NOW()""",
+                ON DUPLICATE KEY UPDATE price=%s,score=%s,`signal`=%s,rsi=%s,ema9=%s,ema21=%s,ema50=%s,created_at=NOW()""",
                 (sym,mkt,price,score,signal,rsi,ema9,ema21,ema50,
                  price,score,signal,rsi,ema9,ema21,ema50))
         conn.commit(); cursor.close(); conn.close()

@@ -233,10 +233,10 @@ def _get_pool():
             pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
             pool_cfg.pop('connection_timeout', None)
             _db_pool = MySQLConnectionPool(
-                pool_name='egreja', pool_size=20,
-                autocommit=True, connection_timeout=10,
+                pool_name='egreja', pool_size=32,
+                autocommit=True, connection_timeout=5,
                 **pool_cfg)
-            log.info('[v10.7] MySQL connection pool inicializado (size=10)')
+            log.info('[v10.7] MySQL connection pool inicializado (size=32)')
         except Exception as e:
             log.error(f'MySQL pool init: {e}')
     return _db_pool
@@ -248,10 +248,14 @@ def get_db():
     """
     pool = _get_pool()
     if pool:
-        try:
-            return pool.get_connection()
-        except Exception as e:
-            log.warning(f'Pool get_connection: {e} — tentando conexão direta')
+        for attempt in range(3):
+            try:
+                return pool.get_connection()
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(0.1 * (attempt + 1))
+                else:
+                    log.warning(f'Pool get_connection: {e} — tentando conexão direta')
     # Fallback direto (ex.: pool esgotado ou erro de inicialização)
     try:
         return mysql.connector.connect(**db_config)

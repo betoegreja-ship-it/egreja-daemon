@@ -4070,8 +4070,11 @@ def trades_open():
 @app.route('/trades/closed')
 def trades_closed():
     with state_lock:
-        data=sorted(stocks_closed+crypto_closed,key=lambda x:x.get('closed_at',''),reverse=True)[:100]
-    return jsonify({'trades':data,'total':len(stocks_closed)+len(crypto_closed)})
+        arbi_cl=[{**t,'asset_type':'arbi','market':'ARBI','direction':t.get('direction','LONG'),
+            'entry_price':t.get('entry_spread',0),'exit_price':t.get('current_spread',0),
+            'quantity':1,'position_value':t.get('position_size',0)} for t in arbi_closed]
+        data=sorted(stocks_closed+crypto_closed+arbi_cl,key=lambda x:x.get('closed_at',''),reverse=True)[:200]
+    return jsonify({'trades':data,'total':len(stocks_closed)+len(crypto_closed)+len(arbi_closed)})
 
 @app.route('/trades')
 def trades():

@@ -818,7 +818,7 @@ def _db_save_order(order):
 def take_portfolio_snapshot():
     with state_lock:
         snap = {
-            'timestamp':        datetime.utcnow().isoformat(),
+            'timestamp':        int(time.time()),
             'stocks_capital':   round(stocks_capital,2),
             'crypto_capital':   round(crypto_capital,2),
             'arbi_capital':     round(arbi_capital,2),

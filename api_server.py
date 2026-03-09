@@ -2648,6 +2648,44 @@ def fetch_stock_prices():
         fetch_stock_prices._last_us_watchlist_ts = now_ts
 
 
+
+def _upsert_market_signals_from_cache():
+    """Gera sinais de stocks a partir do cache de preços e insere em market_signals."""
+    try:
+        with state_lock:
+            prices_snap = dict(stock_prices)
+        if not prices_snap: return
+        conn = get_db()
+        if not conn: return
+        cursor = conn.cursor()
+        for sym, d in prices_snap.items():
+            price = d.get('price', 0)
+            if price <= 0: continue
+            rsi   = d.get('rsi', 50) or 50
+            ema9  = d.get('ema9', 0) or 0
+            ema21 = d.get('ema21', 0) or 0
+            ema50 = d.get('ema50', 0) or 0
+            # Score simples: RSI + EMA alignment
+            score = 50
+            if rsi < 35: score += 20
+            elif rsi > 65: score -= 20
+            if ema9 > ema21 > ema50 and price > ema9: score += 15
+            elif ema9 < ema21 < ema50 and price < ema9: score -= 15
+            score = max(0, min(100, score))
+            if score >= 65: signal = 'COMPRA'
+            elif score <= 35: signal = 'VENDA'
+            else: signal = 'MANTER'
+            # Detecta mercado
+            if sym in [s.replace('.SA','') for s in STOCK_SYMBOLS_B3]: mkt = 'B3'
+            else: mkt = 'NYSE'
+            cursor.execute("""INSERT INTO market_signals (symbol,market_type,price,score,signal,rsi,ema9,ema21,ema50)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON DUPLICATE KEY UPDATE price=%s,score=%s,signal=%s,rsi=%s,ema9=%s,ema21=%s,ema50=%s,created_at=NOW()""",
+                (sym,mkt,price,score,signal,rsi,ema9,ema21,ema50,
+                 price,score,signal,rsi,ema9,ema21,ema50))
+        conn.commit(); cursor.close(); conn.close()
+    except Exception as e: log.error(f'_upsert_market_signals: {e}')
+
 def stock_price_loop():
     """[v10.6-P3] Loop com sleep adaptativo: mais curto no pregão, mais longo fora.
     [v10.6-P0-2] Beat incremental a cada 60s durante sleep fora do pregão para
@@ -2657,6 +2695,7 @@ def stock_price_loop():
         beat('stock_price_loop')
         try:
             fetch_stock_prices()
+            _upsert_market_signals_from_cache()
         except Exception as e:
             log.error(f'stock_price_loop: {e}')
         beat('stock_price_loop')

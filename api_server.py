@@ -3046,7 +3046,8 @@ def monitor_trades():
 
                 to_close_c=[]
                 for trade in crypto_open:
-                    sym=trade['symbol']+'USDT'; price=crypto_prices.get(sym,trade['current_price'])
+                    _raw=trade['symbol']; sym=_raw if _raw.endswith('USDT') else _raw+'USDT'
+                    price=crypto_prices.get(sym,0) or trade.get('current_price',0) or trade['entry_price']
                     age_h=(now-datetime.fromisoformat(trade['opened_at'])).total_seconds()/3600
                     trade['current_price']=price
                     if trade.get('direction')=='SHORT':

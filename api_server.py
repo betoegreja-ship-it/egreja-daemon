@@ -4122,7 +4122,9 @@ def stats():
         d_pnl=calc_period_pnl(all_cl,1); w_pnl=calc_period_pnl(all_cl,7)
         m_pnl=calc_period_pnl(all_cl,30); y_pnl=calc_period_pnl(all_cl,365)
     st=sc+s_val; ct=cc+c_val
-    core_total=round(st+ct,2); arbi_total=round(ac+a_op,2)
+    core_total=round(st+ct,2)
+    # arbi_total = capital inicial + P&L fechado + P&L aberto (cobre free + invested + gains)
+    arbi_total=round(ARBI_CAPITAL+a_cl+a_op,2)
     initial_global=INITIAL_CAPITAL_STOCKS+INITIAL_CAPITAL_CRYPTO+ARBI_CAPITAL
     total_cl_n=len(stocks_closed)+len(crypto_closed); total_win=s_win+c_win
     return jsonify({

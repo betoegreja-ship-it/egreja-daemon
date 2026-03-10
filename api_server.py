@@ -3703,7 +3703,7 @@ def arbi_monitor_loop():
                         return True
                     markets_open = mkt_open(mkt_a) and mkt_open(mkt_b)
                     if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD and markets_open:  reason='TAKE_PROFIT'
-                    elif peak>=2.0 and trade['pnl_pct']<=peak-1.0 and markets_open:           reason='TRAILING_STOP'
+                    elif peak>=1.5 and trade['pnl_pct']<=peak-0.5 and markets_open:           reason='TRAILING_STOP'
                     elif trade['pnl_pct']<=-ARBI_SL_PCT and markets_open:                     reason='STOP_LOSS'
                     elif age_h>=ARBI_TIMEOUT_H:
                         ext=trade.get('extensions',0)

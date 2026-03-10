@@ -630,7 +630,7 @@ def market_open_for(mkt):
 # ═══════════════════════════════════════════════════════════════
 # RISK ENGINE
 # ═══════════════════════════════════════════════════════════════
-def check_risk(symbol, market_type, position_value, strategy='stocks'):
+def check_risk(symbol, market_type, position_value, strategy='stocks', signal=None):
     global RISK_KILL_SWITCH
     if RISK_KILL_SWITCH: return False, 'KILL_SWITCH_ACTIVE', 0
 
@@ -674,7 +674,20 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
 
     total_cap = INITIAL_CAPITAL_STOCKS+INITIAL_CAPITAL_CRYPTO
     max_risk  = total_cap*MAX_RISK_PER_TRADE_PCT/100
-    approved  = min(position_value, max_risk, max_pos, free_cap)
+
+    # [v10.9] Score-based position sizing:
+    # Score 0-49   → 40% do max_pos
+    # Score 50-69  → 60% do max_pos
+    # Score 70-84  → 85% do max_pos
+    # Score 85-100 → 100% do max_pos
+    sig_score = (signal.get('score', 50) if isinstance(signal, dict) else 50)
+    if   sig_score >= 85: score_mult = 1.00
+    elif sig_score >= 70: score_mult = 0.85
+    elif sig_score >= 50: score_mult = 0.60
+    else:                 score_mult = 0.40
+    score_adjusted_max = max_pos * score_mult
+    approved  = min(position_value, max_risk, score_adjusted_max, free_cap)
+    log.debug(f'[SIZING] score={sig_score} mult={score_mult:.2f} adjusted_max={score_adjusted_max:.0f} approved={approved:.0f}')
 
     # [v10.7-Fix3+Fix6] closed lists com cap MAX_CLOSED_HISTORY=500 → drawdown O(500) no pior caso.
     # 500 entradas cobre >7 dias de trades a 20/dia — janela máxima de drawdown = 7 dias.
@@ -3250,7 +3263,7 @@ def stock_execution_worker():
                     continue
 
                 desired_pos=min(stocks_capital*(0.08+score_factor*0.07)*risk_mult, MAX_POSITION_STOCKS)
-                risk_ok,risk_reason,approved_size=check_risk(sym,mkt,desired_pos,'stocks')
+                risk_ok,risk_reason,approved_size=check_risk(sym,mkt,desired_pos,'stocks',signal=sig_enriched)
                 if not risk_ok:
                     # [v10.3.4-F1] Preservar o motivo REAL do bloqueio, não colapsar em 'risk_blocked'
                     real_reason = risk_reason.split()[0] if risk_reason else 'risk_blocked'
@@ -3419,7 +3432,7 @@ def auto_trade_crypto():
                 risk_mult_c = get_risk_multiplier(conf_c)
 
                 desired_pos=min(crypto_capital*(0.05+score_factor*0.05)*risk_mult_c,MAX_POSITION_CRYPTO)
-                risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
+                risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto',signal=sig_enriched_c)
 
                 if not risk_ok:
                     # [v10.3.3-F3] Motivo real preservado

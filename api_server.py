@@ -3690,9 +3690,20 @@ def arbi_monitor_loop():
                     h=trade.setdefault('pnl_history',[]); h.append(trade['pnl_pct'])
                     if len(h)>5: h.pop(0)
                     reason=None
-                    if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD:  reason='TAKE_PROFIT'
-                    elif peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
-                    elif trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
+                    # Só fecha se os dois mercados estiverem abertos (exceto TIMEOUT)
+                    mkt_a=(trade.get('buy_mkt') or trade.get('mkt_a','B3')).upper()
+                    mkt_b=(trade.get('short_mkt') or trade.get('mkt_b','NYSE')).upper()
+                    b3_ok=is_b3_open(); nyse_ok=is_nyse_open()
+                    def mkt_open(m):
+                        if 'B3' in m: return b3_ok
+                        if 'NYSE' in m or 'NASDAQ' in m: return nyse_ok
+                        if 'LSE' in m: return is_lse_open()
+                        if 'HKEX' in m or 'HK' in m: return is_hkex_open()
+                        return True
+                    markets_open = mkt_open(mkt_a) and mkt_open(mkt_b)
+                    if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD and markets_open:  reason='TAKE_PROFIT'
+                    elif peak>=2.0 and trade['pnl_pct']<=peak-1.0 and markets_open:           reason='TRAILING_STOP'
+                    elif trade['pnl_pct']<=-ARBI_SL_PCT and markets_open:                     reason='STOP_LOSS'
                     elif age_h>=ARBI_TIMEOUT_H:
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1

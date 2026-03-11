@@ -2585,6 +2585,16 @@ def fetch_stock_prices():
 
     b3_symbols_display  = [s.replace('.SA', '') for s in STOCK_SYMBOLS_B3]
     us_symbols          = list(STOCK_SYMBOLS_US)
+    # [v10.11] Integra watchlist no loop de trading
+    with watchlist_lock:
+        wl_snap = list(watchlist_symbols)
+    for w in wl_snap:
+        wsym = w['symbol'].upper().replace('.SA','')
+        wmkt = w.get('market','US').upper()
+        if wmkt == 'B3' and wsym not in b3_symbols_display:
+            b3_symbols_display.append(wsym)
+        elif wmkt != 'B3' and wmkt != 'CRYPTO' and wsym not in us_symbols:
+            us_symbols.append(wsym)
 
     # ── B3 ───────────────────────────────────────────────────────────────────
     b3_open_positions = [s for s in b3_symbols_display if s in open_syms_all]
@@ -4186,7 +4196,7 @@ def stats():
             'annual_pnl': round(calc_period_pnl(arbi_closed,365),2),
             'kill_switch': ARBI_KILL_SWITCH,
         },
-        'assets_monitored':len(ALL_STOCK_SYMBOLS)+len(CRYPTO_SYMBOLS),
+        'assets_monitored':len(ALL_STOCK_SYMBOLS)+len(CRYPTO_SYMBOLS)+len(watchlist_symbols),
         'kill_switch':RISK_KILL_SWITCH,'market_regime':market_regime,
         'alerts_enabled':ALERTS_ENABLED,
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'crypto':True},

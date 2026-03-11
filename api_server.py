@@ -3060,7 +3060,14 @@ def monitor_trades():
                 to_close_c=[]
                 for trade in crypto_open:
                     _raw=trade['symbol']; sym=_raw if _raw.endswith('USDT') else _raw+'USDT'
-                    price=crypto_prices.get(sym,0) or trade.get('current_price',0) or trade['entry_price']
+                    _raw_price=crypto_prices.get(sym,0) or trade.get('current_price',0) or trade['entry_price']
+                    # [v10.11] sanity check: rejeita preço se diferir >50% do entry (bug Binance/cache)
+                    _entry=trade['entry_price']
+                    if _entry and _raw_price and (_raw_price < _entry*0.5 or _raw_price > _entry*2.0):
+                        import logging; logging.warning(f"[PRICE_SANITY] {sym} raw={_raw_price} entry={_entry} → usando entry_price")
+                        price=_entry
+                    else:
+                        price=_raw_price
                     age_h=(now-datetime.fromisoformat(trade['opened_at'])).total_seconds()/3600
                     trade['current_price']=price
                     if trade.get('direction')=='SHORT':

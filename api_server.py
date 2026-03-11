@@ -4033,19 +4033,17 @@ def signals():
             display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)
             if price<=0: continue
             change_24h=crypto_momentum.get(sym,0); strength=abs(change_24h)
+            # [v10.11-fix] sempre inicializa ticker_data e klines_data
+            ticker_data = crypto_tickers.get(sym, {})
+            kline_cache_key = f'klines:{sym}'
+            klines_data = _get_cached_candles(kline_cache_key, ttl_min=60) or {}
             if strength < 0.5:
                 score = 50; signal = 'MANTER'
             else:
                 direction_str = 'LONG' if change_24h > 0 else 'SHORT'
-                # [v10.5-3] Usar _crypto_composite_score real — mesmo motor da execução
-                ticker_data = crypto_tickers.get(sym, {})
-                kline_cache_key = f'klines:{sym}'
-                # [v10.6.2-Fix4] Mesma fonte única de klines — _candles_cache TTL=60min
-                klines_data = _get_cached_candles(kline_cache_key, ttl_min=60) or {}
                 if ticker_data and klines_data:
                     score = _crypto_composite_score(ticker_data, klines_data, direction_str)
                 else:
-                    # fallback se klines ainda não carregadas (startup)
                     base  = min(50 + int(strength * 5), 95)
                     score = base if change_24h > 0 else (100 - base)
                 signal = 'COMPRA' if score >= 70 else ('VENDA' if score <= 30 else 'MANTER')

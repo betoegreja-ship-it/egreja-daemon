@@ -4133,22 +4133,22 @@ def _get_db_trade_stats():
                 COUNT(*) as total,
                 SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
                 SUM(pnl) as total_pnl,
-                SUM(CASE WHEN market_type='STOCKS' THEN pnl ELSE 0 END) as stocks_pnl,
-                SUM(CASE WHEN market_type='CRYPTO' THEN pnl ELSE 0 END) as crypto_pnl,
-                SUM(CASE WHEN market_type='STOCKS' AND pnl>0 THEN 1 ELSE 0 END) as stocks_wins,
-                SUM(CASE WHEN market_type='STOCKS' THEN 1 ELSE 0 END) as stocks_total,
-                SUM(CASE WHEN market_type='CRYPTO' AND pnl>0 THEN 1 ELSE 0 END) as crypto_wins,
-                SUM(CASE WHEN market_type='CRYPTO' THEN 1 ELSE 0 END) as crypto_total,
+                SUM(CASE WHEN asset_type='stock' THEN pnl ELSE 0 END) as stocks_pnl,
+                SUM(CASE WHEN asset_type='crypto' THEN pnl ELSE 0 END) as crypto_pnl,
+                SUM(CASE WHEN asset_type='stock' AND pnl>0 THEN 1 ELSE 0 END) as stocks_wins,
+                SUM(CASE WHEN asset_type='stock' THEN 1 ELSE 0 END) as stocks_total,
+                SUM(CASE WHEN asset_type='crypto' AND pnl>0 THEN 1 ELSE 0 END) as crypto_wins,
+                SUM(CASE WHEN asset_type='crypto' THEN 1 ELSE 0 END) as crypto_total,
                 MAX(pnl) as best_trade,
                 MIN(pnl) as worst_trade,
                 SUM(CASE WHEN DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as daily_pnl,
                 SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 7 DAY) THEN pnl ELSE 0 END) as weekly_pnl,
                 SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as monthly_pnl,
                 SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 365 DAY) THEN pnl ELSE 0 END) as annual_pnl,
-                SUM(CASE WHEN market_type='STOCKS' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as stocks_daily,
-                SUM(CASE WHEN market_type='STOCKS' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as stocks_monthly,
-                SUM(CASE WHEN market_type='CRYPTO' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as crypto_daily,
-                SUM(CASE WHEN market_type='CRYPTO' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as crypto_monthly
+                SUM(CASE WHEN asset_type='stock' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as stocks_daily,
+                SUM(CASE WHEN asset_type='stock' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as stocks_monthly,
+                SUM(CASE WHEN asset_type='crypto' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as crypto_daily,
+                SUM(CASE WHEN asset_type='crypto' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as crypto_monthly
             FROM trades WHERE status='CLOSED'
         """)
         row = cursor.fetchone()

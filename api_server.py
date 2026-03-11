@@ -4121,27 +4121,71 @@ def trades():
     with state_lock: all_t=stocks_open+crypto_open+stocks_closed[:50]+crypto_closed[:50]
     return jsonify({'trades':all_t,'total':len(all_t)})
 
+
+def _get_db_trade_stats():
+    """[v10.11] Stats agregadas de TODAS as trades do banco — nunca limitadas por MAX_CLOSED_HISTORY."""
+    try:
+        conn = get_db()
+        if not conn: return {}
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(pnl) as total_pnl,
+                SUM(CASE WHEN market_type='STOCKS' THEN pnl ELSE 0 END) as stocks_pnl,
+                SUM(CASE WHEN market_type='CRYPTO' THEN pnl ELSE 0 END) as crypto_pnl,
+                SUM(CASE WHEN market_type='STOCKS' AND pnl>0 THEN 1 ELSE 0 END) as stocks_wins,
+                SUM(CASE WHEN market_type='STOCKS' THEN 1 ELSE 0 END) as stocks_total,
+                SUM(CASE WHEN market_type='CRYPTO' AND pnl>0 THEN 1 ELSE 0 END) as crypto_wins,
+                SUM(CASE WHEN market_type='CRYPTO' THEN 1 ELSE 0 END) as crypto_total,
+                MAX(pnl) as best_trade,
+                MIN(pnl) as worst_trade,
+                SUM(CASE WHEN DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as daily_pnl,
+                SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 7 DAY) THEN pnl ELSE 0 END) as weekly_pnl,
+                SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as monthly_pnl,
+                SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 365 DAY) THEN pnl ELSE 0 END) as annual_pnl,
+                SUM(CASE WHEN market_type='STOCKS' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as stocks_daily,
+                SUM(CASE WHEN market_type='STOCKS' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as stocks_monthly,
+                SUM(CASE WHEN market_type='CRYPTO' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as crypto_daily,
+                SUM(CASE WHEN market_type='CRYPTO' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as crypto_monthly
+            FROM trades WHERE status='CLOSED'
+        """)
+        row = cursor.fetchone()
+        cursor.close(); conn.close()
+        return {k: float(v or 0) for k, v in row.items()}
+    except Exception as e:
+        log.error(f'_get_db_trade_stats: {e}')
+        return {}
+
 @app.route('/stats')
 def stats():
+    # [v10.11] Stats de closed trades vêm do banco (todas, sem limite de memória)
+    db_st = _get_db_trade_stats()
     with state_lock:
-        s_op=sum(t.get('pnl',0) for t in stocks_open); s_cl=sum(t.get('pnl',0) for t in stocks_closed)
-        s_win=sum(1 for t in stocks_closed if t.get('pnl',0)>0)
+        s_op=sum(t.get('pnl',0) for t in stocks_open)
         s_val=sum(t.get('current_price',t.get('entry_price',0))*t.get('quantity',0) for t in stocks_open)
-        c_op=sum(t.get('pnl',0) for t in crypto_open); c_cl=sum(t.get('pnl',0) for t in crypto_closed)
-        c_win=sum(1 for t in crypto_closed if t.get('pnl',0)>0)
+        c_op=sum(t.get('pnl',0) for t in crypto_open)
         c_val=sum(t.get('current_price',t.get('entry_price',0))*t.get('quantity',0) for t in crypto_open)
         a_op=sum(t.get('pnl',0) for t in arbi_open); a_cl=sum(t.get('pnl',0) for t in arbi_closed)
         a_win=sum(1 for t in arbi_closed if t.get('pnl',0)>0)
         sc=stocks_capital; cc=crypto_capital; ac=arbi_capital
-        all_cl=stocks_closed+crypto_closed; pnls=[t.get('pnl',0) for t in all_cl]
-        d_pnl=calc_period_pnl(all_cl,1); w_pnl=calc_period_pnl(all_cl,7)
-        m_pnl=calc_period_pnl(all_cl,30); y_pnl=calc_period_pnl(all_cl,365)
+    # Usar stats do banco para closed trades
+    s_cl   = db_st.get('stocks_pnl', 0)
+    c_cl   = db_st.get('crypto_pnl', 0)
+    s_win  = int(db_st.get('stocks_wins', 0))
+    c_win  = int(db_st.get('crypto_wins', 0))
+    total_cl_n = int(db_st.get('total', 0))
+    total_win  = int(db_st.get('wins', 0))
+    d_pnl  = db_st.get('daily_pnl', 0)
+    w_pnl  = db_st.get('weekly_pnl', 0)
+    m_pnl  = db_st.get('monthly_pnl', 0)
+    y_pnl  = db_st.get('annual_pnl', 0)
     st=sc+s_val; ct=cc+c_val
     core_total=round(st+ct,2)
     # arbi_total = capital inicial + P&L fechado + P&L aberto (cobre free + invested + gains)
     arbi_total=round(ARBI_CAPITAL+a_cl+a_op,2)
     initial_global=INITIAL_CAPITAL_STOCKS+INITIAL_CAPITAL_CRYPTO+ARBI_CAPITAL
-    total_cl_n=len(stocks_closed)+len(crypto_closed); total_win=s_win+c_win
     return jsonify({
         # ─── GLOBAL (stocks + crypto) — arbi NÃO entra aqui ────
         'initial_capital':initial_global,
@@ -4158,7 +4202,7 @@ def stats():
         'daily_gain_pct':round(d_pnl/initial_global*100,3),
         'monthly_gain_pct':round(m_pnl/initial_global*100,2),
         'annual_gain_pct':round(y_pnl/initial_global*100,2),
-        'best_trade':round(max(pnls),2) if pnls else 0,'worst_trade':round(min(pnls),2) if pnls else 0,
+        'best_trade':round(db_st.get('best_trade',0),2),'worst_trade':round(db_st.get('worst_trade',0),2),
         # ─── STOCKS ─────────────────────────────────────────────
         'stocks_capital':round(sc,2),'stocks_portfolio_value':round(st,2),
         'stocks_open_pnl':round(s_op,2),'stocks_closed_pnl':round(s_cl,2),
@@ -4167,7 +4211,7 @@ def stats():
         'stocks_monthly_pnl':round(calc_period_pnl(stocks_closed,30),2),
         'stocks_annual_pnl':round(calc_period_pnl(stocks_closed,365),2),
         'stocks_total_pnl':round(s_op+s_cl,2),
-        'stocks_win_rate':round(s_win/len(stocks_closed)*100,1) if stocks_closed else 0,
+        'stocks_win_rate':round(s_win/int(db_st.get('stocks_total',1))*100,1) if db_st.get('stocks_total',0)>0 else 0,
         # ─── CRYPTO ─────────────────────────────────────────────
         'crypto_capital':round(cc,2),'crypto_portfolio_value':round(ct,2),
         'crypto_open_pnl':round(c_op,2),'crypto_closed_pnl':round(c_cl,2),
@@ -4176,7 +4220,7 @@ def stats():
         'crypto_monthly_pnl':round(calc_period_pnl(crypto_closed,30),2),
         'crypto_annual_pnl':round(calc_period_pnl(crypto_closed,365),2),
         'crypto_total_pnl':round(c_op+c_cl,2),
-        'crypto_win_rate':round(c_win/len(crypto_closed)*100,1) if crypto_closed else 0,
+        'crypto_win_rate':round(c_win/int(db_st.get('crypto_total',1))*100,1) if db_st.get('crypto_total',0)>0 else 0,
         # ─── ARBI (SEGREGADO) ───────────────────────────────────
         'arbi_book': {
             'segregated': True,

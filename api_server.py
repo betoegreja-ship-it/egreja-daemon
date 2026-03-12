@@ -3752,20 +3752,22 @@ def network_sync_loop():
         try:
             peer_url = SYNC_PEER_URL.rstrip('/')
             # Gerar export local
+            with learning_lock:
+                patterns_raw = dict(pattern_stats_cache)
             with state_lock:
-                all_cl = stocks_closed + crypto_closed
-                total_patterns = len(learning_cache) if learning_cache else 0
-                avg_conf = round(sum(p.get('confidence',0) for p in learning_cache.values()) / max(len(learning_cache),1), 2) if learning_cache else 0.0
-                hot_signals = []
-                for sym, p in list(learning_cache.items())[:20]:
-                    if p.get('confidence',0) >= 0.6:
-                        hot_signals.append({'symbol': sym, 'action': p.get('best_action','BUY'), 'score': p.get('confidence',0)*100, 'market': p.get('market','UNKNOWN')})
-                market_stats = {}
-                for mkt in ['B3','CRYPTO','NYSE']:
-                    mkt_trades = [t for t in all_cl if t.get('asset_type','').upper()==mkt or (mkt=='B3' and t.get('asset_type','')=='stock' and not t.get('symbol','').endswith('USDT'))]
-                    if mkt_trades:
-                        wins = sum(1 for t in mkt_trades if t.get('pnl',0)>0)
-                        market_stats[mkt] = {'total_trades': len(mkt_trades), 'win_rate': round(wins/len(mkt_trades)*100,1), 'total_pnl': round(sum(t.get('pnl',0) for t in mkt_trades),2), 'avg_pnl_pct': round(sum(t.get('pnl_pct',0) for t in mkt_trades)/len(mkt_trades),2)}
+                all_cl = list(stocks_closed) + list(crypto_closed)
+            total_patterns = len(patterns_raw)
+            avg_conf = round(sum(p.get('confidence',0) for p in patterns_raw.values()) / max(len(patterns_raw),1), 2) if patterns_raw else 0.0
+            hot_signals = []
+            for sym, p in list(patterns_raw.items())[:20]:
+                if p.get('confidence',0) >= 0.6:
+                    hot_signals.append({'symbol': sym, 'action': p.get('best_action','BUY'), 'score': p.get('confidence',0)*100, 'market': p.get('market','UNKNOWN')})
+            market_stats = {}
+            for mkt in ['B3','CRYPTO','NYSE']:
+                mkt_trades = [t for t in all_cl if t.get('asset_type','').upper()==mkt or (mkt=='B3' and t.get('asset_type','')=='stock' and not t.get('symbol','').endswith('USDT'))]
+                if mkt_trades:
+                    wins = sum(1 for t in mkt_trades if t.get('pnl',0)>0)
+                    market_stats[mkt] = {'total_trades': len(mkt_trades), 'win_rate': round(wins/len(mkt_trades)*100,1), 'total_pnl': round(sum(t.get('pnl',0) for t in mkt_trades),2), 'avg_pnl_pct': round(sum(t.get('pnl_pct',0) for t in mkt_trades)/len(mkt_trades),2)}
             payload = {
                 'system': 'egreja-railway',
                 'exported_at': datetime.utcnow().isoformat() + 'Z',

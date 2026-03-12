@@ -3744,6 +3744,46 @@ def watchdog():
                     send_whatsapp(f'ALERTA: {name} ({problem}) reiniciada (tentativa {count+1})')
                 except Exception as e: log.error(f'WATCHDOG restart {name}: {e}')
 
+def network_sync_loop():
+    """Faz PUSH periódico dos dados do Railway para o Manus a cada 30 minutos."""
+    import requests as _req
+    time.sleep(60)  # aguarda 1 min após startup
+    while True:
+        try:
+            peer_url = SYNC_PEER_URL.rstrip('/')
+            # Gerar export local
+            with state_lock:
+                all_cl = stocks_closed + crypto_closed
+                total_patterns = len(learning_cache) if learning_cache else 0
+                avg_conf = round(sum(p.get('confidence',0) for p in learning_cache.values()) / max(len(learning_cache),1), 2) if learning_cache else 0.0
+                hot_signals = []
+                for sym, p in list(learning_cache.items())[:20]:
+                    if p.get('confidence',0) >= 0.6:
+                        hot_signals.append({'symbol': sym, 'action': p.get('best_action','BUY'), 'score': p.get('confidence',0)*100, 'market': p.get('market','UNKNOWN')})
+                market_stats = {}
+                for mkt in ['B3','CRYPTO','NYSE']:
+                    mkt_trades = [t for t in all_cl if t.get('asset_type','').upper()==mkt or (mkt=='B3' and t.get('asset_type','')=='stock' and not t.get('symbol','').endswith('USDT'))]
+                    if mkt_trades:
+                        wins = sum(1 for t in mkt_trades if t.get('pnl',0)>0)
+                        market_stats[mkt] = {'total_trades': len(mkt_trades), 'win_rate': round(wins/len(mkt_trades)*100,1), 'total_pnl': round(sum(t.get('pnl',0) for t in mkt_trades),2), 'avg_pnl_pct': round(sum(t.get('pnl_pct',0) for t in mkt_trades)/len(mkt_trades),2)}
+            payload = {
+                'system': 'egreja-railway',
+                'exported_at': datetime.utcnow().isoformat() + 'Z',
+                'learning': {'total_patterns': total_patterns, 'avg_confidence': avg_conf, 'learning_enabled': LEARNING_ENABLED},
+                'hot_signals': hot_signals,
+                'market_stats': market_stats,
+                'portfolio': {'initial_capital': INITIAL_CAPITAL_STOCKS + INITIAL_CAPITAL_CRYPTO, 'stocks_capital': INITIAL_CAPITAL_STOCKS, 'crypto_capital': INITIAL_CAPITAL_CRYPTO}
+            }
+            r = _req.post(f'{peer_url}/sync/import', json=payload, timeout=10)
+            if r.status_code == 200:
+                log.info(f'[NETWORK] ✅ Push para Manus OK: {len(hot_signals)} sinais, {total_patterns} padrões')
+            else:
+                log.warning(f'[NETWORK] Push para Manus status={r.status_code}')
+        except Exception as e:
+            log.debug(f'[NETWORK] Push para Manus falhou: {e}')
+        time.sleep(1800)  # 30 minutos
+
+
 def start_background_threads():
     defs = {
         'stock_price_loop':       stock_price_loop,
@@ -3758,6 +3798,7 @@ def start_background_threads():
         'alert_worker':           alert_worker,
         'watchdog':               watchdog,
         'shadow_evaluator_loop':  shadow_evaluator_loop,   # [FIX-5]
+        'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
     }
     now=time.time()
     for name,fn in defs.items():
@@ -4544,12 +4585,11 @@ PUBLIC_ROUTES.add('/learning/status')
 # ═══════════════════════════════════════════════════════════════
 
 SYNC_VERSION = "1.0"
-SYNC_PEER_URL = os.environ.get('SYNC_PEER_URL', 'https://egreja.com')  # URL do sistema parceiro
+SYNC_PEER_URL = os.environ.get('SYNC_PEER_URL', 'https://manus.up.railway.app')  # URL do sistema Manus
 
 @app.route('/sync/export')
-@require_auth
 def sync_export():
-    """Exporta inteligência aprendida para troca entre sistemas Egreja."""
+    """Exporta inteligência aprendida para troca entre sistemas Egreja. [PUBLIC — sem auth]"""
     try:
         # 1. Padrões aprendidos (top 50 por confiança)
         with learning_lock:
@@ -4656,9 +4696,8 @@ def sync_export():
 
 
 @app.route('/sync/import', methods=['POST'])
-@require_auth
 def sync_import():
-    """Recebe inteligência de outro sistema Egreja e salva insights cruzados."""
+    """Recebe inteligência de outro sistema Egreja. [PUBLIC — sem auth]"""
     try:
         data = request.get_json(force=True)
         if not data:

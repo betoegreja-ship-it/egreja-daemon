@@ -233,10 +233,10 @@ def _get_pool():
             pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
             pool_cfg.pop('connection_timeout', None)
             _db_pool = MySQLConnectionPool(
-                pool_name='egreja', pool_size=32,
-                autocommit=True, connection_timeout=5,
+                pool_name='egreja', pool_size=20,
+                autocommit=True, connection_timeout=10,
                 **pool_cfg)
-            log.info('[v10.7] MySQL connection pool inicializado (size=32)')
+            log.info('[v10.7] MySQL connection pool inicializado (size=10)')
         except Exception as e:
             log.error(f'MySQL pool init: {e}')
     return _db_pool
@@ -248,14 +248,10 @@ def get_db():
     """
     pool = _get_pool()
     if pool:
-        for attempt in range(3):
-            try:
-                return pool.get_connection()
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(0.1 * (attempt + 1))
-                else:
-                    log.warning(f'Pool get_connection: {e} — tentando conexão direta')
+        try:
+            return pool.get_connection()
+        except Exception as e:
+            log.warning(f'Pool get_connection: {e} — tentando conexão direta')
     # Fallback direto (ex.: pool esgotado ou erro de inicialização)
     try:
         return mysql.connector.connect(**db_config)
@@ -630,7 +626,7 @@ def market_open_for(mkt):
 # ═══════════════════════════════════════════════════════════════
 # RISK ENGINE
 # ═══════════════════════════════════════════════════════════════
-def check_risk(symbol, market_type, position_value, strategy='stocks', signal=None):
+def check_risk(symbol, market_type, position_value, strategy='stocks'):
     global RISK_KILL_SWITCH
     if RISK_KILL_SWITCH: return False, 'KILL_SWITCH_ACTIVE', 0
 
@@ -674,20 +670,7 @@ def check_risk(symbol, market_type, position_value, strategy='stocks', signal=No
 
     total_cap = INITIAL_CAPITAL_STOCKS+INITIAL_CAPITAL_CRYPTO
     max_risk  = total_cap*MAX_RISK_PER_TRADE_PCT/100
-
-    # [v10.9] Score-based position sizing:
-    # Score 0-49   → 40% do max_pos
-    # Score 50-69  → 60% do max_pos
-    # Score 70-84  → 85% do max_pos
-    # Score 85-100 → 100% do max_pos
-    sig_score = (signal.get('score', 50) if isinstance(signal, dict) else 50)
-    if   sig_score >= 85: score_mult = 1.00
-    elif sig_score >= 70: score_mult = 0.85
-    elif sig_score >= 50: score_mult = 0.60
-    else:                 score_mult = 0.40
-    score_adjusted_max = max_pos * score_mult
-    approved  = min(position_value, max_risk, score_adjusted_max, free_cap)
-    log.debug(f'[SIZING] score={sig_score} mult={score_mult:.2f} adjusted_max={score_adjusted_max:.0f} approved={approved:.0f}')
+    approved  = min(position_value, max_risk, max_pos, free_cap)
 
     # [v10.7-Fix3+Fix6] closed lists com cap MAX_CLOSED_HISTORY=500 → drawdown O(500) no pior caso.
     # 500 entradas cobre >7 dias de trades a 20/dia — janela máxima de drawdown = 7 dias.
@@ -831,7 +814,7 @@ def _db_save_order(order):
 def take_portfolio_snapshot():
     with state_lock:
         snap = {
-            'timestamp':        int(time.time()),
+            'timestamp':        datetime.utcnow().isoformat(),
             'stocks_capital':   round(stocks_capital,2),
             'crypto_capital':   round(crypto_capital,2),
             'arbi_capital':     round(arbi_capital,2),
@@ -1947,7 +1930,7 @@ def init_all_tables():
             entry_price DECIMAL(18,6), exit_price DECIMAL(18,6), current_price DECIMAL(18,6),
             quantity DECIMAL(20,6), position_value DECIMAL(18,2),
             pnl DECIMAL(18,2) DEFAULT 0, pnl_pct DECIMAL(10,4) DEFAULT 0,
-            peak_pnl_pct DECIMAL(10,4) DEFAULT 0, score INT, `signal` VARCHAR(10),
+            peak_pnl_pct DECIMAL(10,4) DEFAULT 0, score INT, signal VARCHAR(10),
             status VARCHAR(10) DEFAULT 'OPEN', close_reason VARCHAR(20),
             from_watchlist TINYINT(1) DEFAULT 0, order_id VARCHAR(40),
             opened_at DATETIME, closed_at DATETIME, extensions INT DEFAULT 0,
@@ -2000,7 +1983,7 @@ def init_all_tables():
         cursor.execute("""CREATE TABLE IF NOT EXISTS signal_events (
             signal_id VARCHAR(40) PRIMARY KEY,
             feature_hash VARCHAR(20), symbol VARCHAR(20), asset_type VARCHAR(15),
-            market_type VARCHAR(10), `signal` VARCHAR(10), raw_score DECIMAL(6,2),
+            market_type VARCHAR(10), signal VARCHAR(10), raw_score DECIMAL(6,2),
             learning_confidence DECIMAL(6,2), confidence_band VARCHAR(10),
             price DECIMAL(18,6), signal_created_at DATETIME,
             market_regime_mode VARCHAR(20), market_regime_volatility VARCHAR(10),
@@ -2044,7 +2027,7 @@ def init_all_tables():
         # ── [L-8] Shadow Decisions ────────────────────────────────────────
         cursor.execute("""CREATE TABLE IF NOT EXISTS shadow_decisions (
             shadow_id VARCHAR(40) PRIMARY KEY,
-            signal_id VARCHAR(40), symbol VARCHAR(20), `signal` VARCHAR(10),
+            signal_id VARCHAR(40), symbol VARCHAR(20), signal VARCHAR(10),
             price_at_signal DECIMAL(18,6), not_executed_reason VARCHAR(30),
             hypothetical_entry DECIMAL(18,6), hypothetical_exit DECIMAL(18,6) NULL,
             hypothetical_pnl DECIMAL(18,4) NULL, hypothetical_pnl_pct DECIMAL(10,4) NULL,
@@ -2585,16 +2568,6 @@ def fetch_stock_prices():
 
     b3_symbols_display  = [s.replace('.SA', '') for s in STOCK_SYMBOLS_B3]
     us_symbols          = list(STOCK_SYMBOLS_US)
-    # [v10.11] Integra watchlist no loop de trading
-    with watchlist_lock:
-        wl_snap = list(watchlist_symbols)
-    for w in wl_snap:
-        wsym = w['symbol'].upper().replace('.SA','')
-        wmkt = w.get('market','US').upper()
-        if wmkt == 'B3' and wsym not in b3_symbols_display:
-            b3_symbols_display.append(wsym)
-        elif wmkt != 'B3' and wmkt != 'CRYPTO' and wsym not in us_symbols:
-            us_symbols.append(wsym)
 
     # ── B3 ───────────────────────────────────────────────────────────────────
     b3_open_positions = [s for s in b3_symbols_display if s in open_syms_all]
@@ -2671,44 +2644,6 @@ def fetch_stock_prices():
         fetch_stock_prices._last_us_watchlist_ts = now_ts
 
 
-
-def _upsert_market_signals_from_cache():
-    """Gera sinais de stocks a partir do cache de preços e insere em market_signals."""
-    try:
-        with state_lock:
-            prices_snap = dict(stock_prices)
-        if not prices_snap: return
-        conn = get_db()
-        if not conn: return
-        cursor = conn.cursor()
-        for sym, d in prices_snap.items():
-            price = d.get('price', 0)
-            if price <= 0: continue
-            rsi   = d.get('rsi', 50) or 50
-            ema9  = d.get('ema9', 0) or 0
-            ema21 = d.get('ema21', 0) or 0
-            ema50 = d.get('ema50', 0) or 0
-            # Score simples: RSI + EMA alignment
-            score = 50
-            if rsi < 35: score += 20
-            elif rsi > 65: score -= 20
-            if ema9 > ema21 > ema50 and price > ema9: score += 15
-            elif ema9 < ema21 < ema50 and price < ema9: score -= 15
-            score = max(0, min(100, score))
-            if score >= 65: signal = 'COMPRA'
-            elif score <= 35: signal = 'VENDA'
-            else: signal = 'MANTER'
-            # Detecta mercado
-            if sym in [s.replace('.SA','') for s in STOCK_SYMBOLS_B3]: mkt = 'B3'
-            else: mkt = 'NYSE'
-            cursor.execute("""INSERT INTO market_signals (symbol,market_type,price,score,`signal`,rsi,ema9,ema21,ema50)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON DUPLICATE KEY UPDATE price=%s,score=%s,`signal`=%s,rsi=%s,ema9=%s,ema21=%s,ema50=%s,created_at=NOW()""",
-                (sym,mkt,price,score,signal,rsi,ema9,ema21,ema50,
-                 price,score,signal,rsi,ema9,ema21,ema50))
-        conn.commit(); cursor.close(); conn.close()
-    except Exception as e: log.error(f'_upsert_market_signals: {e}')
-
 def stock_price_loop():
     """[v10.6-P3] Loop com sleep adaptativo: mais curto no pregão, mais longo fora.
     [v10.6-P0-2] Beat incremental a cada 60s durante sleep fora do pregão para
@@ -2718,7 +2653,6 @@ def stock_price_loop():
         beat('stock_price_loop')
         try:
             fetch_stock_prices()
-            _upsert_market_signals_from_cache()
         except Exception as e:
             log.error(f'stock_price_loop: {e}')
         beat('stock_price_loop')
@@ -3069,15 +3003,7 @@ def monitor_trades():
 
                 to_close_c=[]
                 for trade in crypto_open:
-                    _raw=trade['symbol']; sym=_raw if _raw.endswith('USDT') else _raw+'USDT'
-                    _raw_price=crypto_prices.get(sym,0) or trade.get('current_price',0) or trade['entry_price']
-                    # [v10.11] sanity check: rejeita preço se diferir >50% do entry (bug Binance/cache)
-                    _entry=trade['entry_price']
-                    if _entry and _raw_price and (_raw_price < _entry*0.5 or _raw_price > _entry*2.0):
-                        import logging; logging.warning(f"[PRICE_SANITY] {sym} raw={_raw_price} entry={_entry} → usando entry_price")
-                        price=_entry
-                    else:
-                        price=_raw_price
+                    sym=trade['symbol']+'USDT'; price=crypto_prices.get(sym,trade['current_price'])
                     age_h=(now-datetime.fromisoformat(trade['opened_at'])).total_seconds()/3600
                     trade['current_price']=price
                     if trade.get('direction')=='SHORT':
@@ -3280,7 +3206,7 @@ def stock_execution_worker():
                     continue
 
                 desired_pos=min(stocks_capital*(0.08+score_factor*0.07)*risk_mult, MAX_POSITION_STOCKS)
-                risk_ok,risk_reason,approved_size=check_risk(sym,mkt,desired_pos,'stocks',signal=sig_enriched)
+                risk_ok,risk_reason,approved_size=check_risk(sym,mkt,desired_pos,'stocks')
                 if not risk_ok:
                     # [v10.3.4-F1] Preservar o motivo REAL do bloqueio, não colapsar em 'risk_blocked'
                     real_reason = risk_reason.split()[0] if risk_reason else 'risk_blocked'
@@ -3449,7 +3375,7 @@ def auto_trade_crypto():
                 risk_mult_c = get_risk_multiplier(conf_c)
 
                 desired_pos=min(crypto_capital*(0.05+score_factor*0.05)*risk_mult_c,MAX_POSITION_CRYPTO)
-                risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto',signal=sig_enriched_c)
+                risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:
                     # [v10.3.3-F3] Motivo real preservado
@@ -3721,20 +3647,12 @@ def arbi_monitor_loop():
                     h=trade.setdefault('pnl_history',[]); h.append(trade['pnl_pct'])
                     if len(h)>5: h.pop(0)
                     reason=None
-                    # Só fecha se os dois mercados estiverem abertos (exceto TIMEOUT)
-                    mkt_a=(trade.get('buy_mkt') or trade.get('mkt_a','B3')).upper()
-                    mkt_b=(trade.get('short_mkt') or trade.get('mkt_b','NYSE')).upper()
-                    b3_ok=is_b3_open(); nyse_ok=is_nyse_open()
-                    def mkt_open(m):
-                        if 'B3' in m: return b3_ok
-                        if 'NYSE' in m or 'NASDAQ' in m: return nyse_ok
-                        if 'LSE' in m: return is_lse_open()
-                        if 'HKEX' in m or 'HK' in m: return is_hkex_open()
-                        return True
-                    markets_open = mkt_open(mkt_a) and mkt_open(mkt_b)
-                    if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD and markets_open:  reason='TAKE_PROFIT'
-                    elif peak>=1.5 and trade['pnl_pct']<=peak-0.5 and markets_open:           reason='TRAILING_STOP'
-                    elif trade['pnl_pct']<=-ARBI_SL_PCT and markets_open:                     reason='STOP_LOSS'
+                    mkt_a=trade.get('mkt_a',''); mkt_b=trade.get('mkt_b','')
+                    both_open=(market_open_for(mkt_a) and market_open_for(mkt_b))
+                    if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD:  reason='TAKE_PROFIT'
+                    elif peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
+                    elif trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
+                    elif not both_open and age_h>=0.5:                       reason='MARKET_CLOSE'
                     elif age_h>=ARBI_TIMEOUT_H:
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
@@ -4027,41 +3945,35 @@ def signals():
                 sig['ema9']=cached.get('ema9',sig.get('ema9',0)); sig['ema21']=cached.get('ema21',sig.get('ema21',0))
                 sig['ema50']=cached.get('ema50',sig.get('ema50',0))
                 sig['ema50_real']=cached.get('ema50_real',False); sig['rsi_real']=cached.get('rsi_real',False)
-                sig['change_24h']=cached.get('change_pct',0)
         crypto_signals=[]
         for sym in CRYPTO_SYMBOLS:
             display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)
             if price<=0: continue
             change_24h=crypto_momentum.get(sym,0); strength=abs(change_24h)
-            # [v10.11-fix] sempre inicializa ticker_data e klines_data
-            ticker_data = crypto_tickers.get(sym, {})
-            kline_cache_key = f'klines:{sym}'
-            klines_data = _get_cached_candles(kline_cache_key, ttl_min=60) or {}
             if strength < 0.5:
                 score = 50; signal = 'MANTER'
             else:
                 direction_str = 'LONG' if change_24h > 0 else 'SHORT'
+                # [v10.5-3] Usar _crypto_composite_score real — mesmo motor da execução
+                ticker_data = crypto_tickers.get(sym, {})
+                kline_cache_key = f'klines:{sym}'
+                # [v10.6.2-Fix4] Mesma fonte única de klines — _candles_cache TTL=60min
+                klines_data = _get_cached_candles(kline_cache_key, ttl_min=60) or {}
                 if ticker_data and klines_data:
                     score = _crypto_composite_score(ticker_data, klines_data, direction_str)
                 else:
+                    # fallback se klines ainda não carregadas (startup)
                     base  = min(50 + int(strength * 5), 95)
                     score = base if change_24h > 0 else (100 - base)
                 signal = 'COMPRA' if score >= 70 else ('VENDA' if score <= 30 else 'MANTER')
 
-            kd = klines_data if (ticker_data and klines_data) else _get_cached_candles(f'klines:{sym}', ttl_min=60) or {}
-            closes = kd.get('closes', [])
-            n = len(closes)
-            c_ema9  = round(_ema(closes, 9),  2) if n >= 9  else round(price, 2)
-            c_ema21 = round(_ema(closes, 21), 2) if n >= 21 else round(price, 2)
-            c_ema50 = round(_ema(closes, 50), 2) if n >= 50 else round(price, 2)
             crypto_signals.append({
                 'symbol':display,'price':price,'signal':signal,'score':score,
                 'market_type':'CRYPTO','asset_type':'crypto',
                 'name':CRYPTO_NAMES.get(sym,display),'rsi':round(max(10,min(90,50+change_24h*3)),1),
                 'change_24h':round(change_24h,2),'ema50_real':False,'rsi_real':False,
-                'atr_pct':   crypto_tickers.get(sym,{}).get('atr_pct', 0.0),
-                'vol_ratio': crypto_tickers.get(sym,{}).get('vol_ratio', 0.0),
-                'ema9':  c_ema9, 'ema21': c_ema21, 'ema50': c_ema50,
+                'atr_pct':   crypto_tickers.get(sym,{}).get('atr_pct', 0.0),      # [v10.5-3]
+                'vol_ratio': crypto_tickers.get(sym,{}).get('vol_ratio', 0.0),     # [v10.5-3]
                 'created_at':datetime.utcnow().isoformat(),'trade_open':display in open_crypto_syms
             })
         all_signals=rows+crypto_signals
@@ -4082,26 +3994,6 @@ def prices_live():
         crypto_snap={k.replace('USDT',''):v for k,v in crypto_prices.items()}
     return jsonify({'timestamp':datetime.utcnow().isoformat(),'trades':trades,'crypto_prices':crypto_snap})
 
-
-@app.route('/prices/crypto')
-def prices_crypto():
-    with state_lock:
-        result = {}
-        for sym, data in crypto_tickers.items():
-            clean = sym.replace('USDT','')
-            result[clean] = {
-                'price': data.get('price', 0),
-                'change_24h': data.get('change_pct', 0),
-                'high_24h': data.get('high_24h', 0),
-                'low_24h': data.get('low_24h', 0),
-            }
-        trades = [{'id':t['id'],'symbol':t['symbol'],
-            'current_price':t.get('current_price',t.get('entry_price',0)),
-            'pnl':t.get('pnl',0),'pnl_pct':t.get('pnl_pct',0),
-            'direction':t.get('direction','LONG')}
-            for t in crypto_open]
-    return jsonify({'prices': result, 'trades': trades, 'ts': datetime.utcnow().isoformat()})
-
 @app.route('/trades/open')
 def trades_open():
     with state_lock: data=stocks_open+crypto_open
@@ -4110,91 +4002,43 @@ def trades_open():
 @app.route('/trades/closed')
 def trades_closed():
     with state_lock:
-        arbi_cl=[{**t,'asset_type':'arbi','market':'ARBI','direction':t.get('direction','LONG'),
-            'entry_price':t.get('entry_spread',0),'exit_price':t.get('current_spread',0),
-            'quantity':1,'position_value':t.get('position_size',0)} for t in arbi_closed]
-        data=sorted(stocks_closed+crypto_closed+arbi_cl,key=lambda x:x.get('closed_at',''),reverse=True)[:200]
-    return jsonify({'trades':data,'total':len(stocks_closed)+len(crypto_closed)+len(arbi_closed)})
+        data=sorted(stocks_closed+crypto_closed,key=lambda x:x.get('closed_at',''),reverse=True)[:100]
+    return jsonify({'trades':data,'total':len(stocks_closed)+len(crypto_closed)})
 
 @app.route('/trades')
 def trades():
     with state_lock: all_t=stocks_open+crypto_open+stocks_closed[:50]+crypto_closed[:50]
     return jsonify({'trades':all_t,'total':len(all_t)})
 
-
-def _get_db_trade_stats():
-    """[v10.11] Stats agregadas de TODAS as trades do banco — nunca limitadas por MAX_CLOSED_HISTORY."""
-    try:
-        conn = get_db()
-        if not conn: return {}
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                SUM(pnl) as total_pnl,
-                SUM(CASE WHEN asset_type='stock' THEN pnl ELSE 0 END) as stocks_pnl,
-                SUM(CASE WHEN asset_type='crypto' THEN pnl ELSE 0 END) as crypto_pnl,
-                SUM(CASE WHEN asset_type='stock' AND pnl>0 THEN 1 ELSE 0 END) as stocks_wins,
-                SUM(CASE WHEN asset_type='stock' THEN 1 ELSE 0 END) as stocks_total,
-                SUM(CASE WHEN asset_type='crypto' AND pnl>0 THEN 1 ELSE 0 END) as crypto_wins,
-                SUM(CASE WHEN asset_type='crypto' THEN 1 ELSE 0 END) as crypto_total,
-                MAX(pnl) as best_trade,
-                MIN(pnl) as worst_trade,
-                SUM(CASE WHEN DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as daily_pnl,
-                SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 7 DAY) THEN pnl ELSE 0 END) as weekly_pnl,
-                SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as monthly_pnl,
-                SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 365 DAY) THEN pnl ELSE 0 END) as annual_pnl,
-                SUM(CASE WHEN asset_type='stock' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as stocks_daily,
-                SUM(CASE WHEN asset_type='stock' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as stocks_monthly,
-                SUM(CASE WHEN asset_type='crypto' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as crypto_daily,
-                SUM(CASE WHEN asset_type='crypto' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as crypto_monthly
-            FROM trades WHERE status='CLOSED'
-        """)
-        row = cursor.fetchone()
-        cursor.close(); conn.close()
-        return {k: float(v or 0) for k, v in row.items()}
-    except Exception as e:
-        log.error(f'_get_db_trade_stats: {e}')
-        return {}
-
 @app.route('/stats')
 def stats():
-    # [v10.11] Stats de closed trades vêm do banco (todas, sem limite de memória)
-    db_st = _get_db_trade_stats()
     with state_lock:
-        s_op=sum(t.get('pnl',0) for t in stocks_open)
+        s_op=sum(t.get('pnl',0) for t in stocks_open); s_cl=sum(t.get('pnl',0) for t in stocks_closed)
+        s_win=sum(1 for t in stocks_closed if t.get('pnl',0)>0)
         s_val=sum(t.get('current_price',t.get('entry_price',0))*t.get('quantity',0) for t in stocks_open)
-        c_op=sum(t.get('pnl',0) for t in crypto_open)
+        c_op=sum(t.get('pnl',0) for t in crypto_open); c_cl=sum(t.get('pnl',0) for t in crypto_closed)
+        c_win=sum(1 for t in crypto_closed if t.get('pnl',0)>0)
         c_val=sum(t.get('current_price',t.get('entry_price',0))*t.get('quantity',0) for t in crypto_open)
         a_op=sum(t.get('pnl',0) for t in arbi_open); a_cl=sum(t.get('pnl',0) for t in arbi_closed)
         a_win=sum(1 for t in arbi_closed if t.get('pnl',0)>0)
         sc=stocks_capital; cc=crypto_capital; ac=arbi_capital
-    # Usar stats do banco para closed trades
-    s_cl   = db_st.get('stocks_pnl', 0)
-    c_cl   = db_st.get('crypto_pnl', 0)
-    s_win  = int(db_st.get('stocks_wins', 0))
-    c_win  = int(db_st.get('crypto_wins', 0))
-    total_cl_n = int(db_st.get('total', 0))
-    total_win  = int(db_st.get('wins', 0))
-    d_pnl  = db_st.get('daily_pnl', 0)
-    w_pnl  = db_st.get('weekly_pnl', 0)
-    m_pnl  = db_st.get('monthly_pnl', 0)
-    y_pnl  = db_st.get('annual_pnl', 0)
+        all_cl=stocks_closed+crypto_closed; pnls=[t.get('pnl',0) for t in all_cl]
+        d_pnl=calc_period_pnl(all_cl,1); w_pnl=calc_period_pnl(all_cl,7)
+        m_pnl=calc_period_pnl(all_cl,30); y_pnl=calc_period_pnl(all_cl,365)
     st=sc+s_val; ct=cc+c_val
-    core_total=round(st+ct,2)
-    # arbi_total = capital inicial + P&L fechado + P&L aberto (cobre free + invested + gains)
-    arbi_total=round(ARBI_CAPITAL+a_cl+a_op,2)
-    initial_global=INITIAL_CAPITAL_STOCKS+INITIAL_CAPITAL_CRYPTO+ARBI_CAPITAL
+    # [V9-4] core_portfolio_value = stocks+crypto apenas (arbi é segregado, não entra)
+    core_total=round(st+ct,2); arbi_total=round(ac,2)
+    initial_global=INITIAL_CAPITAL_STOCKS+INITIAL_CAPITAL_CRYPTO
+    total_cl_n=len(stocks_closed)+len(crypto_closed); total_win=s_win+c_win
     return jsonify({
         # ─── GLOBAL (stocks + crypto) — arbi NÃO entra aqui ────
         'initial_capital':initial_global,
-        'core_portfolio_value':core_total,
-        'total_portfolio_value':round(core_total+arbi_total,2),
+        'core_portfolio_value':core_total,        # [V9-4] nome claro: só stocks+crypto
+        'total_portfolio_value':core_total,        # alias backward-compat
         'open_positions_value':round(s_val+c_val,2),'current_capital':round(sc+cc,2),
-        'total_pnl':round(s_op+s_cl+c_op+c_cl+a_op+a_cl,2),
-        'open_pnl':round(s_op+c_op+a_op,2),'closed_pnl':round(s_cl+c_cl+a_cl,2),
-        'gain_percent':round((core_total+arbi_total-initial_global)/initial_global*100,2),
+        'total_pnl':round(s_op+s_cl+c_op+c_cl,2),
+        'open_pnl':round(s_op+c_op,2),'closed_pnl':round(s_cl+c_cl,2),
+        'gain_percent':round((core_total-initial_global)/initial_global*100,2),
         'open_trades':len(stocks_open)+len(crypto_open),
         'closed_trades':total_cl_n,'winning_trades':total_win,
         'win_rate':round(total_win/total_cl_n*100,1) if total_cl_n>0 else 0,
@@ -4202,25 +4046,15 @@ def stats():
         'daily_gain_pct':round(d_pnl/initial_global*100,3),
         'monthly_gain_pct':round(m_pnl/initial_global*100,2),
         'annual_gain_pct':round(y_pnl/initial_global*100,2),
-        'best_trade':round(db_st.get('best_trade',0),2),'worst_trade':round(db_st.get('worst_trade',0),2),
+        'best_trade':round(max(pnls),2) if pnls else 0,'worst_trade':round(min(pnls),2) if pnls else 0,
         # ─── STOCKS ─────────────────────────────────────────────
         'stocks_capital':round(sc,2),'stocks_portfolio_value':round(st,2),
         'stocks_open_pnl':round(s_op,2),'stocks_closed_pnl':round(s_cl,2),
         'stocks_open_trades':len(stocks_open),'stocks_closed_trades':len(stocks_closed),
-        'stocks_daily_pnl':round(calc_period_pnl(stocks_closed,1),2),
-        'stocks_monthly_pnl':round(calc_period_pnl(stocks_closed,30),2),
-        'stocks_annual_pnl':round(calc_period_pnl(stocks_closed,365),2),
-        'stocks_total_pnl':round(s_op+s_cl,2),
-        'stocks_win_rate':round(s_win/int(db_st.get('stocks_total',1))*100,1) if db_st.get('stocks_total',0)>0 else 0,
         # ─── CRYPTO ─────────────────────────────────────────────
         'crypto_capital':round(cc,2),'crypto_portfolio_value':round(ct,2),
         'crypto_open_pnl':round(c_op,2),'crypto_closed_pnl':round(c_cl,2),
         'crypto_open_trades':len(crypto_open),'crypto_closed_trades':len(crypto_closed),
-        'crypto_daily_pnl':round(calc_period_pnl(crypto_closed,1),2),
-        'crypto_monthly_pnl':round(calc_period_pnl(crypto_closed,30),2),
-        'crypto_annual_pnl':round(calc_period_pnl(crypto_closed,365),2),
-        'crypto_total_pnl':round(c_op+c_cl,2),
-        'crypto_win_rate':round(c_win/int(db_st.get('crypto_total',1))*100,1) if db_st.get('crypto_total',0)>0 else 0,
         # ─── ARBI (SEGREGADO) ───────────────────────────────────
         'arbi_book': {
             'segregated': True,
@@ -4233,12 +4067,9 @@ def stats():
             'open_trades': len(arbi_open), 'closed_trades': len(arbi_closed),
             'winning_trades': a_win,
             'win_rate': round(a_win/len(arbi_closed)*100,1) if arbi_closed else 0,
-            'daily_pnl': round(calc_period_pnl(arbi_closed,1),2),
-            'monthly_pnl': round(calc_period_pnl(arbi_closed,30),2),
-            'annual_pnl': round(calc_period_pnl(arbi_closed,365),2),
             'kill_switch': ARBI_KILL_SWITCH,
         },
-        'assets_monitored':len(ALL_STOCK_SYMBOLS)+len(CRYPTO_SYMBOLS)+len(watchlist_symbols),
+        'assets_monitored':len(ALL_STOCK_SYMBOLS)+len(CRYPTO_SYMBOLS),
         'kill_switch':RISK_KILL_SWITCH,'market_regime':market_regime,
         'alerts_enabled':ALERTS_ENABLED,
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'crypto':True},

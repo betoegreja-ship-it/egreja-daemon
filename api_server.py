@@ -4040,6 +4040,32 @@ def signals():
                 'vol_ratio': crypto_tickers.get(sym,{}).get('vol_ratio', 0.0),     # [v10.5-3]
                 'created_at':datetime.utcnow().isoformat(),'trade_open':display in open_crypto_syms
             })
+        # [v10.8] Quando mercado está fechado e não há sinais recentes no DB,
+        # gerar sinais off-hours a partir do stock_prices em memória (atualizado 1x/30min)
+        # para que Markets/Overview continuem mostrando cotações.
+        if not rows and not (is_b3_open() or is_nyse_open()):
+            with state_lock:
+                sp_snap = dict(stock_prices)
+            now_iso = datetime.utcnow().isoformat()
+            for sym, pd in sp_snap.items():
+                if not pd or pd.get('price', 0) <= 0: continue
+                # Determinar mercado pelo símbolo
+                mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
+                rows.append({
+                    'symbol': sym, 'price': pd.get('price', 0),
+                    'signal': 'MANTER', 'score': 50,
+                    'market_type': mkt_type, 'asset_type': 'stock',
+                    'name': sym, 'rsi': pd.get('rsi', 50),
+                    'ema9': pd.get('ema9', 0), 'ema21': pd.get('ema21', 0),
+                    'ema50': pd.get('ema50', 0), 'ema50_real': pd.get('ema50_real', False),
+                    'rsi_real': pd.get('rsi_real', False),
+                    'change_24h': pd.get('change_24h', 0),
+                    'atr_pct': pd.get('atr_pct', 0),
+                    'vol_ratio': pd.get('volume_ratio', 0),
+                    'created_at': now_iso, 'trade_open': sym in open_stock_syms,
+                    'market_open': False,
+                })
+
         all_signals=rows+crypto_signals
         return jsonify({'status':'OK','timestamp':datetime.utcnow().isoformat(),
             'total':len(all_signals),'stocks_count':len(rows),'crypto_count':len(crypto_signals),

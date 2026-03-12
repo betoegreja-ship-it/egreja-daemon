@@ -131,6 +131,19 @@ MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 90.0))
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 90.0))
 MAX_POSITIONS_STOCKS     = int(os.environ.get('MAX_POSITIONS_STOCKS', 15))
 MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 10))
+MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
+
+# Settings ajustaveis em runtime (via /settings POST)
+KILL_SWITCH_USD          = float(os.environ.get('KILL_SWITCH_USD', 30000))
+STOCK_TP_PCT             = float(os.environ.get('STOCK_TP_PCT', 2.0))
+STOCK_SL_PCT             = float(os.environ.get('STOCK_SL_PCT', 2.0))
+TRAILING_FLOOR_PCT       = float(os.environ.get('TRAILING_FLOOR_PCT', 0.3))
+TRAILING_TRIGGER_PCT     = float(os.environ.get('TRAILING_TRIGGER_PCT', 1.5))
+TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
+TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
+TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
+MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
+DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
 ARBI_CAPITAL         = float(os.environ.get('ARBI_CAPITAL', 500_000))
@@ -4121,6 +4134,46 @@ def reset_arbi_kill_switch():
     ARBI_KILL_SWITCH=False; audit('ARBI_KILL_SWITCH_RESET',{'by':'manual_api'})
     return jsonify({'ok':True,'arbi_kill_switch':False})
 
+@app.route('/settings', methods=['GET','POST'])
+def settings_endpoint():
+    global RISK_KILL_SWITCH, KILL_SWITCH_USD, STOCK_TP_PCT, STOCK_SL_PCT
+    global TRAILING_FLOOR_PCT, TRAILING_TRIGGER_PCT, TIMEOUT_B3_H, TIMEOUT_CRYPTO_H
+    global TIMEOUT_NYSE_H, MIN_SCORE_AUTO, DEFAULT_POSITION_SIZE
+    global MAX_POSITIONS_STOCKS, MAX_POSITIONS_CRYPTO, MAX_POSITIONS_NYSE
+    if request.method == 'POST':
+        d = request.get_json() or {}
+        if 'kill_switch_active' in d: RISK_KILL_SWITCH = bool(d['kill_switch_active'])
+        if 'kill_switch_usd' in d: KILL_SWITCH_USD = float(d['kill_switch_usd'])
+        if 'stock_tp_pct' in d: STOCK_TP_PCT = float(d['stock_tp_pct'])
+        if 'stock_sl_pct' in d: STOCK_SL_PCT = float(d['stock_sl_pct'])
+        if 'trailing_floor_pct' in d: TRAILING_FLOOR_PCT = float(d['trailing_floor_pct'])
+        if 'trailing_trigger_pct' in d: TRAILING_TRIGGER_PCT = float(d['trailing_trigger_pct'])
+        if 'timeout_b3_h' in d: TIMEOUT_B3_H = float(d['timeout_b3_h'])
+        if 'timeout_crypto_h' in d: TIMEOUT_CRYPTO_H = float(d['timeout_crypto_h'])
+        if 'timeout_nyse_h' in d: TIMEOUT_NYSE_H = float(d['timeout_nyse_h'])
+        if 'min_score_auto' in d: MIN_SCORE_AUTO = int(d['min_score_auto'])
+        if 'default_position_size' in d: DEFAULT_POSITION_SIZE = float(d['default_position_size'])
+        if 'max_positions_b3' in d: MAX_POSITIONS_STOCKS = int(d['max_positions_b3'])
+        if 'max_positions_crypto' in d: MAX_POSITIONS_CRYPTO = int(d['max_positions_crypto'])
+        if 'max_positions_nyse' in d: MAX_POSITIONS_NYSE = int(d['max_positions_nyse'])
+        audit('SETTINGS_UPDATED', d)
+    return jsonify({
+        'kill_switch_active': RISK_KILL_SWITCH,
+        'kill_switch_usd': KILL_SWITCH_USD,
+        'stock_tp_pct': STOCK_TP_PCT,
+        'stock_sl_pct': STOCK_SL_PCT,
+        'trailing_floor_pct': TRAILING_FLOOR_PCT,
+        'trailing_trigger_pct': TRAILING_TRIGGER_PCT,
+        'timeout_b3_h': TIMEOUT_B3_H,
+        'timeout_crypto_h': TIMEOUT_CRYPTO_H,
+        'timeout_nyse_h': TIMEOUT_NYSE_H,
+        'min_score_auto': MIN_SCORE_AUTO,
+        'default_position_size': DEFAULT_POSITION_SIZE,
+        'max_positions_b3': MAX_POSITIONS_STOCKS,
+        'max_positions_crypto': MAX_POSITIONS_CRYPTO,
+        'max_positions_nyse': MAX_POSITIONS_NYSE,
+    })
+
 @app.route('/alerts/test')
 def alerts_test():
     ok=_send_whatsapp_direct(f"Egreja AI v10.7.0 test {datetime.now().strftime('%d/%m %H:%M')}")
@@ -4485,6 +4538,279 @@ def shadow_status():
 
 # Adicionar rotas de learning a PUBLIC_ROUTES (somente status básico)
 PUBLIC_ROUTES.add('/learning/status')
+
+# ═══════════════════════════════════════════════════════════════
+# [SYNC] NETWORK INTELLIGENCE — TROCA ENTRE SISTEMAS EGREJA
+# ═══════════════════════════════════════════════════════════════
+
+SYNC_VERSION = "1.0"
+SYNC_PEER_URL = os.environ.get('SYNC_PEER_URL', 'https://egreja.com')  # URL do sistema parceiro
+
+@app.route('/sync/export')
+@require_auth
+def sync_export():
+    """Exporta inteligência aprendida para troca entre sistemas Egreja."""
+    try:
+        # 1. Padrões aprendidos (top 50 por confiança)
+        with learning_lock:
+            patterns_raw = dict(pattern_stats_cache)
+
+        top_patterns = []
+        for key, p in patterns_raw.items():
+            if p.get('total_samples', 0) >= LEARNING_MIN_SAMPLES:
+                wr = p.get('win_rate', 0)
+                top_patterns.append({
+                    'key':          key,
+                    'win_rate':     round(wr, 1),
+                    'avg_pnl':      round(p.get('avg_pnl', 0), 2),
+                    'total_samples':p.get('total_samples', 0),
+                    'confidence':   round(p.get('confidence', 0), 1),
+                })
+        top_patterns.sort(key=lambda x: x['confidence'], reverse=True)
+        top_patterns = top_patterns[:50]
+
+        # 2. Win rate por mercado
+        market_stats = {}
+        try:
+            conn = get_db()
+            if conn:
+                c = conn.cursor(dictionary=True)
+                c.execute("""
+                    SELECT market,
+                           COUNT(*) as total,
+                           SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                           AVG(pnl_pct) as avg_pnl_pct,
+                           SUM(pnl) as total_pnl
+                    FROM trades
+                    WHERE status='CLOSED' AND closed_at >= NOW() - INTERVAL 30 DAY
+                    GROUP BY market
+                """)
+                for r in c.fetchall():
+                    mkt = r.get('market', 'UNKNOWN')
+                    t = int(r.get('total', 0))
+                    market_stats[mkt] = {
+                        'total_trades': t,
+                        'win_rate':     round(int(r.get('wins', 0)) / t * 100, 1) if t else 0,
+                        'avg_pnl_pct':  round(float(r.get('avg_pnl_pct') or 0), 2),
+                        'total_pnl':    round(float(r.get('total_pnl') or 0), 2),
+                    }
+                c.close(); conn.close()
+        except Exception as e:
+            log.debug(f'sync_export market_stats: {e}')
+
+        # 3. Top sinais ativos agora (score alto)
+        hot_signals = []
+        try:
+            conn = get_db()
+            if conn:
+                c = conn.cursor(dictionary=True)
+                c.execute("""
+                    SELECT symbol, market, action, score, learning_confidence, created_at
+                    FROM signal_events
+                    WHERE created_at >= NOW() - INTERVAL 2 HOUR
+                    AND learning_confidence >= 60
+                    ORDER BY learning_confidence DESC
+                    LIMIT 20
+                """)
+                for r in c.fetchall():
+                    hot_signals.append({
+                        'symbol':     r.get('symbol'),
+                        'market':     r.get('market'),
+                        'action':     r.get('action'),
+                        'score':      float(r.get('score') or 0),
+                        'confidence': float(r.get('learning_confidence') or 0),
+                        'age_min':    round((datetime.utcnow() - r['created_at']).total_seconds() / 60, 1) if r.get('created_at') else None,
+                    })
+                c.close(); conn.close()
+        except Exception as e:
+            log.debug(f'sync_export hot_signals: {e}')
+
+        # 4. Score de aprendizado global
+        total_patterns = len(top_patterns)
+        avg_conf = round(sum(p['confidence'] for p in top_patterns) / total_patterns, 1) if total_patterns else 0
+        best_market = max(market_stats, key=lambda m: market_stats[m]['win_rate'], default=None)
+
+        return jsonify({
+            'system':         'egreja-railway',
+            'sync_version':   SYNC_VERSION,
+            'exported_at':    datetime.utcnow().isoformat() + 'Z',
+            'learning': {
+                'total_patterns':   total_patterns,
+                'avg_confidence':   avg_conf,
+                'learning_enabled': LEARNING_ENABLED,
+            },
+            'top_patterns':   top_patterns,
+            'market_stats':   market_stats,
+            'hot_signals':    hot_signals,
+            'best_market':    best_market,
+            'portfolio': {
+                'initial_capital': INITIAL_CAPITAL,
+                'stocks_capital':  INITIAL_CAPITAL_STOCKS,
+                'crypto_capital':  INITIAL_CAPITAL_CRYPTO,
+                'arbi_capital':    ARBI_CAPITAL,
+            }
+        })
+    except Exception as e:
+        log.error(f'sync_export error: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/sync/import', methods=['POST'])
+@require_auth
+def sync_import():
+    """Recebe inteligência de outro sistema Egreja e salva insights cruzados."""
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({'error': 'No data'}), 400
+
+        source_system = data.get('system', 'unknown')
+        exported_at   = data.get('exported_at', '')
+        hot_signals   = data.get('hot_signals', [])
+        market_stats  = data.get('market_stats', {})
+        top_patterns  = data.get('top_patterns', [])
+
+        # Salva snapshot na DB para auditoria e uso pelo sistema
+        conn = get_db()
+        if conn:
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS sync_snapshots (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    source_system VARCHAR(100),
+                    exported_at DATETIME,
+                    received_at DATETIME DEFAULT NOW(),
+                    hot_signals_count INT,
+                    top_patterns_count INT,
+                    payload JSON
+                )
+            """)
+            import json as _json
+            c.execute("""
+                INSERT INTO sync_snapshots
+                    (source_system, exported_at, hot_signals_count, top_patterns_count, payload)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                source_system,
+                exported_at[:19].replace('T', ' ') if exported_at else None,
+                len(hot_signals),
+                len(top_patterns),
+                _json.dumps(data)[:65000],
+            ))
+            conn.commit(); c.close(); conn.close()
+
+        log.info(f'[SYNC] Received from {source_system}: {len(hot_signals)} signals, {len(top_patterns)} patterns')
+
+        return jsonify({
+            'status':   'ok',
+            'received': {
+                'source':           source_system,
+                'hot_signals':      len(hot_signals),
+                'patterns':         len(top_patterns),
+                'market_snapshots': len(market_stats),
+            },
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+        })
+    except Exception as e:
+        log.error(f'sync_import error: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/sync/peer-data')
+@require_auth
+def sync_peer_data():
+    """Busca dados do sistema parceiro (egreja.com) e retorna inteligência cruzada."""
+    try:
+        import requests as _req
+
+        peer_url = SYNC_PEER_URL.rstrip('/')
+        peer_data = None
+        peer_error = None
+
+        # Tenta buscar export do peer
+        try:
+            r = _req.get(
+                f'{peer_url}/sync/export',
+                headers={'X-API-Key': API_SECRET_KEY},
+                timeout=8
+            )
+            if r.status_code == 200:
+                peer_data = r.json()
+        except Exception as e:
+            peer_error = str(e)
+
+        # Export local para comparação
+        local_export = None
+        try:
+            with learning_lock:
+                n_patterns = len(pattern_stats_cache)
+            local_export = {
+                'system': 'egreja-railway',
+                'total_patterns': n_patterns,
+            }
+        except Exception:
+            pass
+
+        return jsonify({
+            'local':      local_export,
+            'peer':       peer_data,
+            'peer_url':   peer_url,
+            'peer_error': peer_error,
+            'synced_at':  datetime.utcnow().isoformat() + 'Z',
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/sync/status')
+@require_auth
+def sync_status():
+    """Verifica se o peer está online e retorna resumo de conectividade."""
+    try:
+        import requests as _req
+        peer_url = SYNC_PEER_URL.rstrip('/')
+        online = False; latency_ms = None; peer_info = {}
+
+        try:
+            import time
+            t0 = time.time()
+            r = _req.get(f'{peer_url}/health', timeout=5)
+            latency_ms = round((time.time() - t0) * 1000)
+            online = r.status_code == 200
+            if online:
+                try: peer_info = r.json()
+                except: pass
+        except Exception as e:
+            peer_info = {'error': str(e)}
+
+        # Último sync recebido
+        last_sync = None
+        try:
+            conn = get_db()
+            if conn:
+                c = conn.cursor(dictionary=True)
+                c.execute("SELECT source_system, received_at, hot_signals_count FROM sync_snapshots ORDER BY received_at DESC LIMIT 1")
+                row = c.fetchone()
+                if row:
+                    last_sync = {
+                        'source':     row['source_system'],
+                        'received_at': row['received_at'].isoformat() if row['received_at'] else None,
+                        'signals':    row['hot_signals_count'],
+                    }
+                c.close(); conn.close()
+        except Exception:
+            pass
+
+        return jsonify({
+            'peer_url':   peer_url,
+            'peer_online':online,
+            'latency_ms': latency_ms,
+            'peer_info':  peer_info,
+            'last_sync':  last_sync,
+            'timestamp':  datetime.utcnow().isoformat() + 'Z',
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
 # ENTRY POINT

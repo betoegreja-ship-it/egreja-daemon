@@ -187,6 +187,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'alert_worker':           30,
     'watchdog':               60,
     'shadow_evaluator_loop':  1200,   # [FIX-5] 20 min timeout
+    'network_sync_loop':      90,    # beat a cada 60s
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -3747,8 +3748,12 @@ def watchdog():
 def network_sync_loop():
     """Faz PUSH periódico dos dados do Railway para o Manus a cada 30 minutos."""
     import requests as _req
-    time.sleep(60)  # aguarda 1 min após startup
+    # Aguarda startup com beats para não ser detectado como FROZEN pelo watchdog
+    for _ in range(6):
+        beat('network_sync_loop')
+        time.sleep(10)
     while True:
+        beat('network_sync_loop')
         try:
             peer_url = SYNC_PEER_URL.rstrip('/')
             # Gerar export local
@@ -3783,7 +3788,10 @@ def network_sync_loop():
                 log.warning(f'[NETWORK] Push para Manus status={r.status_code}')
         except Exception as e:
             log.debug(f'[NETWORK] Push para Manus falhou: {e}')
-        time.sleep(1800)  # 30 minutos
+        # Sleep de 30 min com beats a cada 60s para o watchdog não matar a thread
+        for _ in range(30):
+            beat('network_sync_loop')
+            time.sleep(60)
 
 
 def start_background_threads():

@@ -54,9 +54,119 @@ async function getSignals() {
   }
 }
 
+// ═══════════════════════════════════════════════════
+// SYNC — Network Intelligence (Railway ↔ Manus)
+// ═══════════════════════════════════════════════════
+let railwaySyncSnapshot = null; // último dado recebido do Railway
+
+async function getSyncExport() {
+  try {
+    if (!pool) return null;
+    const conn = await pool.getConnection();
+
+    // Sinais quentes (score >= 70, últimas 2h)
+    const [hotRows] = await conn.query(`
+      SELECT symbol, market_type, signal, score, created_at
+      FROM market_signals
+      WHERE score >= 70
+        AND created_at >= NOW() - INTERVAL 2 HOUR
+      ORDER BY score DESC
+      LIMIT 20
+    `);
+
+    // Estatísticas de win/loss por mercado (se tabela trades existir)
+    let marketStats = {};
+    try {
+      const [mktRows] = await conn.query(`
+        SELECT market_type,
+               COUNT(*) as total,
+               SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+               AVG(pnl_pct) as avg_pnl_pct,
+               SUM(pnl) as total_pnl
+        FROM trades
+        WHERE status = 'CLOSED'
+          AND closed_at >= NOW() - INTERVAL 30 DAY
+        GROUP BY market_type
+      `);
+      mktRows.forEach(r => {
+        const t = parseInt(r.total || 0);
+        marketStats[r.market_type || 'UNKNOWN'] = {
+          total_trades: t,
+          win_rate: t ? Math.round(parseInt(r.wins || 0) / t * 100) : 0,
+          avg_pnl_pct: parseFloat(r.avg_pnl_pct || 0).toFixed(2),
+          total_pnl: parseFloat(r.total_pnl || 0).toFixed(2),
+        };
+      });
+    } catch (e) { /* tabela trades pode não existir */ }
+
+    // Padrões por símbolo
+    const [patRows] = await conn.query(`
+      SELECT symbol,
+             COUNT(*) as total,
+             AVG(score) as avg_score,
+             SUM(CASE WHEN signal='BUY' THEN 1 ELSE 0 END) as buys
+      FROM market_signals
+      WHERE created_at >= NOW() - INTERVAL 7 DAY
+      GROUP BY symbol
+      HAVING total >= 3
+      ORDER BY avg_score DESC
+      LIMIT 30
+    `);
+
+    conn.release();
+
+    const hotSignals = hotRows.map(s => ({
+      symbol: s.symbol,
+      action: s.signal || 'BUY',
+      score: parseFloat(s.score || 0),
+      confidence: parseFloat(s.score || 0),
+      market: s.market_type || 'CRYPTO',
+      age_min: s.created_at ? Math.round((Date.now() - new Date(s.created_at)) / 60000) : 0,
+    }));
+
+    const topPatterns = patRows.map(p => ({
+      key: p.symbol,
+      win_rate: 50,
+      total_samples: parseInt(p.total || 0),
+      avg_pnl: 0,
+      confidence: Math.round(parseFloat(p.avg_score || 0)),
+    }));
+
+    return {
+      system: 'egreja-manus',
+      sync_version: '1.0',
+      exported_at: new Date().toISOString(),
+      learning: {
+        total_patterns: topPatterns.length,
+        avg_confidence: topPatterns.length
+          ? Math.round(topPatterns.reduce((s, p) => s + p.confidence, 0) / topPatterns.length)
+          : 0,
+        learning_enabled: true,
+      },
+      top_patterns: topPatterns,
+      hot_signals: hotSignals,
+      market_stats: marketStats,
+    };
+  } catch (e) {
+    console.error('[SYNC] getSyncExport error:', e.message);
+    return null;
+  }
+}
+
+async function readBody(req) {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try { resolve(JSON.parse(body)); } catch { resolve({}); }
+    });
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization');
   res.setHeader('Content-Type', 'application/json');
 
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
@@ -97,13 +207,51 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200);
     res.end(JSON.stringify({
       status: 'OK',
-      service: 'egreja-signals-api',
+      service: 'egreja-manus',
+      system: 'egreja-manus',
       timestamp: new Date().toISOString()
     }));
     return;
   }
 
-  res.writeHead(404);
+  // ── SYNC: Export ──────────────────────────────────────
+  if (pathname === '/sync/export' && req.method === 'GET') {
+    const data = await getSyncExport();
+    if (data) {
+      res.writeHead(200);
+      res.end(JSON.stringify(data, null, 2));
+    } else {
+      res.writeHead(503);
+      res.end(JSON.stringify({ error: 'Data not available' }));
+    }
+    return;
+  }
+
+  // ── SYNC: Import (recebe dados do Railway) ────────────
+  if (pathname === '/sync/import' && req.method === 'POST') {
+    const body = await readBody(req);
+    railwaySyncSnapshot = {
+      data: body,
+      receivedAt: new Date().toISOString(),
+    };
+    const signals = body.hot_signals || [];
+    const patterns = body.top_patterns || [];
+    console.log(`[SYNC] ✅ Recebido do Railway: ${signals.length} sinais quentes, ${patterns.length} padrões`);
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      status: 'ok',
+      received: { source: body.system, hot_signals: signals.length, patterns: patterns.length },
+      timestamp: new Date().toISOString(),
+    }));
+    return;
+  }
+
+  // ── SYNC: Ver último snapshot do Railway ──────────────
+  if (pathname === '/sync/latest' && req.method === 'GET') {
+    res.writeHead(200);
+    res.end(JSON.stringify(railwaySyncSnapshot || { status: 'no_data', message: 'Nenhum sync recebido ainda' }));
+    return;
+  }
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
@@ -115,8 +263,11 @@ async function start() {
       console.log(`🚀 Egreja Signals API`);
       console.log(`Server running on port ${PORT}`);
       console.log(`Endpoints:`);
-      console.log(`  GET /signals  - Latest market signals from MySQL`);
-      console.log(`  GET /health   - Health check`);
+      console.log(`  GET /signals       - Latest market signals from MySQL`);
+      console.log(`  GET /health        - Health check`);
+      console.log(`  GET /sync/export   - Export intelligence for Railway sync`);
+      console.log(`  POST /sync/import  - Receive intelligence from Railway`);
+      console.log(`  GET /sync/latest   - Last Railway snapshot received`);
       console.log(`===============================================\n`);
     });
   } catch (err) {

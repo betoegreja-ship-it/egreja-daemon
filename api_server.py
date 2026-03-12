@@ -118,7 +118,7 @@ B3_ADR_SYMBOLS = set(B3_TO_ADR.values())
 if not FMP_API_KEY and not POLYGON_API_KEY:
     log.warning('Nenhuma API key configurada — usando Yahoo Finance (não recomendado em produção)')
 
-PUBLIC_ROUTES = {'/', '/health', '/degraded'}
+PUBLIC_ROUTES = {'/', '/health', '/degraded', '/sync/export', '/sync/import'}
 
 TWILIO_SID     = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_TOKEN   = os.environ.get('TWILIO_AUTH_TOKEN', '')

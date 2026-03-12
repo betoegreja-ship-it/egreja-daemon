@@ -4174,8 +4174,18 @@ def reset_kill_switch():
     global RISK_KILL_SWITCH
     data=request.get_json() or {}
     if data.get('confirm')!='RESET': return jsonify({'error':'Send {"confirm":"RESET"}'}),400
-    RISK_KILL_SWITCH=False; audit('KILL_SWITCH_RESET',{'by':'manual_api'})
-    return jsonify({'ok':True,'kill_switch':False})
+    RISK_KILL_SWITCH=False
+    # Limpar cache de sinais bloqueados por kill_switch — permite reavaliação imediata
+    ks_reasons = {'kill_switch','KILL_SWITCH_ACTIVE','KILL_SWITCH','ARBI_KILL_SWITCH'}
+    cleared = 0
+    with learning_lock:
+        keys_to_del = [k for k,v in processed_signal_ids.items() if v.get('reason') in ks_reasons]
+        for k in keys_to_del:
+            del processed_signal_ids[k]
+            cleared += 1
+    audit('KILL_SWITCH_RESET',{'by':'manual_api','cache_cleared':cleared})
+    log.info(f'[KS] Kill switch reset — {cleared} sinais liberados do cache')
+    return jsonify({'ok':True,'kill_switch':False,'signals_released':cleared})
 
 @app.route('/risk/reset_arbi_kill_switch', methods=['POST'])
 def reset_arbi_kill_switch():

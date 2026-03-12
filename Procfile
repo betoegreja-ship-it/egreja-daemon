@@ -1,1 +1,1 @@
-web: node api_signals_simple.js
+web: node api_signals.js

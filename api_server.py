@@ -2106,7 +2106,7 @@ def init_trades_tables():
                 except: pass
             if t['asset_type']=='stock': stocks_open.append(t); stocks_capital-=t['position_value']
             elif t['asset_type']=='crypto': crypto_open.append(t); crypto_capital-=t['position_value']
-        cursor.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT 200")
+        cursor.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT 2000")
         for r in cursor.fetchall():
             t=_row_to_trade(r)
             if t['asset_type']=='stock': stocks_closed.append(t)
@@ -2114,7 +2114,7 @@ def init_trades_tables():
         cursor.execute("SELECT * FROM arbi_trades WHERE status='OPEN'")
         for r in cursor.fetchall():
             t=_row_to_trade(r); arbi_open.append(t); arbi_capital-=t['position_size']
-        cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT 200")
+        cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT 2000")
         for r in cursor.fetchall(): arbi_closed.append(_row_to_trade(r))
         cursor.execute("SELECT symbol, last_close_at FROM symbol_cooldowns")
         for r in cursor.fetchall():
@@ -4015,8 +4015,8 @@ def trades_open():
 @app.route('/trades/closed')
 def trades_closed():
     with state_lock:
-        data=sorted(stocks_closed+crypto_closed,key=lambda x:x.get('closed_at',''),reverse=True)[:100]
-    return jsonify({'trades':data,'total':len(stocks_closed)+len(crypto_closed)})
+        data=sorted(stocks_closed+crypto_closed,key=lambda x:x.get('closed_at',''),reverse=True)
+    return jsonify({'trades':data,'total':len(data)})
 
 @app.route('/trades')
 def trades():

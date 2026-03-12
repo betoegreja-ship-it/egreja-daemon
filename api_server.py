@@ -4644,7 +4644,7 @@ def sync_export():
             'hot_signals':    hot_signals,
             'best_market':    best_market,
             'portfolio': {
-                'initial_capital': INITIAL_CAPITAL,
+                'initial_capital': INITIAL_CAPITAL_STOCKS + INITIAL_CAPITAL_CRYPTO,
                 'stocks_capital':  INITIAL_CAPITAL_STOCKS,
                 'crypto_capital':  INITIAL_CAPITAL_CRYPTO,
                 'arbi_capital':    ARBI_CAPITAL,

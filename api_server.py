@@ -4004,15 +4004,59 @@ def signals():
         with state_lock:
             open_stock_syms  = {t['symbol'] for t in stocks_open}
             open_crypto_syms = {t['symbol'] for t in crypto_open}
+            sp_snap          = dict(stock_prices)
         for sig in rows:
             sig['trade_open']=sig['symbol'] in open_stock_syms
             sig['market_open']=market_open_for(sig.get('market_type',''))
-            cached=stock_prices.get(sig['symbol'])
+            cached=sp_snap.get(sig['symbol'])
             if cached:
                 sig['price']=cached['price']; sig['rsi']=cached.get('rsi',sig.get('rsi',50))
                 sig['ema9']=cached.get('ema9',sig.get('ema9',0)); sig['ema21']=cached.get('ema21',sig.get('ema21',0))
                 sig['ema50']=cached.get('ema50',sig.get('ema50',0))
                 sig['ema50_real']=cached.get('ema50_real',False); sig['rsi_real']=cached.get('rsi_real',False)
+
+        # [v10.9] Gerar stock_signals diretamente do stock_prices em memória
+        # (como crypto faz com crypto_prices) — independente do market_signals no banco.
+        # Garante que ações aparecem sempre no dashboard (mercado aberto ou fechado).
+        stock_signals_from_mem = []
+        b3_open  = is_b3_open()
+        nyse_open= is_nyse_open()
+        syms_in_rows = {r['symbol'] for r in rows}
+        now_iso = datetime.utcnow().isoformat()
+        for sym, pd in sp_snap.items():
+            if not pd or pd.get('price', 0) <= 0: continue
+            if sym in syms_in_rows: continue  # já veio do banco, não duplicar
+            mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
+            mkt_open = b3_open if mkt_type == 'B3' else nyse_open
+            rsi  = pd.get('rsi', 50) or 50
+            ema9 = pd.get('ema9', 0)  or 0
+            ema21= pd.get('ema21',0)  or 0
+            ema50= pd.get('ema50',0)  or 0
+            # Calcular score simples: RSI + EMA trend
+            score = 50
+            if rsi < 40: score += 15
+            elif rsi > 60: score -= 15
+            if ema9 > 0 and ema21 > 0:
+                if ema9 > ema21: score += 10
+                else: score -= 10
+            score = max(0, min(100, score))
+            signal = 'COMPRA' if score >= 70 else ('VENDA' if score <= 30 else 'MANTER')
+            stock_signals_from_mem.append({
+                'symbol': sym, 'price': pd.get('price', 0),
+                'signal': signal, 'score': score,
+                'market_type': mkt_type, 'asset_type': 'stock',
+                'name': sym, 'rsi': round(rsi, 1),
+                'ema9': round(ema9, 4), 'ema21': round(ema21, 4), 'ema50': round(ema50, 4),
+                'ema50_real': pd.get('ema50_real', False),
+                'rsi_real': pd.get('rsi_real', False),
+                'change_24h': pd.get('change_24h', 0),
+                'atr_pct': pd.get('atr_pct', 0),
+                'vol_ratio': pd.get('volume_ratio', 0),
+                'created_at': now_iso,
+                'trade_open': sym in open_stock_syms,
+                'market_open': mkt_open,
+            })
+        rows = rows + stock_signals_from_mem
         crypto_signals=[]
         for sym in CRYPTO_SYMBOLS:
             display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)

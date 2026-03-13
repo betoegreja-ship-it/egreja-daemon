@@ -4344,6 +4344,60 @@ def correct_trade():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/trades/void', methods=['POST'])
+@require_auth
+def void_trade():
+    """[v10.9] Anular trades fechadas com erro — remove da memória e marca VOID no banco.
+    Devolve o capital como se a trade nunca tivesse existido (pnl=0).
+    Uso: POST /trades/void  body: {"trade_ids": ["STK-xxx","STK-yyy"], "reason":"loop_error"}
+    """
+    data = request.get_json() or {}
+    trade_ids = data.get('trade_ids', [])
+    reason    = data.get('reason', 'void_error')
+    if not trade_ids:
+        return jsonify({'error': 'Informe trade_ids (lista)'}), 400
+
+    conn = get_db()
+    if not conn: return jsonify({'error': 'DB unavailable'}), 503
+
+    results = []
+    try:
+        cur = conn.cursor(dictionary=True)
+        for tid in trade_ids:
+            cur.execute('SELECT * FROM trades WHERE id=%s AND status=%s', (tid, 'CLOSED'))
+            row = cur.fetchone()
+            if not row:
+                results.append({'id': tid, 'status': 'not_found'})
+                continue
+            # Marcar como VOID no banco
+            cur.execute(
+                "UPDATE trades SET status='VOID', close_reason=%s WHERE id=%s",
+                (f'VOID:{reason}', tid)
+            )
+            # Remover da memória e devolver capital
+            with state_lock:
+                global stocks_capital, crypto_capital
+                orig_pnl = float(row.get('pnl') or 0)
+                pos_v    = float(row.get('position_value') or 0)
+                asset_type = row.get('asset_type', 'stock')
+                # Reverte: descapitaliza o pnl que foi somado ao capital quando fechou
+                # Ao fechar: capital += pos_v + pnl. Para anular: capital -= pos_v (devolve apenas pos_v)
+                # Na prática: capital += (pos_v + 0) - (pos_v + pnl) = -pnl
+                if asset_type == 'crypto':
+                    crypto_capital -= orig_pnl  # se pnl negativo, devolve capital
+                    crypto_closed[:] = [t for t in crypto_closed if t.get('id') != tid]
+                else:
+                    stocks_capital -= orig_pnl
+                    stocks_closed[:] = [t for t in stocks_closed if t.get('id') != tid]
+            results.append({'id': tid, 'status': 'voided', 'pnl_reversed': round(orig_pnl, 2)})
+        conn.commit(); cur.close(); conn.close()
+        audit('TRADES_VOIDED', {'count': len([r for r in results if r['status']=='voided']), 'reason': reason, 'ids': trade_ids})
+        total_reversed = sum(r.get('pnl_reversed',0) for r in results if r['status']=='voided')
+        return jsonify({'ok': True, 'results': results, 'total_pnl_reversed': round(total_reversed, 2)})
+    except Exception as e:
+        conn.rollback(); conn.close()
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/debug/drawdown')
 @require_auth
 def debug_drawdown():

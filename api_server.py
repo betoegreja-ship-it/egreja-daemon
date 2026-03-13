@@ -4342,6 +4342,32 @@ def correct_trade():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/debug/drawdown')
+@require_auth
+def debug_drawdown():
+    """Mostra exatamente o que check_risk vê para drawdown."""
+    from datetime import timedelta
+    with state_lock:
+        s_closed = list(stocks_closed); c_closed = list(crypto_closed)
+    total_cap = INITIAL_CAPITAL_STOCKS + INITIAL_CAPITAL_CRYPTO
+    cutoff_d = (datetime.utcnow()-timedelta(days=1)).isoformat()
+    cutoff_w = (datetime.utcnow()-timedelta(days=7)).isoformat()
+    daily_losses = [t for t in s_closed+c_closed if t.get('closed_at','')>=cutoff_d and t.get('pnl',0)<0]
+    weekly_losses= [t for t in s_closed+c_closed if t.get('closed_at','')>=cutoff_w and t.get('pnl',0)<0]
+    daily_loss   = sum(t.get('pnl',0) for t in daily_losses)
+    weekly_loss  = sum(t.get('pnl',0) for t in weekly_losses)
+    dd_d = abs(daily_loss)/total_cap*100
+    dd_w = abs(weekly_loss)/total_cap*100
+    top5 = sorted(daily_losses, key=lambda t: t.get('pnl',0))[:5]
+    return jsonify({
+        'kill_switch': RISK_KILL_SWITCH,
+        'in_memory': {'stocks_closed': len(s_closed), 'crypto_closed': len(c_closed)},
+        'daily': {'loss': round(daily_loss,2), 'dd_pct': round(dd_d,4), 'limit': MAX_DAILY_DRAWDOWN_PCT, 'count': len(daily_losses)},
+        'weekly': {'loss': round(weekly_loss,2), 'dd_pct': round(dd_w,4), 'limit': MAX_WEEKLY_DRAWDOWN_PCT, 'count': len(weekly_losses)},
+        'top5_daily_losses': [{'id':t.get('id'),'sym':t.get('symbol'),'pnl':t.get('pnl'),'at':t.get('closed_at','')} for t in top5],
+        'would_trigger': dd_d >= MAX_DAILY_DRAWDOWN_PCT or dd_w >= MAX_WEEKLY_DRAWDOWN_PCT,
+    })
+
 @app.route('/risk/reset_arbi_kill_switch', methods=['POST'])
 def reset_arbi_kill_switch():
     global ARBI_KILL_SWITCH

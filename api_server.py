@@ -175,19 +175,19 @@ _queue_alert_last = 0   # throttle de alerta da fila
 
 # [C-1] Heartbeat timeout POR THREAD (segundos)
 THREAD_HEARTBEAT_TIMEOUT = {
-    'stock_price_loop':       420,
-    'crypto_price_loop':      60,
-    'monitor_trades':         30,
-    'auto_trade_crypto':      200,
-    'stock_execution_worker': 150,
-    'arbi_scan_loop':         400,
-    'arbi_monitor_loop':      120,
-    'snapshot_loop':          400,
-    'persistence_worker':     30,
-    'alert_worker':           30,
-    'watchdog':               60,
-    'shadow_evaluator_loop':  1200,   # [FIX-5] 20 min timeout
-    'network_sync_loop':      90,    # beat a cada 60s
+    'stock_price_loop':       600,   # [v10.9] 10min — loop off-hours tem sleep 5x60s
+    'crypto_price_loop':      120,   # [v10.9] 2min — aumentado
+    'monitor_trades':         60,    # [v10.9] 60s — era 30s, muitas trades podem demorar
+    'auto_trade_crypto':      300,   # [v10.9] 5min
+    'stock_execution_worker': 300,   # [v10.9] 5min — era 150s, loop de 60s + processamento
+    'arbi_scan_loop':         600,
+    'arbi_monitor_loop':      180,
+    'snapshot_loop':          600,
+    'persistence_worker':     60,    # [v10.9] 60s
+    'alert_worker':           60,
+    'watchdog':               90,
+    'shadow_evaluator_loop':  1800,  # 30 min
+    'network_sync_loop':      150,   # [v10.9] 2.5min — 30 sleeps de 60s mas beat intermediário
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -3064,6 +3064,7 @@ def monitor_trades():
                 alert_trade_closed(c)
                 # [L-7] Aprender com o resultado do trade
                 process_trade_outcome(c)
+            beat('monitor_trades')  # [v10.9] beat após processamento — evita FROZEN com muitas trades
         except Exception as e: log.error(f'monitor_trades: {e}')
 
 # ═══════════════════════════════════════════════════════════════
@@ -3754,8 +3755,8 @@ def watchdog():
             count=thread_restart_count.get(name,0)
             log.error(f'WATCHDOG: {name} {problem} (restart #{count+1})')
 
-            if count>=3:
-                log.critical(f'WATCHDOG: {name} failed 3x — activating kill switch')
+            if count>=5:  # [v10.9] era 3x — aumentado para reduzir falsos positivos
+                log.critical(f'WATCHDOG: {name} failed 5x — activating kill switch')
                 global RISK_KILL_SWITCH
                 RISK_KILL_SWITCH=True
                 send_whatsapp(f'CRITICO: thread {name} falhou 3x ({problem}). Kill switch ativado.')

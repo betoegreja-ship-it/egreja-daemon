@@ -686,19 +686,21 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
     max_risk  = total_cap*MAX_RISK_PER_TRADE_PCT/100
     approved  = min(position_value, max_risk, max_pos, free_cap)
 
-    # [v10.7-Fix3+Fix6] closed lists com cap MAX_CLOSED_HISTORY=500 → drawdown O(500) no pior caso.
-    # 500 entradas cobre >7 dias de trades a 20/dia — janela máxima de drawdown = 7 dias.
+    # [v10.9-Fix] Drawdown calculado por PnL LÍQUIDO do período (não perdas brutas).
+    # Perdas brutas penalizam sistemas ativos indevidamente — um sistema com 500 trades/semana
+    # acumula perdas brutas enormes mesmo sendo lucrativo.
+    # PnL líquido = realidade econômica real do portfólio.
     cutoff_d = (datetime.utcnow()-timedelta(days=1)).isoformat()
-    daily_loss = sum(t.get('pnl',0) for t in s_closed+c_closed
-        if t.get('closed_at','')>=cutoff_d and t.get('pnl',0)<0)
-    dd_d = abs(daily_loss)/total_cap*100
+    daily_net = sum(t.get('pnl',0) for t in s_closed+c_closed
+        if t.get('closed_at','')>=cutoff_d)
+    dd_d = abs(min(daily_net, 0))/total_cap*100   # só conta se negativo
     if dd_d >= MAX_DAILY_DRAWDOWN_PCT:
         _trigger_kill_switch(dd_d,'daily'); return False,f'DAILY_DRAWDOWN ({dd_d:.2f}%)',0
 
     cutoff_w = (datetime.utcnow()-timedelta(days=7)).isoformat()
-    weekly_loss = sum(t.get('pnl',0) for t in s_closed+c_closed
-        if t.get('closed_at','')>=cutoff_w and t.get('pnl',0)<0)
-    dd_w = abs(weekly_loss)/total_cap*100
+    weekly_net = sum(t.get('pnl',0) for t in s_closed+c_closed
+        if t.get('closed_at','')>=cutoff_w)
+    dd_w = abs(min(weekly_net, 0))/total_cap*100   # só conta se negativo
     if dd_w >= MAX_WEEKLY_DRAWDOWN_PCT:
         _trigger_kill_switch(dd_w,'weekly'); return False,f'WEEKLY_DRAWDOWN ({dd_w:.2f}%)',0
 

@@ -3076,19 +3076,42 @@ def stock_execution_worker():
         time.sleep(60)
         beat('stock_execution_worker')
         try:
-            conn=get_db()
-            if not conn: continue
-            cursor=conn.cursor(dictionary=True)
-            cutoff=(datetime.utcnow()-timedelta(minutes=SIGNAL_MAX_AGE_MIN)).strftime('%Y-%m-%d %H:%M:%S')
-            cursor.execute('SELECT * FROM market_signals WHERE created_at>=%s ORDER BY score DESC LIMIT 200',(cutoff,))
-            rows=cursor.fetchall(); cursor.close(); conn.close()
+            # [v10.9] Gerar sinais inline do stock_prices em memória
+            # (não depende mais do market_signals no banco — igual ao crypto)
+            with state_lock:
+                sp_snap = dict(stock_prices)
+            now_iso = datetime.utcnow().isoformat()
+            rows = []
+            for sym, pd_data in sp_snap.items():
+                if not pd_data or pd_data.get('price', 0) <= 0: continue
+                mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
+                rsi  = pd_data.get('rsi', 50) or 50
+                ema9 = pd_data.get('ema9', 0)  or 0
+                ema21= pd_data.get('ema21',0)  or 0
+                score = 50
+                if rsi < 40: score += 15
+                elif rsi > 60: score -= 15
+                if ema9 > 0 and ema21 > 0:
+                    if ema9 > ema21: score += 10
+                    else: score -= 10
+                score = max(0, min(100, score))
+                signal_val = 'COMPRA' if score >= 70 else ('VENDA' if score <= 30 else 'MANTER')
+                rows.append({
+                    'symbol': sym, 'price': pd_data.get('price', 0),
+                    'score': score, 'signal': signal_val,
+                    'market_type': mkt_type, 'asset_type': 'stock',
+                    'rsi': rsi, 'ema9': ema9, 'ema21': ema21,
+                    'ema50': pd_data.get('ema50', 0) or 0,
+                    'atr_pct': pd_data.get('atr_pct', 0),
+                    'volume_ratio': pd_data.get('volume_ratio', 0),
+                    'created_at': now_iso,
+                    'id': None,
+                })
 
             for sig in rows:
-                for k,v in sig.items():
-                    if isinstance(v,datetime): sig[k]=v.isoformat()
                 score=sig.get('score',0); mkt=sig.get('market_type','')
                 signal_val=sig.get('signal',''); sym=sig.get('symbol','')
-                pd=stock_prices.get(sym); price=pd['price'] if pd else float(sig.get('price',0) or 0)
+                price=sig.get('price', 0)
                 if price<=0: continue
                 is_long=score>=70 and signal_val=='COMPRA'
                 is_short=score<=30 and signal_val=='VENDA'
@@ -3100,7 +3123,9 @@ def stock_execution_worker():
                 PERMANENT_REASONS = {'kill_switch', 'symbol_duplicate', 'executed'}
                 # Motivos TEMPORÁRIOS: re-avaliar se o contexto que causou o bloqueio mudou.
                 # Mapeamento reason → função de checagem (True = ainda bloqueado).
-                ms_key = str(sig.get('id') or f"{sym}:{score}:{sig.get('created_at','')}")
+                # [v10.9] Para sinais inline (id=None), janela de 60s para dedup
+                _sig_time_window = int(time.time() / 60)
+                ms_key = str(sig.get('id') or f"{sym}:{score}:{_sig_time_window}")
                 origin_key = ms_key[:120]
                 with learning_lock:
                     cached = processed_signal_ids.get(ms_key)

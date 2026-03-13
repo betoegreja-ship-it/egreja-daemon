@@ -3017,7 +3017,11 @@ def monitor_trades():
 
                 to_close_c=[]
                 for trade in crypto_open:
-                    sym=trade['symbol']+'USDT'; price=crypto_prices.get(sym,trade['current_price'])
+                    sym=trade['symbol']+'USDT'
+                    # [v10.8-Fix] Nunca usar price=0: se crypto_prices vazio/zerado, manter current_price anterior
+                    _raw_price = crypto_prices.get(sym, 0)
+                    price = _raw_price if _raw_price > 0 else trade.get('current_price', trade['entry_price'])
+                    if price <= 0: price = trade['entry_price']  # último fallback: entry_price
                     age_h=(now-datetime.fromisoformat(trade['opened_at'])).total_seconds()/3600
                     trade['current_price']=price
                     if trade.get('direction')=='SHORT':
@@ -4212,6 +4216,61 @@ def reset_kill_switch():
     audit('KILL_SWITCH_RESET',{'by':'manual_api','cache_cleared':cleared})
     log.info(f'[KS] Kill switch reset — {cleared} sinais liberados do cache')
     return jsonify({'ok':True,'kill_switch':False,'signals_released':cleared})
+
+@app.route('/trades/correct', methods=['POST'])
+@require_auth
+def correct_trade():
+    """[v10.8] Corrigir exit_price/pnl de trade fechada com preço errado (bug de API)."""
+    data = request.get_json() or {}
+    trade_id = data.get('trade_id')
+    new_exit  = float(data.get('exit_price', 0))
+    reason    = data.get('reason', 'price_correction')
+    if not trade_id or new_exit <= 0:
+        return jsonify({'error': 'Informe trade_id e exit_price > 0'}), 400
+    conn = get_db()
+    if not conn: return jsonify({'error': 'DB unavailable'}), 503
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT * FROM trades WHERE id=%s AND status=%s', (trade_id, 'CLOSED'))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return jsonify({'error': f'Trade {trade_id} não encontrada ou não fechada'}), 404
+        entry  = float(row.get('entry_price') or 0)
+        pos_v  = float(row.get('position_value') or 0)
+        direction = row.get('direction', 'LONG')
+        if entry <= 0 or pos_v <= 0:
+            cur.close(); conn.close()
+            return jsonify({'error': 'entry_price ou position_value inválidos na trade'}), 400
+        qty    = pos_v / entry
+        if direction == 'LONG':
+            new_pnl = (new_exit - entry) * qty
+        else:
+            new_pnl = (entry - new_exit) * qty
+        new_pnl_pct = (new_pnl / pos_v) * 100
+        old_exit = float(row.get('exit_price') or row.get('current_price') or 0)
+        old_pnl  = float(row.get('pnl') or 0)
+        cur.execute(
+            'UPDATE trades SET exit_price=%s, current_price=%s, pnl=%s, pnl_pct=%s, close_reason=%s WHERE id=%s',
+            (new_exit, new_exit, round(new_pnl, 4), round(new_pnl_pct, 4), reason, trade_id)
+        )
+        conn.commit(); cur.close(); conn.close()
+        # Atualizar em memória também
+        for lst in (stocks_closed, crypto_closed):
+            for t in lst:
+                if t.get('id') == trade_id:
+                    t['exit_price'] = new_exit; t['current_price'] = new_exit
+                    t['pnl'] = round(new_pnl, 4); t['pnl_pct'] = round(new_pnl_pct, 4)
+                    t['close_reason'] = reason
+        audit('TRADE_CORRECTED', {'id': trade_id, 'old_exit': old_exit, 'new_exit': new_exit,
+                                   'old_pnl': old_pnl, 'new_pnl': round(new_pnl, 4)})
+        log.info(f'[CORRECTION] {trade_id}: exit {old_exit}→{new_exit}, pnl {old_pnl:+.2f}→{new_pnl:+.2f}')
+        return jsonify({'ok': True, 'trade_id': trade_id,
+                        'old_exit': old_exit, 'new_exit': new_exit,
+                        'old_pnl': old_pnl, 'new_pnl': round(new_pnl, 4),
+                        'new_pnl_pct': round(new_pnl_pct, 4)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/risk/reset_arbi_kill_switch', methods=['POST'])
 def reset_arbi_kill_switch():

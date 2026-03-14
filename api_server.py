@@ -187,7 +187,8 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'alert_worker':           60,
     'watchdog':               90,
     'shadow_evaluator_loop':  1800,  # 30 min
-    'network_sync_loop':      150,   # [v10.9] 2.5min — 30 sleeps de 60s mas beat intermediário
+    'network_sync_loop':      150,   # [v10.9] 2.5min
+    'report_scheduler':       150,   # acorda a cada 60s — 30 sleeps de 60s mas beat intermediário
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -3841,6 +3842,7 @@ def start_background_threads():
         'watchdog':               watchdog,
         'shadow_evaluator_loop':  shadow_evaluator_loop,   # [FIX-5]
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
+        'report_scheduler':       _report_scheduler,        # relatórios automáticos
     }
     now=time.time()
     for name,fn in defs.items():
@@ -4187,6 +4189,8 @@ def stats():
         c_val=sum(t.get('current_price',t.get('entry_price',0))*t.get('quantity',0) for t in crypto_open)
         a_op=sum(t.get('pnl',0) for t in arbi_open); a_cl=sum(t.get('pnl',0) for t in arbi_closed)
         a_win=sum(1 for t in arbi_closed if t.get('pnl',0)>0)
+        a_d=calc_period_pnl(list(arbi_closed),1); a_w=calc_period_pnl(list(arbi_closed),7)
+        a_m=calc_period_pnl(list(arbi_closed),30); a_y=calc_period_pnl(list(arbi_closed),365)
         sc=stocks_capital; cc=crypto_capital; ac=arbi_capital
         all_cl=stocks_closed+crypto_closed; pnls=[t.get('pnl',0) for t in all_cl]
         d_pnl=calc_period_pnl(all_cl,1); w_pnl=calc_period_pnl(all_cl,7)
@@ -4234,6 +4238,8 @@ def stats():
             'winning_trades': a_win,
             'win_rate': round(a_win/len(arbi_closed)*100,1) if arbi_closed else 0,
             'kill_switch': ARBI_KILL_SWITCH,
+            'daily_pnl': round(a_d,2), 'weekly_pnl': round(a_w,2),
+            'monthly_pnl': round(a_m,2), 'annual_pnl': round(a_y,2),
         },
         'assets_monitored':len(ALL_STOCK_SYMBOLS)+len(CRYPTO_SYMBOLS),
         'kill_switch':RISK_KILL_SWITCH,'market_regime':market_regime,
@@ -5107,6 +5113,168 @@ def sync_status():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════
+# RELATÓRIOS — /reports/daily  /reports/weekly  /reports/monthly
+# ═══════════════════════════════════════════════════════════════
+
+def _build_report(period_days, label):
+    """Gera dict estruturado do relatório para um período."""
+    cutoff = (datetime.utcnow() - timedelta(days=period_days)).isoformat()
+    with state_lock:
+        s_cl = list(stocks_closed); c_cl = list(crypto_closed); a_cl = list(arbi_closed)
+        s_op = list(stocks_open);   c_op = list(crypto_open);   a_op = list(arbi_open)
+        sc = stocks_capital; cc = crypto_capital; ac = arbi_capital
+
+    def period_trades(lst): return [t for t in lst if t.get('closed_at','') >= cutoff]
+    def _stats(lst):
+        wins   = [t for t in lst if t.get('pnl',0) > 0]
+        losses = [t for t in lst if t.get('pnl',0) < 0]
+        total_pnl = sum(t.get('pnl',0) for t in lst)
+        by_sym = {}
+        for t in lst:
+            sym = t.get('symbol') or t.get('name','?')
+            by_sym.setdefault(sym, {'pnl':0,'count':0})
+            by_sym[sym]['pnl'] += t.get('pnl',0); by_sym[sym]['count'] += 1
+        top5 = sorted(by_sym.items(), key=lambda x: x[1]['pnl'], reverse=True)[:5]
+        bot5 = sorted(by_sym.items(), key=lambda x: x[1]['pnl'])[:5]
+        return {
+            'count': len(lst), 'wins': len(wins), 'losses': len(losses),
+            'win_rate': round(len(wins)/len(lst)*100,1) if lst else 0,
+            'total_pnl': round(total_pnl, 2),
+            'avg_pnl': round(total_pnl/len(lst),2) if lst else 0,
+            'best_trade': round(max((t.get('pnl',0) for t in lst), default=0),2),
+            'worst_trade': round(min((t.get('pnl',0) for t in lst), default=0),2),
+            'top5_symbols': [{'symbol':k,'pnl':round(v['pnl'],2),'count':v['count']} for k,v in top5 if v['pnl']>0],
+            'bot5_symbols': [{'symbol':k,'pnl':round(v['pnl'],2),'count':v['count']} for k,v in bot5 if v['pnl']<0],
+        }
+
+    s_trades = period_trades(s_cl); c_trades = period_trades(c_cl); a_trades = period_trades(a_cl)
+    all_trades = s_trades + c_trades
+    total_pnl_sc   = sum(t.get('pnl',0) for t in all_trades)
+    total_pnl_arbi = sum(t.get('pnl',0) for t in a_trades)
+    initial_sc     = INITIAL_CAPITAL_STOCKS + INITIAL_CAPITAL_CRYPTO
+    open_pnl_sc    = sum(t.get('pnl',0) for t in s_op+c_op)
+    open_pnl_arbi  = sum(t.get('pnl',0) for t in a_op)
+
+    return {
+        'period': label, 'period_days': period_days,
+        'generated_at': datetime.utcnow().isoformat(),
+        'portfolio': {
+            'initial_capital': initial_sc,
+            'closed_pnl': round(total_pnl_sc, 2),
+            'open_pnl': round(open_pnl_sc, 2),
+            'total_pnl': round(total_pnl_sc + open_pnl_sc, 2),
+            'return_pct': round((total_pnl_sc + open_pnl_sc) / initial_sc * 100, 3) if initial_sc else 0,
+        },
+        'arbi': {
+            'initial_capital': ARBI_CAPITAL,
+            'closed_pnl': round(total_pnl_arbi, 2),
+            'open_pnl': round(open_pnl_arbi, 2),
+            'total_pnl': round(total_pnl_arbi + open_pnl_arbi, 2),
+            'return_pct': round((total_pnl_arbi + open_pnl_arbi) / ARBI_CAPITAL * 100, 3) if ARBI_CAPITAL else 0,
+        },
+        'stocks': _stats(s_trades),
+        'crypto': _stats(c_trades),
+        'arbi_detail': _stats(a_trades),
+        'combined': {
+            'count': len(s_trades)+len(c_trades)+len(a_trades),
+            'total_pnl': round(total_pnl_sc + total_pnl_arbi, 2),
+            'win_rate': round(sum(1 for t in all_trades+a_trades if t.get('pnl',0)>0) /
+                              max(len(all_trades+a_trades),1) * 100, 1),
+        },
+        'open_positions': {
+            'stocks': len(s_op), 'crypto': len(c_op), 'arbi': len(a_op),
+            'open_pnl_total': round(open_pnl_sc + open_pnl_arbi, 2),
+        },
+    }
+
+def _whatsapp_report(rpt):
+    """Formata e envia relatorio por WhatsApp."""
+    p  = rpt['period']
+    pf = rpt['portfolio']; ar = rpt['arbi']
+    sc_r = rpt['stocks']; cr_r = rpt['crypto']; ab = rpt['arbi_detail']
+    cmb  = rpt['combined']
+    g = lambda v: 'GANHO' if v>=0 else 'PERDA'
+    msg = (
+        f"EGREJA AI - Relatorio {p}\n"
+        f"\nSTOCKS + CRYPTO\n"
+        f"PnL fechado: {g(pf['closed_pnl'])} ${pf['closed_pnl']:+,.0f}\n"
+        f"PnL aberto:  {g(pf['open_pnl'])} ${pf['open_pnl']:+,.0f}\n"
+        f"Retorno: {pf['return_pct']:+.2f}%\n"
+        f"  Stocks ({sc_r['count']} trades, WR {sc_r['win_rate']:.0f}%): ${sc_r['total_pnl']:+,.0f}\n"
+        f"  Crypto ({cr_r['count']} trades, WR {cr_r['win_rate']:.0f}%): ${cr_r['total_pnl']:+,.0f}\n"
+        f"\nARBI (pool separado)\n"
+        f"PnL: {g(ar['closed_pnl'])} ${ar['closed_pnl']:+,.0f} ({ar['return_pct']:+.2f}%)\n"
+        f"Trades: {ab['count']} | WR: {ab['win_rate']:.0f}%\n"
+        f"\nTOTAL GERAL\n"
+        f"PnL combinado: {g(cmb['total_pnl'])} ${cmb['total_pnl']:+,.0f}\n"
+        f"Win Rate global: {cmb['win_rate']:.0f}% ({cmb['count']} trades)"
+    )
+    if sc_r.get('top5_symbols'):
+        tops = ' | '.join(f"{x['symbol']} +${x['pnl']:,.0f}" for x in sc_r['top5_symbols'][:3])
+        msg += f"\nTop Stocks: {tops}"
+    if cr_r.get('top5_symbols'):
+        tops = ' | '.join(f"{x['symbol']} +${x['pnl']:,.0f}" for x in cr_r['top5_symbols'][:3])
+        msg += f"\nTop Crypto: {tops}"
+    send_whatsapp(msg)
+
+@app.route('/reports/daily')
+@require_auth
+def report_daily():
+    return jsonify(_build_report(1, 'DIARIO'))
+
+@app.route('/reports/weekly')
+@require_auth
+def report_weekly():
+    return jsonify(_build_report(7, 'SEMANAL'))
+
+@app.route('/reports/monthly')
+@require_auth
+def report_monthly():
+    return jsonify(_build_report(30, 'MENSAL'))
+
+@app.route('/reports/send/<period>', methods=['POST'])
+@require_auth
+def report_send(period):
+    """Envia relatorio por WhatsApp: POST /reports/send/daily|weekly|monthly"""
+    days = {'daily':1,'weekly':7,'monthly':30}.get(period)
+    if not days: return jsonify({'error':'period deve ser daily, weekly ou monthly'}), 400
+    label = {'daily':'DIARIO','weekly':'SEMANAL','monthly':'MENSAL'}[period]
+    rpt = _build_report(days, label)
+    _whatsapp_report(rpt)
+    return jsonify({'ok': True, 'period': period, 'report': rpt})
+
+def _report_scheduler():
+    """Scheduler automatico: diario 20h BRT, semanal sextas, mensal ultimo dia."""
+    import pytz, calendar as _cal
+    brt = pytz.timezone('America/Sao_Paulo')
+    sent = set()
+    while True:
+        try:
+            beat('report_scheduler')
+            now_brt = datetime.now(brt)
+            key_d  = now_brt.strftime('%Y-%m-%d')
+            hour   = now_brt.hour; wd = now_brt.weekday()
+            last_d = _cal.monthrange(now_brt.year, now_brt.month)[1]
+            if hour == 20:
+                if key_d not in sent:
+                    sent.add(key_d)
+                    try: _whatsapp_report(_build_report(1,'DIARIO')); log.info('REPORT: diario enviado')
+                    except Exception as e: log.error(f'REPORT diario: {e}')
+                if wd == 4 and (key_d+'-W') not in sent:
+                    sent.add(key_d+'-W')
+                    try: _whatsapp_report(_build_report(7,'SEMANAL')); log.info('REPORT: semanal enviado')
+                    except Exception as e: log.error(f'REPORT semanal: {e}')
+                if now_brt.day == last_d and (key_d+'-M') not in sent:
+                    sent.add(key_d+'-M')
+                    try: _whatsapp_report(_build_report(30,'MENSAL')); log.info('REPORT: mensal enviado')
+                    except Exception as e: log.error(f'REPORT mensal: {e}')
+            if len(sent) > 200: sent.clear()
+        except Exception as e: log.error(f'_report_scheduler: {e}')
+        time.sleep(60)
+
 
 # ═══════════════════════════════════════════════════════════════
 # ENTRY POINT

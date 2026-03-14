@@ -188,7 +188,6 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'watchdog':               90,
     'shadow_evaluator_loop':  1800,  # 30 min
     'network_sync_loop':      150,   # [v10.9] 2.5min — 30 sleeps de 60s mas beat intermediário
-    'report_scheduler':       120,   # acorda a cada 60s
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -3842,7 +3841,6 @@ def start_background_threads():
         'watchdog':               watchdog,
         'shadow_evaluator_loop':  shadow_evaluator_loop,   # [FIX-5]
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
-        'report_scheduler':       _report_scheduler,        # relatórios automáticos
     }
     now=time.time()
     for name,fn in defs.items():
@@ -4189,8 +4187,6 @@ def stats():
         c_val=sum(t.get('current_price',t.get('entry_price',0))*t.get('quantity',0) for t in crypto_open)
         a_op=sum(t.get('pnl',0) for t in arbi_open); a_cl=sum(t.get('pnl',0) for t in arbi_closed)
         a_win=sum(1 for t in arbi_closed if t.get('pnl',0)>0)
-        a_d_pnl=calc_period_pnl(list(arbi_closed),1); a_w_pnl=calc_period_pnl(list(arbi_closed),7)
-        a_m_pnl=calc_period_pnl(list(arbi_closed),30); a_y_pnl=calc_period_pnl(list(arbi_closed),365)
         sc=stocks_capital; cc=crypto_capital; ac=arbi_capital
         all_cl=stocks_closed+crypto_closed; pnls=[t.get('pnl',0) for t in all_cl]
         d_pnl=calc_period_pnl(all_cl,1); w_pnl=calc_period_pnl(all_cl,7)
@@ -4238,8 +4234,6 @@ def stats():
             'winning_trades': a_win,
             'win_rate': round(a_win/len(arbi_closed)*100,1) if arbi_closed else 0,
             'kill_switch': ARBI_KILL_SWITCH,
-            'daily_pnl': round(a_d_pnl,2), 'weekly_pnl': round(a_w_pnl,2),
-            'monthly_pnl': round(a_m_pnl,2), 'annual_pnl': round(a_y_pnl,2),
         },
         'assets_monitored':len(ALL_STOCK_SYMBOLS)+len(CRYPTO_SYMBOLS),
         'kill_switch':RISK_KILL_SWITCH,'market_regime':market_regime,
@@ -5141,179 +5135,3 @@ if __name__ == '__main__':
     # Single-process: use gunicorn com --workers=1 em produção
     # gunicorn -w 1 -b 0.0.0.0:$PORT api_server:app
     app.run(host='0.0.0.0', port=port, debug=False)
-
-
-# ═══════════════════════════════════════════════════════════════
-# RELATÓRIOS — /reports/daily  /reports/weekly  /reports/monthly
-# ═══════════════════════════════════════════════════════════════
-
-def _build_report(period_days, label):
-    """Gera dict estruturado do relatório para um período."""
-    from datetime import timedelta
-    cutoff = (datetime.utcnow() - timedelta(days=period_days)).isoformat()
-    with state_lock:
-        s_cl = list(stocks_closed); c_cl = list(crypto_closed); a_cl = list(arbi_closed)
-        s_op = list(stocks_open);   c_op = list(crypto_open);   a_op = list(arbi_open)
-        sc = stocks_capital; cc = crypto_capital; ac = arbi_capital
-
-    def period_trades(lst): return [t for t in lst if t.get('closed_at','') >= cutoff]
-    def stats(lst):
-        wins = [t for t in lst if t.get('pnl',0) > 0]
-        losses = [t for t in lst if t.get('pnl',0) < 0]
-        total_pnl = sum(t.get('pnl',0) for t in lst)
-        by_sym = {}
-        for t in lst:
-            sym = t.get('symbol') or t.get('name','?')
-            by_sym.setdefault(sym, {'pnl':0,'count':0})
-            by_sym[sym]['pnl'] += t.get('pnl',0); by_sym[sym]['count'] += 1
-        top5 = sorted(by_sym.items(), key=lambda x: x[1]['pnl'], reverse=True)[:5]
-        bot5 = sorted(by_sym.items(), key=lambda x: x[1]['pnl'])[:5]
-        return {
-            'count': len(lst), 'wins': len(wins), 'losses': len(losses),
-            'win_rate': round(len(wins)/len(lst)*100,1) if lst else 0,
-            'total_pnl': round(total_pnl, 2),
-            'avg_pnl': round(total_pnl/len(lst),2) if lst else 0,
-            'best_trade': round(max((t.get('pnl',0) for t in lst), default=0),2),
-            'worst_trade': round(min((t.get('pnl',0) for t in lst), default=0),2),
-            'top5_symbols': [{'symbol':k,'pnl':round(v['pnl'],2),'count':v['count']} for k,v in top5 if v['pnl']>0],
-            'bot5_symbols': [{'symbol':k,'pnl':round(v['pnl'],2),'count':v['count']} for k,v in bot5 if v['pnl']<0],
-        }
-
-    s_trades = period_trades(s_cl); c_trades = period_trades(c_cl); a_trades = period_trades(a_cl)
-    all_trades = s_trades + c_trades
-    total_pnl_sc = sum(t.get('pnl',0) for t in all_trades)
-    total_pnl_arbi = sum(t.get('pnl',0) for t in a_trades)
-    initial_sc = INITIAL_CAPITAL_STOCKS + INITIAL_CAPITAL_CRYPTO
-    open_pnl_sc = sum(t.get('pnl',0) for t in s_op+c_op)
-    open_pnl_arbi = sum(t.get('pnl',0) for t in a_op)
-
-    return {
-        'period': label, 'period_days': period_days,
-        'generated_at': datetime.utcnow().isoformat(),
-        'portfolio': {
-            'initial_capital': initial_sc,
-            'closed_pnl': round(total_pnl_sc, 2),
-            'open_pnl': round(open_pnl_sc, 2),
-            'total_pnl': round(total_pnl_sc + open_pnl_sc, 2),
-            'return_pct': round((total_pnl_sc + open_pnl_sc) / initial_sc * 100, 3),
-        },
-        'arbi': {
-            'initial_capital': ARBI_CAPITAL,
-            'closed_pnl': round(total_pnl_arbi, 2),
-            'open_pnl': round(open_pnl_arbi, 2),
-            'total_pnl': round(total_pnl_arbi + open_pnl_arbi, 2),
-            'return_pct': round((total_pnl_arbi + open_pnl_arbi) / ARBI_CAPITAL * 100, 3),
-        },
-        'stocks': stats(s_trades),
-        'crypto': stats(c_trades),
-        'arbi_detail': stats(a_trades),
-        'combined': {
-            'count': len(s_trades)+len(c_trades)+len(a_trades),
-            'total_pnl': round(total_pnl_sc + total_pnl_arbi, 2),
-            'win_rate': round(sum(1 for t in all_trades+a_trades if t.get('pnl',0)>0) /
-                              max(len(all_trades+a_trades),1) * 100, 1),
-        },
-        'open_positions': {
-            'stocks': len(s_op), 'crypto': len(c_op), 'arbi': len(a_op),
-            'open_pnl_total': round(open_pnl_sc + open_pnl_arbi, 2),
-        },
-    }
-
-def _whatsapp_report(rpt):
-    """Formata e envia relatório por WhatsApp."""
-    p = rpt['period']
-    pf = rpt['portfolio']; ar = rpt['arbi']
-    sc = rpt['stocks'];    cr = rpt['crypto']; ab = rpt['arbi_detail']
-    cmb = rpt['combined']
-    emoji_pnl = lambda v: '🟢' if v>=0 else '🔴'
-    lines = [
-        f"📊 *EGREJA AI — Relatório {p}*",
-        f"",
-        f"*STOCKS + CRYPTO*",
-        f"PnL fechado: {emoji_pnl(pf['closed_pnl'])} ${pf['closed_pnl']:+,.0f}",
-        f"PnL aberto:  {emoji_pnl(pf['open_pnl'])} ${pf['open_pnl']:+,.0f}",
-        f"Retorno: {pf['return_pct']:+.2f}%",
-        f"",
-        f"  📈 Stocks ({sc['count']} trades, WR {sc['win_rate']:.0f}%): ${sc['total_pnl']:+,.0f}",
-        f"  ₿ Crypto ({cr['count']} trades, WR {cr['win_rate']:.0f}%): ${cr['total_pnl']:+,.0f}",
-        f"",
-        f"*ARBI* (pool separado)",
-        f"PnL: {emoji_pnl(ar['closed_pnl'])} ${ar['closed_pnl']:+,.0f} ({ar['return_pct']:+.2f}%)",
-        f"Trades: {ab['count']} | WR: {ab['win_rate']:.0f}%",
-        f"",
-        f"*TOTAL GERAL*",
-        f"PnL combinado: {emoji_pnl(cmb['total_pnl'])} ${cmb['total_pnl']:+,.0f}",
-        f"Win Rate global: {cmb['win_rate']:.0f}% ({cmb['count']} trades)",
-    ]
-    if sc.get('top5_symbols'):
-        lines += ["", "🏆 Top Stocks:"] + [f"  {x['symbol']}: +${x['pnl']:,.0f}" for x in sc['top5_symbols'][:3]]
-    if cr.get('top5_symbols'):
-        lines += ["", "🏆 Top Crypto:"] + [f"  {x['symbol']}: +${x['pnl']:,.0f}" for x in cr['top5_symbols'][:3]]
-    send_whatsapp('\n'.join(lines))
-
-@app.route('/reports/daily')
-@require_auth
-def report_daily():
-    return jsonify(_build_report(1, 'DIÁRIO'))
-
-@app.route('/reports/weekly')
-@require_auth
-def report_weekly():
-    return jsonify(_build_report(7, 'SEMANAL'))
-
-@app.route('/reports/monthly')
-@require_auth
-def report_monthly():
-    return jsonify(_build_report(30, 'MENSAL'))
-
-@app.route('/reports/send/<period>', methods=['POST'])
-@require_auth
-def report_send(period):
-    """Envia relatório por WhatsApp manualmente: POST /reports/send/daily|weekly|monthly"""
-    days = {'daily':1,'weekly':7,'monthly':30}.get(period)
-    if not days: return jsonify({'error':'period deve ser daily, weekly ou monthly'}), 400
-    label = {'daily':'DIÁRIO','weekly':'SEMANAL','monthly':'MENSAL'}[period]
-    rpt = _build_report(days, label)
-    _whatsapp_report(rpt)
-    return jsonify({'ok': True, 'period': period, 'report': rpt})
-
-def _report_scheduler():
-    """Scheduler automático: relatório diário às 20h BRT, semanal às sextas, mensal no último dia."""
-    import pytz
-    brt = pytz.timezone('America/Sao_Paulo')
-    last_daily = ''; last_weekly = ''; last_monthly = ''
-    while True:
-        try:
-            beat('report_scheduler') if 'report_scheduler' in THREAD_HEARTBEAT_TIMEOUT else None
-            now_brt = datetime.now(brt)
-            date_str = now_brt.strftime('%Y-%m-%d')
-            hour = now_brt.hour; weekday = now_brt.weekday()  # 4=sexta
-            import calendar
-            last_day = calendar.monthrange(now_brt.year, now_brt.month)[1]
-            # Diário: toda tarde às 20h BRT
-            if hour == 20 and last_daily != date_str:
-                last_daily = date_str
-                try:
-                    rpt = _build_report(1, 'DIÁRIO')
-                    _whatsapp_report(rpt)
-                    log.info('REPORT_SCHEDULER: relatório diário enviado')
-                except Exception as e: log.error(f'REPORT_SCHEDULER daily: {e}')
-            # Semanal: sexta às 20h BRT
-            if weekday == 4 and hour == 20 and last_weekly != date_str:
-                last_weekly = date_str
-                try:
-                    rpt = _build_report(7, 'SEMANAL')
-                    _whatsapp_report(rpt)
-                    log.info('REPORT_SCHEDULER: relatório semanal enviado')
-                except Exception as e: log.error(f'REPORT_SCHEDULER weekly: {e}')
-            # Mensal: último dia do mês às 20h BRT
-            if now_brt.day == last_day and hour == 20 and last_monthly != date_str:
-                last_monthly = date_str
-                try:
-                    rpt = _build_report(30, 'MENSAL')
-                    _whatsapp_report(rpt)
-                    log.info('REPORT_SCHEDULER: relatório mensal enviado')
-                except Exception as e: log.error(f'REPORT_SCHEDULER monthly: {e}')
-        except Exception as e: log.error(f'_report_scheduler: {e}')
-        time.sleep(60)
-

@@ -2805,6 +2805,11 @@ def fetch_crypto_prices():
                     price   = float(t_data.get('lastPrice') or 0)
                     change  = float(t_data.get('priceChangePercent') or 0)
                     if price <= 0: continue
+                    # [v10.9-SanityFix] Rejeitar preço suspeito: se difere >90% do anterior, é bug da API
+                    prev_price = crypto_prices.get(sym, 0)
+                    if prev_price > 0 and price < prev_price * 0.10:
+                        log.warning(f'PRICE_SANITY: {sym} rejected price={price:.6f} (prev={prev_price:.4f}, drop>90%)')
+                        continue
                     with state_lock:
                         crypto_prices[sym] = price
                         crypto_momentum[sym] = round(change, 3)
@@ -3021,10 +3026,15 @@ def monitor_trades():
                 to_close_c=[]
                 for trade in crypto_open:
                     sym=trade['symbol']+'USDT'
-                    # [v10.8-Fix] Nunca usar price=0: se crypto_prices vazio/zerado, manter current_price anterior
+                    # [v10.8-Fix] Nunca usar price=0 ou price suspeito (< 5% do entry)
                     _raw_price = crypto_prices.get(sym, 0)
-                    price = _raw_price if _raw_price > 0 else trade.get('current_price', trade['entry_price'])
-                    if price <= 0: price = trade['entry_price']  # último fallback: entry_price
+                    _entry = trade.get('entry_price', 0)
+                    # Sanity check: preço válido deve ser > 0 e > 5% do entry_price
+                    # Preços tipo 0.0001 quando entry=0.92 são bugs da API Binance
+                    _price_sane = (_raw_price > 0 and
+                                   (_entry <= 0 or _raw_price >= _entry * 0.05))
+                    price = _raw_price if _price_sane else trade.get('current_price', _entry)
+                    if price <= 0: price = _entry if _entry > 0 else 1  # último fallback
                     age_h=(now-datetime.fromisoformat(trade['opened_at'])).total_seconds()/3600
                     trade['current_price']=price
                     if trade.get('direction')=='SHORT':

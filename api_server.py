@@ -5280,6 +5280,87 @@ def blocked_symbols_route():
     in_cooldown.sort(key=lambda x: -x['remaining_s'])
     return jsonify({'blocked': blocked, 'in_cooldown': in_cooldown[:20]})
 
+
+@app.route('/trades/purge', methods=['POST'])
+@require_auth
+def purge_trades():
+    """[v10.9] Deletar trades permanentemente do banco e da memória.
+    Remove também trades VOID do mesmo símbolo.
+    Body: {"symbol": "RAIZ4"} para deletar todas de um símbolo
+          {"trade_ids": ["STK-xxx",...]} para deletar IDs específicos
+    ATENÇÃO: operação irreversível.
+    """
+    data = request.get_json() or {}
+    sym    = data.get('symbol','').upper().strip()
+    ids_in = data.get('trade_ids', [])
+    confirm = data.get('confirm','')
+
+    if confirm != 'PURGE':
+        return jsonify({'error': 'Adicione "confirm":"PURGE" para confirmar'}), 400
+
+    conn = get_db()
+    if not conn: return jsonify({'error': 'DB unavailable'}), 503
+
+    deleted_ids = []
+    pnl_removed = 0.0
+    try:
+        cur = conn.cursor(dictionary=True)
+
+        if sym:
+            # Deletar todas as trades do símbolo (CLOSED e VOID)
+            cur.execute('SELECT id, pnl, asset_type, status FROM trades WHERE symbol=%s', (sym,))
+            rows = cur.fetchall()
+            for r in rows:
+                cur.execute('DELETE FROM trades WHERE id=%s', (r['id'],))
+                if r.get('status') == 'CLOSED':
+                    pnl_removed += float(r.get('pnl') or 0)
+                deleted_ids.append(r['id'])
+            log.warning(f'PURGE: {len(deleted_ids)} trades de {sym} deletadas do banco')
+        elif ids_in:
+            for tid in ids_in:
+                cur.execute('SELECT id, pnl, asset_type, status FROM trades WHERE id=%s', (tid,))
+                r = cur.fetchone()
+                if r:
+                    cur.execute('DELETE FROM trades WHERE id=%s', (tid,))
+                    if r.get('status') == 'CLOSED':
+                        pnl_removed += float(r.get('pnl') or 0)
+                    deleted_ids.append(tid)
+        else:
+            cur.close(); conn.close()
+            return jsonify({'error': 'Informe symbol ou trade_ids'}), 400
+
+        conn.commit(); cur.close(); conn.close()
+
+        # Remover da memória + reverter capital
+        with state_lock:
+            global stocks_capital, crypto_capital
+            before_s = len(stocks_closed); before_c = len(crypto_closed)
+            if sym:
+                stocks_closed[:] = [t for t in stocks_closed if t.get('symbol') != sym]
+                crypto_closed[:] = [t for t in crypto_closed if t.get('symbol') != sym]
+                stocks_open[:]   = [t for t in stocks_open   if t.get('symbol') != sym]
+                crypto_open[:]   = [t for t in crypto_open   if t.get('symbol') != sym]
+            else:
+                stocks_closed[:] = [t for t in stocks_closed if t.get('id') not in deleted_ids]
+                crypto_closed[:] = [t for t in crypto_closed if t.get('id') not in deleted_ids]
+            # Reverter PnL: as trades removidas tinham pnl já somado ao capital
+            # Desfazer: capital -= pnl (pnl negativo → capital sobe)
+            stocks_capital -= pnl_removed  # pnl_removed negativo → capital aumenta
+            removed_s = before_s - len(stocks_closed)
+            removed_c = before_c - len(crypto_closed)
+
+        audit('TRADES_PURGED', {'symbol': sym or 'multiple', 'count': len(deleted_ids),
+                                  'pnl_removed': round(pnl_removed,2)})
+        log.warning(f'PURGE completo: {len(deleted_ids)} trades | pnl_removed={pnl_removed:+,.2f}')
+        return jsonify({
+            'ok': True, 'deleted': len(deleted_ids), 'ids': deleted_ids,
+            'pnl_removed': round(pnl_removed, 2),
+            'note': 'Operação irreversível — trades removidas permanentemente do banco'
+        })
+    except Exception as e:
+        conn.rollback(); conn.close()
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/reports/daily')
 @require_auth
 def report_daily():

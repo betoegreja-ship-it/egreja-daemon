@@ -312,6 +312,9 @@ arbi_spreads    = {}
 fx_rates        = {}
 
 symbol_cooldown = {}
+symbol_sl_count  = {}   # [v10.9-CircuitBreaker] conta stop losses consecutivos por símbolo
+# Cooldown exponencial: 2 SLs→10min, 3→30min, 4+→2h
+SYMBOL_SL_COOLDOWNS = {1: 300, 2: 600, 3: 1800, 4: 7200}
 alerted_signals = {}
 alerted_trades  = {}
 
@@ -3016,7 +3019,13 @@ def monitor_trades():
                         #   SHORT: pnl = (entry - exit) * qty  → retorna collateral + ganho ✓
                         # NÃO usar exit_price * qty para SHORT (seria capital incorreto)
                         stocks_capital += trade['position_value'] + trade['pnl']
-                        symbol_cooldown[sym]=time.time()
+                        # [v10.9-CB] Circuit breaker: SL consecutivo aumenta cooldown
+                        if reason == 'STOP_LOSS':
+                            symbol_sl_count[sym] = symbol_sl_count.get(sym, 0) + 1
+                        else:
+                            symbol_sl_count[sym] = 0  # reset ao fechar sem SL
+                        _cd = SYMBOL_SL_COOLDOWNS.get(min(symbol_sl_count.get(sym,1),4), 300)
+                        symbol_cooldown[sym] = time.time() + (_cd - SYMBOL_COOLDOWN_SEC)  # offset extra
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         stocks_closed.insert(0,c)
                         if len(stocks_closed) > MAX_CLOSED_HISTORY: stocks_closed.pop()   # [v10.7-Fix3]

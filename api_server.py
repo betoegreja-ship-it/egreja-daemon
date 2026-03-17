@@ -313,6 +313,7 @@ fx_rates        = {}
 
 symbol_cooldown = {}
 symbol_sl_count  = {}   # [v10.9-CircuitBreaker] conta stop losses consecutivos por símbolo
+symbol_blocked   = set()  # [v10.9] símbolos bloqueados manualmente (admin)
 # Cooldown exponencial: 2 SLs→10min, 3→30min, 4+→2h
 SYMBOL_SL_COOLDOWNS = {1: 300, 2: 600, 3: 1800, 4: 7200}
 alerted_signals = {}
@@ -678,6 +679,8 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
 
     if sum(1 for t in all_open if t.get('symbol')==symbol) >= MAX_SAME_SYMBOL:
         return False, f'SYMBOL_ALREADY_OPEN ({symbol})', 0
+    if symbol in symbol_blocked:
+        return False, f'SYMBOL_BLOCKED (manual)', 0
     if time.time()-symbol_cooldown.get(symbol,0) < SYMBOL_COOLDOWN_SEC:
         secs = int(SYMBOL_COOLDOWN_SEC-(time.time()-symbol_cooldown.get(symbol,0)))
         return False, f'SYMBOL_COOLDOWN (+{secs}s)', 0
@@ -5238,6 +5241,44 @@ def _whatsapp_report(rpt):
         tops = ' | '.join(f"{x['symbol']} +${x['pnl']:,.0f}" for x in cr_r['top5_symbols'][:3])
         msg += f"\nTop Crypto: {tops}"
     send_whatsapp(msg)
+
+@app.route('/risk/block_symbol', methods=['POST'])
+@require_auth
+def block_symbol_route():
+    """Bloqueia ou desbloqueia um símbolo manualmente.
+    POST body: {"symbol": "RAIZ4", "action": "block"|"unblock"}
+    """
+    data = request.get_json() or {}
+    sym    = data.get('symbol','').upper().strip()
+    action = data.get('action','block')
+    if not sym: return jsonify({'error': 'symbol obrigatório'}), 400
+    if action == 'block':
+        symbol_blocked.add(sym)
+        # Também impõe cooldown máximo de 24h
+        symbol_cooldown[sym] = time.time() + 86400 - SYMBOL_COOLDOWN_SEC
+        audit('SYMBOL_BLOCKED', {'symbol': sym})
+        log.warning(f'SYMBOL_BLOCKED manual: {sym}')
+        return jsonify({'ok': True, 'symbol': sym, 'status': 'blocked'})
+    else:
+        symbol_blocked.discard(sym)
+        symbol_cooldown.pop(sym, None)
+        audit('SYMBOL_UNBLOCKED', {'symbol': sym})
+        log.info(f'SYMBOL_UNBLOCKED: {sym}')
+        return jsonify({'ok': True, 'symbol': sym, 'status': 'unblocked'})
+
+@app.route('/risk/blocked_symbols')
+@require_auth
+def blocked_symbols_route():
+    """Lista símbolos bloqueados e cooldowns ativos.""";
+    now = time.time()
+    blocked = [{'symbol': s, 'reason': 'manual_block'} for s in sorted(symbol_blocked)]
+    in_cooldown = [
+        {'symbol': s, 'remaining_s': int(ts - now), 'sl_count': symbol_sl_count.get(s,0)}
+        for s, ts in symbol_cooldown.items()
+        if ts > now and s not in symbol_blocked
+    ]
+    in_cooldown.sort(key=lambda x: -x['remaining_s'])
+    return jsonify({'blocked': blocked, 'in_cooldown': in_cooldown[:20]})
 
 @app.route('/reports/daily')
 @require_auth

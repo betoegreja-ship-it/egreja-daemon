@@ -2144,6 +2144,7 @@ def init_trades_tables():
         for r in cursor.fetchall(): arbi_closed.append(_row_to_trade(r))
         # [v10.9] Carregar runtime settings do banco
         try:
+            global MIN_SCORE_AUTO, TRAILING_TRIGGER_PCT, STOCK_SL_PCT  # [FIX] declarar globals antes de atribuir
             cursor.execute("CREATE TABLE IF NOT EXISTS runtime_settings (key_name VARCHAR(60) PRIMARY KEY, value_float DOUBLE, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB")
             cursor.execute("SELECT key_name, value_float FROM runtime_settings")
             for _r in cursor.fetchall():

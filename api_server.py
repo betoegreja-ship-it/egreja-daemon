@@ -1998,6 +1998,11 @@ def init_all_tables():
             total_open_pnl DECIMAL(18,2), open_positions INT, arbi_positions INT,
             kill_switch TINYINT(1), arbi_kill_switch TINYINT(1), market_regime VARCHAR(20),
             INDEX idx_ts (ts))""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS symbol_blocked_persistent (
+            symbol VARCHAR(20) PRIMARY KEY,
+            blocked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            reason VARCHAR(200)
+        ) ENGINE=InnoDB""")
         cursor.execute("""CREATE TABLE IF NOT EXISTS symbol_cooldowns (
             symbol VARCHAR(30) PRIMARY KEY, last_close_at DATETIME,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
@@ -2126,6 +2131,10 @@ def init_trades_tables():
             t=_row_to_trade(r); arbi_open.append(t); arbi_capital-=t['position_size']
         cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC")  # [v10.9] sem limite
         for r in cursor.fetchall(): arbi_closed.append(_row_to_trade(r))
+        cursor.execute("SELECT symbol FROM symbol_blocked_persistent")
+        for r in cursor.fetchall():
+            symbol_blocked.add(r['symbol'])
+            log.info(f'STARTUP: {r["symbol"]} carregado como BLOCKED (persistido)')
         cursor.execute("SELECT symbol, last_close_at FROM symbol_cooldowns")
         for r in cursor.fetchall():
             if r.get('last_close_at'):
@@ -2227,7 +2236,7 @@ STOCK_SYMBOLS_B3 = [
     'PETR4.SA','VALE3.SA','ITUB4.SA','BBDC4.SA','ABEV3.SA','WEGE3.SA',
     'RENT3.SA','LREN3.SA','SUZB3.SA','GGBR4.SA','EMBR3.SA','CSNA3.SA',
     'CMIG4.SA','CPLE6.SA','BBAS3.SA','VIVT3.SA','SBSP3.SA','CSAN3.SA',
-    'GOAU4.SA','USIM5.SA','BPAC11.SA','RADL3.SA','PRIO3.SA','RAIZ4.SA',
+    'GOAU4.SA','USIM5.SA','BPAC11.SA','RADL3.SA','PRIO3.SA',  # RAIZ4.SA removida (loop bug)
     'BRFS3.SA','MRFG3.SA','JBSS3.SA','EGIE3.SA','CMIN3.SA','AESB3.SA'
 ]
 STOCK_SYMBOLS_US = [
@@ -5254,16 +5263,34 @@ def block_symbol_route():
     if not sym: return jsonify({'error': 'symbol obrigatório'}), 400
     if action == 'block':
         symbol_blocked.add(sym)
-        # Também impõe cooldown máximo de 24h
         symbol_cooldown[sym] = time.time() + 86400 - SYMBOL_COOLDOWN_SEC
         audit('SYMBOL_BLOCKED', {'symbol': sym})
         log.warning(f'SYMBOL_BLOCKED manual: {sym}')
-        return jsonify({'ok': True, 'symbol': sym, 'status': 'blocked'})
+        # [v10.9] Persistir no banco para sobreviver restarts
+        try:
+            _conn = get_db()
+            if _conn:
+                _cur = _conn.cursor()
+                _cur.execute(
+                    "INSERT INTO symbol_blocked_persistent (symbol, reason) VALUES (%s,%s) "
+                    "ON DUPLICATE KEY UPDATE blocked_at=NOW(), reason=VALUES(reason)",
+                    (sym, 'manual_block')
+                )
+                _conn.commit(); _cur.close(); _conn.close()
+        except Exception as _e: log.error(f'block_symbol persist: {_e}')
+        return jsonify({'ok': True, 'symbol': sym, 'status': 'blocked', 'persisted': True})
     else:
         symbol_blocked.discard(sym)
         symbol_cooldown.pop(sym, None)
         audit('SYMBOL_UNBLOCKED', {'symbol': sym})
         log.info(f'SYMBOL_UNBLOCKED: {sym}')
+        try:
+            _conn = get_db()
+            if _conn:
+                _cur = _conn.cursor()
+                _cur.execute("DELETE FROM symbol_blocked_persistent WHERE symbol=%s", (sym,))
+                _conn.commit(); _cur.close(); _conn.close()
+        except Exception as _e: log.error(f'unblock persist: {_e}')
         return jsonify({'ok': True, 'symbol': sym, 'status': 'unblocked'})
 
 @app.route('/risk/blocked_symbols')

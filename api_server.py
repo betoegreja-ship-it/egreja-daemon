@@ -2131,8 +2131,12 @@ def init_trades_tables():
         cursor.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY closed_at DESC")  # [v10.9] sem limite
         for r in cursor.fetchall():
             t=_row_to_trade(r)
-            if t['asset_type']=='stock': stocks_closed.append(t)
-            elif t['asset_type']=='crypto': crypto_closed.append(t)
+            if t['asset_type']=='stock':
+                stocks_closed.append(t)
+                stocks_capital += float(t.get('pnl') or 0)  # [FIX-27] reaplica PnL fechado no capital após restart
+            elif t['asset_type']=='crypto':
+                crypto_closed.append(t)
+                crypto_capital += float(t.get('pnl') or 0)  # [FIX-27] reaplica PnL fechado no capital após restart
         cursor.execute("SELECT * FROM arbi_trades WHERE status='OPEN'")
         for r in cursor.fetchall():
             t=_row_to_trade(r); arbi_open.append(t); arbi_capital-=t['position_size']

@@ -146,7 +146,7 @@ MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
-ARBI_CAPITAL         = float(os.environ.get('ARBI_CAPITAL', 500_000))  # env Railway = 3M → ajustar para 4.5M
+ARBI_CAPITAL         = float(os.environ.get('ARBI_CAPITAL', 4_500_000))  # [v10.9] aumentado de 3M para 4.5M
 ARBI_MIN_SPREAD      = float(os.environ.get('ARBI_MIN_SPREAD', 2.0))
 ARBI_TP_SPREAD       = float(os.environ.get('ARBI_TP_SPREAD', 0.5))
 ARBI_SL_PCT          = float(os.environ.get('ARBI_SL_PCT', 1.5))
@@ -4546,6 +4546,15 @@ def settings_endpoint():
             with state_lock:
                 arbi_capital = max(0, arbi_capital + float(d['arbi_capital_add']))
             log.info(f'ARBI CAPITAL ajustado em {d["arbi_capital_add"]:+,.0f} → novo total: {arbi_capital:,.0f}')
+            # Persistir no banco
+            try:
+                _ca = get_db()
+                if _ca:
+                    _cr2 = _ca.cursor()
+                    _cr2.execute("CREATE TABLE IF NOT EXISTS runtime_settings (key_name VARCHAR(60) PRIMARY KEY, value_float DOUBLE, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB")
+                    _cr2.execute("INSERT INTO runtime_settings (key_name,value_float) VALUES ('ARBI_CAPITAL_TOTAL',%s) ON DUPLICATE KEY UPDATE value_float=%s,updated_at=NOW()", (arbi_capital+sum(t.get('position_size',0) for t in arbi_open), arbi_capital+sum(t.get('position_size',0) for t in arbi_open)))
+                    _ca.commit(); _cr2.close(); _ca.close()
+            except Exception as _ea: log.error(f'arbi capital persist: {_ea}')
         audit('SETTINGS_UPDATED', d)
         # [v10.9] Persistir settings no banco — sobrevive restarts
         try:

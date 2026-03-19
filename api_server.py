@@ -146,7 +146,7 @@ MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
-ARBI_CAPITAL         = float(os.environ.get('ARBI_CAPITAL', 500_000))
+ARBI_CAPITAL         = float(os.environ.get('ARBI_CAPITAL', 500_000))  # env Railway = 3M → ajustar para 4.5M
 ARBI_MIN_SPREAD      = float(os.environ.get('ARBI_MIN_SPREAD', 2.0))
 ARBI_TP_SPREAD       = float(os.environ.get('ARBI_TP_SPREAD', 0.5))
 ARBI_SL_PCT          = float(os.environ.get('ARBI_SL_PCT', 1.5))
@@ -207,10 +207,13 @@ SHADOW_TRACK_REASONS   = {'confidence_low','market_closed','risk_blocked','symbo
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
+    # [v10.9-opt] Removidos por WR<45% e PnL negativo após 10 dias de dados:
+    # LINKUSDT (WR 43%, -$10.5K), XLMUSDT (WR 35%, -$7.8K),
+    # ATOMUSDT (WR 38%, -$4.5K), BCHUSDT (WR 39%, -$4.2K)
     'BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT',
     'ADAUSDT','DOGEUSDT','AVAXUSDT','TRXUSDT','DOTUSDT',
-    'LINKUSDT','MATICUSDT','LTCUSDT','UNIUSDT','ATOMUSDT',
-    'XLMUSDT','BCHUSDT','NEARUSDT','APTUSDT','ARBUSDT'
+    'MATICUSDT','LTCUSDT','UNIUSDT',
+    'NEARUSDT','APTUSDT','ARBUSDT'
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',
@@ -3020,8 +3023,8 @@ def monitor_trades():
                     if len(h)>5: h.pop(0)
                     trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
                     peak=trade['peak_pnl_pct']; mkt=trade.get('market',''); reason=None
-                    if peak>=2.0 and trade['pnl_pct']<=peak-1.0:   reason='TRAILING_STOP'
-                    elif trade['pnl_pct']<=-1.5:                    reason='STOP_LOSS'
+                    if peak>=1.5 and trade['pnl_pct']<=peak-0.5:   reason='TRAILING_STOP'  # [v10.9-opt] era 2.0/1.0
+                    elif trade['pnl_pct']<=-2.0:                    reason='STOP_LOSS'  # [v10.9-opt] era -1.5
                     elif age_h>=2.0:
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
@@ -3134,7 +3137,7 @@ def stock_execution_worker():
                     if ema9 > ema21: score += 10
                     else: score -= 10
                 score = max(0, min(100, score))
-                signal_val = 'COMPRA' if score >= 70 else ('VENDA' if score <= 30 else 'MANTER')
+                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')  # [v10.9-opt] usa MIN_SCORE_AUTO=73
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),
                     'score': score, 'signal': signal_val,
@@ -3152,9 +3155,20 @@ def stock_execution_worker():
                 signal_val=sig.get('signal',''); sym=sig.get('symbol','')
                 price=sig.get('price', 0)
                 if price<=0: continue
-                is_long=score>=70 and signal_val=='COMPRA'
-                is_short=score<=30 and signal_val=='VENDA'
+                is_long=score>=MIN_SCORE_AUTO and signal_val=='COMPRA'  # [v10.9-opt] era 70
+                is_short=score<=(100-MIN_SCORE_AUTO) and signal_val=='VENDA'  # [v10.9-opt] era 30
                 if not (is_long or is_short): continue
+
+                # [v10.9-TrendFilter] Bloquear LONGs em ações com queda >5% nos últimos 5 preços
+                # Previne loops como RAIZ4 — ação em tendência de queda não deve receber COMPRA
+                if is_long:
+                    _hist = pd_data.get('price_history') or []
+                    if len(_hist) >= 5:
+                        _p_now  = pd_data.get('price', 0)
+                        _p_5ago = _hist[-5] if len(_hist) >= 5 else _hist[0]
+                        if _p_5ago > 0 and (_p_now - _p_5ago) / _p_5ago * 100 < -5.0:
+                            log.debug(f'TREND_FILTER: {sym} LONG bloqueado — queda {(_p_now-_p_5ago)/_p_5ago*100:.1f}% em 5 períodos')
+                            continue
 
                 # ── Deduplicação + política de re-avaliação ─────────────────────────────────
                 # Motivos PERMANENTES: nunca re-avaliar dentro da mesma janela de sinal.
@@ -4516,6 +4530,11 @@ def settings_endpoint():
         if 'max_positions_b3' in d: MAX_POSITIONS_STOCKS = int(d['max_positions_b3'])
         if 'max_positions_crypto' in d: MAX_POSITIONS_CRYPTO = int(d['max_positions_crypto'])
         if 'max_positions_nyse' in d: MAX_POSITIONS_NYSE = int(d['max_positions_nyse'])
+        if 'arbi_capital_add' in d:  # adiciona capital ao pool arbi (positivo=deposita, negativo=retira)
+            global arbi_capital
+            with state_lock:
+                arbi_capital = max(0, arbi_capital + float(d['arbi_capital_add']))
+            log.info(f'ARBI CAPITAL ajustado em {d["arbi_capital_add"]:+,.0f} → novo total: {arbi_capital:,.0f}')
         audit('SETTINGS_UPDATED', d)
     return jsonify({
         'kill_switch_active': RISK_KILL_SWITCH,

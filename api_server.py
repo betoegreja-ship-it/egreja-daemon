@@ -199,6 +199,10 @@ LEARNING_MIN_SAMPLES   = int(os.environ.get('LEARNING_MIN_SAMPLES', 10))   # amo
 LEARNING_EWMA_ALPHA    = float(os.environ.get('LEARNING_EWMA_ALPHA', 0.15)) # recência (0=ignore histórico, 1=só recente)
 RISK_MULT_MIN          = float(os.environ.get('RISK_MULT_MIN', 0.50))       # [L-9] multiplicador mínimo conservador
 RISK_MULT_MAX          = float(os.environ.get('RISK_MULT_MAX', 1.15))       # [L-9] multiplicador máximo
+# [v10.9-Learning] Dead zone de confiança: faixa onde o histórico mostra performance negativa
+# Dados de 10 dias: faixa 55-64 = 38-44% WR, -$53K em perdas. Não executar.
+LEARNING_DEAD_ZONE_LOW  = float(os.environ.get('LEARNING_DEAD_ZONE_LOW',  55.0))  # início da dead zone
+LEARNING_DEAD_ZONE_HIGH = float(os.environ.get('LEARNING_DEAD_ZONE_HIGH', 65.0))  # fim da dead zone (= threshold HIGH)
 SHADOW_TRACK_REASONS   = {'confidence_low','market_closed','risk_blocked','symbol_open','kill_switch','cooldown','capital'}
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
@@ -3263,6 +3267,17 @@ def stock_execution_worker():
                 insight   = generate_insight(sig_enriched, features, feat_hash, conf)
                 risk_mult = get_risk_multiplier(conf)
 
+                # [v10.9-DeadZone] Bloquear faixa de confiança com performance historicamente negativa
+                # Dados mostram: 55-64 = 38-44% WR e -$53K em perdas. Faixa 40-54 e 65+ OK.
+                _lc = conf.get('final_confidence', 50)
+                if LEARNING_DEAD_ZONE_LOW <= _lc < LEARNING_DEAD_ZONE_HIGH:
+                    _confirmed_sig_id = record_signal_event(sig_enriched, features, feat_hash, conf, insight,
+                                        source_type='stock_signal_db', existing_signal_id=_sig_pre_id,
+                                        origin_signal_key=origin_key)
+                    record_shadow_decision(_confirmed_sig_id, sig_enriched, 'learning_dead_zone')
+                    _cache_reason('learning_dead_zone')
+                    continue
+
                 # Filtros de execução — gravar signal_event + shadow antes de qualquer continue/break
                 # [v10.6.3-Fix1] _confirmed_sig_id: começa com _sig_pre_id e é atualizado para o ID
                 # real que o banco confirma via ON DUPLICATE KEY em record_signal_event().
@@ -3451,6 +3466,16 @@ def auto_trade_crypto():
                 conf_c      = calc_learning_confidence(sig_enriched_c, features_c, feat_hash_c)
                 insight_c   = generate_insight(sig_enriched_c, features_c, feat_hash_c, conf_c)
                 risk_mult_c = get_risk_multiplier(conf_c)
+
+                # [v10.9-DeadZone] Mesma dead zone para crypto
+                _lc_c = conf_c.get('final_confidence', 50)
+                if LEARNING_DEAD_ZONE_LOW <= _lc_c < LEARNING_DEAD_ZONE_HIGH:
+                    _csig_id = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
+                                        source_type='crypto_signal', existing_signal_id=_cpre_id,
+                                        origin_signal_key=_c_origin_key)
+                    record_shadow_decision(_csig_id, sig_enriched_c, 'learning_dead_zone')
+                    with learning_lock: processed_signal_ids[_c_ms_key] = {'sig_id': _csig_id, 'reason': 'learning_dead_zone'}
+                    continue
 
                 desired_pos=min(crypto_capital*(0.05+score_factor*0.05)*risk_mult_c,MAX_POSITION_CRYPTO)
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')

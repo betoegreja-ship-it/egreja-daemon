@@ -2138,6 +2138,17 @@ def init_trades_tables():
             t=_row_to_trade(r); arbi_open.append(t); arbi_capital-=t['position_size']
         cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC")  # [v10.9] sem limite
         for r in cursor.fetchall(): arbi_closed.append(_row_to_trade(r))
+        # [v10.9] Carregar runtime settings do banco
+        try:
+            cursor.execute("CREATE TABLE IF NOT EXISTS runtime_settings (key_name VARCHAR(60) PRIMARY KEY, value_float DOUBLE, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB")
+            cursor.execute("SELECT key_name, value_float FROM runtime_settings")
+            for _r in cursor.fetchall():
+                _k, _v = _r['key_name'], float(_r['value_float'])
+                if _k == 'MIN_SCORE_AUTO':        MIN_SCORE_AUTO = int(_v)
+                elif _k == 'TRAILING_TRIGGER_PCT': TRAILING_TRIGGER_PCT = _v
+                elif _k == 'STOCK_SL_PCT':         STOCK_SL_PCT = _v
+                log.info(f'STARTUP settings: {_k}={_v}')
+        except Exception as _e: log.warning(f'runtime_settings load: {_e}')
         cursor.execute("SELECT symbol FROM symbol_blocked_persistent")
         for r in cursor.fetchall():
             symbol_blocked.add(r['symbol'])
@@ -4536,6 +4547,16 @@ def settings_endpoint():
                 arbi_capital = max(0, arbi_capital + float(d['arbi_capital_add']))
             log.info(f'ARBI CAPITAL ajustado em {d["arbi_capital_add"]:+,.0f} → novo total: {arbi_capital:,.0f}')
         audit('SETTINGS_UPDATED', d)
+        # [v10.9] Persistir settings no banco — sobrevive restarts
+        try:
+            _cs = get_db()
+            if _cs:
+                _cr = _cs.cursor()
+                _cr.execute("CREATE TABLE IF NOT EXISTS runtime_settings (key_name VARCHAR(60) PRIMARY KEY, value_float DOUBLE, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB")
+                for _k, _v in [('MIN_SCORE_AUTO', MIN_SCORE_AUTO), ('TRAILING_TRIGGER_PCT', TRAILING_TRIGGER_PCT), ('STOCK_SL_PCT', STOCK_SL_PCT)]:
+                    _cr.execute("INSERT INTO runtime_settings (key_name,value_float) VALUES (%s,%s) ON DUPLICATE KEY UPDATE value_float=%s,updated_at=NOW()", (_k,_v,_v))
+                _cs.commit(); _cr.close(); _cs.close()
+        except Exception as _e: log.error(f'settings persist: {_e}')
     return jsonify({
         'kill_switch_active': RISK_KILL_SWITCH,
         'kill_switch_usd': KILL_SWITCH_USD,

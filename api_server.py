@@ -294,7 +294,7 @@ arbi_open    = []; arbi_closed    = []
 # Sem cap, após 6 meses com 20-30 trades/dia = 3.000-5.000 entradas em memória.
 # check_risk() itera s_closed+c_closed em cada sinal → O(n) no caminho crítico.
 # 500 entradas cobre >7 dias de histórico para drawdown (janela máxima = 7d).
-MAX_CLOSED_HISTORY = int(os.environ.get('MAX_CLOSED_HISTORY', 500))
+MAX_CLOSED_HISTORY = int(os.environ.get('MAX_CLOSED_HISTORY', 0))  # 0 = sem limite
 
 state_lock       = threading.Lock()
 orders_lock      = threading.Lock()
@@ -2116,7 +2116,7 @@ def init_trades_tables():
                 except: pass
             if t['asset_type']=='stock': stocks_open.append(t); stocks_capital-=t['position_value']
             elif t['asset_type']=='crypto': crypto_open.append(t); crypto_capital-=t['position_value']
-        cursor.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT 2000")
+        cursor.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY closed_at DESC")  # [v10.9] sem limite
         for r in cursor.fetchall():
             t=_row_to_trade(r)
             if t['asset_type']=='stock': stocks_closed.append(t)
@@ -2124,7 +2124,7 @@ def init_trades_tables():
         cursor.execute("SELECT * FROM arbi_trades WHERE status='OPEN'")
         for r in cursor.fetchall():
             t=_row_to_trade(r); arbi_open.append(t); arbi_capital-=t['position_size']
-        cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC LIMIT 2000")
+        cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC")  # [v10.9] sem limite
         for r in cursor.fetchall(): arbi_closed.append(_row_to_trade(r))
         cursor.execute("SELECT symbol, last_close_at FROM symbol_cooldowns")
         for r in cursor.fetchall():
@@ -3031,7 +3031,7 @@ def monitor_trades():
                         symbol_cooldown[sym] = time.time() + (_cd - SYMBOL_COOLDOWN_SEC)  # offset extra
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         stocks_closed.insert(0,c)
-                        if len(stocks_closed) > MAX_CLOSED_HISTORY: stocks_closed.pop()   # [v10.7-Fix3]
+                        # [v10.9] Sem limite em memória — histórico completo
                         to_close.append(trade['id']); closed_stocks.append(c)
                 stocks_open[:] = [t for t in stocks_open if t['id'] not in to_close]
 
@@ -3071,7 +3071,7 @@ def monitor_trades():
                         symbol_cooldown[trade['symbol']]=time.time()
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         crypto_closed.insert(0,c)
-                        if len(crypto_closed) > MAX_CLOSED_HISTORY: crypto_closed.pop()   # [v10.7-Fix3]
+                        # [v10.9] Sem limite em memória — histórico completo
                         to_close_c.append(trade['id']); closed_cryptos.append(c)
                 crypto_open[:] = [t for t in crypto_open if t['id'] not in to_close_c]
 
@@ -3730,7 +3730,7 @@ def arbi_monitor_loop():
                         arbi_capital+=trade['position_size']+trade['pnl']
                         c=dict(trade); c.update({'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         arbi_closed.insert(0,c)
-                        if len(arbi_closed) > MAX_CLOSED_HISTORY: arbi_closed.pop()   # [v10.7-Fix3]
+                        # [v10.9] Sem limite em memória — histórico completo
                         to_close.append(trade['id']); closed_trades.append(c)
                 arbi_open[:] = [t for t in arbi_open if t['id'] not in to_close]
 
@@ -4197,7 +4197,7 @@ def trades_closed():
 
 @app.route('/trades')
 def trades():
-    with state_lock: all_t=stocks_open+crypto_open+stocks_closed[:50]+crypto_closed[:50]
+    with state_lock: all_t=stocks_open+crypto_open+stocks_closed+crypto_closed  # [v10.9] sem limite
     return jsonify({'trades':all_t,'total':len(all_t)})
 
 @app.route('/stats')

@@ -3630,11 +3630,11 @@ ARBI_PAIRS = [
     {'id':'ITUB4-ITUB',  'leg_a':'ITUB4.SA', 'leg_b':'ITUB',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Itaú',        'ratio_a':1,'ratio_b':1},
     {'id':'BBDC4-BBD',   'leg_a':'BBDC4.SA', 'leg_b':'BBD',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Bradesco',    'ratio_a':1,'ratio_b':1},
     {'id':'ABEV3-ABEV',  'leg_a':'ABEV3.SA', 'leg_b':'ABEV',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Ambev',       'ratio_a':1,'ratio_b':1},
-    {'id':'EMBR3-ERJ',   'leg_a':'EMBR3.SA', 'leg_b':'ERJ',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Embraer',     'ratio_a':4,'ratio_b':1},
+    # Embraer (EMBR3/ERJ) removida — ERJ sem cobertura de preço disponível
     {'id':'GGBR4-GGB',   'leg_a':'GGBR4.SA', 'leg_b':'GGB',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Gerdau',      'ratio_a':1,'ratio_b':1},
     {'id':'CSNA3-SID',   'leg_a':'CSNA3.SA', 'leg_b':'SID',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'CSN',         'ratio_a':1,'ratio_b':1},
     {'id':'CMIG4-CIG',   'leg_a':'CMIG4.SA', 'leg_b':'CIG',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Cemig',       'ratio_a':1,'ratio_b':1},
-    {'id':'CPLE6-ELP',   'leg_a':'CPLE6.SA', 'leg_b':'ELP',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Copel',       'ratio_a':1,'ratio_b':1},
+    # Copel (CPLE6/ELP) removida — ELP ADR sem cobertura de preço disponível
     {'id':'BP-BP.L',     'leg_a':'BP',       'leg_b':'BP.L',   'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'BP',          'ratio_a':1,'ratio_b':6},
     {'id':'SHEL-SHEL.L', 'leg_a':'SHEL',     'leg_b':'SHEL.L', 'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'Shell',       'ratio_a':1,'ratio_b':2},
     {'id':'AZN-AZN.L',   'leg_a':'AZN',      'leg_b':'AZN.L',  'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'AstraZeneca', 'ratio_a':1,'ratio_b':1},
@@ -3692,8 +3692,7 @@ ARBI_PAIRS = [
     # TIMS3/TIMB: ratio 5:1 verificado — 1 ADR TIMB = 5 ações TIMS3
     # Verificado: TIMS3=R$26.28 ÷ 5.2552 × 5 = $25.00 vs TIMB=$24.81 → spread +0.78% ✅
     {'id':'TIMS3-TIMB',  'leg_a':'TIMS3.SA','leg_b':'TIMB',  'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'TIM Brasil',     'ratio_a':5,'ratio_b':1},
-    # BRF: ratio 2:1 — 1 ADR BRFS = 2 ações BRFS3 (fonte: SEC Filing Form F-6)
-    {'id':'BRFS3-BRFS',  'leg_a':'BRFS3.SA','leg_b':'BRFS',  'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'BRF Foods',      'ratio_a':2,'ratio_b':1},
+    # BRF (BRFS3/BRFS) removida — ticker sem cobertura de preço disponível
 ]
 
 def _fetch_arbi_price(symbol: str) -> float:

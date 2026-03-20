@@ -3616,11 +3616,9 @@ ARBI_PAIRS = [
     {'id':'AZN-AZN.L',   'leg_a':'AZN',      'leg_b':'AZN.L',  'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'AstraZeneca', 'ratio_a':1,'ratio_b':1},
     {'id':'GSK-GSK.L',   'leg_a':'GSK',      'leg_b':'GSK.L',  'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'GSK',         'ratio_a':1,'ratio_b':2},
     {'id':'HSBC-HSBA.L', 'leg_a':'HSBC',     'leg_b':'HSBA.L', 'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'HSBC',        'ratio_a':1,'ratio_b':5},
-    {'id':'TCEHY-0700',  'leg_a':'TCEHY',    'leg_b':'0700.HK','mkt_a':'NYSE','mkt_b':'HKEX','fx':'HKDUSD','name':'Tencent',     'ratio_a':1,'ratio_b':1},
-    {'id':'BABA-9988',   'leg_a':'BABA',     'leg_b':'9988.HK','mkt_a':'NYSE','mkt_b':'HKEX','fx':'HKDUSD','name':'Alibaba',     'ratio_a':1,'ratio_b':8},
-    {'id':'HSBC-0005',   'leg_a':'HSBC',     'leg_b':'0005.HK','mkt_a':'NYSE','mkt_b':'HKEX','fx':'HKDUSD','name':'HSBC HK',    'ratio_a':1,'ratio_b':5},
-    {'id':'CHL-0941',    'leg_a':'CHL',      'leg_b':'0941.HK','mkt_a':'NYSE','mkt_b':'HKEX','fx':'HKDUSD','name':'China Mobile','ratio_a':1,'ratio_b':5},
-    {'id':'PING-2318',   'leg_a':'PING',     'leg_b':'2318.HK','mkt_a':'NYSE','mkt_b':'HKEX','fx':'HKDUSD','name':'Ping An',    'ratio_a':1,'ratio_b':5},
+    # [v10.9] HKEX pares removidos — NYSE e HKEX não têm sobreposição de horário (gap de 6h)
+    # HKEX fecha 08:00 UTC, NYSE abre 14:30 UTC → jamais executariam. 0 trades em todo o histórico.
+    # Removidos: Tencent, Alibaba, HSBC HK, China Mobile, Ping An
 ]
 
 def _fetch_arbi_price(symbol: str) -> float:

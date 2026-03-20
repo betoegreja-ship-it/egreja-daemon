@@ -148,6 +148,7 @@ DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000)
 # Arbitragem — livro segregado
 ARBI_CAPITAL         = float(os.environ.get('ARBI_CAPITAL', 4_500_000))  # [v10.9] aumentado de 3M para 4.5M
 ARBI_MIN_SPREAD      = float(os.environ.get('ARBI_MIN_SPREAD', 2.0))
+ARBI_MAX_SPREAD      = float(os.environ.get('ARBI_MAX_SPREAD', 15.0))  # [v10.9] teto: spread >15% = estrutural/preço inválido
 ARBI_TP_SPREAD       = float(os.environ.get('ARBI_TP_SPREAD', 0.5))
 ARBI_SL_PCT          = float(os.environ.get('ARBI_SL_PCT', 1.5))
 ARBI_TIMEOUT_H       = float(os.environ.get('ARBI_TIMEOUT_H', 72))
@@ -3784,7 +3785,7 @@ def calc_spread(pair):
             'mkt_a':pair['mkt_a'],'mkt_b':pair['mkt_b'],'price_a':round(pa_raw,4),'price_b':round(pb_raw,4),
             'price_a_usd':round(pa,4),'price_b_usd':round(pb,4),'spread_pct':round(spread_pct,2),
             'abs_spread':round(abs(spread_pct),2),'fx_rate':fx_rates.get(fx,0),'fx_pair':fx,
-            'ratio_a':ra,'ratio_b':rb,'opportunity':abs(spread_pct)>=ARBI_MIN_SPREAD,
+            'ratio_a':ra,'ratio_b':rb,'opportunity':ARBI_MIN_SPREAD<=abs(spread_pct)<=ARBI_MAX_SPREAD,  # [v10.9] teto 15% evita spread estrutural
             'direction':'LONG_A' if spread_pct<0 else 'LONG_B',
             'markets_open':market_open_for(pair['mkt_a']) and market_open_for(pair['mkt_b']),
             'updated_at':datetime.utcnow().isoformat()}
@@ -3804,6 +3805,8 @@ def arbi_scan_loop():
 
                 with state_lock: arbi_spreads[pair['id']]=spread
 
+                if abs(spread.get('spread_pct',0)) > ARBI_MAX_SPREAD:
+                    log.warning(f'[ARBI-SANITY] {pair["id"]} spread {spread["spread_pct"]:+.2f}% acima do teto {ARBI_MAX_SPREAD}% — possível preço inválido, ignorando')
                 if not spread['opportunity'] or not spread['markets_open']:
                     time.sleep(1.5); continue
 

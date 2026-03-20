@@ -3684,9 +3684,9 @@ ARBI_PAIRS = [
     {'id':'CNQ-CNQ.TO',  'leg_a':'CNQ',    'leg_b':'CNQ.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'CNQ',            'ratio_a':1,'ratio_b':1},
     {'id':'ENB-ENB.TO',  'leg_a':'ENB',    'leg_b':'ENB.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'Enbridge',       'ratio_a':1,'ratio_b':1},
     {'id':'BNS-BNS.TO',  'leg_a':'BNS',    'leg_b':'BNS.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'BNS',            'ratio_a':1,'ratio_b':1},
-    # Barrick: spread estrutural ~13% (GOLD NYSE vs ABX.TO TSX) — oportunidade real
-    # Verificado: GOLD=$42.19 vs ABX.TO=C$51 × CADUSD = $37.18 → spread +13.5%
-    {'id':'GOLD-ABX.TO', 'leg_a':'GOLD',   'leg_b':'ABX.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'Barrick Gold',   'ratio_a':1,'ratio_b':1},
+    # [REMOVIDO] Barrick Gold (GOLD/ABX.TO): spread estrutural 13% NÃO é arbi real.
+    # O spread não converge — são classes de ações diferentes com prêmio permanente.
+    # Causa: trade ARB-980dccb9e283 com preço inválido gerou -$257K fictício.
 
     # ── B3/NYSE adicionais ────────────────────────────────────────────────────
     # TIMS3/TIMB: ratio 5:1 verificado — 1 ADR TIMB = 5 ações TIMS3
@@ -4688,6 +4688,58 @@ def arbi_spreads_route():
     return jsonify({'spreads':spreads,'opportunities':[s for s in spreads if s['opportunity']],
         'total_pairs':len(ARBI_PAIRS),'monitored':len(spreads),'fx_rates':fx_rates,
         'arbi_kill_switch':ARBI_KILL_SWITCH,'updated_at':datetime.utcnow().isoformat()})
+
+@app.route('/arbitrage/purge', methods=['POST'])
+@require_auth
+def arbitrage_purge():
+    """[v10.9] Deletar/corrigir trade arbi problemática do banco e memória."""
+    data = request.get_json() or {}
+    trade_id = data.get('trade_id')
+    confirm  = data.get('confirm','')
+    new_pnl  = data.get('new_pnl', None)  # se fornecido, corrige o pnl em vez de deletar
+    if not trade_id or confirm != 'PURGE':
+        return jsonify({'error': 'Informe trade_id e confirm=PURGE'}), 400
+    conn = get_db()
+    if not conn: return jsonify({'error': 'DB unavailable'}), 503
+    deleted = 0; corrected = False; old_pnl = 0
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute('SELECT * FROM arbi_trades WHERE id=%s', (trade_id,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return jsonify({'error': f'{trade_id} não encontrado em arbi_trades'}), 404
+        old_pnl = float(row.get('pnl') or 0)
+        if new_pnl is not None:
+            # Corrigir PnL em vez de deletar
+            cur.execute('UPDATE arbi_trades SET pnl=%s, pnl_pct=%s WHERE id=%s',
+                       (float(new_pnl), round(float(new_pnl)/float(row.get('position_size',1000000))*100,4), trade_id))
+            conn.commit(); corrected = True
+        else:
+            cur.execute('DELETE FROM arbi_trades WHERE id=%s', (trade_id,))
+            conn.commit(); deleted = 1
+        cur.close(); conn.close()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    # Atualizar memória
+    global arbi_capital
+    with state_lock:
+        if new_pnl is not None:
+            # Corrigir em memória
+            for t in arbi_closed:
+                if t.get('id') == trade_id:
+                    diff = float(new_pnl) - old_pnl
+                    t['pnl'] = float(new_pnl)
+                    arbi_capital += diff
+                    break
+        else:
+            before = len(arbi_closed)
+            arbi_closed[:] = [t for t in arbi_closed if t.get('id') != trade_id]
+            if len(arbi_closed) < before:
+                arbi_capital += old_pnl  # devolver o PnL ao capital
+    audit('ARBI_PURGE', {'id': trade_id, 'old_pnl': old_pnl, 'new_pnl': new_pnl, 'deleted': deleted})
+    return jsonify({'ok': True, 'trade_id': trade_id, 'old_pnl': old_pnl,
+                   'deleted': deleted, 'corrected': corrected, 'new_pnl': new_pnl})
 
 @app.route('/arbitrage/trades')
 def arbi_trades_route():

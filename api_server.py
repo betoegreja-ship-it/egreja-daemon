@@ -3652,13 +3652,9 @@ ARBI_PAIRS = [
     {'id':'SBSP3-SBS',  'leg_a':'SBSP3.SA','leg_b':'SBS',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Sabesp',      'ratio_a':1,'ratio_b':1},
     {'id':'UGPA3-UGP',  'leg_a':'UGPA3.SA','leg_b':'UGP',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Ultrapar',    'ratio_a':1,'ratio_b':1},
 
-    # ── NYSE/TSX (Canadá) — overlap 6.5h, mesmo fuso horário ─────────────────
-    # pa = preco_USD × ratio_a  |  pb = preco_CAD × CADUSD × ratio_b
-    # Ratios confirmados ≈ 1:1 via preços reais (desvio < 1%)
-    {'id':'RY-RY.TO',   'leg_a':'RY',      'leg_b':'RY.TO',  'mkt_a':'NYSE','mkt_b':'TSX', 'fx':'CADUSD','name':'RBC',         'ratio_a':1,'ratio_b':1},
-    {'id':'TD-TD.TO',   'leg_a':'TD',      'leg_b':'TD.TO',  'mkt_a':'NYSE','mkt_b':'TSX', 'fx':'CADUSD','name':'TD Bank',     'ratio_a':1,'ratio_b':1},
-    {'id':'SHOP-SHOP.TO','leg_a':'SHOP',   'leg_b':'SHOP.TO','mkt_a':'NYSE','mkt_b':'TSX', 'fx':'CADUSD','name':'Shopify',     'ratio_a':1,'ratio_b':1},
-    {'id':'SU-SU.TO',   'leg_a':'SU',      'leg_b':'SU.TO',  'mkt_a':'NYSE','mkt_b':'TSX', 'fx':'CADUSD','name':'Suncor',      'ratio_a':1,'ratio_b':1},
+    # ── NYSE/TSX (Canadá) — REMOVIDOS: mercado eficiente demais ─────────────
+    # Spreads históricos: 0.00-0.09% — nunca atingem o limiar de 2.0% para abrir.
+    # 7 pares (RBC, TD, Shopify, Suncor, CNQ, ENB, BNS) removidos em 20/03/2026.
 
     # ── NYSE/LSE adicionais — overlap 2h (14:30-16:30 UTC) ───────────────────
     # pa = preco_USD × ratio_a  |  pb = (preco_GBp / 100) × GBPUSD × ratio_b
@@ -3680,14 +3676,7 @@ ARBI_PAIRS = [
     # Verificado: LVMUY=$105 × 5 = $525 vs MC.PA=€458 × 1.1555 = $529 → spread -0.71% ✅
     {'id':'LVMUY-MC.PA', 'leg_a':'LVMUY',  'leg_b':'MC.PA',  'mkt_a':'NYSE','mkt_b':'EURONEXT','fx':'EURUSD','name':'LVMH',        'ratio_a':5,'ratio_b':1},
 
-    # ── NYSE/TSX adicionais — overlap 6.5h ───────────────────────────────────
-    # CNQ, ENB, BNS verificados: spread 0.02-0.05% com ratio 1:1 ✅
-    {'id':'CNQ-CNQ.TO',  'leg_a':'CNQ',    'leg_b':'CNQ.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'CNQ',            'ratio_a':1,'ratio_b':1},
-    {'id':'ENB-ENB.TO',  'leg_a':'ENB',    'leg_b':'ENB.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'Enbridge',       'ratio_a':1,'ratio_b':1},
-    {'id':'BNS-BNS.TO',  'leg_a':'BNS',    'leg_b':'BNS.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'BNS',            'ratio_a':1,'ratio_b':1},
-    # [REMOVIDO] Barrick Gold (GOLD/ABX.TO): spread estrutural 13% NÃO é arbi real.
-    # O spread não converge — são classes de ações diferentes com prêmio permanente.
-    # Causa: trade ARB-980dccb9e283 com preço inválido gerou -$257K fictício.
+
 
     # ── B3/NYSE adicionais ────────────────────────────────────────────────────
     # TIMS3/TIMB: ratio 5:1 verificado — 1 ADR TIMB = 5 ações TIMS3

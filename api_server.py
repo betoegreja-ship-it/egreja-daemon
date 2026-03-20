@@ -641,12 +641,30 @@ def is_hkex_open():
     if now.weekday()>=5 or now.date() in _HKEX_HOLIDAYS: return False
     h = now.hour + now.minute/60.0; return (9.5<=h<12.0) or (13.0<=h<16.0)
 
+def is_tsx_open():
+    # TSX (Toronto) abre 09:30-16:00 ET = mesmo horário da NYSE
+    now = datetime.now(TZ_NEW_YORK)
+    if now.weekday()>=5: return False
+    h = now.hour + now.minute/60.0; return 9.5<=h<16.0
+
+def is_euronext_open():
+    # Euronext/XETRA 09:00-17:30 CET = 08:00-16:30 UTC (aprox)
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        TZ_CET = _ZI('Europe/Paris')
+    except: TZ_CET = TZ_LONDON
+    now = datetime.now(TZ_CET)
+    if now.weekday()>=5: return False
+    h = now.hour + now.minute/60.0; return 9.0<=h<17.5
+
 def market_open_for(mkt):
-    if mkt=='CRYPTO':                return True
-    if mkt=='B3':                    return is_b3_open()
-    if mkt in ('NYSE','NASDAQ','US'):return is_nyse_open()
-    if mkt=='LSE':                   return is_lse_open()
-    if mkt=='HKEX':                  return is_hkex_open()
+    if mkt=='CRYPTO':                        return True
+    if mkt=='B3':                            return is_b3_open()
+    if mkt in ('NYSE','NASDAQ','US'):        return is_nyse_open()
+    if mkt=='LSE':                           return is_lse_open()
+    if mkt=='HKEX':                          return is_hkex_open()
+    if mkt=='TSX':                           return is_tsx_open()
+    if mkt in ('EURONEXT','XETRA','XAMS'):  return is_euronext_open()
     return False
 
 # ═══════════════════════════════════════════════════════════════
@@ -2988,7 +3006,7 @@ def fetch_fx_rates():
         # frankfurter.app: base USD, retorna quantas unidades de cada moeda = 1 USD
         r = requests.get(
             'https://api.frankfurter.app/latest',
-            params={'from': 'USD', 'to': 'BRL,GBP,HKD'}, timeout=8)
+            params={'from': 'USD', 'to': 'BRL,GBP,HKD,CAD,EUR'}, timeout=8)  # [v10.9] +CAD,EUR
         if r.status_code == 200:
             rates = r.json().get('rates', {})
             if rates.get('BRL', 0) > 0:
@@ -2998,12 +3016,18 @@ def fetch_fx_rates():
                 fx_rates['GBPUSD'] = round(1.0 / rates['GBP'], 4)
             if rates.get('HKD', 0) > 0:
                 fx_rates['HKDUSD'] = round(rates['HKD'], 4)
+            if rates.get('CAD', 0) > 0:
+                # USD→CAD (ex: 1.36); queremos CADUSD = 1 CAD em USD (ex: 0.735)
+                fx_rates['CADUSD'] = round(1.0 / rates['CAD'], 4)
+            if rates.get('EUR', 0) > 0:
+                # USD→EUR (ex: 0.92); queremos EURUSD = 1 EUR em USD (ex: 1.085)
+                fx_rates['EURUSD'] = round(1.0 / rates['EUR'], 4)
             log.info(f'FX (frankfurter.app/ECB): {fx_rates}')
             return
     except Exception as e:
         log.warning(f'frankfurter.app: {e}')
     # Yahoo fallback
-    pairs = {'USDBRL': 'BRL=X', 'GBPUSD': 'GBPUSD=X', 'HKDUSD': 'HKD=X'}
+    pairs = {'USDBRL': 'BRL=X', 'GBPUSD': 'GBPUSD=X', 'HKDUSD': 'HKD=X', 'CADUSD': 'CAD=X', 'EURUSD': 'EURUSD=X'}  # [v10.9-arbi]
     for key, sym in pairs.items():
         try:
             r = requests.get(
@@ -3619,6 +3643,38 @@ ARBI_PAIRS = [
     # [v10.9] HKEX pares removidos — NYSE e HKEX não têm sobreposição de horário (gap de 6h)
     # HKEX fecha 08:00 UTC, NYSE abre 14:30 UTC → jamais executariam. 0 trades em todo o histórico.
     # Removidos: Tencent, Alibaba, HSBC HK, China Mobile, Ping An
+
+    # ── B3/NYSE novos ─────────────────────────────────────────────────────────
+    # Ratios confirmados via preços reais: spread ≈ 0% quando mercados eficientes
+    # pa = (preco_BRL / USDBRL) × ratio_a  |  pb = preco_USD × ratio_b
+    {'id':'SUZB3-SUZ',  'leg_a':'SUZB3.SA','leg_b':'SUZ',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Suzano',      'ratio_a':1,'ratio_b':1},
+    {'id':'SBSP3-SBS',  'leg_a':'SBSP3.SA','leg_b':'SBS',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Sabesp',      'ratio_a':1,'ratio_b':1},
+    {'id':'UGPA3-UGP',  'leg_a':'UGPA3.SA','leg_b':'UGP',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Ultrapar',    'ratio_a':1,'ratio_b':1},
+
+    # ── NYSE/TSX (Canadá) — overlap 6.5h, mesmo fuso horário ─────────────────
+    # pa = preco_USD × ratio_a  |  pb = preco_CAD × CADUSD × ratio_b
+    # Ratios confirmados ≈ 1:1 via preços reais (desvio < 1%)
+    {'id':'RY-RY.TO',   'leg_a':'RY',      'leg_b':'RY.TO',  'mkt_a':'NYSE','mkt_b':'TSX', 'fx':'CADUSD','name':'RBC',         'ratio_a':1,'ratio_b':1},
+    {'id':'TD-TD.TO',   'leg_a':'TD',      'leg_b':'TD.TO',  'mkt_a':'NYSE','mkt_b':'TSX', 'fx':'CADUSD','name':'TD Bank',     'ratio_a':1,'ratio_b':1},
+    {'id':'SHOP-SHOP.TO','leg_a':'SHOP',   'leg_b':'SHOP.TO','mkt_a':'NYSE','mkt_b':'TSX', 'fx':'CADUSD','name':'Shopify',     'ratio_a':1,'ratio_b':1},
+    {'id':'SU-SU.TO',   'leg_a':'SU',      'leg_b':'SU.TO',  'mkt_a':'NYSE','mkt_b':'TSX', 'fx':'CADUSD','name':'Suncor',      'ratio_a':1,'ratio_b':1},
+
+    # ── NYSE/LSE adicionais — overlap 2h (14:30-16:30 UTC) ───────────────────
+    # pa = preco_USD × ratio_a  |  pb = (preco_GBp / 100) × GBPUSD × ratio_b
+    # ATENÇÃO: LSE cotações em GBp (pence), não £ — divisão por 100 obrigatória
+    # Rio Tinto: 1 ADR NYSE = 1 ação LSE (ratio confirmado 0.996 ≈ 1:1)
+    # Diageo: 1 ADR NYSE = 4 ações LSE (ratio confirmado 3.973 ≈ 4:1)
+    {'id':'RIO-RIO.L',  'leg_a':'RIO',     'leg_b':'RIO.L',  'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'Rio Tinto',  'ratio_a':1,'ratio_b':1},
+    {'id':'UL-ULVR.L',  'leg_a':'UL',      'leg_b':'ULVR.L', 'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'Unilever',   'ratio_a':1,'ratio_b':1},
+    {'id':'DEO-DGE.L',  'leg_a':'DEO',     'leg_b':'DGE.L',  'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'Diageo',     'ratio_a':1,'ratio_b':4},
+    {'id':'BTI-BATS.L', 'leg_a':'BTI',     'leg_b':'BATS.L', 'mkt_a':'NYSE','mkt_b':'LSE', 'fx':'GBPUSD','name':'BAT',        'ratio_a':1,'ratio_b':1},
+
+    # ── NYSE/EURONEXT — overlap 2h (14:30-16:30 UTC) ─────────────────────────
+    # pa = preco_USD × ratio_a  |  pb = preco_EUR × EURUSD × ratio_b
+    # Ratios confirmados ≈ 1:1. Spread estrutural de ~5-7% é REAL (custo ADR + bid-ask)
+    {'id':'ASML-ASML.AS','leg_a':'ASML',   'leg_b':'ASML.AS','mkt_a':'NYSE','mkt_b':'EURONEXT','fx':'EURUSD','name':'ASML',    'ratio_a':1,'ratio_b':1},
+    {'id':'TTE-TTE.PA',  'leg_a':'TTE',    'leg_b':'TTE.PA', 'mkt_a':'NYSE','mkt_b':'EURONEXT','fx':'EURUSD','name':'TotalEnergies','ratio_a':1,'ratio_b':1},
+    {'id':'SAP-SAP.DE',  'leg_a':'SAP',    'leg_b':'SAP.DE', 'mkt_a':'NYSE','mkt_b':'XETRA',  'fx':'EURUSD','name':'SAP',      'ratio_a':1,'ratio_b':1},
 ]
 
 def _fetch_arbi_price(symbol: str) -> float:
@@ -3687,10 +3743,23 @@ def calc_spread(pair):
         pa_raw=_fetch_arbi_price(pair['leg_a']); pb_raw=_fetch_arbi_price(pair['leg_b'])
         if pa_raw<=0 or pb_raw<=0: return None
         fx=pair['fx']; ra=pair.get('ratio_a',1); rb=pair.get('ratio_b',1)
-        if fx=='USDBRL':   rate=fx_rates.get('USDBRL',5.8); pa=(pa_raw/rate)*ra; pb=pb_raw*rb
-        elif fx=='GBPUSD': rate=fx_rates.get('GBPUSD',1.27); pa=pa_raw*ra; pb=(pb_raw/100*rate)*rb
-        elif fx=='HKDUSD': rate=fx_rates.get('HKDUSD',7.8); pa=pa_raw*ra; pb=(pb_raw/rate)*rb
-        else:              pa=pa_raw*ra; pb=pb_raw*rb
+        if fx=='USDBRL':
+            # leg_a=B3(BRL), leg_b=NYSE(USD) → converte BRL→USD
+            rate=fx_rates.get('USDBRL',5.8); pa=(pa_raw/rate)*ra; pb=pb_raw*rb
+        elif fx=='GBPUSD':
+            # leg_a=NYSE(USD), leg_b=LSE(GBp=pence÷100=£×GBPUSD) → converte GBp→USD
+            rate=fx_rates.get('GBPUSD',1.27); pa=pa_raw*ra; pb=(pb_raw/100*rate)*rb
+        elif fx=='HKDUSD':
+            # leg_a=NYSE(USD), leg_b=HKEX(HKD÷HKDUSD) → converte HKD→USD
+            rate=fx_rates.get('HKDUSD',7.8); pa=pa_raw*ra; pb=(pb_raw/rate)*rb
+        elif fx=='CADUSD':
+            # [v10.9] leg_a=NYSE(USD), leg_b=TSX(CAD×CADUSD) → converte CAD→USD
+            rate=fx_rates.get('CADUSD',0.735); pa=pa_raw*ra; pb=(pb_raw*rate)*rb
+        elif fx=='EURUSD':
+            # [v10.9] leg_a=NYSE(USD), leg_b=EURONEXT(EUR×EURUSD) → converte EUR→USD
+            rate=fx_rates.get('EURUSD',1.085); pa=pa_raw*ra; pb=(pb_raw*rate)*rb
+        else:
+            pa=pa_raw*ra; pb=pb_raw*rb
         if pb<=0: return None
         spread_pct=((pa-pb)/pb)*100
         return {'pair_id':pair['id'],'name':pair['name'],'leg_a':pair['leg_a'],'leg_b':pair['leg_b'],

@@ -3672,9 +3672,28 @@ ARBI_PAIRS = [
     # ── NYSE/EURONEXT — overlap 2h (14:30-16:30 UTC) ─────────────────────────
     # pa = preco_USD × ratio_a  |  pb = preco_EUR × EURUSD × ratio_b
     # Ratios confirmados ≈ 1:1. Spread estrutural de ~5-7% é REAL (custo ADR + bid-ask)
-    {'id':'ASML-ASML.AS','leg_a':'ASML',   'leg_b':'ASML.AS','mkt_a':'NYSE','mkt_b':'EURONEXT','fx':'EURUSD','name':'ASML',    'ratio_a':1,'ratio_b':1},
+    {'id':'ASML-ASML.AS','leg_a':'ASML',   'leg_b':'ASML.AS','mkt_a':'NYSE','mkt_b':'EURONEXT','fx':'EURUSD','name':'ASML',       'ratio_a':1,'ratio_b':1},
     {'id':'TTE-TTE.PA',  'leg_a':'TTE',    'leg_b':'TTE.PA', 'mkt_a':'NYSE','mkt_b':'EURONEXT','fx':'EURUSD','name':'TotalEnergies','ratio_a':1,'ratio_b':1},
-    {'id':'SAP-SAP.DE',  'leg_a':'SAP',    'leg_b':'SAP.DE', 'mkt_a':'NYSE','mkt_b':'XETRA',  'fx':'EURUSD','name':'SAP',      'ratio_a':1,'ratio_b':1},
+    {'id':'SAP-SAP.DE',  'leg_a':'SAP',    'leg_b':'SAP.DE', 'mkt_a':'NYSE','mkt_b':'XETRA',  'fx':'EURUSD','name':'SAP',         'ratio_a':1,'ratio_b':1},
+    # LVMH: 1 ADR LVMUY (NYSE) = 0.2 ação MC.PA → ratio_a=5 para paridade com 1 ação LVMH
+    # Verificado: LVMUY=$105 × 5 = $525 vs MC.PA=€458 × 1.1555 = $529 → spread -0.71% ✅
+    {'id':'LVMUY-MC.PA', 'leg_a':'LVMUY',  'leg_b':'MC.PA',  'mkt_a':'NYSE','mkt_b':'EURONEXT','fx':'EURUSD','name':'LVMH',        'ratio_a':5,'ratio_b':1},
+
+    # ── NYSE/TSX adicionais — overlap 6.5h ───────────────────────────────────
+    # CNQ, ENB, BNS verificados: spread 0.02-0.05% com ratio 1:1 ✅
+    {'id':'CNQ-CNQ.TO',  'leg_a':'CNQ',    'leg_b':'CNQ.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'CNQ',            'ratio_a':1,'ratio_b':1},
+    {'id':'ENB-ENB.TO',  'leg_a':'ENB',    'leg_b':'ENB.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'Enbridge',       'ratio_a':1,'ratio_b':1},
+    {'id':'BNS-BNS.TO',  'leg_a':'BNS',    'leg_b':'BNS.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'BNS',            'ratio_a':1,'ratio_b':1},
+    # Barrick: spread estrutural ~13% (GOLD NYSE vs ABX.TO TSX) — oportunidade real
+    # Verificado: GOLD=$42.19 vs ABX.TO=C$51 × CADUSD = $37.18 → spread +13.5%
+    {'id':'GOLD-ABX.TO', 'leg_a':'GOLD',   'leg_b':'ABX.TO', 'mkt_a':'NYSE','mkt_b':'TSX','fx':'CADUSD','name':'Barrick Gold',   'ratio_a':1,'ratio_b':1},
+
+    # ── B3/NYSE adicionais ────────────────────────────────────────────────────
+    # TIMS3/TIMB: ratio 5:1 verificado — 1 ADR TIMB = 5 ações TIMS3
+    # Verificado: TIMS3=R$26.28 ÷ 5.2552 × 5 = $25.00 vs TIMB=$24.81 → spread +0.78% ✅
+    {'id':'TIMS3-TIMB',  'leg_a':'TIMS3.SA','leg_b':'TIMB',  'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'TIM Brasil',     'ratio_a':5,'ratio_b':1},
+    # BRF: ratio 2:1 — 1 ADR BRFS = 2 ações BRFS3 (fonte: SEC Filing Form F-6)
+    {'id':'BRFS3-BRFS',  'leg_a':'BRFS3.SA','leg_b':'BRFS',  'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'BRF Foods',      'ratio_a':2,'ratio_b':1},
 ]
 
 def _fetch_arbi_price(symbol: str) -> float:

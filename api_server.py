@@ -734,9 +734,12 @@ def check_risk_arbi(pair_id, position_value):
     cutoff=(datetime.utcnow()-timedelta(days=1)).isoformat()
     daily_loss=sum(t.get('pnl',0) for t in a_closed
         if t.get('closed_at','')>=cutoff and t.get('pnl',0)<0)
-    dd=abs(daily_loss)/ARBI_CAPITAL*100
+    # [FIX-28] Usar capital total real (cap + em trades) como base do drawdown
+    # ARBI_CAPITAL constante pode ser a env var antiga (500K); usar variável real
+    _arbi_cap_total = max(cap + sum(t.get('position_size',0) for t in arbi_open), ARBI_CAPITAL, 1)
+    dd=abs(daily_loss)/_arbi_cap_total*100
     if dd>=ARBI_MAX_DAILY_LOSS:
-        ARBI_KILL_SWITCH=True; send_whatsapp(f'ARBI KILL SWITCH: drawdown {dd:.2f}%')
+        ARBI_KILL_SWITCH=True; send_whatsapp(f'ARBI KILL SWITCH: drawdown {dd:.2f}% (base ${_arbi_cap_total:,.0f})')
         return False, f'ARBI_DAILY_DRAWDOWN ({dd:.2f}%)', 0
     return True, 'OK', round(min(position_value, ARBI_POS_SIZE, cap), 2)
 

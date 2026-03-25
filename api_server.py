@@ -4768,6 +4768,108 @@ def db_audit():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/performance/stocks')
+def performance_stocks():
+    """[v10.11] Dados detalhados de performance histórica de stocks."""
+    try:
+        conn = get_db()
+        if not conn: return jsonify({'error':'db unavailable'}), 500
+        cursor = conn.cursor(dictionary=True)
+        # Diário
+        cursor.execute("""
+            SELECT DATE(closed_at) as dt,
+                COUNT(*) as n, SUM(pnl) as pnl,
+                SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
+                SUM(position_value) as deployed,
+                AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
+            FROM trades WHERE status='CLOSED' AND asset_type='stock'
+            GROUP BY DATE(closed_at) ORDER BY dt""")
+        daily = [{**r,'dt':str(r['dt']),'pnl':float(r['pnl'] or 0),'deployed':float(r['deployed'] or 0),
+                  'n':int(r['n']),'wins':int(r['wins']),'avg_dur_h':round(float(r['avg_dur_h'] or 0),2)} for r in cursor.fetchall()]
+        # Por símbolo
+        cursor.execute("""
+            SELECT symbol, market, COUNT(*) as n, SUM(pnl) as pnl,
+                SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
+                MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl,
+                SUM(position_value) as deployed
+            FROM trades WHERE status='CLOSED' AND asset_type='stock'
+            GROUP BY symbol, market ORDER BY pnl DESC""")
+        by_sym = [{**r,'pnl':float(r['pnl'] or 0),'wins':int(r['wins']),'n':int(r['n']),
+                   'best':float(r['best'] or 0),'worst':float(r['worst'] or 0),
+                   'avg_pnl':float(r['avg_pnl'] or 0),'deployed':float(r['deployed'] or 0)} for r in cursor.fetchall()]
+        # Por motivo de fechamento
+        cursor.execute("""
+            SELECT close_reason, COUNT(*) as n, SUM(pnl) as pnl,
+                SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins
+            FROM trades WHERE status='CLOSED' AND asset_type='stock'
+            GROUP BY close_reason ORDER BY n DESC""")
+        by_reason = [{**r,'pnl':float(r['pnl'] or 0),'n':int(r['n']),'wins':int(r['wins'])} for r in cursor.fetchall()]
+        # Global
+        cursor.execute("""SELECT COUNT(*) as n, SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
+            MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
+            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
+            FROM trades WHERE status='CLOSED' AND asset_type='stock'""")
+        glb = cursor.fetchone()
+        cursor.close(); conn.close()
+        # Trades abertas
+        with state_lock: open_t = list(stocks_open)
+        return jsonify({
+            'global': {k:float(v or 0) if isinstance(v,(int,float,type(None))) else str(v) for k,v in glb.items()},
+            'daily': daily, 'by_symbol': by_sym, 'by_reason': by_reason,
+            'open_trades': len(open_t),
+            'initial_capital': INITIAL_CAPITAL_STOCKS,
+        })
+    except Exception as e: return jsonify({'error':str(e)}), 500
+
+@app.route('/performance/crypto')
+def performance_crypto():
+    """[v10.11] Dados detalhados de performance histórica de crypto."""
+    try:
+        conn = get_db()
+        if not conn: return jsonify({'error':'db unavailable'}), 500
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT DATE(closed_at) as dt,
+                COUNT(*) as n, SUM(pnl) as pnl,
+                SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
+                SUM(position_value) as deployed,
+                AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
+            FROM trades WHERE status='CLOSED' AND asset_type='crypto'
+            GROUP BY DATE(closed_at) ORDER BY dt""")
+        daily = [{**r,'dt':str(r['dt']),'pnl':float(r['pnl'] or 0),'deployed':float(r['deployed'] or 0),
+                  'n':int(r['n']),'wins':int(r['wins']),'avg_dur_h':round(float(r['avg_dur_h'] or 0),2)} for r in cursor.fetchall()]
+        cursor.execute("""
+            SELECT symbol, COUNT(*) as n, SUM(pnl) as pnl,
+                SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
+                MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl,
+                SUM(position_value) as deployed
+            FROM trades WHERE status='CLOSED' AND asset_type='crypto'
+            GROUP BY symbol ORDER BY pnl DESC""")
+        by_sym = [{**r,'pnl':float(r['pnl'] or 0),'wins':int(r['wins']),'n':int(r['n']),
+                   'best':float(r['best'] or 0),'worst':float(r['worst'] or 0),
+                   'avg_pnl':float(r['avg_pnl'] or 0),'deployed':float(r['deployed'] or 0)} for r in cursor.fetchall()]
+        cursor.execute("""
+            SELECT close_reason, COUNT(*) as n, SUM(pnl) as pnl,
+                SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins
+            FROM trades WHERE status='CLOSED' AND asset_type='crypto'
+            GROUP BY close_reason ORDER BY n DESC""")
+        by_reason = [{**r,'pnl':float(r['pnl'] or 0),'n':int(r['n']),'wins':int(r['wins'])} for r in cursor.fetchall()]
+        cursor.execute("""SELECT COUNT(*) as n, SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
+            MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
+            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
+            FROM trades WHERE status='CLOSED' AND asset_type='crypto'""")
+        glb = cursor.fetchone()
+        cursor.close(); conn.close()
+        with state_lock: open_t = list(crypto_open)
+        return jsonify({
+            'global': {k:float(v or 0) if isinstance(v,(int,float,type(None))) else str(v) for k,v in glb.items()},
+            'daily': daily, 'by_symbol': by_sym, 'by_reason': by_reason,
+            'open_trades': len(open_t),
+            'initial_capital': INITIAL_CAPITAL_CRYPTO,
+        })
+    except Exception as e: return jsonify({'error':str(e)}), 500
+
 @app.route('/risk/reset_arbi_kill_switch', methods=['POST'])
 def reset_arbi_kill_switch():
     global ARBI_KILL_SWITCH

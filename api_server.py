@@ -3257,16 +3257,45 @@ def stock_execution_worker():
                     if price > ema9 * 1.01: score += 7   # preço acima EMA9 — momentum
                     elif price < ema9 * 0.99: score -= 7  # preço abaixo EMA9 — fraqueza
                 score = max(0, min(100, score))
-                # [v10.11] Boost/penalidade baseado em padrão histórico do learning
-                # O feature_hash não está disponível aqui, mas podemos usar RSI/EMA buckets
-                _rsi_bucket = 'OVERSOLD' if rsi < 30 else ('LOW' if rsi < 45 else ('HIGH' if rsi > 65 else ('OVERBOUGHT' if rsi > 75 else 'NEUTRAL')))
-                _ema_align  = 'BULLISH' if (ema9>ema21 and ema21>ema50 and ema50>0) else ('BEARISH' if (ema9<ema21 and ema21<ema50 and ema50>0) else 'NEUTRAL')
+                # [v10.12] Score dinâmico por learning — mais fatores, maior impacto
+                _rsi_bucket = 'OVERSOLD' if rsi<30 else ('LOW' if rsi<45 else ('OVERBOUGHT' if rsi>75 else ('HIGH' if rsi>65 else 'NEUTRAL')))
+                _ema_align  = 'BULLISH_STACK' if (ema9>ema21 and ema21>ema50 and ema50>0) else ('BEARISH_STACK' if (ema9<ema21 and ema21<ema50 and ema50>0) else ('BULLISH' if ema9>ema21 else 'BEARISH'))
+                _vol_bucket = 'LOW' if (vol_ratio>0 and vol_ratio<0.8) else ('HIGH' if vol_ratio>1.8 else 'NORMAL')
+                _atr_bucket = 'EXTREME' if atr_pct>4 else ('HIGH' if atr_pct>2.5 else ('LOW' if atr_pct<0.8 else 'NORMAL'))
+                _direction  = 'LONG' if score>50 else 'SHORT'
+                _score_adj  = 0
+                _pattern_blocked = False
                 with learning_lock:
-                    for _ftype, _fval in [('rsi_bucket', _rsi_bucket), ('ema_alignment', _ema_align)]:
-                        _fs = factor_stats_cache.get((_ftype, _fval), {})
-                        if _fs.get('total_samples', 0) >= 10:
-                            _cw = _fs.get('confidence_weight', 0.0)
-                            score = max(0, min(100, score + int(_cw * 8)))  # ±8 pontos do learning
+                    # Fator RSI (±12 pts)
+                    _fs_rsi = factor_stats_cache.get(('rsi_bucket', _rsi_bucket), {})
+                    if _fs_rsi.get('total_samples',0) >= 10:
+                        _score_adj += int(_fs_rsi.get('confidence_weight',0) * 12)
+                    # Fator EMA alignment (±12 pts)
+                    _fs_ema = factor_stats_cache.get(('ema_alignment', _ema_align), {})
+                    if _fs_ema.get('total_samples',0) >= 10:
+                        _score_adj += int(_fs_ema.get('confidence_weight',0) * 12)
+                    # Fator volatilidade (±8 pts)
+                    _fs_vol = factor_stats_cache.get(('volatility_bucket', _vol_bucket), {})
+                    if _fs_vol.get('total_samples',0) >= 10:
+                        _score_adj += int(_fs_vol.get('confidence_weight',0) * 8)
+                    # Fator ATR (±10 pts — ATR extremo penaliza muito)
+                    _fs_atr = factor_stats_cache.get(('atr_bucket', _atr_bucket), {})
+                    if _fs_atr.get('total_samples',0) >= 10:
+                        _score_adj += int(_fs_atr.get('confidence_weight',0) * 10)
+                    # Fator direção (±6 pts)
+                    _fs_dir = factor_stats_cache.get(('direction', _direction), {})
+                    if _fs_dir.get('total_samples',0) >= 5:
+                        _score_adj += int(_fs_dir.get('confidence_weight',0) * 6)
+                    # Bloqueio: padrão com WR<40% e n≥30 — não executar mesmo se score OK
+                    for _ph, _ps in list(pattern_stats_cache.items())[:200]:
+                        _pn = _ps.get('total_samples',0)
+                        _pw = _ps.get('wins',0)
+                        if _pn >= 30 and _pw/_pn < 0.40 and _ps.get('ewma_hit_rate',1) < 0.45:
+                            _pattern_blocked = True
+                            break
+                score = max(0, min(100, score + _score_adj))
+                if _pattern_blocked and score < MIN_SCORE_AUTO + 5:
+                    continue  # bloquear sinal de padrão ruim
                 signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),
@@ -3285,8 +3314,18 @@ def stock_execution_worker():
                 signal_val=sig.get('signal',''); sym=sig.get('symbol','')
                 price=sig.get('price', 0)
                 if price<=0: continue
-                is_long=score>=MIN_SCORE_AUTO and signal_val=='COMPRA'  # [v10.9-opt] era 70
-                is_short=score<=(100-MIN_SCORE_AUTO) and signal_val=='VENDA'  # [v10.9-opt] era 30
+                # [v10.12] Threshold variável por confiança do padrão
+                _eff_min = MIN_SCORE_AUTO
+                with learning_lock:
+                    _best_pat = max(pattern_stats_cache.values(), 
+                                   key=lambda p: p.get('wins',0)/max(p.get('total_samples',1),1),
+                                   default={})
+                    if _best_pat.get('total_samples',0)>=50:
+                        _pat_wr = _best_pat.get('wins',0)/_best_pat['total_samples']
+                        if _pat_wr >= 0.80: _eff_min = max(65, MIN_SCORE_AUTO-5)   # padrão muito confiável
+                        elif _pat_wr >= 0.70: _eff_min = MIN_SCORE_AUTO            # padrão ok
+                is_long=score>=_eff_min and signal_val=='COMPRA'
+                is_short=score<=(100-_eff_min) and signal_val=='VENDA'
                 if not (is_long or is_short): continue
 
                 # [v10.9-TrendFilter] Bloquear LONGs em ações com queda >5% nos últimos 5 preços

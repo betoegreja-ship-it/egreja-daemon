@@ -925,6 +925,132 @@ def record_data_quality(symbol, source, latency_ms, price_valid):
             'price_valid': price_valid,
         }
 
+# ═══════════════════════════════════════════════════════════════════
+# [v10.13] TEMPORAL & CROSS-MARKET LEARNING ENGINE
+# Aprende padrões de hora×dia, correlações stocks→crypto e FX
+# ═══════════════════════════════════════════════════════════════════
+
+# Scores temporais de crypto por hora UTC (derivados de 1.183 trades reais)
+# Positivo = favorável, Negativo = desfavorável
+CRYPTO_HOUR_SCORE = {
+    0: 0, 1: -8, 2: +6, 3: -8, 4: +6, 5: +12, 6: +12, 7: +12,
+    8: 0, 9: -15, 10: 0, 11: +6, 12: +6, 13: 0, 14: -8, 15: -15,
+    16: -8, 17: -8, 18: -15, 19: -15, 20: -15, 21: -15, 22: -8, 23: 0
+}
+
+# Score por dia da semana para crypto (0=Seg, 6=Dom)
+CRYPTO_DOW_SCORE = {
+    0: +4,   # Segunda: 53.7% WR
+    1: -10,  # Terça:   43.9% WR — pior dia, -$37.9K total
+    2: -8,   # Quarta:  40.3% WR
+    3: +2,   # Quinta:  48.7% WR — neutro-positivo
+    4: -8,   # Sexta:   42.0% WR
+    5: -6,   # Sábado:  43.3% WR
+    6: +15,  # Domingo: 64.7% WR — melhor dia, +$12.7K total
+}
+
+# Blocos hora×dia específicos para BLOQUEAR (WR<30%, n>=5)
+CRYPTO_BLOCKED_WINDOWS = {
+    # (weekday, hour_utc): motivo
+    (0, 0): 'Seg00h_WR0pct',    (4, 14): 'Sex14h_WR0pct',
+    (5, 22): 'Sab22h_WR0pct',   (2, 19): 'Qua19h_WR0pct',
+    (1, 18): 'Ter18h_WR9pct',   (3, 22): 'Qui22h_WR9pct',
+    (3, 19): 'Qui19h_WR9pct',   (4, 20): 'Sex20h_WR11pct',
+    (3, 18): 'Qui18h_WR12pct',  (2, 21): 'Qua21h_WR35pct',
+    (4, 19): 'Sex19h_WR15pct',  (5, 21): 'Sab21h_WR17pct',
+    (1, 21): 'Ter21h_WR29pct',  (4, 16): 'Sex16h_WR22pct',
+    (1, 15): 'Ter15h_WR35pct',  (3, 15): 'Qui15h_WR0pct',
+}
+
+# Janelas prioritárias (WR>=80%, n>=5) — score boost adicional
+CRYPTO_PRIORITY_WINDOWS = {
+    (0, 17): +20, (3, 7): +20, (4, 8): +20, (6, 12): +20,
+    (6, 0): +18,  (3, 4): +18, (3, 13): +16, (2, 11): +16,
+    (1, 5): +14,  (2, 8): +14, (0, 6): +14,  (3, 7): +14,
+}
+
+# Estado cross-market em memória (atualizado pelo trading loop)
+_cross_market_state = {
+    'stocks_wr_today': 50.0,      # WR de stocks hoje
+    'stocks_pnl_today': 0.0,      # PnL de stocks hoje
+    'stocks_n_today': 0,          # Nº de trades de stocks hoje
+    'stocks_wr_yesterday': 50.0,  # WR de stocks ontem
+    'stocks_pnl_yesterday': 0.0,
+    'stocks_n_yesterday': 0,
+    'usdbrl_change_pct': 0.0,     # variação % do USD/BRL hoje
+    'btc_change_24h': 0.0,        # variação % BTC 24h (proxy de sentimento crypto)
+    'last_update': '',
+}
+
+def update_cross_market_state(new_vals: dict):
+    """Atualiza estado cross-market para uso no score de crypto."""
+    global _cross_market_state
+    _cross_market_state.update(new_vals)
+    _cross_market_state['last_update'] = datetime.utcnow().isoformat()
+
+def get_temporal_crypto_score(hour_utc: int, weekday: int) -> tuple:
+    """
+    [v10.13] Retorna (score_adj, blocked, reason) baseado em padrões temporais.
+    score_adj: pontos a adicionar/subtrair do score base
+    blocked: True se a janela deve ser completamente bloqueada
+    reason: string descritiva para logging
+    """
+    # Checar bloqueio específico
+    window_key = (weekday, hour_utc)
+    if window_key in CRYPTO_BLOCKED_WINDOWS:
+        return 0, True, CRYPTO_BLOCKED_WINDOWS[window_key]
+    
+    # Score hora + dia
+    hour_adj = CRYPTO_HOUR_SCORE.get(hour_utc, 0)
+    dow_adj  = CRYPTO_DOW_SCORE.get(weekday, 0)
+    
+    # Boost para janelas prioritárias
+    priority_boost = CRYPTO_PRIORITY_WINDOWS.get(window_key, 0)
+    
+    total_adj = hour_adj + dow_adj + priority_boost
+    reason = f"h{hour_utc}UTC_d{weekday}_adj{total_adj:+d}"
+    return total_adj, False, reason
+
+def get_cross_market_crypto_adj() -> int:
+    """
+    [v10.13] Ajuste de score baseado em correlação stocks→crypto.
+    Quando stocks estão ruins no mesmo dia → crypto penalizado.
+    Quando stocks estão neutros → crypto favorecido (menor correlação).
+    """
+    s = _cross_market_state
+    today_wr = s.get('stocks_wr_today', 50.0)
+    today_n  = s.get('stocks_n_today', 0)
+    yest_wr  = s.get('stocks_wr_yesterday', 50.0)
+    yest_n   = s.get('stocks_n_yesterday', 0)
+    
+    adj = 0
+    # Correlação mesmo dia (dados reais: stocks ruins → crypto WR 35.8%)
+    if today_n >= 5:
+        if today_wr < 40:
+            adj -= 12  # stocks muito ruins hoje → crypto penalizado
+        elif today_wr < 48:
+            adj -= 6   # stocks ruins → leve penalidade
+        elif 48 <= today_wr <= 55:
+            adj += 4   # stocks neutros → crypto levemente favorecido
+        # stocks bons não ajudam crypto (dados mostram correlação inversa)
+    
+    # Correlação D-1: stocks ruins ontem → crypto amanhã também fraco
+    if yest_n >= 5 and yest_wr < 45:
+        adj -= 5
+    
+    # FX: USD/BRL subindo = dólar forte = cripto geralmente sobe (safe haven)
+    usdbrl_chg = s.get('usdbrl_change_pct', 0.0)
+    if usdbrl_chg > 1.5:   adj += 4  # dólar forte → cripto pode subir
+    elif usdbrl_chg < -1.5: adj -= 3  # dólar fraco → menos fluxo para cripto
+    
+    # BTC sentimento (proxy geral de mercado cripto)
+    btc_chg = s.get('btc_change_24h', 0.0)
+    if btc_chg > 3.0:   adj += 5   # BTC em alta → mercado bullish
+    elif btc_chg < -3.0: adj -= 8  # BTC em queda → mercado bearish (penaliza mais)
+    
+    return max(-20, min(+15, adj))  # cap ±20 pts
+
+
 # ═══════════════════════════════════════════════════════════════
 # [L-1] FEATURE ENGINEERING — extração determinística e bucketing
 # ═══════════════════════════════════════════════════════════════
@@ -1729,6 +1855,49 @@ def _db_log_learning_audit(event_type: str, entity_id: str, payload: dict):
 # ═══════════════════════════════════════════════════════════════
 # [L-3] LEARNING UPDATE — chamado quando trade fecha
 # ═══════════════════════════════════════════════════════════════
+
+def _update_cross_market_from_stocks():
+    """[v10.13] Atualiza estado cross-market baseado em trades de stocks do dia."""
+    try:
+        from datetime import date
+        today = date.today().isoformat()
+        yesterday = (date.today() - __import__('datetime').timedelta(days=1)).isoformat()
+        with state_lock:
+            today_trades   = [t for t in stocks_closed if (t.get('closed_at','') or '')[:10] == today]
+            yest_trades    = [t for t in stocks_closed if (t.get('closed_at','') or '')[:10] == yesterday]
+        def calc(trades_list):
+            n=len(trades_list); wins=sum(1 for t in trades_list if float(t.get('pnl',0) or 0)>0)
+            pnl=sum(float(t.get('pnl',0) or 0) for t in trades_list)
+            return n, wins/n*100 if n else 50.0, pnl
+        tn,twr,tpnl = calc(today_trades)
+        yn,ywr,ypnl = calc(yest_trades)
+        # BTC como proxy de sentimento crypto
+        btc_chg = 0.0
+        with state_lock:
+            btc_ticker = crypto_prices.get('BTCUSDT', {})
+            if btc_ticker: btc_chg = float(btc_ticker.get('change_24h', 0) or 0)
+        # USDBRL
+        usdbrl_chg = 0.0
+        try:
+            import requests
+            r = requests.get('https://frankfurter.app/latest?from=USD&to=BRL', timeout=3)
+            if r.ok:
+                rate = r.json().get('rates',{}).get('BRL', 0)
+                if rate > 0:
+                    # Comparar com valor anterior em memória
+                    prev = _cross_market_state.get('_usdbrl_prev', rate)
+                    usdbrl_chg = (rate - prev) / prev * 100
+                    _cross_market_state['_usdbrl_prev'] = rate
+                    _cross_market_state['_usdbrl_rate'] = rate
+        except: pass
+        update_cross_market_state({
+            'stocks_wr_today': twr, 'stocks_pnl_today': tpnl, 'stocks_n_today': tn,
+            'stocks_wr_yesterday': ywr, 'stocks_pnl_yesterday': ypnl, 'stocks_n_yesterday': yn,
+            'usdbrl_change_pct': usdbrl_chg, 'btc_change_24h': btc_chg,
+        })
+        log.debug(f"CROSS_MKT: stocks_today WR={twr:.1f}% n={tn} | BTC_chg={btc_chg:+.1f}% | USDBRL={usdbrl_chg:+.1f}%")
+    except Exception as e:
+        log.warning(f"_update_cross_market_from_stocks: {e}")
 
 def process_trade_outcome(trade: dict):
     """[L-7][FIX-4] Processa fechamento de trade e atualiza aprendizado.
@@ -3193,6 +3362,10 @@ def monitor_trades():
                 alert_trade_closed(c)
                 # [L-7] Aprender com o resultado do trade
                 process_trade_outcome(c)
+                # [v10.13] Atualizar estado cross-market após fechar trade de stock
+                if c.get('asset_type') == 'stock':
+                    try: _update_cross_market_from_stocks()
+                    except: pass
             for c in closed_cryptos:
                 audit('TRADE_CLOSED',{'id':c['id'],'symbol':c['symbol'],'pnl':c['pnl'],'reason':c['close_reason']})
                 enqueue_persist('trade',c)
@@ -3200,6 +3373,10 @@ def monitor_trades():
                 alert_trade_closed(c)
                 # [L-7] Aprender com o resultado do trade
                 process_trade_outcome(c)
+                # [v10.13] Atualizar estado cross-market após fechar trade de stock
+                if c.get('asset_type') == 'stock':
+                    try: _update_cross_market_from_stocks()
+                    except: pass
             beat('monitor_trades')  # [v10.9] beat após processamento — evita FROZEN com muitas trades
         except Exception as e: log.error(f'monitor_trades: {e}')
 
@@ -3613,6 +3790,18 @@ def auto_trade_crypto():
                     score = min(50 + int(abs(change_24h) * 5), 95)
                     if direction == 'SHORT': score = 100 - score
                     atr_pct_c = 0.0; vol_ratio_c = 0.0
+
+                # [v10.13] Ajuste temporal + cross-market no score de crypto
+                _now_c = datetime.utcnow()
+                _t_adj, _t_blocked, _t_reason = get_temporal_crypto_score(_now_c.hour, _now_c.weekday())
+                if _t_blocked:
+                    log.debug(f"TEMPORAL_BLOCK crypto {display}: {_t_reason}")
+                    continue
+                _cm_adj = get_cross_market_crypto_adj()
+                _score_before = score
+                score = max(0, min(100, score + _t_adj + _cm_adj))
+                if abs(_t_adj + _cm_adj) >= 5:
+                    log.debug(f"SCORE_ADJ crypto {display}: {_score_before}→{score} (t={_t_adj:+d} cm={_cm_adj:+d})")
 
                 score_factor=min(abs(score-50)/50.0,1.0)
 

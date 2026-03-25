@@ -479,7 +479,7 @@ def persistence_worker():
             # [BUG-1] agora são 3 elementos
             priority, seq, task = urgent_queue.get(timeout=5)
             kind = task.get('kind')
-            if kind == 'trade':          _db_save_trade(task['data'])
+            if kind == 'trade':          _db_save_trade(task['data']); _backup_trade_to_file(task['data'])
             elif kind == 'arbi':         _db_save_arbi_trade(task['data'])
             elif kind == 'audit':        _db_insert_audit(task['data'])
             elif kind == 'order':        _db_save_order(task['data'])
@@ -2207,7 +2207,49 @@ def init_trades_tables():
         cursor.close(); conn.close()
         log.info(f'Loaded: {len(stocks_open)}s/{len(crypto_open)}c/{len(arbi_open)}a open | '
                  f'{len(orders_log)} orders | {len(audit_log)} audit | {len(symbol_cooldown)} cooldowns')
+        _restore_missing_trades_from_backup()   # [v10.11] verifica backup após carregar do banco
     except Exception as e: log.error(f'init_trades_tables: {e}')
+
+
+import os as _os, json as _json, threading as _bk_lock
+_BACKUP_FILE = '/tmp/egreja_trades_backup.json'
+_backup_lock = threading.Lock()
+
+def _backup_trade_to_file(trade: dict):
+    """[v10.11] Backup local JSON — proteção dupla contra perda de dados em deploy."""
+    try:
+        with _backup_lock:
+            existing = []
+            if _os.path.exists(_BACKUP_FILE):
+                try:
+                    with open(_BACKUP_FILE, 'r') as f:
+                        existing = _json.load(f)
+                except: existing = []
+            # Evita duplicatas pelo ID
+            ids = {t.get('id') for t in existing}
+            if trade.get('id') not in ids:
+                existing.append({k: str(v) if hasattr(v,'isoformat') else v 
+                                 for k,v in trade.items() 
+                                 if k not in ('_features','pnl_history')})
+                with open(_BACKUP_FILE, 'w') as f:
+                    _json.dump(existing, f)
+    except Exception as e:
+        log.warning(f'[BACKUP] falha no backup local: {e}')
+
+def _restore_missing_trades_from_backup():
+    """[v10.11] No startup, verifica se há trades no backup que não estão na memória."""
+    try:
+        if not _os.path.exists(_BACKUP_FILE): return
+        with open(_BACKUP_FILE, 'r') as f:
+            backup = _json.load(f)
+        db_ids = {t.get('id') for t in stocks_closed + crypto_closed}
+        missing = [t for t in backup if t.get('id') not in db_ids and t.get('status')=='CLOSED']
+        if missing:
+            log.warning(f'[BACKUP] {len(missing)} trades no backup não encontradas na memória — verificar banco')
+            for t in missing[:5]:
+                log.warning(f'  Missing: {t.get("id")} {t.get("symbol")} {t.get("closed_at")}')
+    except Exception as e:
+        log.warning(f'[BACKUP] erro ao verificar backup: {e}')
 
 def _db_save_trade(trade):
     conn=get_db()
@@ -4385,8 +4427,10 @@ def _get_db_trade_stats():
                 SUM(CASE WHEN closed_at >= DATE_SUB(NOW(),INTERVAL 365 DAY) THEN pnl ELSE 0 END) as annual_pnl,
                 SUM(CASE WHEN asset_type='stock' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as stocks_daily,
                 SUM(CASE WHEN asset_type='stock' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as stocks_monthly,
+                SUM(CASE WHEN asset_type='stock' AND closed_at >= DATE_SUB(NOW(),INTERVAL 365 DAY) THEN pnl ELSE 0 END) as stocks_annual,
                 SUM(CASE WHEN asset_type='crypto' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as crypto_daily,
-                SUM(CASE WHEN asset_type='crypto' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as crypto_monthly
+                SUM(CASE WHEN asset_type='crypto' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as crypto_monthly,
+                SUM(CASE WHEN asset_type='crypto' AND closed_at >= DATE_SUB(NOW(),INTERVAL 365 DAY) THEN pnl ELSE 0 END) as crypto_annual
             FROM trades WHERE status='CLOSED'
         """)
         row = cursor.fetchone()
@@ -4441,16 +4485,22 @@ def stats():
         'stocks_open_trades':len(stocks_open),
         'stocks_closed_trades':int(db_st.get('stocks_total',len(stocks_closed))),
         'stocks_win_rate':round(db_st.get('stocks_wins',0)/db_st.get('stocks_total',1)*100,1) if db_st.get('stocks_total',0)>0 else 0,
+        'stocks_annual_pnl':round(db_st.get('stocks_annual',0),2),
         'stocks_daily_pnl':round(db_st.get('stocks_daily',0),2),
         'stocks_monthly_pnl':round(db_st.get('stocks_monthly',0),2),
+        'stocks_return_pct':round(db_st.get('stocks_pnl',0)/INITIAL_CAPITAL_STOCKS*100,2) if INITIAL_CAPITAL_STOCKS>0 else 0,
+        'stocks_annual_return_pct':round(db_st.get('stocks_annual',0)/INITIAL_CAPITAL_STOCKS*100,2) if INITIAL_CAPITAL_STOCKS>0 else 0,
         # ─── CRYPTO ─────────────────────────────────────────────
         'crypto_capital':round(cc,2),'crypto_portfolio_value':round(ct,2),
         'crypto_open_pnl':round(c_op,2),'crypto_closed_pnl':round(c_cl,2),
         'crypto_open_trades':len(crypto_open),
         'crypto_closed_trades':int(db_st.get('crypto_total',len(crypto_closed))),
         'crypto_win_rate':round(db_st.get('crypto_wins',0)/db_st.get('crypto_total',1)*100,1) if db_st.get('crypto_total',0)>0 else 0,
+        'crypto_annual_pnl':round(db_st.get('crypto_annual',0),2),
         'crypto_daily_pnl':round(db_st.get('crypto_daily',0),2),
         'crypto_monthly_pnl':round(db_st.get('crypto_monthly',0),2),
+        'crypto_return_pct':round(db_st.get('crypto_pnl',0)/INITIAL_CAPITAL_CRYPTO*100,2) if INITIAL_CAPITAL_CRYPTO>0 else 0,
+        'crypto_annual_return_pct':round(db_st.get('crypto_annual',0)/INITIAL_CAPITAL_CRYPTO*100,2) if INITIAL_CAPITAL_CRYPTO>0 else 0,
         # ─── ARBI (SEGREGADO) ───────────────────────────────────
         'arbi_book': {
             'segregated': True,

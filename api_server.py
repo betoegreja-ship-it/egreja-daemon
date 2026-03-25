@@ -2635,6 +2635,8 @@ def init_all_tables():
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS signal_id           VARCHAR(40)  NULL",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS feature_hash        VARCHAR(20)  NULL",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS learning_confidence DECIMAL(6,2) NULL",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fee_estimated DECIMAL(10,2) NULL DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS pnl_gross DECIMAL(10,2) NULL",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS insight_summary     TEXT         NULL",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS learning_version    VARCHAR(10)  NULL",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS features_json       LONGTEXT     NULL",  # [P0-1]
@@ -2684,16 +2686,24 @@ def init_trades_tables():
         for r in cursor.fetchall():
             t=_row_to_trade(r)
             if t['asset_type']=='stock':
+                if not t.get('fee_estimated') and t.get('status')=='CLOSED':
+                    apply_fee_to_trade(t)  # [v10.14] fee retroativo
                 stocks_closed.append(t)
-                stocks_capital += float(t.get('pnl') or 0)  # [FIX-27] reaplica PnL fechado no capital após restart
+                stocks_capital += float(t.get('pnl') or 0)  # [FIX-27]
             elif t['asset_type']=='crypto':
+                if not t.get('fee_estimated') and t.get('status')=='CLOSED':
+                    apply_fee_to_trade(t)  # [v10.14] fee retroativo
                 crypto_closed.append(t)
-                crypto_capital += float(t.get('pnl') or 0)  # [FIX-27] reaplica PnL fechado no capital após restart
+                crypto_capital += float(t.get('pnl') or 0)  # [FIX-27]
         cursor.execute("SELECT * FROM arbi_trades WHERE status='OPEN'")
         for r in cursor.fetchall():
             t=_row_to_trade(r); arbi_open.append(t); arbi_capital-=t['position_size']
         cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC")  # [v10.9] sem limite
-        for r in cursor.fetchall(): arbi_closed.append(_row_to_trade(r))
+        for r in cursor.fetchall():
+            at=_row_to_trade(r)
+            if not at.get('fee_estimated'):
+                at['market']='ARBI'; apply_fee_to_trade(at)
+            arbi_closed.append(at)
         # [v10.9] Carregar runtime settings do banco
         try:
             global MIN_SCORE_AUTO, TRAILING_TRIGGER_PCT, STOCK_SL_PCT  # [FIX] declarar globals antes de atribuir
@@ -2793,13 +2803,13 @@ def _db_save_trade(trade):
                                               if not k.startswith('_')}, default=str)
             except: pass
         cursor.execute("""INSERT INTO trades (id,symbol,market,asset_type,direction,
-            entry_price,exit_price,current_price,quantity,position_value,
+            entry_price,exit_price,current_price,quantity,position_value,fee_estimated,pnl_gross,
             pnl,pnl_pct,peak_pnl_pct,score,`signal`,status,close_reason,
             from_watchlist,order_id,opened_at,closed_at,extensions,
             signal_id,feature_hash,learning_confidence,insight_summary,learning_version,features_json)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_price=VALUES(current_price),pnl=VALUES(pnl),
-            pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
+            pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),fee_estimated=VALUES(fee_estimated),pnl_gross=VALUES(pnl_gross),
             status=VALUES(status),close_reason=VALUES(close_reason),
             exit_price=VALUES(exit_price),closed_at=VALUES(closed_at),extensions=VALUES(extensions)""",
             (t.get('id'),t.get('symbol'),t.get('market'),t.get('asset_type'),t.get('direction'),
@@ -2823,7 +2833,7 @@ def _db_save_arbi_trade(trade):
             position_size,pnl,pnl_pct,peak_pnl_pct,fx_rate,status,close_reason,opened_at,closed_at,extensions)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_spread=VALUES(current_spread),pnl=VALUES(pnl),
-            pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
+            pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),fee_estimated=VALUES(fee_estimated),pnl_gross=VALUES(pnl_gross),
             status=VALUES(status),close_reason=VALUES(close_reason),
             closed_at=VALUES(closed_at),extensions=VALUES(extensions)""",
             (t.get('id'),t.get('pair_id'),t.get('name'),t.get('leg_a'),t.get('leg_b'),
@@ -3671,6 +3681,7 @@ def monitor_trades():
                         _cd = SYMBOL_SL_COOLDOWNS.get(min(symbol_sl_count.get(sym,1),4), 300)
                         symbol_cooldown[sym] = time.time() + (_cd - SYMBOL_COOLDOWN_SEC)  # offset extra
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
+                        apply_fee_to_trade(c)  # [v10.14] descontar corretagem
                         stocks_closed.insert(0,c)
                         # [v10.9] Sem limite em memória — histórico completo
                         to_close.append(trade['id']); closed_stocks.append(c)
@@ -3711,6 +3722,7 @@ def monitor_trades():
                         crypto_capital += trade['position_value'] + trade['pnl']
                         symbol_cooldown[trade['symbol']]=time.time()
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
+                        apply_fee_to_trade(c)  # [v10.14] descontar corretagem
                         crypto_closed.insert(0,c)
                         # [v10.9] Sem limite em memória — histórico completo
                         to_close_c.append(trade['id']); closed_cryptos.append(c)
@@ -5479,7 +5491,9 @@ def performance_stocks():
         # Global
         cursor.execute("""SELECT COUNT(*) as n, SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
             MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
-            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
+            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h,
+            SUM(COALESCE(fee_estimated,0)) as fee_estimated_total,
+            SUM(COALESCE(pnl_gross,pnl)) as pnl_gross_total
             FROM trades WHERE status='CLOSED' AND asset_type='stock'""")
         glb = cursor.fetchone()
         cursor.close(); conn.close()
@@ -5528,7 +5542,9 @@ def performance_crypto():
         by_reason = [{**r,'pnl':float(r['pnl'] or 0),'n':int(r['n']),'wins':int(r['wins'])} for r in cursor.fetchall()]
         cursor.execute("""SELECT COUNT(*) as n, SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
             MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
-            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
+            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h,
+            SUM(COALESCE(fee_estimated,0)) as fee_estimated_total,
+            SUM(COALESCE(pnl_gross,pnl)) as pnl_gross_total
             FROM trades WHERE status='CLOSED' AND asset_type='crypto'""")
         glb = cursor.fetchone()
         cursor.close(); conn.close()
@@ -6630,6 +6646,67 @@ def _report_scheduler():
 
 
 # ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════
+# [v10.14] BROKERAGE FEE SIMULATION — taxas reais por mercado
+# Deduzidas automaticamente no fechamento de cada trade
+# P&L BRUTO inalterado (usado para lógica de trading)
+# P&L LÍQUIDO = gross - fee (usado para reporting e aprendizado)
+# ═══════════════════════════════════════════════════════════════════
+
+# Taxas round-trip (entrada + saída) por mercado
+FEES = {
+    'B3':    0.00195,   # 0.065% corretagem × 2 + 0.033% emolumentos × 2
+    'NYSE':  0.00012,   # IBKR Pro ~0.005% × 2 + SEC fee
+    'CRYPTO':0.00200,   # Binance 0.10% taker × 2
+    'ARBI':  0.00200,   # Binance 0.10% × 2 legs (mas 4 ordens = entrada+saída × 2 mercados)
+}
+# Taxa BNB com desconto 25% para crypto
+FEES_BNB = {'CRYPTO': 0.00150, 'ARBI': 0.00150}
+USE_BNB_DISCOUNT = bool(os.environ.get('USE_BNB_DISCOUNT', 'false').lower() == 'true')
+
+def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> float:
+    """[v10.14] Calcula taxa estimada de corretagem para uma operação round-trip."""
+    pv = abs(float(position_value or 0))
+    if asset_type == 'stock':
+        rate = FEES.get(market, FEES['NYSE'])
+    elif asset_type == 'crypto':
+        if USE_BNB_DISCOUNT:
+            rate = FEES_BNB.get('CRYPTO', FEES['CRYPTO'])
+        else:
+            rate = FEES['CRYPTO']
+    else:  # arbi
+        if USE_BNB_DISCOUNT:
+            rate = FEES_BNB.get('ARBI', FEES['ARBI'])
+        else:
+            rate = FEES['ARBI']
+    return round(pv * rate, 2)
+
+def apply_fee_to_trade(trade: dict) -> dict:
+    """
+    [v10.14] Aplica taxa ao trade fechado.
+    - trade['pnl_gross'] = P&L original (preservado)
+    - trade['fee_estimated'] = taxa calculada
+    - trade['pnl'] = P&L líquido (bruto - taxa) ← usado no reporting
+    - trade['pnl_pct'] = recalculado sobre posição
+    NÃO altera lógica de trading (SL, TP, capital devolvido — baseados no gross)
+    """
+    if trade.get('_fee_applied'):
+        return trade  # evitar dupla aplicação
+    pv   = float(trade.get('position_value', 0) or 0)
+    mkt  = trade.get('market', 'NYSE')
+    atype = trade.get('asset_type', 'stock')
+    fee  = calc_fee(pv, mkt, atype)
+    gross = float(trade.get('pnl', 0) or 0)
+    net   = round(gross - fee, 2)
+    net_pct = round(net / pv * 100, 4) if pv > 0 else 0
+    trade['pnl_gross']      = gross
+    trade['fee_estimated']  = fee
+    trade['pnl']            = net          # sobrescreve com líquido para reporting
+    trade['pnl_pct']        = net_pct      # recalculado líquido
+    trade['_fee_applied']   = True
+    return trade
+
+
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════
 if __name__ == '__main__':

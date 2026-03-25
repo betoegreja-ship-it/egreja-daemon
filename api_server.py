@@ -3257,6 +3257,16 @@ def stock_execution_worker():
                     if price > ema9 * 1.01: score += 7   # preço acima EMA9 — momentum
                     elif price < ema9 * 0.99: score -= 7  # preço abaixo EMA9 — fraqueza
                 score = max(0, min(100, score))
+                # [v10.11] Boost/penalidade baseado em padrão histórico do learning
+                # O feature_hash não está disponível aqui, mas podemos usar RSI/EMA buckets
+                _rsi_bucket = 'OVERSOLD' if rsi < 30 else ('LOW' if rsi < 45 else ('HIGH' if rsi > 65 else ('OVERBOUGHT' if rsi > 75 else 'NEUTRAL')))
+                _ema_align  = 'BULLISH' if (ema9>ema21 and ema21>ema50 and ema50>0) else ('BEARISH' if (ema9<ema21 and ema21<ema50 and ema50>0) else 'NEUTRAL')
+                with learning_lock:
+                    for _ftype, _fval in [('rsi_bucket', _rsi_bucket), ('ema_alignment', _ema_align)]:
+                        _fs = factor_stats_cache.get((_ftype, _fval), {})
+                        if _fs.get('total_samples', 0) >= 10:
+                            _cw = _fs.get('confidence_weight', 0.0)
+                            score = max(0, min(100, score + int(_cw * 8)))  # ±8 pontos do learning
                 signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),

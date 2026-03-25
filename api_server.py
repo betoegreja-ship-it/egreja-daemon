@@ -930,7 +930,50 @@ def record_data_quality(symbol, source, latency_ms, price_valid):
 # Aprende padrões de hora×dia, correlações stocks→crypto e FX
 # ═══════════════════════════════════════════════════════════════════
 
-# Scores temporais de crypto por hora UTC (derivados de 1.183 trades reais)
+# Scores temporais de STOCKS por hora UTC (derivados de 534 trades reais)
+STOCKS_HOUR_SCORE = {
+    13: +6,   # 13h UTC = 10h BRT: abertura B3, WR 60.6%, +$292/trade
+    14: +2,   # 14h UTC = 11h BRT: WR 54.3%
+    15: -5,   # 15h UTC = 12h BRT: WR 45.9%, instável pós-abertura
+    16: +6,   # 16h UTC = 13h BRT: WR 64.7%, NYSE estável
+    17: +2,   # 17h UTC = 14h BRT: WR 54.1%
+    18: +6,   # 18h UTC = 15h BRT: WR 59.4%, B3 69% WR
+    19: -5,   # 19h UTC = 16h BRT: WR 41.4%, fechamento B3 caótico
+}
+
+# Score por dia da semana para STOCKS (0=Seg, 6=Dom)
+STOCKS_DOW_SCORE = {
+    0: 0,    # Segunda: 50.5% WR — neutro
+    1: +2,   # Terça:   51.6% WR — levemente positivo
+    2: +12,  # Quarta:  60.5% WR — MELHOR DIA, +$32.5K total
+    3: -10,  # Quinta:  44.1% WR — PIOR DIA, SL 27%, -$14.4K
+    4: +4,   # Sexta:   54.7% WR — ligeiramente positivo
+    5: 0,    # Sábado:  mercado fechado
+    6: 0,    # Domingo: mercado fechado
+}
+
+# Penalidade específica B3 na quinta (volatilidade de anúncios/opções)
+STOCKS_B3_QUINTA_PENALTY = -15  # B3 quinta: WR 34.8%, média -$490/trade
+
+# Janelas prioritárias stocks (WR>=70%, n>=5) — boost adicional
+STOCKS_PRIORITY_WINDOWS = {
+    (1, 13): +15,  # Terça 13h: WR 69%, n=36
+    (2, 13): +15,  # Quarta 13h: WR 72%, n=50
+    (2, 18): +12,  # Quarta 18h: WR 78%, n=23
+    (0, 18): +12,  # Segunda 18h: WR 70%, n=20
+    (2, 17): +10,  # Quarta 17h: WR 71%, n=21
+    (4, 16): +10,  # Sexta 16h: WR 67%, n=21
+}
+
+# Janelas a bloquear em stocks (WR<35%, n>=5)
+STOCKS_BLOCKED_WINDOWS = {
+    (3, 17): 'Qui17h_WR11pct',   # PIOR: WR 11%, n=9, média -$645
+    (1, 18): 'Ter18h_WR33pct',   # WR 33%, n=18
+    (0, 19): 'Seg19h_WR33pct',   # WR 33%, n=18
+    (2, 19): 'Qua19h_WR25pct',   # WR 25%, n=16
+}
+
+# Scores temporais de crypto por hora UTC# Scores temporais de crypto por hora UTC (derivados de 1.183 trades reais)
 # Positivo = favorável, Negativo = desfavorável
 CRYPTO_HOUR_SCORE = {
     0: 0, 1: -8, 2: +6, 3: -8, 4: +6, 5: +12, 6: +12, 7: +12,
@@ -987,6 +1030,32 @@ def update_cross_market_state(new_vals: dict):
     global _cross_market_state
     _cross_market_state.update(new_vals)
     _cross_market_state['last_update'] = datetime.utcnow().isoformat()
+
+def get_temporal_stock_score(hour_utc: int, weekday: int, market: str = 'NYSE') -> tuple:
+    """
+    [v10.13] Retorna (score_adj, blocked, reason) para stocks.
+    Baseado em análise de 534 trades reais por dia/hora/mercado.
+    """
+    window_key = (weekday, hour_utc)
+
+    # Bloquear janelas ruins
+    if window_key in STOCKS_BLOCKED_WINDOWS:
+        return 0, True, STOCKS_BLOCKED_WINDOWS[window_key]
+
+    hour_adj = STOCKS_HOUR_SCORE.get(hour_utc, 0)
+    dow_adj  = STOCKS_DOW_SCORE.get(weekday, 0)
+
+    # Penalidade específica B3 na quinta
+    b3_quinta_adj = 0
+    if weekday == 3 and market == 'B3':
+        b3_quinta_adj = STOCKS_B3_QUINTA_PENALTY
+
+    # Boost janelas prioritárias
+    priority_boost = STOCKS_PRIORITY_WINDOWS.get(window_key, 0)
+
+    total_adj = hour_adj + dow_adj + b3_quinta_adj + priority_boost
+    reason = f"h{hour_utc}UTC_d{weekday}_mkt{market}_adj{total_adj:+d}"
+    return total_adj, False, reason
 
 def get_temporal_crypto_score(hour_utc: int, weekday: int) -> tuple:
     """
@@ -3473,6 +3542,17 @@ def stock_execution_worker():
                 score = max(0, min(100, score + _score_adj))
                 if _pattern_blocked and score < MIN_SCORE_AUTO + 5:
                     continue  # bloquear sinal de padrão ruim
+                # [v10.13] Ajuste temporal para stocks
+                _now_s = datetime.utcnow()
+                _mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
+                _st_adj, _st_blocked, _st_reason = get_temporal_stock_score(_now_s.hour, _now_s.weekday(), _mkt_type)
+                if _st_blocked:
+                    log.debug(f"STOCK_TEMPORAL_BLOCK: {sym} — {_st_reason}")
+                    continue
+                _score_before_t = score
+                score = max(0, min(100, score + _st_adj))
+                if abs(_st_adj) >= 5:
+                    log.debug(f"STOCK_SCORE_ADJ: {sym} {_score_before_t}→{score} ({_st_reason})")
                 signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),

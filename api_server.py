@@ -85,8 +85,8 @@ if GUNICORN_WORKERS > 1:
 
 INITIAL_CAPITAL_STOCKS = float(os.environ.get('INITIAL_CAPITAL_STOCKS', 9_000_000))
 INITIAL_CAPITAL_CRYPTO = float(os.environ.get('INITIAL_CAPITAL_CRYPTO', 1_000_000))
-MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 450_000))
-MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO',  50_000))
+MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 250_000))
+MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 150_000))
 
 FMP_API_KEY      = os.environ.get('FMP_API_KEY', '')        # mantido como fallback terciário
 POLYGON_API_KEY  = os.environ.get('POLYGON_API_KEY', '')    # primário para stocks US/NYSE
@@ -3365,7 +3365,8 @@ def stock_execution_worker():
                     _cache_reason('market_closed')
                     continue
 
-                desired_pos=min(stocks_capital*(0.08+score_factor*0.07)*risk_mult, MAX_POSITION_STOCKS)
+                # [v10.11] Posição maior para reduzir capital parado — 15 posições × $200K+ = $3M investido
+                desired_pos=min(stocks_capital*(0.12+score_factor*0.10)*risk_mult, MAX_POSITION_STOCKS)
                 risk_ok,risk_reason,approved_size=check_risk(sym,mkt,desired_pos,'stocks')
                 if not risk_ok:
                     # [v10.3.4-F1] Preservar o motivo REAL do bloqueio, não colapsar em 'risk_blocked'
@@ -3544,7 +3545,8 @@ def auto_trade_crypto():
                     with learning_lock: processed_signal_ids[_c_ms_key] = {'sig_id': _csig_id, 'reason': 'learning_dead_zone'}
                     continue
 
-                desired_pos=min(crypto_capital*(0.05+score_factor*0.05)*risk_mult_c,MAX_POSITION_CRYPTO)
+                # [v10.11] Posição crypto maior — 10 posições × $120K = $1.2M de $1.5M investido
+                desired_pos=min(crypto_capital*(0.08+score_factor*0.07)*risk_mult_c,MAX_POSITION_CRYPTO)
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:

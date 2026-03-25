@@ -3225,14 +3225,39 @@ def stock_execution_worker():
                 rsi  = pd_data.get('rsi', 50) or 50
                 ema9 = pd_data.get('ema9', 0)  or 0
                 ema21= pd_data.get('ema21',0)  or 0
+                # [v10.11] Score composto multi-fator — mais discriminante que RSI+EMA simples
                 score = 50
-                if rsi < 40: score += 15
-                elif rsi > 60: score -= 15
+                # RSI (30 pontos): oversold/overbought com gradação
+                if   rsi < 30: score += 25    # extremo oversold — forte COMPRA
+                elif rsi < 40: score += 15    # oversold
+                elif rsi < 50: score += 5     # neutro-baixo
+                elif rsi > 70: score -= 25    # extremo overbought — forte VENDA
+                elif rsi > 60: score -= 15    # overbought
+                elif rsi > 50: score -= 5     # neutro-alto
+                # EMA cross (25 pontos): alinhamento de tendência
+                ema50 = pd_data.get('ema50', 0) or 0
                 if ema9 > 0 and ema21 > 0:
-                    if ema9 > ema21: score += 10
-                    else: score -= 10
+                    if ema9 > ema21:
+                        score += 12           # EMA9 > EMA21: tendência de alta
+                        if ema50 > 0 and ema21 > ema50: score += 8  # EMA21 > EMA50: tendência forte
+                    else:
+                        score -= 12           # EMA9 < EMA21: tendência de baixa
+                        if ema50 > 0 and ema21 < ema50: score -= 8  # EMA21 < EMA50: tendência fraca
+                # Volume (10 pontos): confirma movimento
+                vol_ratio = pd_data.get('volume_ratio', 0) or 0
+                if vol_ratio > 1.5: score += 8    # volume acima da média — confirma
+                elif vol_ratio < 0.5: score -= 5  # volume baixo — sinal fraco
+                # ATR / Volatilidade (10 pontos): filtrar alta volatilidade
+                atr_pct = pd_data.get('atr_pct', 0) or 0
+                if 0 < atr_pct < 1.5: score += 5  # volatilidade saudável
+                elif atr_pct > 4.0: score -= 10   # volatilidade excessiva — risco alto
+                # Preço vs EMA9 (10 pontos): preço acima/abaixo da média rápida
+                price = pd_data.get('price', 0) or 0
+                if price > 0 and ema9 > 0:
+                    if price > ema9 * 1.01: score += 7   # preço acima EMA9 — momentum
+                    elif price < ema9 * 0.99: score -= 7  # preço abaixo EMA9 — fraqueza
                 score = max(0, min(100, score))
-                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')  # [v10.9-opt] usa MIN_SCORE_AUTO=73
+                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),
                     'score': score, 'signal': signal_val,

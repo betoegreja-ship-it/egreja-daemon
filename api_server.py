@@ -3799,7 +3799,12 @@ def arbi_scan_loop():
                 if not spread['opportunity'] or not spread['markets_open']:
                     time.sleep(1.5); continue
 
-                risk_ok,risk_reason,approved_size=check_risk_arbi(pair['id'],ARBI_POS_SIZE)
+                # [v10.11] Position size dinâmico = portfolio_arbi / 3 (cresce com lucros)
+                with state_lock:
+                    _arbi_pnl_total = sum(t.get('pnl',0) for t in arbi_open) + sum(t.get('pnl',0) for t in arbi_closed)
+                    _arbi_port_val  = ARBI_CAPITAL + _arbi_pnl_total
+                _dynamic_pos = max(round(_arbi_port_val / 3), ARBI_POS_SIZE)
+                risk_ok,risk_reason,approved_size=check_risk_arbi(pair['id'],_dynamic_pos)
                 if not risk_ok:
                     if 'KILL_SWITCH' in risk_reason: break
                     time.sleep(1.5); continue

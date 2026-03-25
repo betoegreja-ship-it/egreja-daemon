@@ -2020,6 +2020,13 @@ def process_trade_outcome(trade: dict):
             update_signal_outcome(sig_id, trade.get('id',''), trade.get('order_id',''),
                                    pnl, pnl_pct, trade.get('close_reason',''))
 
+        # [v10.13] Atualizar padrões compostos descobertos automaticamente
+        if features:
+            try:
+                update_composite_pattern(features, pnl, pnl_pct)
+            except Exception as ce:
+                log.debug(f"update_composite_pattern: {ce}")
+
         LEARNING_DEGRADED = False
         learning_errors = max(0, learning_errors - 1)   # decrementa ao sucesso
     except Exception as e:
@@ -2028,6 +2035,291 @@ def process_trade_outcome(trade: dict):
         if learning_errors >= 5:
             LEARNING_DEGRADED = True
             log.warning('Learning engine em modo degradado após 5 erros consecutivos')
+
+# ═══════════════════════════════════════════════════════════════
+# [v10.13] PATTERN DISCOVERY ENGINE — mineração automática
+# Cruza todas as dimensões capturadas, descobre padrões novos
+# e retroalimenta o score com confiança estatística
+# ═══════════════════════════════════════════════════════════════
+
+# Cache de padrões compostos descobertos automaticamente
+_composite_patterns: dict = {}   # chave_composta → stats
+_pattern_discovery_lock = threading.Lock()
+_last_discovery_run: str = ''
+
+# Dimensões disponíveis para cruzamento — cresce com novos dados
+DISCOVERY_DIMENSIONS = [
+    # Primárias — já capturadas no feature_hash atual
+    'score_bucket', 'rsi_bucket', 'ema_alignment', 'volatility_bucket',
+    'regime_mode', 'time_bucket', 'weekday', 'asset_type', 'market_type',
+    'atr_bucket', 'volume_bucket', 'direction', 'dq_bucket',
+    # Temporais — extraídas do horário de abertura
+    'hour_utc', 'is_market_open_hour',
+    # Cross-market — estado dos outros mercados no momento do sinal
+    'stocks_regime',      # bom/ruim/neutro baseado em WR do dia
+    'crypto_regime',      # idem
+    'btc_trend',          # BTC subindo/caindo
+    'usdbrl_trend',       # dólar subindo/caindo
+    # Símbolo — padrões por ativo específico
+    'symbol_bucket',      # top_performer / normal / underperformer
+]
+
+# Combinações de 2 e 3 dimensões a explorar automaticamente
+DISCOVERY_COMBOS_2D = [
+    ('weekday', 'time_bucket'),
+    ('weekday', 'market_type'),
+    ('weekday', 'rsi_bucket'),
+    ('weekday', 'ema_alignment'),
+    ('weekday', 'volatility_bucket'),
+    ('time_bucket', 'market_type'),
+    ('time_bucket', 'rsi_bucket'),
+    ('time_bucket', 'ema_alignment'),
+    ('time_bucket', 'volatility_bucket'),
+    ('market_type', 'rsi_bucket'),
+    ('market_type', 'ema_alignment'),
+    ('market_type', 'volatility_bucket'),
+    ('rsi_bucket', 'ema_alignment'),
+    ('rsi_bucket', 'atr_bucket'),
+    ('rsi_bucket', 'volume_bucket'),
+    ('ema_alignment', 'volatility_bucket'),
+    ('ema_alignment', 'atr_bucket'),
+    ('score_bucket', 'rsi_bucket'),
+    ('score_bucket', 'ema_alignment'),
+    ('score_bucket', 'volatility_bucket'),
+    ('asset_type', 'weekday'),
+    ('asset_type', 'time_bucket'),
+    ('direction', 'weekday'),
+    ('direction', 'time_bucket'),
+    ('direction', 'volatility_bucket'),
+    ('stocks_regime', 'asset_type'),      # cross-market
+    ('btc_trend', 'asset_type'),          # BTC → crypto/stocks
+    ('usdbrl_trend', 'market_type'),      # FX → B3/NYSE
+]
+
+DISCOVERY_COMBOS_3D = [
+    ('weekday', 'time_bucket', 'market_type'),
+    ('weekday', 'time_bucket', 'rsi_bucket'),
+    ('weekday', 'rsi_bucket', 'ema_alignment'),
+    ('weekday', 'market_type', 'volatility_bucket'),
+    ('time_bucket', 'rsi_bucket', 'ema_alignment'),
+    ('time_bucket', 'market_type', 'rsi_bucket'),
+    ('rsi_bucket', 'ema_alignment', 'volatility_bucket'),
+    ('score_bucket', 'rsi_bucket', 'ema_alignment'),
+    ('asset_type', 'weekday', 'time_bucket'),
+    ('asset_type', 'weekday', 'volatility_bucket'),
+    ('direction', 'weekday', 'volatility_bucket'),
+    ('market_type', 'weekday', 'rsi_bucket'),
+    ('stocks_regime', 'weekday', 'asset_type'),   # 3D cross-market
+    ('btc_trend', 'weekday', 'asset_type'),
+]
+
+def _enrich_features_for_discovery(features: dict) -> dict:
+    """[v10.13] Adiciona dimensões cross-market e temporais ao feature dict para mineração."""
+    enriched = dict(features)
+    try:
+        # Hora UTC real
+        now = datetime.utcnow()
+        enriched['hour_utc'] = str(now.hour)
+        enriched['is_market_open_hour'] = 'YES' if 13 <= now.hour <= 19 else 'NO'
+        # Estado dos mercados cruzados
+        cm = _cross_market_state
+        sw = cm.get('stocks_wr_today', 50.0)
+        enriched['stocks_regime'] = 'BAD' if sw < 45 else ('GOOD' if sw >= 58 else 'NEUTRAL')
+        btc = cm.get('btc_change_24h', 0.0)
+        enriched['btc_trend'] = 'UP' if btc > 2 else ('DOWN' if btc < -2 else 'FLAT')
+        fx = cm.get('usdbrl_change_pct', 0.0)
+        enriched['usdbrl_trend'] = 'UP' if fx > 0.5 else ('DOWN' if fx < -0.5 else 'FLAT')
+        # Regime de crypto (baseado em WR do dia se disponível)
+        # Simplificado: usa btc_trend como proxy
+        enriched['crypto_regime'] = enriched['btc_trend']
+    except: pass
+    return enriched
+
+def _make_composite_key(features: dict, dims: tuple) -> str:
+    """Gera chave composta para combinação de dimensões."""
+    parts = [f"{d}={features.get(d, '?')}" for d in dims]
+    return '|'.join(parts)
+
+def _empty_composite_stats(key: str, dims: tuple) -> dict:
+    return {
+        'key': key, 'dims': '×'.join(dims),
+        'total_samples': 0, 'wins': 0, 'losses': 0,
+        'avg_pnl_pct': 0.0, 'ewma_hit_rate': 0.5,
+        'expectancy': 0.0, 'confidence_weight': 0.0,
+        'score_adj': 0,   # ajuste de score calculado
+        'reliable': False, 'blocked': False,
+        'last_seen': '', 'updated': '',
+    }
+
+def update_composite_pattern(features: dict, pnl: float, pnl_pct: float):
+    """[v10.13] Atualiza todos os padrões compostos relevantes para este trade."""
+    if not LEARNING_ENABLED: return
+    enriched = _enrich_features_for_discovery(features)
+    win = 1 if pnl > 0 else 0
+    alpha = 0.15
+    now_iso = datetime.utcnow().isoformat()
+
+    with _pattern_discovery_lock:
+        all_combos = DISCOVERY_COMBOS_2D + DISCOVERY_COMBOS_3D
+        for dims in all_combos:
+            # Verificar se todas as dimensões estão disponíveis
+            if not all(enriched.get(d) for d in dims): continue
+            key = _make_composite_key(enriched, dims)
+            s = _composite_patterns.get(key) or _empty_composite_stats(key, dims)
+
+            s['total_samples'] += 1
+            s['wins'] += win
+            s['losses'] += (1 - win)
+            s['avg_pnl_pct'] = (s['avg_pnl_pct'] * (s['total_samples']-1) + pnl_pct) / s['total_samples']
+            s['ewma_hit_rate'] = alpha * win + (1 - alpha) * s['ewma_hit_rate']
+            # Expectancy = E[pnl_pct] ajustado pelo EWMA
+            s['expectancy'] = round(s['ewma_hit_rate'] * s['avg_pnl_pct'] - (1-s['ewma_hit_rate']) * abs(s['avg_pnl_pct']), 4)
+            n = s['total_samples']
+            wr = s['wins'] / n
+            # confidence_weight: [-1, +1] — positivo = padrão confiável
+            s['confidence_weight'] = round(2 * wr - 1, 4)
+            # Score adjustment: quanto este padrão deve ajustar o score (±15 pts)
+            if n >= 15:
+                if wr >= 0.75: s['score_adj'] = +15
+                elif wr >= 0.65: s['score_adj'] = +10
+                elif wr >= 0.58: s['score_adj'] = +5
+                elif wr >= 0.48: s['score_adj'] = 0
+                elif wr >= 0.38: s['score_adj'] = -8
+                else: s['score_adj'] = -15
+            # Marcar como confiável ou a bloquear
+            s['reliable'] = (n >= 20 and wr >= 0.70 and s['ewma_hit_rate'] >= 0.65)
+            s['blocked']  = (n >= 20 and wr < 0.38 and s['ewma_hit_rate'] < 0.45)
+            s['last_seen'] = now_iso
+            s['updated'] = now_iso
+            _composite_patterns[key] = s
+
+def get_composite_score_adj(features: dict) -> tuple:
+    """
+    [v10.13] Consulta todos os padrões compostos e retorna o ajuste de score agregado.
+    Retorna (score_adj, blocked, best_pattern_key).
+    Prioriza padrões com mais amostras e maior confiança.
+    """
+    if not _composite_patterns or not LEARNING_ENABLED:
+        return 0, False, ''
+
+    enriched = _enrich_features_for_discovery(features)
+    adj_total = 0
+    blocked = False
+    best_key = ''
+    best_n = 0
+    count = 0
+
+    with _pattern_discovery_lock:
+        all_combos = DISCOVERY_COMBOS_2D + DISCOVERY_COMBOS_3D
+        for dims in all_combos:
+            if not all(enriched.get(d) for d in dims): continue
+            key = _make_composite_key(enriched, dims)
+            s = _composite_patterns.get(key)
+            if not s or s['total_samples'] < 10: continue
+
+            # Bloquear se este padrão é consistentemente ruim
+            if s['blocked']:
+                blocked = True
+                best_key = key
+                break
+
+            # Peso pelo número de amostras (mais amostras = mais confiável)
+            weight = min(s['total_samples'] / 50.0, 1.0)
+            adj_total += s['score_adj'] * weight
+            count += 1
+            if s['total_samples'] > best_n:
+                best_n = s['total_samples']
+                best_key = key
+
+    if count > 0:
+        # Média ponderada, limitada a ±20 pts
+        adj_total = max(-20, min(+20, int(adj_total / count)))
+
+    return adj_total, blocked, best_key
+
+def run_pattern_discovery():
+    """
+    [v10.13] Mineração periódica de padrões do banco — roda em background.
+    Analisa trades históricas e alimenta _composite_patterns com dados passados.
+    """
+    global _last_discovery_run
+    if not LEARNING_ENABLED: return
+    try:
+        conn = get_db()
+        if not conn: return
+        cursor = conn.cursor(dictionary=True)
+        # Buscar trades fechadas com features_json
+        cursor.execute("""
+            SELECT t.pnl, t.pnl_pct, t.features_json, t.asset_type, t.market,
+                   t.opened_at, t.closed_at, t.close_reason, t.symbol,
+                   t.score, t.rsi_at_open, t.ema9_at_open, t.ema21_at_open
+            FROM trades t
+            WHERE t.status='CLOSED' AND t.pnl IS NOT NULL
+            ORDER BY t.closed_at DESC
+            LIMIT 2000
+        """)
+        rows = cursor.fetchall()
+        cursor.close(); conn.close()
+
+        processed = 0
+        for row in rows:
+            try:
+                features = {}
+                if row.get('features_json'):
+                    features = json.loads(row['features_json'])
+                if not features:
+                    # Reconstruir features básicas do que temos
+                    opened = row.get('opened_at')
+                    dt = datetime.fromisoformat(str(opened).replace('Z','')) if opened else datetime.utcnow()
+                    features = {
+                        'asset_type': row.get('asset_type','stock'),
+                        'market_type': row.get('market','NYSE'),
+                        'weekday': str(dt.weekday()),
+                        'hour_utc': str(dt.hour),
+                        'time_bucket': _time_bucket(dt),
+                        'direction': 'LONG',  # maioria é LONG
+                    }
+                # Garantir weekday e hour como strings
+                if 'weekday' in features:
+                    features['weekday'] = str(features['weekday'])
+                if 'hour_utc' not in features and row.get('opened_at'):
+                    dt = datetime.fromisoformat(str(row['opened_at']).replace('Z',''))
+                    features['hour_utc'] = str(dt.hour)
+                    features['is_market_open_hour'] = 'YES' if 13 <= dt.hour <= 19 else 'NO'
+                # Adicionar cross-market (histórico simplificado)
+                features['stocks_regime'] = 'NEUTRAL'
+                features['btc_trend'] = 'FLAT'
+                features['usdbrl_trend'] = 'FLAT'
+                pnl = float(row.get('pnl', 0) or 0)
+                pnl_pct = float(row.get('pnl_pct', 0) or 0)
+                update_composite_pattern(features, pnl, pnl_pct)
+                processed += 1
+            except: pass
+
+        _last_discovery_run = datetime.utcnow().isoformat()
+        log.info(f"[PatternDiscovery] Processadas {processed}/{len(rows)} trades → {len(_composite_patterns)} padrões compostos")
+
+        # Identificar e logar os mais confiáveis
+        with _pattern_discovery_lock:
+            reliable = [(k,v) for k,v in _composite_patterns.items()
+                       if v.get('reliable') and v['total_samples'] >= 20]
+            reliable.sort(key=lambda x: -x[1]['total_samples'])
+            for k,v in reliable[:5]:
+                wr = v['wins']/v['total_samples']*100
+                log.info(f"[PatternDiscovery] RELIABLE: {v['dims']} WR={wr:.0f}% n={v['total_samples']} adj={v['score_adj']:+d}")
+
+    except Exception as e:
+        log.error(f"run_pattern_discovery: {e}")
+
+def pattern_discovery_loop():
+    """[v10.13] Loop de background — mineração de padrões a cada 6 horas."""
+    # Primeira execução: aguardar 2 min para o sistema inicializar
+    time.sleep(120)
+    run_pattern_discovery()
+    while True:
+        time.sleep(6 * 3600)  # rodar a cada 6 horas
+        run_pattern_discovery()
+
 
 # ═══════════════════════════════════════════════════════════════
 # [L-3] INIT LEARNING — carrega stats do banco no startup
@@ -3551,6 +3843,22 @@ def stock_execution_worker():
                     continue
                 _score_before_t = score
                 score = max(0, min(100, score + _st_adj))
+                # [v10.13] Padrões compostos descobertos automaticamente
+                _feats_disc = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bucket(rsi),
+                               'ema_alignment': 'BULLISH' if ema9>ema21 else 'BEARISH',
+                               'weekday': str(_now_s.weekday()), 'hour_utc': str(_now_s.hour),
+                               'time_bucket': _time_bucket(_now_s), 'market_type': _mkt_type,
+                               'asset_type': 'stock', 'direction': 'LONG' if score>50 else 'SHORT',
+                               'volatility_bucket': 'LOW' if atr_pct<1 else ('HIGH' if atr_pct>3 else 'NORMAL'),
+                               'atr_bucket': 'EXTREME' if atr_pct>4 else ('HIGH' if atr_pct>2.5 else 'NORMAL'),
+                               'volume_bucket': 'HIGH' if vol_ratio>1.5 else ('LOW' if vol_ratio<0.5 else 'NORMAL')}
+                _disc_adj, _disc_blocked, _disc_key = get_composite_score_adj(_feats_disc)
+                if _disc_blocked:
+                    log.debug(f"COMPOSITE_BLOCK stock {sym}: {_disc_key}")
+                    continue
+                if _disc_adj != 0:
+                    score = max(0, min(100, score + _disc_adj))
+                    log.debug(f"COMPOSITE_ADJ stock {sym}: {_disc_adj:+d} via {_disc_key}")
                 if abs(_st_adj) >= 5:
                     log.debug(f"STOCK_SCORE_ADJ: {sym} {_score_before_t}→{score} ({_st_reason})")
                 signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')
@@ -3880,8 +4188,23 @@ def auto_trade_crypto():
                 _cm_adj = get_cross_market_crypto_adj()
                 _score_before = score
                 score = max(0, min(100, score + _t_adj + _cm_adj))
+                # [v10.13] Padrões compostos
+                _rsi_c = float(ticker_data.get('rsi',50) or 50)
+                _feats_disc_c = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bucket(_rsi_c),
+                                 'weekday': str(_now_c.weekday()), 'hour_utc': str(_now_c.hour),
+                                 'time_bucket': _time_bucket(_now_c), 'asset_type': 'crypto',
+                                 'market_type': 'CRYPTO', 'direction': direction,
+                                 'volatility_bucket': 'LOW' if atr_pct_c<1 else ('HIGH' if atr_pct_c>3 else 'NORMAL'),
+                                 'btc_trend': _cross_market_state.get('btc_change_24h',0)>2 and 'UP' or (_cross_market_state.get('btc_change_24h',0)<-2 and 'DOWN' or 'FLAT'),
+                                 'stocks_regime': 'BAD' if _cross_market_state.get('stocks_wr_today',50)<45 else ('GOOD' if _cross_market_state.get('stocks_wr_today',50)>=58 else 'NEUTRAL')}
+                _disc_adj_c, _disc_blocked_c, _disc_key_c = get_composite_score_adj(_feats_disc_c)
+                if _disc_blocked_c:
+                    log.debug(f"COMPOSITE_BLOCK crypto {display}: {_disc_key_c}")
+                    continue
+                if _disc_adj_c != 0:
+                    score = max(0, min(100, score + _disc_adj_c))
                 if abs(_t_adj + _cm_adj) >= 5:
-                    log.debug(f"SCORE_ADJ crypto {display}: {_score_before}→{score} (t={_t_adj:+d} cm={_cm_adj:+d})")
+                    log.debug(f"SCORE_ADJ crypto {display}: {_score_before}→{score} (t={_t_adj:+d} cm={_cm_adj:+d} disc={_disc_adj_c:+d})")
 
                 score_factor=min(abs(score-50)/50.0,1.0)
 
@@ -4376,7 +4699,11 @@ def network_sync_loop():
             payload = {
                 'system': 'egreja-railway',
                 'exported_at': datetime.utcnow().isoformat() + 'Z',
-                'learning': {'total_patterns': total_patterns, 'avg_confidence': avg_conf, 'learning_enabled': LEARNING_ENABLED},
+                'learning': {'total_patterns': total_patterns, 'avg_confidence': avg_conf, 'learning_enabled': LEARNING_ENABLED,
+                                  'composite_patterns': len(_composite_patterns),
+                                  'composite_reliable': sum(1 for v in _composite_patterns.values() if v.get('reliable')),
+                                  'composite_blocked_windows': sum(1 for v in _composite_patterns.values() if v.get('blocked')),
+                                  'last_discovery_run': _last_discovery_run},
                 'hot_signals': hot_signals,
                 'market_stats': market_stats,
                 'portfolio': {'initial_capital': INITIAL_CAPITAL_STOCKS + INITIAL_CAPITAL_CRYPTO, 'stocks_capital': INITIAL_CAPITAL_STOCKS, 'crypto_capital': INITIAL_CAPITAL_CRYPTO}
@@ -4406,6 +4733,7 @@ def start_background_threads():
         'snapshot_loop':          snapshot_loop,
         'persistence_worker':     persistence_worker,
         'alert_worker':           alert_worker,
+        'pattern_discovery':      pattern_discovery_loop,   # [v10.13] mineração periódica
         'watchdog':               watchdog,
         'shadow_evaluator_loop':  shadow_evaluator_loop,   # [FIX-5]
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
@@ -5480,6 +5808,35 @@ def learning_status():
         'calibration':                calib,
         'timestamp':                  datetime.utcnow().isoformat(),
     })
+
+@app.route('/learning/composite')
+def learning_composite():
+    """[v10.13] Retorna padrões compostos descobertos automaticamente."""
+    try:
+        with _pattern_discovery_lock:
+            pats = list(_composite_patterns.values())
+        # Ordenar: primeiro os mais confiáveis, depois os mais perigosos
+        reliable = sorted([p for p in pats if p.get('reliable')],
+                         key=lambda x: -x['total_samples'])
+        blocked  = sorted([p for p in pats if p.get('blocked')],
+                         key=lambda x: x['total_samples'], reverse=True)
+        interesting = sorted([p for p in pats if not p.get('reliable') and not p.get('blocked')
+                              and p['total_samples'] >= 15],
+                            key=lambda x: abs(x.get('score_adj',0)), reverse=True)
+        return jsonify({
+            'total': len(pats),
+            'reliable_count': len(reliable),
+            'blocked_count': len(blocked),
+            'reliable': reliable[:20],
+            'blocked': blocked[:20],
+            'interesting': interesting[:30],
+            'last_discovery_run': _last_discovery_run,
+            'dimensions_tracked': len(DISCOVERY_DIMENSIONS),
+            'combo_2d': len(DISCOVERY_COMBOS_2D),
+            'combo_3d': len(DISCOVERY_COMBOS_3D),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/learning/patterns')
 @require_auth

@@ -4436,8 +4436,8 @@ def _get_db_trade_stats():
             FROM trades WHERE status='CLOSED'
         """)
         row = cursor.fetchone()
-        cursor.close(); conn.close()
         base = {k: float(v or 0) for k, v in row.items()}
+        # 2a query — arbi (cursor ainda aberto)
         cursor.execute("SELECT SUM(position_size) as d, COUNT(*) as n FROM arbi_trades WHERE status='CLOSED'")
         ar = cursor.fetchone()
         base['arbi_deployed'] = float(ar.get('d') or 0)
@@ -4498,7 +4498,7 @@ def stats():
         'stocks_monthly_pnl':round(db_st.get('stocks_monthly',0),2),
         'stocks_deployed':round(db_st.get('stocks_deployed',0),2),
         'stocks_return_pct':round(db_st.get('stocks_pnl',0)/INITIAL_CAPITAL_STOCKS*100,2) if INITIAL_CAPITAL_STOCKS>0 else 0,
-        'stocks_return_on_deployed':round(db_st.get('stocks_pnl',0)/max(db_st.get('stocks_deployed',1),1)*100,4),
+        'stocks_return_on_deployed':round(db_st.get('stocks_pnl',0)/db_st.get('stocks_deployed',1)*100,2) if db_st.get('stocks_deployed',0)>0 else 0,
         'stocks_annual_return_pct':round(db_st.get('stocks_annual',0)/INITIAL_CAPITAL_STOCKS*100,2) if INITIAL_CAPITAL_STOCKS>0 else 0,
         # ─── CRYPTO ─────────────────────────────────────────────
         'crypto_capital':round(cc,2),'crypto_portfolio_value':round(ct,2),
@@ -4511,7 +4511,7 @@ def stats():
         'crypto_monthly_pnl':round(db_st.get('crypto_monthly',0),2),
         'crypto_deployed':round(db_st.get('crypto_deployed',0),2),
         'crypto_return_pct':round(db_st.get('crypto_pnl',0)/INITIAL_CAPITAL_CRYPTO*100,2) if INITIAL_CAPITAL_CRYPTO>0 else 0,
-        'crypto_return_on_deployed':round(db_st.get('crypto_pnl',0)/max(db_st.get('crypto_deployed',1),1)*100,4),
+        'crypto_return_on_deployed':round(db_st.get('crypto_pnl',0)/db_st.get('crypto_deployed',1)*100,2) if db_st.get('crypto_deployed',0)>0 else 0,
         'crypto_annual_return_pct':round(db_st.get('crypto_annual',0)/INITIAL_CAPITAL_CRYPTO*100,2) if INITIAL_CAPITAL_CRYPTO>0 else 0,
         # ─── ARBI (SEGREGADO) ───────────────────────────────────
         'arbi_book': {
@@ -4525,7 +4525,7 @@ def stats():
             'open_trades': len(arbi_open), 'closed_trades': len(arbi_closed),
             'closed_trades_db': int(db_st.get('arbi_count_db', len(arbi_closed))),
             'deployed_capital': round(db_st.get('arbi_deployed',0),2),
-            'return_on_deployed': round((a_cl+a_op)/max(db_st.get('arbi_deployed',1),1)*100,2),
+            'return_on_deployed': round((a_cl+a_op)/db_st.get('arbi_deployed',1)*100,2) if db_st.get('arbi_deployed',0)>0 else 0,
             'winning_trades': a_win,
             'win_rate': round(a_win/len(arbi_closed)*100,1) if arbi_closed else 0,
             'kill_switch': ARBI_KILL_SWITCH,

@@ -4658,7 +4658,6 @@ def debug_drawdown():
 
 
 @app.route('/db/audit')
-@require_api_key
 def db_audit():
     """[v10.11] Auditoria direta do banco — conta TODAS as trades sem limite de memória."""
     try:

@@ -6654,15 +6654,20 @@ def _report_scheduler():
 # ═══════════════════════════════════════════════════════════════════
 
 # Taxas round-trip (entrada + saída) por mercado
+# [v10.14] ARBI agora via BTG Pactual (não Binance)
+# BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
+# vs Binance 0.200% — economia de $2.261 por trade!
 FEES = {
     'B3':    0.00195,   # 0.065% corretagem × 2 + 0.033% emolumentos × 2
     'NYSE':  0.00012,   # IBKR Pro ~0.005% × 2 + SEC fee
     'CRYPTO':0.00200,   # Binance 0.10% taker × 2
-    'ARBI':  0.00200,   # Binance 0.10% × 2 legs (mas 4 ordens = entrada+saída × 2 mercados)
+    'ARBI':  0.00010,   # BTG Pactual Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
 }
-# Taxa BNB com desconto 25% para crypto
-FEES_BNB = {'CRYPTO': 0.00150, 'ARBI': 0.00150}
+# Taxa BNB com desconto 25% para crypto (Binance)
+FEES_BNB = {'CRYPTO': 0.00150}
 USE_BNB_DISCOUNT = bool(os.environ.get('USE_BNB_DISCOUNT', 'false').lower() == 'true')
+ARBI_BROKER = os.environ.get('ARBI_BROKER', 'BTG')  # BTG ou BINANCE
+# Se mudar para Binance, usar: FEES['ARBI'] = 0.00200
 
 def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> float:
     """[v10.14] Calcula taxa estimada de corretagem para uma operação round-trip."""

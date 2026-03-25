@@ -4436,11 +4436,19 @@ def stats():
         # ─── STOCKS ─────────────────────────────────────────────
         'stocks_capital':round(sc,2),'stocks_portfolio_value':round(st,2),
         'stocks_open_pnl':round(s_op,2),'stocks_closed_pnl':round(s_cl,2),
-        'stocks_open_trades':len(stocks_open),'stocks_closed_trades':len(stocks_closed),
+        'stocks_open_trades':len(stocks_open),
+        'stocks_closed_trades':int(db_st.get('stocks_total',len(stocks_closed))),
+        'stocks_win_rate':round(db_st.get('stocks_wins',0)/db_st.get('stocks_total',1)*100,1) if db_st.get('stocks_total',0)>0 else 0,
+        'stocks_daily_pnl':round(db_st.get('stocks_daily',0),2),
+        'stocks_monthly_pnl':round(db_st.get('stocks_monthly',0),2),
         # ─── CRYPTO ─────────────────────────────────────────────
         'crypto_capital':round(cc,2),'crypto_portfolio_value':round(ct,2),
         'crypto_open_pnl':round(c_op,2),'crypto_closed_pnl':round(c_cl,2),
-        'crypto_open_trades':len(crypto_open),'crypto_closed_trades':len(crypto_closed),
+        'crypto_open_trades':len(crypto_open),
+        'crypto_closed_trades':int(db_st.get('crypto_total',len(crypto_closed))),
+        'crypto_win_rate':round(db_st.get('crypto_wins',0)/db_st.get('crypto_total',1)*100,1) if db_st.get('crypto_total',0)>0 else 0,
+        'crypto_daily_pnl':round(db_st.get('crypto_daily',0),2),
+        'crypto_monthly_pnl':round(db_st.get('crypto_monthly',0),2),
         # ─── ARBI (SEGREGADO) ───────────────────────────────────
         'arbi_book': {
             'segregated': True,

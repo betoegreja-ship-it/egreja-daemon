@@ -4656,6 +4656,54 @@ def debug_drawdown():
         'would_trigger': dd_d >= MAX_DAILY_DRAWDOWN_PCT or dd_w >= MAX_WEEKLY_DRAWDOWN_PCT,
     })
 
+
+@app.route('/db/audit')
+@require_api_key
+def db_audit():
+    """[v10.11] Auditoria direta do banco — conta TODAS as trades sem limite de memória."""
+    try:
+        conn = get_db()
+        if not conn: return jsonify({'error':'db unavailable'}), 500
+        cursor = conn.cursor(dictionary=True)
+        
+        # Contagem total por tipo e status
+        cursor.execute("SELECT asset_type, status, COUNT(*) as n FROM trades GROUP BY asset_type, status ORDER BY asset_type, status")
+        by_type = cursor.fetchall()
+        
+        # Total geral
+        cursor.execute("SELECT COUNT(*) as total FROM trades")
+        total = cursor.fetchone()['total']
+        
+        # Primeira e última trade
+        cursor.execute("SELECT MIN(opened_at) as primeira, MAX(closed_at) as ultima FROM trades")
+        dates = cursor.fetchone()
+        
+        # Por mês
+        cursor.execute("""SELECT DATE_FORMAT(closed_at,'%Y-%m') as mes, asset_type, COUNT(*) as n, 
+            SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins
+            FROM trades WHERE status='CLOSED' 
+            GROUP BY mes, asset_type ORDER BY mes, asset_type""")
+        by_month = cursor.fetchall()
+        
+        # Arbi
+        cursor.execute("SELECT COUNT(*) as total FROM arbi_trades")
+        arbi_total = cursor.fetchone()['total']
+        cursor.execute("SELECT status, COUNT(*) as n FROM arbi_trades GROUP BY status")
+        arbi_by_status = cursor.fetchall()
+        
+        cursor.close(); conn.close()
+        return jsonify({
+            'trades_by_type_status': [{**r, 'n': int(r['n'])} for r in by_type],
+            'total_trades': int(total),
+            'date_range': {k: str(v) for k,v in dates.items()},
+            'by_month': [{**r, 'n': int(r['n']), 'wins': int(r['wins']), 
+                          'pnl': float(r['pnl'] or 0)} for r in by_month],
+            'arbi_total': int(arbi_total),
+            'arbi_by_status': [{**r, 'n': int(r['n'])} for r in arbi_by_status],
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/risk/reset_arbi_kill_switch', methods=['POST'])
 def reset_arbi_kill_switch():
     global ARBI_KILL_SWITCH

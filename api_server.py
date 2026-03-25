@@ -4430,12 +4430,20 @@ def _get_db_trade_stats():
                 SUM(CASE WHEN asset_type='stock' AND closed_at >= DATE_SUB(NOW(),INTERVAL 365 DAY) THEN pnl ELSE 0 END) as stocks_annual,
                 SUM(CASE WHEN asset_type='crypto' AND DATE(closed_at)=CURDATE() THEN pnl ELSE 0 END) as crypto_daily,
                 SUM(CASE WHEN asset_type='crypto' AND closed_at >= DATE_SUB(NOW(),INTERVAL 30 DAY) THEN pnl ELSE 0 END) as crypto_monthly,
-                SUM(CASE WHEN asset_type='crypto' AND closed_at >= DATE_SUB(NOW(),INTERVAL 365 DAY) THEN pnl ELSE 0 END) as crypto_annual
+                SUM(CASE WHEN asset_type='crypto' AND closed_at >= DATE_SUB(NOW(),INTERVAL 365 DAY) THEN pnl ELSE 0 END) as crypto_annual,
+                SUM(CASE WHEN asset_type='stock' THEN position_value ELSE 0 END) as stocks_deployed,
+                SUM(CASE WHEN asset_type='crypto' THEN position_value ELSE 0 END) as crypto_deployed
             FROM trades WHERE status='CLOSED'
         """)
         row = cursor.fetchone()
         cursor.close(); conn.close()
-        return {k: float(v or 0) for k, v in row.items()}
+        base = {k: float(v or 0) for k, v in row.items()}
+        cursor.execute("SELECT SUM(position_size) as d, COUNT(*) as n FROM arbi_trades WHERE status='CLOSED'")
+        ar = cursor.fetchone()
+        base['arbi_deployed'] = float(ar.get('d') or 0)
+        base['arbi_count_db'] = int(ar.get('n') or 0)
+        cursor.close(); conn.close()
+        return base
     except Exception as e:
         log.error(f'_get_db_trade_stats: {e}')
         return {}
@@ -4488,7 +4496,9 @@ def stats():
         'stocks_annual_pnl':round(db_st.get('stocks_annual',0),2),
         'stocks_daily_pnl':round(db_st.get('stocks_daily',0),2),
         'stocks_monthly_pnl':round(db_st.get('stocks_monthly',0),2),
+        'stocks_deployed':round(db_st.get('stocks_deployed',0),2),
         'stocks_return_pct':round(db_st.get('stocks_pnl',0)/INITIAL_CAPITAL_STOCKS*100,2) if INITIAL_CAPITAL_STOCKS>0 else 0,
+        'stocks_return_on_deployed':round(db_st.get('stocks_pnl',0)/max(db_st.get('stocks_deployed',1),1)*100,4),
         'stocks_annual_return_pct':round(db_st.get('stocks_annual',0)/INITIAL_CAPITAL_STOCKS*100,2) if INITIAL_CAPITAL_STOCKS>0 else 0,
         # ─── CRYPTO ─────────────────────────────────────────────
         'crypto_capital':round(cc,2),'crypto_portfolio_value':round(ct,2),
@@ -4499,7 +4509,9 @@ def stats():
         'crypto_annual_pnl':round(db_st.get('crypto_annual',0),2),
         'crypto_daily_pnl':round(db_st.get('crypto_daily',0),2),
         'crypto_monthly_pnl':round(db_st.get('crypto_monthly',0),2),
+        'crypto_deployed':round(db_st.get('crypto_deployed',0),2),
         'crypto_return_pct':round(db_st.get('crypto_pnl',0)/INITIAL_CAPITAL_CRYPTO*100,2) if INITIAL_CAPITAL_CRYPTO>0 else 0,
+        'crypto_return_on_deployed':round(db_st.get('crypto_pnl',0)/max(db_st.get('crypto_deployed',1),1)*100,4),
         'crypto_annual_return_pct':round(db_st.get('crypto_annual',0)/INITIAL_CAPITAL_CRYPTO*100,2) if INITIAL_CAPITAL_CRYPTO>0 else 0,
         # ─── ARBI (SEGREGADO) ───────────────────────────────────
         'arbi_book': {
@@ -4511,6 +4523,9 @@ def stats():
             'total_pnl': round(a_op+a_cl,2),
             'gain_percent': round((arbi_total-ARBI_CAPITAL)/ARBI_CAPITAL*100,2),
             'open_trades': len(arbi_open), 'closed_trades': len(arbi_closed),
+            'closed_trades_db': int(db_st.get('arbi_count_db', len(arbi_closed))),
+            'deployed_capital': round(db_st.get('arbi_deployed',0),2),
+            'return_on_deployed': round((a_cl+a_op)/max(db_st.get('arbi_deployed',1),1)*100,2),
             'winning_trades': a_win,
             'win_rate': round(a_win/len(arbi_closed)*100,1) if arbi_closed else 0,
             'kill_switch': ARBI_KILL_SWITCH,

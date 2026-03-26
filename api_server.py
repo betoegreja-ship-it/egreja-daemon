@@ -1751,7 +1751,7 @@ def _db_save_signal_event(event: dict):
     try:
         c = conn.cursor()
         c.execute("""INSERT INTO signal_events (
-            signal_id, feature_hash, symbol, asset_type, market_type, signal_type, raw_score,
+            signal_id, feature_hash, symbol, asset_type, market_type, `signal`, raw_score,
             learning_confidence, confidence_band, price, signal_created_at,
             market_regime_mode, market_regime_volatility, market_open, trade_open,
             rsi, ema9, ema21, ema50, rsi_bucket, score_bucket, change_pct_bucket,
@@ -3871,7 +3871,10 @@ def stock_execution_worker():
                                'volatility_bucket': 'LOW' if atr_pct<1 else ('HIGH' if atr_pct>3 else 'NORMAL'),
                                'atr_bucket': 'EXTREME' if atr_pct>4 else ('HIGH' if atr_pct>2.5 else 'NORMAL'),
                                'volume_bucket': 'HIGH' if vol_ratio>1.5 else ('LOW' if vol_ratio<0.5 else 'NORMAL')}
-                _disc_adj, _disc_blocked, _disc_key = get_composite_score_adj(_feats_disc)
+                try:
+                    _disc_adj, _disc_blocked, _disc_key = get_composite_score_adj(_feats_disc)
+                except Exception as _ge:
+                    _disc_adj, _disc_blocked, _disc_key = 0, False, ''
                 if _disc_blocked:
                     log.debug(f"COMPOSITE_BLOCK stock {sym}: {_disc_key}")
                     continue
@@ -4151,7 +4154,9 @@ def stock_execution_worker():
                 enqueue_persist('trade',trade)
                 if score>=ALERT_MIN_SCORE: alert_signal(dict(sig))
                 log.info(f'STK {sym} {direction} qty={qty} score={score}')
-        except Exception as e: log.error(f'stock_execution_worker: {e}')
+        except Exception as e:
+            import traceback as _tb
+            log.error(f'stock_execution_worker: {e}\n{_tb.format_exc()[:800]}')
 
 # ═══════════════════════════════════════════════════════════════
 # [V9-1] CRYPTO AUTO-TRADE — create_order FORA do state_lock
@@ -4216,7 +4221,10 @@ def auto_trade_crypto():
                                  'volatility_bucket': 'LOW' if atr_pct_c<1 else ('HIGH' if atr_pct_c>3 else 'NORMAL'),
                                  'btc_trend': _cross_market_state.get('btc_change_24h',0)>2 and 'UP' or (_cross_market_state.get('btc_change_24h',0)<-2 and 'DOWN' or 'FLAT'),
                                  'stocks_regime': 'BAD' if _cross_market_state.get('stocks_wr_today',50)<45 else ('GOOD' if _cross_market_state.get('stocks_wr_today',50)>=58 else 'NEUTRAL')}
-                _disc_adj_c, _disc_blocked_c, _disc_key_c = get_composite_score_adj(_feats_disc_c)
+                try:
+                    _disc_adj_c, _disc_blocked_c, _disc_key_c = get_composite_score_adj(_feats_disc_c)
+                except Exception as _ge:
+                    _disc_adj_c, _disc_blocked_c, _disc_key_c = 0, False, ''
                 if _disc_blocked_c:
                     log.debug(f"COMPOSITE_BLOCK crypto {display}: {_disc_key_c}")
                     continue
@@ -6800,28 +6808,30 @@ if __name__ == '__main__':
     log.info(f'Queue thresholds: WARN={URGENT_QUEUE_WARN} / CRIT={URGENT_QUEUE_CRIT}')
 
     log.info('Init...')
-    # [v10.14] Limpeza preventiva — libera espaço antes de criar tabelas
+    init_all_tables()
+    # [v10.14] Limpeza de espaço APÓS criar tabelas (garante que existam)
     try:
         _sc = get_db()
         if _sc:
             _cur = _sc.cursor()
             freed = []
-            # TRUNCATE em todas as tabelas auxiliares para liberar espaço
             for _t in ['signal_events','shadow_decisions','learning_audit','audit_events']:
                 try:
                     _cur.execute(f'SELECT COUNT(*) FROM {_t}'); n = _cur.fetchone()[0]
-                    _cur.execute(f'TRUNCATE TABLE {_t}'); _sc.commit()
-                    freed.append(f'{_t}:{n}')
+                    if n > 0:
+                        _cur.execute(f'TRUNCATE TABLE {_t}'); _sc.commit()
+                        freed.append(f'{_t}:{n}')
                 except: pass
-            # pattern_stats — limpar entradas fracas
             try:
                 _cur.execute("DELETE FROM pattern_stats WHERE total_samples < 2"); _sc.commit()
             except: pass
+            try:
+                _cur.execute("DELETE FROM orders WHERE created_at < DATE_SUB(NOW(), INTERVAL 7 DAY)"); _sc.commit()
+            except: pass
             _cur.close(); _sc.close()
-            log.info(f'Startup cleanup OK: {freed}')
+            log.info(f'Startup disk cleanup: {freed}')
     except Exception as _e:
         log.warning(f'Startup cleanup error: {_e}')
-    init_all_tables()
     fetch_fx_rates()          # [v10.6-P1-4] FX carregado ANTES de stock — ADR usa USDBRL
     fetch_crypto_prices()
     fetch_stock_prices()

@@ -2245,6 +2245,7 @@ def run_pattern_discovery():
     global _last_discovery_run
     if not LEARNING_ENABLED: return
     try:
+        beat('pattern_discovery')  # heartbeat antes de começar
         conn = get_db()
         if not conn: return
         cursor = conn.cursor(dictionary=True)
@@ -2262,6 +2263,7 @@ def run_pattern_discovery():
         cursor.close(); conn.close()
 
         processed = 0
+        beat('pattern_discovery')  # heartbeat após query
         for row in rows:
             try:
                 features = {}
@@ -2296,6 +2298,7 @@ def run_pattern_discovery():
                 processed += 1
             except: pass
 
+        beat('pattern_discovery')  # heartbeat após processar
         _last_discovery_run = datetime.utcnow().isoformat()
         log.info(f"[PatternDiscovery] Processadas {processed}/{len(rows)} trades → {len(_composite_patterns)} padrões compostos")
 
@@ -5726,7 +5729,7 @@ def arbitrage_purge():
 @app.route('/arbitrage/trades')
 def arbi_trades_route():
     with state_lock:
-        open_t=list(arbi_open); closed_t=arbi_closed[:50]; cap=arbi_capital
+        open_t=list(arbi_open); closed_t=list(arbi_closed); cap=arbi_capital
         c_pnl=sum(t.get('pnl',0) for t in arbi_closed); o_pnl=sum(t.get('pnl',0) for t in arbi_open)
         winners=sum(1 for t in arbi_closed if t.get('pnl',0)>0)
     return jsonify({'open_trades':open_t,'closed_trades':closed_t,'capital':round(cap,2),

@@ -6811,25 +6811,29 @@ if __name__ == '__main__':
     log.info(f'Queue thresholds: WARN={URGENT_QUEUE_WARN} / CRIT={URGENT_QUEUE_CRIT}')
 
     log.info('Init...')
-    # [v10.14] Limpeza agressiva ANTES de init_all_tables para liberar disco
+    # [v10.14] Liberar disco ANTES de init_all_tables — DROP TABLE libera espaço imediatamente
+    # (TRUNCATE não libera espaço InnoDB, DROP TABLE sim)
     try:
         _sc = get_db()
         if _sc:
             _cur = _sc.cursor()
-            freed = []
-            # Tentar TRUNCATE em todas as tabelas auxiliares (podem não existir — ignorar erro)
-            for _t in ['signal_events','shadow_decisions','learning_audit',
-                       'audit_events','orders']:
+            dropped = []
+            # DROP tabelas auxiliares não críticas (serão recriadas por init_all_tables)
+            for _t in ['signal_events','shadow_decisions','learning_audit','audit_events']:
                 try:
-                    _cur.execute(f'TRUNCATE TABLE {_t}'); _sc.commit()
-                    freed.append(_t)
+                    _cur.execute(f'DROP TABLE IF EXISTS {_t}'); _sc.commit()
+                    dropped.append(_t)
                 except: pass
-            # Limpar pattern_stats de entradas fracas
+            # orders — limpar antigas (manter tabela)
+            try:
+                _cur.execute("DELETE FROM orders WHERE created_at < DATE_SUB(NOW(), INTERVAL 3 DAY)"); _sc.commit()
+            except: pass
+            # pattern_stats — limpar entradas fracas
             try:
                 _cur.execute("DELETE FROM pattern_stats WHERE total_samples < 2"); _sc.commit()
             except: pass
             _cur.close(); _sc.close()
-            log.info(f'Pre-init disk cleanup: {freed}')
+            log.info(f'Pre-init disk freed (DROP): {dropped}')
     except Exception as _e:
         log.warning(f'Pre-init cleanup error: {_e}')
     init_all_tables()

@@ -6739,7 +6739,7 @@ def apply_fee_to_trade(trade: dict) -> dict:
 
 @app.route('/admin/db-cleanup', methods=['POST'])
 def admin_db_cleanup():
-    """[v10.14] Limpa tabelas cheias e adiciona colunas faltando."""
+    """[v10.14] Limpa tabelas cheias, adiciona colunas e libera espaço."""
     if request.headers.get('X-API-Key') != API_SECRET_KEY:
         return jsonify({'error': 'unauthorized'}), 401
     conn = get_db()
@@ -6747,37 +6747,43 @@ def admin_db_cleanup():
     results = {}
     try:
         c = conn.cursor()
-        # Limpar tabelas cheias — manter só últimos registros
-        cleanups = [
-            ("orders",           "DELETE FROM orders WHERE created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)"),
-            ("audit_events",     "DELETE FROM audit_events WHERE created_at < DATE_SUB(NOW(), INTERVAL 14 DAY)"),
-            ("shadow_decisions", "DELETE FROM shadow_decisions WHERE created_at < DATE_SUB(NOW(), INTERVAL 14 DAY)"),
-            ("signal_events",    "DELETE FROM signal_events WHERE signal_created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)"),
-        ]
-        for name, sql in cleanups:
+        # TRUNCATE nas tabelas auxiliares — dados não são críticos
+        for tbl in ['signal_events', 'shadow_decisions', 'learning_audit', 'audit_events']:
             try:
-                c.execute(sql); conn.commit()
-                results[name] = f'OK deleted {c.rowcount} rows'
+                c.execute(f'SELECT COUNT(*) FROM {tbl}')
+                before = c.fetchone()[0]
+                c.execute(f'TRUNCATE TABLE {tbl}')
+                conn.commit()
+                results[tbl] = f'truncated {before} rows'
             except Exception as e:
-                results[name] = f'ERROR: {e}'
-        # Adicionar colunas faltando em trades
-        alters = [
+                results[tbl] = f'error: {e}'
+        # orders — manter últimos 500
+        try:
+            c.execute("DELETE FROM orders WHERE id NOT IN (SELECT id FROM (SELECT id FROM orders ORDER BY created_at DESC LIMIT 500) t)")
+            conn.commit()
+            results['orders'] = f'kept last 500 (deleted {c.rowcount})'
+        except Exception as e:
+            results['orders'] = f'error: {e}'
+        # OPTIMIZE para liberar espaço físico
+        for tbl in ['signal_events', 'shadow_decisions', 'learning_audit']:
+            try: c.execute(f'OPTIMIZE TABLE {tbl}'); conn.commit()
+            except: pass
+        # Adicionar colunas de fee (idempotente — ignora se já existem)
+        for sql in [
             "ALTER TABLE trades ADD COLUMN fee_estimated DECIMAL(10,2) NULL DEFAULT 0",
-            "ALTER TABLE trades ADD COLUMN pnl_gross DECIMAL(10,2) NULL",
             "ALTER TABLE trades ADD COLUMN pnl_net DECIMAL(10,2) NULL",
-        ]
-        for sql in alters:
-            try:
-                c.execute(sql); conn.commit()
-                results['alter_trades'] = results.get('alter_trades','') + ' OK'
-            except Exception as e:
-                results['alter_trades'] = results.get('alter_trades','') + f' ERR:{e}'
-        # Ver tamanho atual das tabelas
+            "ALTER TABLE trades ADD COLUMN pnl_gross DECIMAL(10,2) NULL",
+        ]:
+            try: c.execute(sql); conn.commit(); results.setdefault('cols','') ; results['cols'] += ' OK'
+            except: pass  # coluna já existe
+        # Tamanho atual
         c.execute("""SELECT table_name, table_rows,
             ROUND((data_length+index_length)/1024/1024,1) as mb
             FROM information_schema.tables WHERE table_schema=DATABASE()
-            ORDER BY (data_length+index_length) DESC LIMIT 10""")
-        results['table_sizes'] = [{'table': r[0], 'rows': r[1], 'mb': float(r[2] or 0)} for r in c.fetchall()]
+            ORDER BY (data_length+index_length) DESC LIMIT 12""")
+        results['table_sizes'] = [{'t': r[0], 'rows': r[1], 'mb': float(r[2] or 0)} for r in c.fetchall()]
+        total_mb = sum(x['mb'] for x in results['table_sizes'])
+        results['total_mb'] = total_mb
         c.close(); conn.close()
         return jsonify({'ok': True, 'results': results})
     except Exception as e:

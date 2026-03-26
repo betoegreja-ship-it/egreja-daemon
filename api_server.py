@@ -4517,32 +4517,33 @@ def calc_spread(pair):
         if pa_raw<=0 or pb_raw<=0: return None
         fx=pair['fx']; ra=pair.get('ratio_a',1); rb=pair.get('ratio_b',1)
         if fx=='USDBRL':
-            # [v10.14-Audit] CORREÇÃO DO RATIO ADR
-            # pa = PETR4 em USD = pa_raw_BRL / fx_rate (SEM multiplicar por ratio_a)
-            # pb_norm = PBR / ratio_a = preço ADR equivalente a 1 PETR4
-            # spread = (pa / (pb/ratio_a) - 1) × 100
-            # ratio_a = quantas ações locais (PETR4) equivalem a 1 ADR (PBR)
+            # [v10.14-Audit] Fórmula unificada correta:
+            # pa_norm = ação local em USD (sem ratio)
+            # pb_norm = ADR × ratio_b (quantidade de ações locais por ADR)
+            # spread  = pa_norm / pb_norm - 1
             rate=fx_rates.get('USDBRL',5.8)
-            pa = pa_raw/rate          # PETR4 em USD (por 1 ação local)
-            pb = (pb_raw*rb)/ra       # PBR normalizado: preço por 1 ação local equivalente
+            pa = pa_raw/rate            # local (BRL→USD), sem ratio
+            pb = pb_raw * rb            # ADR × ratio_b (normaliza para mesmo denominador)
+            # Normalizar ambos para preço por ação local
+            pa = pa / 1                 # já é por 1 ação local
+            pb = pb / ra                # pb / ratio_a = preço por 1 ação local via ADR
         elif fx=='GBPUSD':
-            # [v10.14-Audit] leg_a=NYSE(USD), leg_b=LSE(GBp÷100=£×GBPUSD)
-            # pa = NYSE price em USD por ação (sem ratio pois ratio_a=1 para NYSE)
-            # pb = LSE em USD por unidade equivalente à ação NYSE
+            # [v10.14-Audit] pa_norm = NYSE em USD (sem ratio, pois ratio_a=1)
+            # pb_norm = LSE em USD × ratio_b (ações LSE por 1 NYSE) / ratio_a
             rate=fx_rates.get('GBPUSD',1.27)
-            pa = (pa_raw*rb)/ra       # NYSE normalizado por ratio
-            pb = (pb_raw/100*rate)    # LSE: GBp→USD (sem ratio pois rb=1 geralmente)
+            pa = pa_raw                     # NYSE já em USD
+            pb = (pb_raw/100*rate)*rb/ra    # LSE: GBp→£→USD, normalizado pelo ratio
         elif fx=='HKDUSD':
-            # leg_a=NYSE(USD), leg_b=HKEX(HKD÷HKDUSD) → converte HKD→USD
-            rate=fx_rates.get('HKDUSD',7.8); pa=pa_raw*ra; pb=(pb_raw/rate)*rb
+            rate=fx_rates.get('HKDUSD',7.8)
+            pa = pa_raw; pb = (pb_raw/rate)*rb/ra
         elif fx=='CADUSD':
-            # [v10.9] leg_a=NYSE(USD), leg_b=TSX(CAD×CADUSD) → converte CAD→USD
-            rate=fx_rates.get('CADUSD',0.735); pa=pa_raw*ra; pb=(pb_raw*rate)*rb
+            rate=fx_rates.get('CADUSD',0.735)
+            pa = pa_raw; pb = (pb_raw*rate)*rb/ra
         elif fx=='EURUSD':
-            # [v10.14-Audit] leg_a=NYSE(USD), leg_b=EURONEXT(EUR×EURUSD)
+            # [v10.14-Audit] pa_norm = NYSE em USD, pb_norm = EUR→USD × ratio_b / ratio_a
             rate=fx_rates.get('EURUSD',1.085)
-            pa = (pa_raw*rb)/ra       # NYSE normalizado
-            pb = pb_raw*rate          # EURONEXT: EUR→USD
+            pa = pa_raw                     # NYSE já em USD
+            pb = (pb_raw*rate)*rb/ra        # EUR→USD, normalizado pelo ratio
         else:
             pa=pa_raw*ra; pb=pb_raw*rb
         if pb<=0: return None

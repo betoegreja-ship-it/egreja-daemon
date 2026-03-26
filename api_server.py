@@ -2313,12 +2313,15 @@ def run_pattern_discovery():
 
 def pattern_discovery_loop():
     """[v10.13] Loop de background — mineração de padrões a cada 6 horas."""
-    # Primeira execução: aguardar 2 min para o sistema inicializar
-    time.sleep(120)
-    run_pattern_discovery()
+    time.sleep(180)  # aguardar 3 min para inicializar
+    try: run_pattern_discovery()
+    except: pass
     while True:
-        time.sleep(6 * 3600)  # rodar a cada 6 horas
-        run_pattern_discovery()
+        beat('pattern_discovery')
+        time.sleep(6 * 3600)
+        beat('pattern_discovery')
+        try: run_pattern_discovery()
+        except Exception as e: log.error(f'pattern_discovery_loop: {e}')
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -3815,7 +3818,7 @@ def stock_execution_worker():
                     elif price < ema9 * 0.99: score -= 7  # preço abaixo EMA9 — fraqueza
                 score = max(0, min(100, score))
                 # [v10.12] Score dinâmico por learning — mais fatores, maior impacto
-                _rsi_bucket = 'OVERSOLD' if rsi<30 else ('LOW' if rsi<45 else ('OVERBOUGHT' if rsi>75 else ('HIGH' if rsi>65 else 'NEUTRAL')))
+                _rsi_bkt = 'OVERSOLD' if rsi<30 else ('LOW' if rsi<45 else ('OVERBOUGHT' if rsi>75 else ('HIGH' if rsi>65 else 'NEUTRAL')))
                 _ema_align  = 'BULLISH_STACK' if (ema9>ema21 and ema21>ema50 and ema50>0) else ('BEARISH_STACK' if (ema9<ema21 and ema21<ema50 and ema50>0) else ('BULLISH' if ema9>ema21 else 'BEARISH'))
                 _vol_bucket = 'LOW' if (vol_ratio>0 and vol_ratio<0.8) else ('HIGH' if vol_ratio>1.8 else 'NORMAL')
                 _atr_bucket = 'EXTREME' if atr_pct>4 else ('HIGH' if atr_pct>2.5 else ('LOW' if atr_pct<0.8 else 'NORMAL'))
@@ -3863,7 +3866,7 @@ def stock_execution_worker():
                 _score_before_t = score
                 score = max(0, min(100, score + _st_adj))
                 # [v10.13] Padrões compostos descobertos automaticamente
-                _feats_disc = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bucket(rsi),
+                _feats_disc = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bkt,
                                'ema_alignment': 'BULLISH' if ema9>ema21 else 'BEARISH',
                                'weekday': str(_now_s.weekday()), 'hour_utc': str(_now_s.hour),
                                'time_bucket': _time_bucket(_now_s), 'market_type': _mkt_type,

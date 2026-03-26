@@ -2252,7 +2252,7 @@ def run_pattern_discovery():
         cursor.execute("""
             SELECT t.pnl, t.pnl_pct, t.features_json, t.asset_type, t.market,
                    t.opened_at, t.closed_at, t.close_reason, t.symbol,
-                   t.score, t.rsi_at_open, t.ema9_at_open, t.ema21_at_open
+                   t.score
             FROM trades t
             WHERE t.status='CLOSED' AND t.pnl IS NOT NULL
             ORDER BY t.closed_at DESC
@@ -4259,7 +4259,7 @@ def auto_trade_crypto():
                 _lc_c = conf_c.get('final_confidence', 50)
                 if LEARNING_DEAD_ZONE_LOW <= _lc_c < LEARNING_DEAD_ZONE_HIGH:
                     _csig_id = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
-                                        source_type='crypto_signal', existing_signal_id=_cpre_id,
+                                        source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
                                         origin_signal_key=_c_origin_key)
                     record_shadow_decision(_csig_id, sig_enriched_c, 'learning_dead_zone')
                     with learning_lock: processed_signal_ids[_c_ms_key] = {'sig_id': _csig_id, 'reason': 'learning_dead_zone'}
@@ -6688,20 +6688,16 @@ FEES = {
 }
 
 def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> float:
-    """[v10.14] Calcula taxa estimada de corretagem para uma operação round-trip."""
+    """[v10.14] Calcula taxa estimada de corretagem para uma operação round-trip.
+    FEES já incorpora BNB discount via _binance_rt() — não precisa de FEES_BNB separado.
+    """
     pv = abs(float(position_value or 0))
     if asset_type == 'stock':
         rate = FEES.get(market, FEES['NYSE'])
     elif asset_type == 'crypto':
-        if USE_BNB_DISCOUNT:
-            rate = FEES_BNB.get('CRYPTO', FEES['CRYPTO'])
-        else:
-            rate = FEES['CRYPTO']
-    else:  # arbi
-        if USE_BNB_DISCOUNT:
-            rate = FEES_BNB.get('ARBI', FEES['ARBI'])
-        else:
-            rate = FEES['ARBI']
+        rate = FEES['CRYPTO']   # já calculado com VIP tier + BNB por _binance_rt()
+    else:                       # arbi
+        rate = FEES['ARBI']
     return round(pv * rate, 2)
 
 def apply_fee_to_trade(trade: dict) -> dict:

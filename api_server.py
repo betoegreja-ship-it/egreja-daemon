@@ -2804,19 +2804,19 @@ def _db_save_trade(trade):
                                               if not k.startswith('_')}, default=str)
             except: pass
         cursor.execute("""INSERT INTO trades (id,symbol,market,asset_type,direction,
-            entry_price,exit_price,current_price,quantity,position_value,fee_estimated,pnl_gross,
-            pnl,pnl_pct,peak_pnl_pct,score,`signal`,status,close_reason,
+            entry_price,exit_price,current_price,quantity,position_value,
+            pnl,pnl_pct,peak_pnl_pct,score,signal_type,status,close_reason,
             from_watchlist,order_id,opened_at,closed_at,extensions,
             signal_id,feature_hash,learning_confidence,insight_summary,learning_version,features_json)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_price=VALUES(current_price),pnl=VALUES(pnl),
-            pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),fee_estimated=VALUES(fee_estimated),pnl_gross=VALUES(pnl_gross),
+            pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
             status=VALUES(status),close_reason=VALUES(close_reason),
             exit_price=VALUES(exit_price),closed_at=VALUES(closed_at),extensions=VALUES(extensions)""",
             (t.get('id'),t.get('symbol'),t.get('market'),t.get('asset_type'),t.get('direction'),
              t.get('entry_price'),t.get('exit_price'),t.get('current_price'),
              t.get('quantity'),t.get('position_value'),t.get('pnl',0),t.get('pnl_pct',0),
-             t.get('peak_pnl_pct',0),t.get('score'),t.get('signal'),t.get('status','OPEN'),
+             t.get('peak_pnl_pct',0),t.get('score'),t.get('signal',''),t.get('status','OPEN'),
              t.get('close_reason'),1 if t.get('from_watchlist') else 0,
              t.get('order_id'),t.get('opened_at'),t.get('closed_at'),t.get('extensions',0),
              t.get('signal_id'),t.get('feature_hash'),t.get('learning_confidence'),
@@ -2834,7 +2834,7 @@ def _db_save_arbi_trade(trade):
             position_size,pnl,pnl_pct,peak_pnl_pct,fx_rate,status,close_reason,opened_at,closed_at,extensions)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_spread=VALUES(current_spread),pnl=VALUES(pnl),
-            pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),fee_estimated=VALUES(fee_estimated),pnl_gross=VALUES(pnl_gross),
+            pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
             status=VALUES(status),close_reason=VALUES(close_reason),
             closed_at=VALUES(closed_at),extensions=VALUES(extensions)""",
             (t.get('id'),t.get('pair_id'),t.get('name'),t.get('leg_a'),t.get('leg_b'),

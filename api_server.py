@@ -6657,19 +6657,31 @@ def _report_scheduler():
 # [v10.14] ARBI agora via BTG Pactual (não Binance)
 # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
 # vs Binance 0.200% — economia de $2.261 por trade!
-# [v10.14] TODAS as operações via BTG Pactual
-# BTG Day Trade: corretagem ZERO em ações — paga apenas emolumentos B3
-# Crypto: mantém Binance (BTG não opera cripto)
+# [v10.14] Corretagem real por mercado — verificado em março/2026
+# B3 + NYSE + Arbi: BTG Pactual Day Trade (corretagem ZERO, só emolumentos)
+# Crypto: Binance Spot — taxas reais por VIP tier
+#   VIP 0:       0.100% maker + 0.100% taker = 0.200% rt
+#   VIP 0+BNB:   0.075% + 0.075% = 0.150% rt
+#   VIP 3:       0.042% + 0.060% = 0.102% rt   (elegível: vol>$20M/30d)
+#   VIP 3+BNB:   0.0315% + 0.045% = 0.0765% rt ← TAXA REAL com nosso volume
+BINANCE_VIP_TIER   = int(os.environ.get('BINANCE_VIP_TIER', 3))
+USE_BNB_DISCOUNT   = bool(os.environ.get('USE_BNB_DISCOUNT', 'true').lower() == 'true')
+BROKER             = 'BTG'   # B3, NYSE, Arbi via BTG | Crypto via Binance
+
+# Tabela maker/taker Binance por VIP tier (valores por LADO, sem BNB)
+_BINANCE_FEES = {0:(0.0010,0.0010), 1:(0.0009,0.0010), 2:(0.0008,0.0010),
+                 3:(0.00042,0.0006), 4:(0.0002,0.0004), 5:(0.00012,0.0003)}
+def _binance_rt() -> float:
+    m,t = _BINANCE_FEES.get(BINANCE_VIP_TIER, (0.001,0.001))
+    if USE_BNB_DISCOUNT: m,t = m*0.75, t*0.75
+    return round(m+t, 6)   # round trip = maker+taker (compra taker + venda taker)
+
 FEES = {
-    'B3':    0.00030,   # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.030% round trip
-    'NYSE':  0.00020,   # BTG US via DriveWealth: ~0.020% round trip (spread + regulatórias)
-    'CRYPTO':0.00200,   # Binance 0.10% taker × 2 (BTG não oferece crypto)
-    'ARBI':  0.00010,   # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
+    'B3':    0.00030,   # BTG Day Trade: ZERO corretagem + emolumentos B3 (era 0.195% XP)
+    'NYSE':  0.00020,   # BTG US: ~0.020% rt spread+SEC (era 0.012% IBKR)
+    'CRYPTO':_binance_rt(),  # Binance VIP3+BNB = 0.0765% rt (era 0.200%)
+    'ARBI':  0.00010,   # BTG Day Trade: ZERO corretagem + emolumentos ~0.010% rt
 }
-# Binance BNB desconto 25% — só para crypto
-FEES_BNB = {'CRYPTO': 0.00150}
-USE_BNB_DISCOUNT = bool(os.environ.get('USE_BNB_DISCOUNT', 'false').lower() == 'true')
-BROKER = 'BTG'  # B3, NYSE e Arbi via BTG Pactual | Crypto via Binance
 
 def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> float:
     """[v10.14] Calcula taxa estimada de corretagem para uma operação round-trip."""

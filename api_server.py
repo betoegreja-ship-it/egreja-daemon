@@ -2805,7 +2805,7 @@ def _db_save_trade(trade):
             except: pass
         cursor.execute("""INSERT INTO trades (id,symbol,market,asset_type,direction,
             entry_price,exit_price,current_price,quantity,position_value,
-            pnl,pnl_pct,peak_pnl_pct,score,signal_type,status,close_reason,
+            pnl,pnl_pct,peak_pnl_pct,score,`signal`,status,close_reason,
             from_watchlist,order_id,opened_at,closed_at,extensions,
             signal_id,feature_hash,learning_confidence,insight_summary,learning_version,features_json)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -6800,6 +6800,30 @@ if __name__ == '__main__':
     log.info(f'Queue thresholds: WARN={URGENT_QUEUE_WARN} / CRIT={URGENT_QUEUE_CRIT}')
 
     log.info('Init...')
+    # [v10.14] Limpeza preventiva de tabelas auxiliares no startup
+    try:
+        _sc = get_db()
+        if _sc:
+            _cur = _sc.cursor()
+            for _t in ['shadow_decisions','learning_audit','audit_events']:
+                try: _cur.execute(f'TRUNCATE TABLE {_t}'); _sc.commit()
+                except: pass
+            # signal_events — manter últimos 5000
+            try:
+                _cur.execute("DELETE FROM signal_events WHERE id NOT IN (SELECT id FROM (SELECT id FROM signal_events ORDER BY id DESC LIMIT 5000) t)")
+                _sc.commit()
+                _cur.execute("OPTIMIZE TABLE signal_events")
+                _sc.commit()
+            except: pass
+            # pattern_stats — limpar entradas antigas com poucas amostras
+            try:
+                _cur.execute("DELETE FROM pattern_stats WHERE total_samples < 3")
+                _sc.commit()
+            except: pass
+            _cur.close(); _sc.close()
+            log.info('Startup cleanup: tabelas auxiliares limpas')
+    except Exception as _e:
+        log.warning(f'Startup cleanup error: {_e}')
     init_all_tables()
     fetch_fx_rates()          # [v10.6-P1-4] FX carregado ANTES de stock — ADR usa USDBRL
     fetch_crypto_prices()

@@ -6657,17 +6657,19 @@ def _report_scheduler():
 # [v10.14] ARBI agora via BTG Pactual (não Binance)
 # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
 # vs Binance 0.200% — economia de $2.261 por trade!
+# [v10.14] TODAS as operações via BTG Pactual
+# BTG Day Trade: corretagem ZERO em ações — paga apenas emolumentos B3
+# Crypto: mantém Binance (BTG não opera cripto)
 FEES = {
-    'B3':    0.00030,   # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.030% round trip (era 0.195% XP)
-    'NYSE':  0.00020,   # BTG US via DriveWealth: ~0.020% round trip incluindo spread (era 0.012% IBKR)
-    'CRYPTO':0.00200,   # Binance 0.10% taker × 2
-    'ARBI':  0.00010,   # BTG Pactual Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
+    'B3':    0.00030,   # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.030% round trip
+    'NYSE':  0.00020,   # BTG US via DriveWealth: ~0.020% round trip (spread + regulatórias)
+    'CRYPTO':0.00200,   # Binance 0.10% taker × 2 (BTG não oferece crypto)
+    'ARBI':  0.00010,   # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
 }
-# Taxa BNB com desconto 25% para crypto (Binance)
+# Binance BNB desconto 25% — só para crypto
 FEES_BNB = {'CRYPTO': 0.00150}
 USE_BNB_DISCOUNT = bool(os.environ.get('USE_BNB_DISCOUNT', 'false').lower() == 'true')
-ARBI_BROKER = os.environ.get('ARBI_BROKER', 'BTG')  # BTG ou BINANCE
-# Se mudar para Binance, usar: FEES['ARBI'] = 0.00200
+BROKER = 'BTG'  # B3, NYSE e Arbi via BTG Pactual | Crypto via Binance
 
 def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> float:
     """[v10.14] Calcula taxa estimada de corretagem para uma operação round-trip."""

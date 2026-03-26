@@ -5571,9 +5571,15 @@ def performance_crypto():
             FROM trades WHERE status='CLOSED' AND asset_type='crypto'""")
         glb = cursor.fetchone()
         cursor.close(); conn.close()
-        with state_lock: open_t = list(crypto_open)
+        with state_lock:
+            open_t   = list(crypto_open)
+            _fees_c  = round(sum(t.get('fee_estimated',0) for t in crypto_closed), 2)
+            _net_c   = round(sum(t.get('pnl_net', t.get('pnl',0)) for t in crypto_closed), 2)
+        glb_cd = {k:float(v or 0) if isinstance(v,(int,float,type(None))) else str(v) for k,v in glb.items()}
+        glb_cd['fee_estimated_total'] = _fees_c
+        glb_cd['pnl_net_total']       = _net_c
         return jsonify({
-            'global': {k:float(v or 0) if isinstance(v,(int,float,type(None))) else str(v) for k,v in glb.items()},
+            'global': glb_cd,
             'daily': daily, 'by_symbol': by_sym, 'by_reason': by_reason,
             'open_trades': len(open_t),
             'initial_capital': INITIAL_CAPITAL_CRYPTO,

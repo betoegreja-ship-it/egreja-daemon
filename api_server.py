@@ -2632,17 +2632,17 @@ def init_all_tables():
 
         # ── Migração: adicionar colunas de learning nas tabelas existentes ─
         for col_sql in [
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS signal_id           VARCHAR(40)  NULL",
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS feature_hash        VARCHAR(20)  NULL",
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS learning_confidence DECIMAL(6,2) NULL",
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fee_estimated DECIMAL(10,2) NULL DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN signal_id           VARCHAR(40)  NULL",
+            "ALTER TABLE trades ADD COLUMN feature_hash        VARCHAR(20)  NULL",
+            "ALTER TABLE trades ADD COLUMN learning_confidence DECIMAL(6,2) NULL",
+            "ALTER TABLE trades ADD COLUMN fee_estimated DECIMAL(10,2) NULL DEFAULT 0",
             "CREATE TABLE IF NOT EXISTS symbol_blocked_persistent (symbol VARCHAR(20) PRIMARY KEY, blocked_until DATETIME, reason VARCHAR(100), created_at DATETIME DEFAULT NOW())",
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS pnl_gross DECIMAL(10,2) NULL",
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS insight_summary     TEXT         NULL",
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS learning_version    VARCHAR(10)  NULL",
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS features_json       LONGTEXT     NULL",  # [P0-1]
+            "ALTER TABLE trades ADD COLUMN pnl_gross DECIMAL(10,2) NULL",
+            "ALTER TABLE trades ADD COLUMN insight_summary     TEXT         NULL",
+            "ALTER TABLE trades ADD COLUMN learning_version    VARCHAR(10)  NULL",
+            "ALTER TABLE trades ADD COLUMN features_json       LONGTEXT     NULL",  # [P0-1]
             # [S2] Deduplicação persistida — chave de origem do sinal de mercado
-            "ALTER TABLE signal_events ADD COLUMN IF NOT EXISTS origin_signal_key VARCHAR(120) NULL",
+            "ALTER TABLE signal_events ADD COLUMN origin_signal_key VARCHAR(120) NULL",
         ]:
             try: cursor.execute(col_sql)
             except Exception as e:
@@ -6762,9 +6762,9 @@ def admin_db_cleanup():
                 results[name] = f'ERROR: {e}'
         # Adicionar colunas faltando em trades
         alters = [
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fee_estimated DECIMAL(10,2) NULL DEFAULT 0",
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS pnl_gross DECIMAL(10,2) NULL",
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS pnl_net DECIMAL(10,2) NULL",
+            "ALTER TABLE trades ADD COLUMN fee_estimated DECIMAL(10,2) NULL DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN pnl_gross DECIMAL(10,2) NULL",
+            "ALTER TABLE trades ADD COLUMN pnl_net DECIMAL(10,2) NULL",
         ]
         for sql in alters:
             try:

@@ -6737,6 +6737,53 @@ def apply_fee_to_trade(trade: dict) -> dict:
     return trade
 
 
+@app.route('/admin/db-cleanup', methods=['POST'])
+def admin_db_cleanup():
+    """[v10.14] Limpa tabelas cheias e adiciona colunas faltando."""
+    if request.headers.get('X-API-Key') != API_SECRET_KEY:
+        return jsonify({'error': 'unauthorized'}), 401
+    conn = get_db()
+    if not conn: return jsonify({'error': 'db unavailable'}), 500
+    results = {}
+    try:
+        c = conn.cursor()
+        # Limpar tabelas cheias — manter só últimos registros
+        cleanups = [
+            ("orders",           "DELETE FROM orders WHERE created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)"),
+            ("audit_events",     "DELETE FROM audit_events WHERE created_at < DATE_SUB(NOW(), INTERVAL 14 DAY)"),
+            ("shadow_decisions", "DELETE FROM shadow_decisions WHERE created_at < DATE_SUB(NOW(), INTERVAL 14 DAY)"),
+            ("signal_events",    "DELETE FROM signal_events WHERE signal_created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)"),
+        ]
+        for name, sql in cleanups:
+            try:
+                c.execute(sql); conn.commit()
+                results[name] = f'OK deleted {c.rowcount} rows'
+            except Exception as e:
+                results[name] = f'ERROR: {e}'
+        # Adicionar colunas faltando em trades
+        alters = [
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fee_estimated DECIMAL(10,2) NULL DEFAULT 0",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS pnl_gross DECIMAL(10,2) NULL",
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS pnl_net DECIMAL(10,2) NULL",
+        ]
+        for sql in alters:
+            try:
+                c.execute(sql); conn.commit()
+                results['alter_trades'] = results.get('alter_trades','') + ' OK'
+            except Exception as e:
+                results['alter_trades'] = results.get('alter_trades','') + f' ERR:{e}'
+        # Ver tamanho atual das tabelas
+        c.execute("""SELECT table_name, table_rows,
+            ROUND((data_length+index_length)/1024/1024,1) as mb
+            FROM information_schema.tables WHERE table_schema=DATABASE()
+            ORDER BY (data_length+index_length) DESC LIMIT 10""")
+        results['table_sizes'] = [{'table': r[0], 'rows': r[1], 'mb': float(r[2] or 0)} for r in c.fetchall()]
+        c.close(); conn.close()
+        return jsonify({'ok': True, 'results': results})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════
 if __name__ == '__main__':

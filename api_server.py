@@ -147,11 +147,11 @@ DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000)
 
 # Arbitragem — livro segregado
 ARBI_CAPITAL         = float(os.environ.get('ARBI_CAPITAL', 4_500_000))  # [v10.9] aumentado de 3M para 4.5M
-ARBI_MIN_SPREAD      = float(os.environ.get('ARBI_MIN_SPREAD', 2.0))
+ARBI_MIN_SPREAD      = float(os.environ.get('ARBI_MIN_SPREAD', 0.8))    # [v10.14] BTG: era 2.0%
 ARBI_MAX_SPREAD      = float(os.environ.get('ARBI_MAX_SPREAD', 15.0))  # [v10.9] teto: spread >15% = estrutural/preço inválido
-ARBI_TP_SPREAD       = float(os.environ.get('ARBI_TP_SPREAD', 0.5))
-ARBI_SL_PCT          = float(os.environ.get('ARBI_SL_PCT', 1.5))
-ARBI_TIMEOUT_H       = float(os.environ.get('ARBI_TIMEOUT_H', 72))
+ARBI_TP_SPREAD       = float(os.environ.get('ARBI_TP_SPREAD',  0.20))   # [v10.14] BTG: era 0.5%
+ARBI_SL_PCT          = float(os.environ.get('ARBI_SL_PCT',    0.80))   # [v10.14] BTG: era 1.5%
+ARBI_TIMEOUT_H       = float(os.environ.get('ARBI_TIMEOUT_H',  48))    # [v10.14] BTG: era 72h
 ARBI_POS_SIZE        = float(os.environ.get('ARBI_POS_SIZE', 50_000))
 ARBI_MAX_POSITIONS   = int(os.environ.get('ARBI_MAX_POSITIONS', 8))
 ARBI_MAX_DAILY_LOSS  = float(os.environ.get('ARBI_MAX_DAILY_LOSS_PCT', 1.5))

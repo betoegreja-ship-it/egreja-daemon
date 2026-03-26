@@ -6811,30 +6811,28 @@ if __name__ == '__main__':
     log.info(f'Queue thresholds: WARN={URGENT_QUEUE_WARN} / CRIT={URGENT_QUEUE_CRIT}')
 
     log.info('Init...')
-    init_all_tables()
-    # [v10.14] Limpeza de espaço APÓS criar tabelas (garante que existam)
+    # [v10.14] Limpeza agressiva ANTES de init_all_tables para liberar disco
     try:
         _sc = get_db()
         if _sc:
             _cur = _sc.cursor()
             freed = []
-            for _t in ['signal_events','shadow_decisions','learning_audit','audit_events']:
+            # Tentar TRUNCATE em todas as tabelas auxiliares (podem não existir — ignorar erro)
+            for _t in ['signal_events','shadow_decisions','learning_audit',
+                       'audit_events','orders']:
                 try:
-                    _cur.execute(f'SELECT COUNT(*) FROM {_t}'); n = _cur.fetchone()[0]
-                    if n > 0:
-                        _cur.execute(f'TRUNCATE TABLE {_t}'); _sc.commit()
-                        freed.append(f'{_t}:{n}')
+                    _cur.execute(f'TRUNCATE TABLE {_t}'); _sc.commit()
+                    freed.append(_t)
                 except: pass
+            # Limpar pattern_stats de entradas fracas
             try:
                 _cur.execute("DELETE FROM pattern_stats WHERE total_samples < 2"); _sc.commit()
             except: pass
-            try:
-                _cur.execute("DELETE FROM orders WHERE created_at < DATE_SUB(NOW(), INTERVAL 7 DAY)"); _sc.commit()
-            except: pass
             _cur.close(); _sc.close()
-            log.info(f'Startup disk cleanup: {freed}')
+            log.info(f'Pre-init disk cleanup: {freed}')
     except Exception as _e:
-        log.warning(f'Startup cleanup error: {_e}')
+        log.warning(f'Pre-init cleanup error: {_e}')
+    init_all_tables()
     fetch_fx_rates()          # [v10.6-P1-4] FX carregado ANTES de stock — ADR usa USDBRL
     fetch_crypto_prices()
     fetch_stock_prices()

@@ -6658,8 +6658,8 @@ def _report_scheduler():
 # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
 # vs Binance 0.200% — economia de $2.261 por trade!
 FEES = {
-    'B3':    0.00195,   # 0.065% corretagem × 2 + 0.033% emolumentos × 2
-    'NYSE':  0.00012,   # IBKR Pro ~0.005% × 2 + SEC fee
+    'B3':    0.00030,   # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.030% round trip (era 0.195% XP)
+    'NYSE':  0.00020,   # BTG US via DriveWealth: ~0.020% round trip incluindo spread (era 0.012% IBKR)
     'CRYPTO':0.00200,   # Binance 0.10% taker × 2
     'ARBI':  0.00010,   # BTG Pactual Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
 }

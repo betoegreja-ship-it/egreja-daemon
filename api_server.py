@@ -866,7 +866,7 @@ def _db_save_order(order):
 def take_portfolio_snapshot():
     with state_lock:
         snap = {
-            'timestamp':        datetime.utcnow().isoformat(),
+            'timestamp':        datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
             'stocks_capital':   round(stocks_capital,2),
             'crypto_capital':   round(crypto_capital,2),
             'arbi_capital':     round(arbi_capital,2),
@@ -1751,7 +1751,7 @@ def _db_save_signal_event(event: dict):
     try:
         c = conn.cursor()
         c.execute("""INSERT INTO signal_events (
-            signal_id, feature_hash, symbol, asset_type, market_type, `signal`, raw_score,
+            signal_id, feature_hash, symbol, asset_type, market_type, signal_type, raw_score,
             learning_confidence, confidence_band, price, signal_created_at,
             market_regime_mode, market_regime_volatility, market_open, trade_open,
             rsi, ema9, ema21, ema50, rsi_bucket, score_bucket, change_pct_bucket,
@@ -1771,7 +1771,7 @@ def _db_save_signal_event(event: dict):
                 payload_json=VALUES(payload_json),
                 updated_at=VALUES(updated_at)""",
             (event['signal_id'], event['feature_hash'], event['symbol'],
-             event['asset_type'], event['market_type'], event['signal'],
+             event['asset_type'], event['market_type'], event.get('signal',''),
              event['raw_score'], event['learning_confidence'], event['confidence_band'],
              event['price'], event['signal_created_at'], event['market_regime_mode'],
              event['market_regime_volatility'], event['market_open'], event['trade_open'],
@@ -2512,7 +2512,7 @@ def init_all_tables():
             entry_price DECIMAL(18,6), exit_price DECIMAL(18,6), current_price DECIMAL(18,6),
             quantity DECIMAL(20,6), position_value DECIMAL(18,2),
             pnl DECIMAL(18,2) DEFAULT 0, pnl_pct DECIMAL(10,4) DEFAULT 0,
-            peak_pnl_pct DECIMAL(10,4) DEFAULT 0, score INT, signal VARCHAR(10),
+            peak_pnl_pct DECIMAL(10,4) DEFAULT 0, score INT, signal_type VARCHAR(10),
             status VARCHAR(10) DEFAULT 'OPEN', close_reason VARCHAR(20),
             from_watchlist TINYINT(1) DEFAULT 0, order_id VARCHAR(40),
             opened_at DATETIME, closed_at DATETIME, extensions INT DEFAULT 0,
@@ -2570,7 +2570,7 @@ def init_all_tables():
         cursor.execute("""CREATE TABLE IF NOT EXISTS signal_events (
             signal_id VARCHAR(40) PRIMARY KEY,
             feature_hash VARCHAR(20), symbol VARCHAR(20), asset_type VARCHAR(15),
-            market_type VARCHAR(10), signal VARCHAR(10), raw_score DECIMAL(6,2),
+            market_type VARCHAR(10), signal_type VARCHAR(10), raw_score DECIMAL(6,2),
             learning_confidence DECIMAL(6,2), confidence_band VARCHAR(10),
             price DECIMAL(18,6), signal_created_at DATETIME,
             market_regime_mode VARCHAR(20), market_regime_volatility VARCHAR(10),
@@ -2614,7 +2614,7 @@ def init_all_tables():
         # ── [L-8] Shadow Decisions ────────────────────────────────────────
         cursor.execute("""CREATE TABLE IF NOT EXISTS shadow_decisions (
             shadow_id VARCHAR(40) PRIMARY KEY,
-            signal_id VARCHAR(40), symbol VARCHAR(20), signal VARCHAR(10),
+            signal_id VARCHAR(40), symbol VARCHAR(20), signal_type VARCHAR(10),
             price_at_signal DECIMAL(18,6), not_executed_reason VARCHAR(30),
             hypothetical_entry DECIMAL(18,6), hypothetical_exit DECIMAL(18,6) NULL,
             hypothetical_pnl DECIMAL(18,4) NULL, hypothetical_pnl_pct DECIMAL(10,4) NULL,
@@ -2636,6 +2636,7 @@ def init_all_tables():
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS feature_hash        VARCHAR(20)  NULL",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS learning_confidence DECIMAL(6,2) NULL",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fee_estimated DECIMAL(10,2) NULL DEFAULT 0",
+            "CREATE TABLE IF NOT EXISTS symbol_blocked_persistent (symbol VARCHAR(20) PRIMARY KEY, blocked_until DATETIME, reason VARCHAR(100), created_at DATETIME DEFAULT NOW())",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS pnl_gross DECIMAL(10,2) NULL",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS insight_summary     TEXT         NULL",
             "ALTER TABLE trades ADD COLUMN IF NOT EXISTS learning_version    VARCHAR(10)  NULL",
@@ -3681,7 +3682,10 @@ def monitor_trades():
                         _cd = SYMBOL_SL_COOLDOWNS.get(min(symbol_sl_count.get(sym,1),4), 300)
                         symbol_cooldown[sym] = time.time() + (_cd - SYMBOL_COOLDOWN_SEC)  # offset extra
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
-                        apply_fee_to_trade(c)  # [v10.14] descontar corretagem
+                        try:
+                            apply_fee_to_trade(c)  # [v10.14] fee simulado
+                        except Exception as _fe:
+                            log.debug(f"apply_fee_to_trade stock: {_fe}")
                         stocks_closed.insert(0,c)
                         # [v10.9] Sem limite em memória — histórico completo
                         to_close.append(trade['id']); closed_stocks.append(c)
@@ -3722,7 +3726,10 @@ def monitor_trades():
                         crypto_capital += trade['position_value'] + trade['pnl']
                         symbol_cooldown[trade['symbol']]=time.time()
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
-                        apply_fee_to_trade(c)  # [v10.14] descontar corretagem
+                        try:
+                            apply_fee_to_trade(c)  # [v10.14] fee simulado
+                        except Exception as _fe:
+                            log.debug(f"apply_fee_to_trade crypto: {_fe}")
                         crypto_closed.insert(0,c)
                         # [v10.9] Sem limite em memória — histórico completo
                         to_close_c.append(trade['id']); closed_cryptos.append(c)
@@ -4260,9 +4267,9 @@ def auto_trade_crypto():
                 if LEARNING_DEAD_ZONE_LOW <= _lc_c < LEARNING_DEAD_ZONE_HIGH:
                     _csig_id = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
                                         source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
-                                        origin_signal_key=_c_origin_key)
+                                        origin_signal_key=origin_key_c)
                     record_shadow_decision(_csig_id, sig_enriched_c, 'learning_dead_zone')
-                    with learning_lock: processed_signal_ids[_c_ms_key] = {'sig_id': _csig_id, 'reason': 'learning_dead_zone'}
+                    with learning_lock: processed_signal_ids[ms_key_c] = {'sig_id': _csig_id, 'reason': 'learning_dead_zone'}
                     continue
 
                 # [v10.11] Posição crypto maior — 10 posições × $120K = $1.2M de $1.5M investido
@@ -5495,16 +5502,19 @@ def performance_stocks():
         # Global
         cursor.execute("""SELECT COUNT(*) as n, SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
             MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
-            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h,
-            SUM(COALESCE(fee_estimated,0)) as fee_estimated_total,
-            SUM(pnl) as pnl_gross_total
+            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
             FROM trades WHERE status='CLOSED' AND asset_type='stock'""")
         glb = cursor.fetchone()
         cursor.close(); conn.close()
-        # Trades abertas
-        with state_lock: open_t = list(stocks_open)
+        with state_lock:
+            open_t  = list(stocks_open)
+            _fees   = round(sum(t.get('fee_estimated',0) for t in stocks_closed), 2)
+            _pnl_net= round(sum(t.get('pnl_net', t.get('pnl',0)) for t in stocks_closed), 2)
+        glb_d = {k:float(v or 0) if isinstance(v,(int,float,type(None))) else str(v) for k,v in glb.items()}
+        glb_d['fee_estimated_total'] = _fees
+        glb_d['pnl_net_total']       = _pnl_net
         return jsonify({
-            'global': {k:float(v or 0) if isinstance(v,(int,float,type(None))) else str(v) for k,v in glb.items()},
+            'global': glb_d,
             'daily': daily, 'by_symbol': by_sym, 'by_reason': by_reason,
             'open_trades': len(open_t),
             'initial_capital': INITIAL_CAPITAL_STOCKS,
@@ -5546,9 +5556,7 @@ def performance_crypto():
         by_reason = [{**r,'pnl':float(r['pnl'] or 0),'n':int(r['n']),'wins':int(r['wins'])} for r in cursor.fetchall()]
         cursor.execute("""SELECT COUNT(*) as n, SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
             MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
-            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h,
-            SUM(COALESCE(fee_estimated,0)) as fee_estimated_total,
-            SUM(pnl) as pnl_gross_total
+            AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
             FROM trades WHERE status='CLOSED' AND asset_type='crypto'""")
         glb = cursor.fetchone()
         cursor.close(); conn.close()

@@ -5312,10 +5312,14 @@ def stats():
         'open_trades':len(stocks_open)+len(crypto_open),
         'closed_trades':total_cl_n,'winning_trades':total_win,
         'win_rate':round(total_win/total_cl_n*100,1) if total_cl_n>0 else 0,
-        'daily_pnl':d_pnl,'weekly_pnl':w_pnl,'monthly_pnl':m_pnl,'annual_pnl':y_pnl,
-        'daily_gain_pct':round(d_pnl/initial_global*100,3),
-        'monthly_gain_pct':round(m_pnl/initial_global*100,2),
-        'annual_gain_pct':round(y_pnl/initial_global*100,2),
+        # [v10.14] Períodos incluem arbi
+        'daily_pnl':  round(d_pnl + calc_period_pnl(list(arbi_closed),1),2),
+        'weekly_pnl': round(w_pnl + calc_period_pnl(list(arbi_closed),7),2),
+        'monthly_pnl':round(m_pnl + calc_period_pnl(list(arbi_closed),30),2),
+        'annual_pnl': round(y_pnl + calc_period_pnl(list(arbi_closed),365),2),
+        'daily_gain_pct':  round((d_pnl + calc_period_pnl(list(arbi_closed),1))/initial_global*100,3),
+        'monthly_gain_pct':round((m_pnl + calc_period_pnl(list(arbi_closed),30))/initial_global*100,2),
+        'annual_gain_pct': round((y_pnl + calc_period_pnl(list(arbi_closed),365))/initial_global*100,2),
         'best_trade':round(db_st.get('best_trade',0),2),'worst_trade':round(db_st.get('worst_trade',0),2),
         # ─── STOCKS ─────────────────────────────────────────────
         'stocks_capital':round(sc,2),'stocks_portfolio_value':round(st,2),

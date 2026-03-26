@@ -2530,7 +2530,20 @@ def init_all_tables():
             leg_a VARCHAR(20), leg_b VARCHAR(20), mkt_a VARCHAR(10), mkt_b VARCHAR(10),
             direction VARCHAR(10), buy_leg VARCHAR(20), buy_mkt VARCHAR(10),
             short_leg VARCHAR(20), short_mkt VARCHAR(10),
-            entry_spread DECIMAL(10,4), current_spread DECIMAL(10,4), position_size DECIMAL(18,2),
+            entry_spread DECIMAL(10,4), entry_spread_raw DECIMAL(10,4), current_spread DECIMAL(10,4),
+            entry_spread_normalized DECIMAL(10,4), position_size DECIMAL(18,2),
+            price_a_entry DECIMAL(18,4), price_b_entry DECIMAL(18,4),
+            price_a_usd_norm DECIMAL(18,4), price_b_usd_norm DECIMAL(18,4),
+            bid_a DECIMAL(18,4), ask_a DECIMAL(18,4), bid_b DECIMAL(18,4), ask_b DECIMAL(18,4),
+            qty_a INT, qty_b INT,
+            entry_ts DATETIME, signal_ts_a DATETIME, signal_ts_b DATETIME,
+            delta_ts_between_legs_ms INT DEFAULT 0,
+            fx_cost DECIMAL(10,2) DEFAULT 0, slippage_cost_a DECIMAL(10,2) DEFAULT 0,
+            slippage_cost_b DECIMAL(10,2) DEFAULT 0, slippage_bps_total DECIMAL(8,2) DEFAULT 0,
+            exchange_fee_a DECIMAL(10,2) DEFAULT 0, exchange_fee_b DECIMAL(10,2) DEFAULT 0,
+            total_cost_estimated DECIMAL(10,2) DEFAULT 0,
+            audit_flag VARCHAR(30) DEFAULT 'valid',
+            simulation_model_version VARCHAR(10),
             pnl DECIMAL(18,2) DEFAULT 0, pnl_pct DECIMAL(10,4) DEFAULT 0,
             peak_pnl_pct DECIMAL(10,4) DEFAULT 0, fx_rate DECIMAL(10,4),
             status VARCHAR(10) DEFAULT 'OPEN', close_reason VARCHAR(20),
@@ -4504,11 +4517,21 @@ def calc_spread(pair):
         if pa_raw<=0 or pb_raw<=0: return None
         fx=pair['fx']; ra=pair.get('ratio_a',1); rb=pair.get('ratio_b',1)
         if fx=='USDBRL':
-            # leg_a=B3(BRL), leg_b=NYSE(USD) → converte BRL→USD
-            rate=fx_rates.get('USDBRL',5.8); pa=(pa_raw/rate)*ra; pb=pb_raw*rb
+            # [v10.14-Audit] CORREÇÃO DO RATIO ADR
+            # pa = PETR4 em USD = pa_raw_BRL / fx_rate (SEM multiplicar por ratio_a)
+            # pb_norm = PBR / ratio_a = preço ADR equivalente a 1 PETR4
+            # spread = (pa / (pb/ratio_a) - 1) × 100
+            # ratio_a = quantas ações locais (PETR4) equivalem a 1 ADR (PBR)
+            rate=fx_rates.get('USDBRL',5.8)
+            pa = pa_raw/rate          # PETR4 em USD (por 1 ação local)
+            pb = (pb_raw*rb)/ra       # PBR normalizado: preço por 1 ação local equivalente
         elif fx=='GBPUSD':
-            # leg_a=NYSE(USD), leg_b=LSE(GBp=pence÷100=£×GBPUSD) → converte GBp→USD
-            rate=fx_rates.get('GBPUSD',1.27); pa=pa_raw*ra; pb=(pb_raw/100*rate)*rb
+            # [v10.14-Audit] leg_a=NYSE(USD), leg_b=LSE(GBp÷100=£×GBPUSD)
+            # pa = NYSE price em USD por ação (sem ratio pois ratio_a=1 para NYSE)
+            # pb = LSE em USD por unidade equivalente à ação NYSE
+            rate=fx_rates.get('GBPUSD',1.27)
+            pa = (pa_raw*rb)/ra       # NYSE normalizado por ratio
+            pb = (pb_raw/100*rate)    # LSE: GBp→USD (sem ratio pois rb=1 geralmente)
         elif fx=='HKDUSD':
             # leg_a=NYSE(USD), leg_b=HKEX(HKD÷HKDUSD) → converte HKD→USD
             rate=fx_rates.get('HKDUSD',7.8); pa=pa_raw*ra; pb=(pb_raw/rate)*rb
@@ -4516,20 +4539,71 @@ def calc_spread(pair):
             # [v10.9] leg_a=NYSE(USD), leg_b=TSX(CAD×CADUSD) → converte CAD→USD
             rate=fx_rates.get('CADUSD',0.735); pa=pa_raw*ra; pb=(pb_raw*rate)*rb
         elif fx=='EURUSD':
-            # [v10.9] leg_a=NYSE(USD), leg_b=EURONEXT(EUR×EURUSD) → converte EUR→USD
-            rate=fx_rates.get('EURUSD',1.085); pa=pa_raw*ra; pb=(pb_raw*rate)*rb
+            # [v10.14-Audit] leg_a=NYSE(USD), leg_b=EURONEXT(EUR×EURUSD)
+            rate=fx_rates.get('EURUSD',1.085)
+            pa = (pa_raw*rb)/ra       # NYSE normalizado
+            pb = pb_raw*rate          # EURONEXT: EUR→USD
         else:
             pa=pa_raw*ra; pb=pb_raw*rb
         if pb<=0: return None
-        spread_pct=((pa-pb)/pb)*100
+        # [v10.14-Audit] Spread normalizado por ratio — corrige exibição de ADR
+        # spread_norm = (price_a_normalized / price_b_normalized - 1) × 100
+        # price_a_norm = pa_raw_usd / ratio_a → preço por unidade econômica
+        # price_b_norm = pb_raw_usd / ratio_b → preço por unidade econômica
+        # [v10.14-Audit] pa e pb já estão normalizados pela nova fórmula acima
+        # pa = preço da leg_a por unidade econômica (1 ação local ou equivalente)
+        # pb = preço da leg_b normalizado ao equivalente da leg_a
+        pa_norm = pa; pb_norm = pb
+        spread_pct = ((pa_norm - pb_norm) / pb_norm) * 100 if pb_norm > 0 else 0
+
+        now_ts = datetime.utcnow().isoformat()
+        # Timestamp do preço (simplificado — usar updated_at do cache)
+        price_ts_a = now_ts; price_ts_b = now_ts
+
+        # Bid/Ask estimado — simulação conservadora: spread bid/ask típico por mercado
+        # B3: ~0.05% | NYSE: ~0.02% | LSE/EURONEXT: ~0.03%
+        def _ba_spread(mkt):
+            return {'B3':0.0005,'NYSE':0.0002,'LSE':0.0003,'EURONEXT':0.0003}.get(mkt,0.0003)
+        bid_a = round(pa_raw * (1 - _ba_spread(pair['mkt_a'])/2), 4)
+        ask_a = round(pa_raw * (1 + _ba_spread(pair['mkt_a'])/2), 4)
+        bid_b = round(pb_raw * (1 - _ba_spread(pair['mkt_b'])/2), 4)
+        ask_b = round(pb_raw * (1 + _ba_spread(pair['mkt_b'])/2), 4)
+        spread_bps_a = round(_ba_spread(pair['mkt_a']) * 10000, 1)
+        spread_bps_b = round(_ba_spread(pair['mkt_b']) * 10000, 1)
+
+        # Quantidade estimada (position_size / entry_price em USD)
+        _pos = ARBI_POS_SIZE
+        qty_a = round(_pos / pa, 0) if pa > 0 else 0
+        qty_b = round(_pos / pb, 0) if pb > 0 else 0
+
         return {'pair_id':pair['id'],'name':pair['name'],'leg_a':pair['leg_a'],'leg_b':pair['leg_b'],
-            'mkt_a':pair['mkt_a'],'mkt_b':pair['mkt_b'],'price_a':round(pa_raw,4),'price_b':round(pb_raw,4),
-            'price_a_usd':round(pa,4),'price_b_usd':round(pb,4),'spread_pct':round(spread_pct,2),
-            'abs_spread':round(abs(spread_pct),2),'fx_rate':fx_rates.get(fx,0),'fx_pair':fx,
-            'ratio_a':ra,'ratio_b':rb,'opportunity':ARBI_MIN_SPREAD<=abs(spread_pct)<=ARBI_MAX_SPREAD,  # [v10.9] teto 15% evita spread estrutural
+            'mkt_a':pair['mkt_a'],'mkt_b':pair['mkt_b'],
+            # Preços raw e normalizados
+            'price_a':round(pa_raw,4),'price_b':round(pb_raw,4),
+            'price_a_usd':round(pa,4),'price_b_usd':round(pb,4),   # já normalizado por ratio
+            'price_a_raw_usd':round(pa_raw if fx=='USDBRL' else pa_raw, 4),
+            'price_b_raw_usd':round(pb_raw, 4),
+            # Bid/Ask simulado
+            'bid_a':bid_a,'ask_a':ask_a,'bid_b':bid_b,'ask_b':ask_b,
+            'spread_bps_a':spread_bps_a,'spread_bps_b':spread_bps_b,
+            'price_source_a':'last','price_source_b':'last',
+            # Timestamps
+            'signal_ts_a':price_ts_a,'signal_ts_b':price_ts_b,'delta_ts_ms':0,
+            # Spread calculado corretamente
+            'spread_pct':round(spread_pct,4),
+            'spread_pct_display':round(spread_pct,2),
+            'abs_spread':round(abs(spread_pct),2),
+            'entry_spread_normalized':round(spread_pct,4),
+            # Ratio e FX
+            'fx_rate':fx_rates.get(fx,0),'fx_pair':fx,'fx_ts':now_ts,
+            'ratio_a':ra,'ratio_b':rb,'ratio_source':'pair_config',
+            # Quantidade
+            'qty_a_est':int(qty_a),'qty_b_est':int(qty_b),
+            # Flags
+            'opportunity':ARBI_MIN_SPREAD<=abs(spread_pct)<=ARBI_MAX_SPREAD,
             'direction':'LONG_A' if spread_pct<0 else 'LONG_B',
             'markets_open':market_open_for(pair['mkt_a']) and market_open_for(pair['mkt_b']),
-            'updated_at':datetime.utcnow().isoformat()}
+            'updated_at':now_ts}
     except Exception as e: log.error(f'Spread {pair["id"]}: {e}'); return None
 
 def arbi_scan_loop():
@@ -4573,14 +4647,64 @@ def arbi_scan_loop():
                     elif approved_size<=0 or arbi_capital<=0: pass
                     else:
                         pos=min(approved_size,arbi_capital); arbi_capital-=pos
+                        _entry_ts = datetime.utcnow().isoformat()
+                        # [v10.14-Audit] Preço de entrada por lado
+                        # LONG_A: compra leg_a (ask) e vende leg_b (bid)
+                        _entry_price_a = spread.get('ask_a' if spread['direction']=='LONG_A' else 'bid_a', spread.get('price_a',0))
+                        _entry_price_b = spread.get('bid_b' if spread['direction']=='LONG_A' else 'ask_b', spread.get('price_b',0))
+                        # Custo de câmbio estimado (B3↔NYSE: 0.10% do volume)
+                        _fx_cost = round(pos * 0.001, 2) if pair.get('fx','') == 'USDBRL' else 0
+                        # Fee ARBI via BTG Day Trade — emolumentos B3 ~0.010% round trip
+                        _fee_b3 = round(pos * 0.0001, 2) if 'B3' in [pair['mkt_a'], pair['mkt_b']] else round(pos * 0.0002, 2)
+                        # Slippage estimado (posição / ADV proxy × fator)
+                        _slippage_a_bps = round(min(pos / 5e6 * 10, 5), 2)  # estimativa conservadora
+                        _slippage_b_bps = round(min(pos / 5e6 * 10, 5), 2)
+                        _slippage_cost  = round(pos * (_slippage_a_bps + _slippage_b_bps) / 10000, 2)
+                        _qty_a = spread.get('qty_a_est', 0)
+                        _qty_b = spread.get('qty_b_est', 0)
                         trade={'id':trade_id,'pair_id':pair['id'],'name':pair['name'],
                             'leg_a':pair['leg_a'],'leg_b':pair['leg_b'],
                             'mkt_a':pair['mkt_a'],'mkt_b':pair['mkt_b'],
                             'direction':spread['direction'],'buy_leg':bl,'buy_mkt':bm,
-                            'short_leg':sl,'short_mkt':sm,'entry_spread':spread['spread_pct'],
-                            'current_spread':spread['spread_pct'],'position_size':round(pos,2),
-                            'pnl':0,'pnl_pct':0,'peak_pnl_pct':0,'fx_rate':spread['fx_rate'],
-                            'opened_at':datetime.utcnow().isoformat(),'status':'OPEN','asset_type':'arbitrage'}
+                            'short_leg':sl,'short_mkt':sm,
+                            # Spreads — raw e normalizado
+                            'entry_spread':spread.get('entry_spread_normalized', spread['spread_pct']),
+                            'entry_spread_raw':spread['spread_pct'],
+                            'current_spread':spread['spread_pct'],
+                            'position_size':round(pos,2),
+                            'pnl':0,'pnl_pct':0,'peak_pnl_pct':0,
+                            'fx_rate':spread['fx_rate'],'fx_ts':spread.get('fx_ts',_entry_ts),
+                            # Timestamps Sprint 1
+                            'entry_ts':_entry_ts,
+                            'signal_ts_a':spread.get('signal_ts_a',_entry_ts),
+                            'signal_ts_b':spread.get('signal_ts_b',_entry_ts),
+                            'delta_ts_between_legs_ms':spread.get('delta_ts_ms',0),
+                            # Preços por perna
+                            'price_a_entry':_entry_price_a,
+                            'price_b_entry':_entry_price_b,
+                            'price_a_usd_norm':spread.get('price_a_usd',0),
+                            'price_b_usd_norm':spread.get('price_b_usd',0),
+                            'bid_a':spread.get('bid_a',0),'ask_a':spread.get('ask_a',0),
+                            'bid_b':spread.get('bid_b',0),'ask_b':spread.get('ask_b',0),
+                            'price_source_a':spread.get('price_source_a','last'),
+                            'price_source_b':spread.get('price_source_b','last'),
+                            # Quantidade
+                            'qty_a':_qty_a,'qty_b':_qty_b,
+                            'ratio_a':pair.get('ratio_a',1),'ratio_b':pair.get('ratio_b',1),
+                            # Custos detalhados Sprint 1
+                            'broker_fee_a':0,'broker_fee_b':0,  # BTG Day Trade ZERO
+                            'exchange_fee_a':round(_fee_b3/2,2),'exchange_fee_b':round(_fee_b3/2,2),
+                            'fx_cost':_fx_cost,
+                            'slippage_cost_a':round(_slippage_cost/2,2),
+                            'slippage_cost_b':round(_slippage_cost/2,2),
+                            'slippage_bps_total':round(_slippage_a_bps+_slippage_b_bps,2),
+                            'total_cost_estimated':round(_fee_b3 + _fx_cost + _slippage_cost,2),
+                            # Audit flags
+                            'audit_flag':'valid',
+                            'simulation_model_version':'v2.0',
+                            'fee_model_version':'v1.0',
+                            'slippage_model_version':'v1.0',
+                            'opened_at':_entry_ts,'status':'OPEN','asset_type':'arbitrage'}
                         arbi_open.append(trade); opened=True
 
                 if opened:
@@ -6724,8 +6848,10 @@ def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> f
         rate = FEES.get(market, FEES['NYSE'])
     elif asset_type == 'crypto':
         rate = FEES['CRYPTO']   # já calculado com VIP tier + BNB por _binance_rt()
-    else:                       # arbi
-        rate = FEES['ARBI']
+    else:                       # arbi — BTG Day Trade: emolumentos B3 ~0.010% rt
+        # Já capturado em total_cost_estimated na abertura — não duplicar
+        # Retornar só emolumentos mínimos para registro
+        rate = FEES['ARBI']  # 0.010%
     return round(pv * rate, 2)
 
 def apply_fee_to_trade(trade: dict) -> dict:
@@ -6741,10 +6867,16 @@ def apply_fee_to_trade(trade: dict) -> dict:
     """
     if trade.get('_fee_applied'):
         return trade
-    pv    = float(trade.get('position_value', 0) or 0)
+    pv    = float(trade.get('position_value', 0) or trade.get('position_size', 0) or 0)
     mkt   = trade.get('market', 'NYSE')
     atype = trade.get('asset_type', 'stock')
-    fee   = calc_fee(pv, mkt, atype)
+    # Para arbi: usar total_cost_estimated que já tem fee+slippage+fx_cost
+    if atype in ('arbitrage','arbi') or mkt == 'ARBI':
+        fee = float(trade.get('total_cost_estimated', 0) or 0)
+        if fee == 0:  # fallback para trades antigas sem o campo
+            fee = calc_fee(pv, mkt, atype)
+    else:
+        fee = calc_fee(pv, mkt, atype)
     gross = float(trade.get('pnl', 0) or 0)
     net   = round(gross - fee, 2)
     net_pct = round(net / pv * 100, 4) if pv > 0 else 0

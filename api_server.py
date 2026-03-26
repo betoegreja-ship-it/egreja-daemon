@@ -5299,17 +5299,26 @@ def stats():
     core_total=round(st+ct,2); arbi_total=round(ARBI_CAPITAL+a_cl+a_op,2)
     grand_total=round(core_total+arbi_total,2)  # [v10.14] stocks+crypto+arbi
     initial_global=INITIAL_CAPITAL_STOCKS+INITIAL_CAPITAL_CRYPTO+ARBI_CAPITAL
-    total_cl_n=int(db_st.get('total',len(stocks_closed)+len(crypto_closed))); total_win=int(db_st.get('wins',s_win+c_win))
+    # [v10.14-FIX] P&L derivado do grand_total — garante consistência matemática
+    # Evita discrepância entre portfolio value e total_pnl reportado
+    _true_total_pnl  = round(grand_total - initial_global, 2)
+    _true_open_pnl   = round(s_op + c_op + a_op, 2)
+    _true_closed_pnl = round(_true_total_pnl - _true_open_pnl, 2)
+    # [v10.14-FIX] Win rate e trades incluem arbi
+    _arbi_wins = sum(1 for t in arbi_closed if t.get('pnl',0) > 0)
+    total_cl_n = int(db_st.get('total', len(stocks_closed)+len(crypto_closed))) + len(arbi_closed)
+    total_win  = int(db_st.get('wins', s_win+c_win)) + _arbi_wins
     return jsonify({
         # ─── GLOBAL (stocks + crypto) — arbi NÃO entra aqui ────
         'initial_capital':initial_global,
         'core_portfolio_value':core_total,        # stocks+crypto apenas
         'total_portfolio_value':grand_total,       # [v10.14] stocks+crypto+arbi (correto para display)
         'open_positions_value':round(s_val+c_val,2),'current_capital':round(sc+cc,2),
-        'total_pnl':round(s_op+s_cl+c_op+c_cl+a_op+a_cl,2),  # [v10.14] inclui arbi
-        'open_pnl':round(s_op+c_op+a_op,2),'closed_pnl':round(s_cl+c_cl+a_cl,2),  # [v10.14] inclui arbi
-        'gain_percent':round((grand_total-initial_global)/initial_global*100,2),  # [v10.14] usa grand total
-        'open_trades':len(stocks_open)+len(crypto_open),
+        'total_pnl':_true_total_pnl,      # [v10.14] = grand_total - initial (matematicamente exato)
+        'open_pnl':_true_open_pnl,         # stocks+crypto+arbi open
+        'closed_pnl':_true_closed_pnl,     # total - open (consistente com portfolio)
+        'gain_percent':round(_true_total_pnl/initial_global*100,2),
+        'open_trades':len(stocks_open)+len(crypto_open)+len(arbi_open),
         'closed_trades':total_cl_n,'winning_trades':total_win,
         'win_rate':round(total_win/total_cl_n*100,1) if total_cl_n>0 else 0,
         # [v10.14] Períodos incluem arbi
@@ -5323,7 +5332,9 @@ def stats():
         'best_trade':round(db_st.get('best_trade',0),2),'worst_trade':round(db_st.get('worst_trade',0),2),
         # ─── STOCKS ─────────────────────────────────────────────
         'stocks_capital':round(sc,2),'stocks_portfolio_value':round(st,2),
-        'stocks_open_pnl':round(s_op,2),'stocks_closed_pnl':round(s_cl,2),
+        'stocks_open_pnl':round(s_op,2),
+        # [v10.14-FIX] stocks_closed_pnl derivado do portfolio
+        'stocks_closed_pnl':round(st - INITIAL_CAPITAL_STOCKS - s_op, 2),
         'stocks_fees_total':round(sum(t.get('fee_estimated',0) for t in stocks_closed),2),
         'stocks_pnl_net':round(sum(t.get('pnl_net',t.get('pnl',0)) for t in stocks_closed),2),
         'stocks_open_trades':len(stocks_open),
@@ -5338,7 +5349,9 @@ def stats():
         'stocks_annual_return_pct':round(db_st.get('stocks_annual',0)/INITIAL_CAPITAL_STOCKS*100,2) if INITIAL_CAPITAL_STOCKS>0 else 0,
         # ─── CRYPTO ─────────────────────────────────────────────
         'crypto_capital':round(cc,2),'crypto_portfolio_value':round(ct,2),
-        'crypto_open_pnl':round(c_op,2),'crypto_closed_pnl':round(c_cl,2),
+        'crypto_open_pnl':round(c_op,2),
+        # [v10.14-FIX] crypto_closed_pnl derivado do portfolio (não do DB gross)
+        'crypto_closed_pnl':round(ct - INITIAL_CAPITAL_CRYPTO - c_op, 2),
         'crypto_fees_total':round(sum(t.get('fee_estimated',0) for t in crypto_closed),2),
         'crypto_pnl_net':round(sum(t.get('pnl_net',t.get('pnl',0)) for t in crypto_closed),2),
         'crypto_open_trades':len(crypto_open),

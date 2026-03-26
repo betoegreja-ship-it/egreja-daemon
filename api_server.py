@@ -1751,7 +1751,7 @@ def _db_save_signal_event(event: dict):
     try:
         c = conn.cursor()
         c.execute("""INSERT INTO signal_events (
-            signal_id, feature_hash, symbol, asset_type, market_type, `signal`, raw_score,
+            signal_id, feature_hash, symbol, asset_type, market_type, signal_type, raw_score,
             learning_confidence, confidence_band, price, signal_created_at,
             market_regime_mode, market_regime_volatility, market_open, trade_open,
             rsi, ema9, ema21, ema50, rsi_bucket, score_bucket, change_pct_bucket,
@@ -1896,12 +1896,12 @@ def _db_save_shadow_decision(shadow: dict):
     try:
         c = conn.cursor()
         c.execute("""INSERT IGNORE INTO shadow_decisions (
-            shadow_id, signal_id, symbol, `signal`, price_at_signal,
+            shadow_id, signal_id, symbol, signal_type, price_at_signal,
             not_executed_reason, hypothetical_entry, evaluation_status,
             created_at, payload_json)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (shadow['shadow_id'], shadow['signal_id'], shadow['symbol'],
-             shadow['signal'], shadow['price_at_signal'],
+             shadow.get('signal_type', shadow.get('signal','')), shadow['price_at_signal'],
              shadow['not_executed_reason'], shadow['hypothetical_entry'],
              shadow['evaluation_status'], shadow['created_at'], shadow['payload_json']))
         c.close()

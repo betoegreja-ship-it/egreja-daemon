@@ -6800,28 +6800,25 @@ if __name__ == '__main__':
     log.info(f'Queue thresholds: WARN={URGENT_QUEUE_WARN} / CRIT={URGENT_QUEUE_CRIT}')
 
     log.info('Init...')
-    # [v10.14] Limpeza preventiva de tabelas auxiliares no startup
+    # [v10.14] Limpeza preventiva — libera espaço antes de criar tabelas
     try:
         _sc = get_db()
         if _sc:
             _cur = _sc.cursor()
-            for _t in ['shadow_decisions','learning_audit','audit_events']:
-                try: _cur.execute(f'TRUNCATE TABLE {_t}'); _sc.commit()
+            freed = []
+            # TRUNCATE em todas as tabelas auxiliares para liberar espaço
+            for _t in ['signal_events','shadow_decisions','learning_audit','audit_events']:
+                try:
+                    _cur.execute(f'SELECT COUNT(*) FROM {_t}'); n = _cur.fetchone()[0]
+                    _cur.execute(f'TRUNCATE TABLE {_t}'); _sc.commit()
+                    freed.append(f'{_t}:{n}')
                 except: pass
-            # signal_events — manter últimos 5000
+            # pattern_stats — limpar entradas fracas
             try:
-                _cur.execute("DELETE FROM signal_events WHERE id NOT IN (SELECT id FROM (SELECT id FROM signal_events ORDER BY id DESC LIMIT 5000) t)")
-                _sc.commit()
-                _cur.execute("OPTIMIZE TABLE signal_events")
-                _sc.commit()
-            except: pass
-            # pattern_stats — limpar entradas antigas com poucas amostras
-            try:
-                _cur.execute("DELETE FROM pattern_stats WHERE total_samples < 3")
-                _sc.commit()
+                _cur.execute("DELETE FROM pattern_stats WHERE total_samples < 2"); _sc.commit()
             except: pass
             _cur.close(); _sc.close()
-            log.info('Startup cleanup: tabelas auxiliares limpas')
+            log.info(f'Startup cleanup OK: {freed}')
     except Exception as _e:
         log.warning(f'Startup cleanup error: {_e}')
     init_all_tables()

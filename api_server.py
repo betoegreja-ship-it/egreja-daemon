@@ -5173,6 +5173,8 @@ def stats():
         # ─── STOCKS ─────────────────────────────────────────────
         'stocks_capital':round(sc,2),'stocks_portfolio_value':round(st,2),
         'stocks_open_pnl':round(s_op,2),'stocks_closed_pnl':round(s_cl,2),
+        'stocks_fees_total':round(sum(t.get('fee_estimated',0) for t in stocks_closed),2),
+        'stocks_pnl_net':round(sum(t.get('pnl_net',t.get('pnl',0)) for t in stocks_closed),2),
         'stocks_open_trades':len(stocks_open),
         'stocks_closed_trades':int(db_st.get('stocks_total',len(stocks_closed))),
         'stocks_win_rate':round(db_st.get('stocks_wins',0)/db_st.get('stocks_total',1)*100,1) if db_st.get('stocks_total',0)>0 else 0,
@@ -5186,6 +5188,8 @@ def stats():
         # ─── CRYPTO ─────────────────────────────────────────────
         'crypto_capital':round(cc,2),'crypto_portfolio_value':round(ct,2),
         'crypto_open_pnl':round(c_op,2),'crypto_closed_pnl':round(c_cl,2),
+        'crypto_fees_total':round(sum(t.get('fee_estimated',0) for t in crypto_closed),2),
+        'crypto_pnl_net':round(sum(t.get('pnl_net',t.get('pnl',0)) for t in crypto_closed),2),
         'crypto_open_trades':len(crypto_open),
         'crypto_closed_trades':int(db_st.get('crypto_total',len(crypto_closed))),
         'crypto_win_rate':round(db_st.get('crypto_wins',0)/db_st.get('crypto_total',1)*100,1) if db_st.get('crypto_total',0)>0 else 0,
@@ -5493,7 +5497,7 @@ def performance_stocks():
             MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
             AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h,
             SUM(COALESCE(fee_estimated,0)) as fee_estimated_total,
-            SUM(COALESCE(pnl_gross,pnl)) as pnl_gross_total
+            SUM(pnl) as pnl_gross_total
             FROM trades WHERE status='CLOSED' AND asset_type='stock'""")
         glb = cursor.fetchone()
         cursor.close(); conn.close()
@@ -5544,7 +5548,7 @@ def performance_crypto():
             MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
             AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h,
             SUM(COALESCE(fee_estimated,0)) as fee_estimated_total,
-            SUM(COALESCE(pnl_gross,pnl)) as pnl_gross_total
+            SUM(pnl) as pnl_gross_total
             FROM trades WHERE status='CLOSED' AND asset_type='crypto'""")
         glb = cursor.fetchone()
         cursor.close(); conn.close()
@@ -6702,27 +6706,30 @@ def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> f
 
 def apply_fee_to_trade(trade: dict) -> dict:
     """
-    [v10.14] Aplica taxa ao trade fechado.
-    - trade['pnl_gross'] = P&L original (preservado)
-    - trade['fee_estimated'] = taxa calculada
-    - trade['pnl'] = P&L líquido (bruto - taxa) ← usado no reporting
-    - trade['pnl_pct'] = recalculado sobre posição
-    NÃO altera lógica de trading (SL, TP, capital devolvido — baseados no gross)
+    [v10.14] Calcula e registra a taxa estimada de corretagem.
+    IMPORTANTE: pnl e pnl_pct NÃO são alterados — permanecem como bruto.
+    O sistema interno (capital, learning, WR, SL, TP) usa sempre o bruto.
+    Campos adicionados para exibição no frontend:
+      - trade['pnl_gross']    = cópia do pnl bruto (igual a pnl)
+      - trade['fee_estimated'] = taxa calculada
+      - trade['pnl_net']      = pnl - fee (só para display)
+      - trade['pnl_net_pct']  = pnl_net / position_value × 100
     """
     if trade.get('_fee_applied'):
-        return trade  # evitar dupla aplicação
-    pv   = float(trade.get('position_value', 0) or 0)
-    mkt  = trade.get('market', 'NYSE')
+        return trade
+    pv    = float(trade.get('position_value', 0) or 0)
+    mkt   = trade.get('market', 'NYSE')
     atype = trade.get('asset_type', 'stock')
-    fee  = calc_fee(pv, mkt, atype)
+    fee   = calc_fee(pv, mkt, atype)
     gross = float(trade.get('pnl', 0) or 0)
     net   = round(gross - fee, 2)
     net_pct = round(net / pv * 100, 4) if pv > 0 else 0
-    trade['pnl_gross']      = gross
-    trade['fee_estimated']  = fee
-    trade['pnl']            = net          # sobrescreve com líquido para reporting
-    trade['pnl_pct']        = net_pct      # recalculado líquido
-    trade['_fee_applied']   = True
+    # NUNCA sobrescreve pnl ou pnl_pct — lógica interna usa bruto
+    trade['pnl_gross']     = gross   # igual a pnl (bruto)
+    trade['fee_estimated'] = fee
+    trade['pnl_net']       = net     # líquido = só para display
+    trade['pnl_net_pct']   = net_pct
+    trade['_fee_applied']  = True
     return trade
 
 

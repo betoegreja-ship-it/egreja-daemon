@@ -673,6 +673,9 @@ def market_open_for(mkt):
 # ═══════════════════════════════════════════════════════════════
 def check_risk(symbol, market_type, position_value, strategy='stocks'):
     global RISK_KILL_SWITCH
+    # [v10.14] Auto-reset se kill foi de outro dia e drawdown atual está ok
+    if RISK_KILL_SWITCH:
+        _auto_reset_kill_switch_if_safe()
     if RISK_KILL_SWITCH: return False, 'KILL_SWITCH_ACTIVE', 0
 
     with state_lock:
@@ -766,6 +769,29 @@ def _trigger_kill_switch(dd_pct, period):
     global RISK_KILL_SWITCH
     RISK_KILL_SWITCH = True
     audit('KILL_SWITCH_ACTIVATED',{'drawdown_pct':round(dd_pct,2),'period':period})
+
+def _auto_reset_kill_switch_if_safe():
+    """[v10.14] Auto-reset do kill_switch no início de um novo dia se drawdown < limite."""
+    global RISK_KILL_SWITCH
+    if not RISK_KILL_SWITCH: return
+    try:
+        now = datetime.utcnow()
+        # Só resetar entre 13:00-13:30 UTC (abertura NYSE) ou 13:00 UTC (qualquer mercado)
+        # Resetar se o drawdown diário zerou (novo dia)
+        with state_lock:
+            all_closed = list(stocks_closed) + list(crypto_closed)
+        today = now.date()
+        daily_loss = sum(t.get('pnl',0) for t in all_closed
+                         if t.get('closed_at','')[:10] == str(today) and t.get('pnl',0) < 0)
+        total_cap = INITIAL_CAPITAL_STOCKS + INITIAL_CAPITAL_CRYPTO
+        dd_today = abs(daily_loss) / total_cap * 100 if total_cap > 0 else 0
+        # Se drawdown de HOJE está ok → reset automático (kill foi do dia anterior)
+        if dd_today < MAX_DAILY_DRAWDOWN_PCT * 0.5:  # margem de 50% do limite
+            RISK_KILL_SWITCH = False
+            log.info(f'[KS] Auto-reset: drawdown hoje={dd_today:.2f}% < limite/2={MAX_DAILY_DRAWDOWN_PCT*0.5:.1f}%')
+            audit('KILL_SWITCH_AUTO_RESET', {'dd_today': round(dd_today,2), 'threshold': MAX_DAILY_DRAWDOWN_PCT})
+    except Exception as e:
+        log.warning(f'auto_reset_ks: {e}')
     send_whatsapp(f'KILL SWITCH ATIVADO — drawdown {period}: {dd_pct:.2f}%')
 
 def _second_validation(symbol, market_type, strategy):

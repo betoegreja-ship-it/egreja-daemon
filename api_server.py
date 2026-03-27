@@ -5329,7 +5329,8 @@ def stats():
     # Evita discrepância entre portfolio value e total_pnl reportado
     _true_total_pnl  = round(grand_total - initial_global, 2)
     _true_open_pnl   = round(s_op + c_op + a_op, 2)
-    _true_closed_pnl = round(_true_total_pnl - _true_open_pnl, 2)
+    # [v10.14] closed_pnl = DB + arbi_closed — NÃO derivar de open para evitar efeito contrário
+    _true_closed_pnl = round(s_cl + c_cl + a_cl, 2)
     # [v10.14-FIX] Win rate e trades incluem arbi
     _arbi_wins = sum(1 for t in arbi_closed if t.get('pnl',0) > 0)
     total_cl_n = int(db_st.get('total', len(stocks_closed)+len(crypto_closed))) + len(arbi_closed)
@@ -5349,6 +5350,8 @@ def stats():
         'win_rate':round(total_win/total_cl_n*100,1) if total_cl_n>0 else 0,
         # [v10.14] Períodos incluem arbi
         'daily_pnl':  round(d_pnl + calc_period_pnl(list(arbi_closed),1),2),
+        'daily_pnl_closed': round(d_pnl + calc_period_pnl(list(arbi_closed),1),2),  # só fechadas
+        'daily_pnl_total':  round(d_pnl + calc_period_pnl(list(arbi_closed),1) + s_op + c_op + a_op,2),  # fechadas+abertas
         'weekly_pnl': round(w_pnl + calc_period_pnl(list(arbi_closed),7),2),
         'monthly_pnl':round(m_pnl + calc_period_pnl(list(arbi_closed),30),2),
         'annual_pnl': round(y_pnl + calc_period_pnl(list(arbi_closed),365),2),
@@ -5359,8 +5362,7 @@ def stats():
         # ─── STOCKS ─────────────────────────────────────────────
         'stocks_capital':round(sc,2),'stocks_portfolio_value':round(st,2),
         'stocks_open_pnl':round(s_op,2),
-        # [v10.14-FIX] stocks_closed_pnl derivado do portfolio
-        'stocks_closed_pnl':round(st - INITIAL_CAPITAL_STOCKS - s_op, 2),
+        'stocks_closed_pnl':round(s_cl,2),  # [v10.14] do banco (pnl gross fechadas)
         'stocks_fees_total':round(sum(t.get('fee_estimated',0) for t in stocks_closed),2),
         'stocks_pnl_net':round(sum(t.get('pnl_net',t.get('pnl',0)) for t in stocks_closed),2),
         'stocks_open_trades':len(stocks_open),
@@ -5376,8 +5378,7 @@ def stats():
         # ─── CRYPTO ─────────────────────────────────────────────
         'crypto_capital':round(cc,2),'crypto_portfolio_value':round(ct,2),
         'crypto_open_pnl':round(c_op,2),
-        # [v10.14-FIX] crypto_closed_pnl derivado do portfolio (não do DB gross)
-        'crypto_closed_pnl':round(ct - INITIAL_CAPITAL_CRYPTO - c_op, 2),
+        'crypto_closed_pnl':round(c_cl,2),  # [v10.14] do banco (pnl gross fechadas)
         'crypto_fees_total':round(sum(t.get('fee_estimated',0) for t in crypto_closed),2),
         'crypto_pnl_net':round(sum(t.get('pnl_net',t.get('pnl',0)) for t in crypto_closed),2),
         'crypto_open_trades':len(crypto_open),

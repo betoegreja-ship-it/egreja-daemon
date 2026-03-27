@@ -5309,9 +5309,14 @@ def stats():
     db_st = _get_db_trade_stats()
     with state_lock:
         s_op=sum(t.get('pnl',0) for t in stocks_open)
-        s_val=sum(t.get('current_price',t.get('entry_price',0))*t.get('quantity',0) for t in stocks_open)
+        # [v10.14-FIX-CRITICO] position_value + pnl funciona para LONG e SHORT
+        # current_price*qty era ERRADO para SHORT: quando short lucra (preço cai),
+        # current_price*qty caía e portfolio diminuía — o inverso do correto!
+        # Fórmula nova: para LONG: pos+pnl = entry*qty+(current-entry)*qty = current*qty ✓
+        #               para SHORT: pos+pnl = entry*qty+(entry-current)*qty ✓
+        s_val=sum(float(t.get('position_value',0))+float(t.get('pnl',0)) for t in stocks_open)
         c_op=sum(t.get('pnl',0) for t in crypto_open)
-        c_val=sum(t.get('current_price',t.get('entry_price',0))*t.get('quantity',0) for t in crypto_open)
+        c_val=sum(float(t.get('position_value',0))+float(t.get('pnl',0)) for t in crypto_open)
         a_op=sum(t.get('pnl',0) for t in arbi_open); a_cl=sum(t.get('pnl',0) for t in arbi_closed)
         a_win=sum(1 for t in arbi_closed if t.get('pnl',0)>0)
         a_d=calc_period_pnl(list(arbi_closed),1); a_w=calc_period_pnl(list(arbi_closed),7)

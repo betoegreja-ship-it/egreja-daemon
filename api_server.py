@@ -89,11 +89,11 @@ MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 250_000))
 MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 600_000))  # [v10.14] máximo global
 # [v10.14] Posição máxima por símbolo — BTC e ETH são as âncoras de capital
 CRYPTO_MAX_POSITION_BY_SYM = {
-    'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  600_000)),  # âncora — mais previsível
-    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  600_000)),  # âncora — melhor histórico
-    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',   50_000)),  # resto do capital
-    'NEARUSDT': float(os.environ.get('MAX_POS_NEAR',  50_000)),
-    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',   50_000)),
+    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  600_000)),  # 40% — melhor histórico WR 55%
+    'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  300_000)),  # 20% — referência de mercado
+    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',  300_000)),  # 20% — segundo melhor P&L
+    'NEARUSDT': float(os.environ.get('MAX_POS_NEAR', 200_000)),  # 13% — terceiro WR 55%
+    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',  100_000)),  #  7% — estável
 }
 
 FMP_API_KEY      = os.environ.get('FMP_API_KEY', '')        # mantido como fallback terciário
@@ -136,7 +136,7 @@ ALERTS_ENABLED = bool(TWILIO_SID and TWILIO_TOKEN and TWILIO_TO)
 ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 90.0))
-MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 90.0))
+MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = int(os.environ.get('MAX_POSITIONS_STOCKS', 15))
 MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.14] 5 símbolos = máx 5 simultâneas
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))

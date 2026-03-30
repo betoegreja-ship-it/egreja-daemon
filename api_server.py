@@ -86,7 +86,15 @@ if GUNICORN_WORKERS > 1:
 INITIAL_CAPITAL_STOCKS = float(os.environ.get('INITIAL_CAPITAL_STOCKS', 9_000_000))
 INITIAL_CAPITAL_CRYPTO = float(os.environ.get('INITIAL_CAPITAL_CRYPTO', 1_000_000))
 MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 250_000))
-MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 200_000))  # [v10.14] 5 símbolos → posição maior
+MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 600_000))  # [v10.14] máximo global
+# [v10.14] Posição máxima por símbolo — BTC e ETH são as âncoras de capital
+CRYPTO_MAX_POSITION_BY_SYM = {
+    'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  600_000)),  # âncora — mais previsível
+    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  600_000)),  # âncora — melhor histórico
+    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',   50_000)),  # resto do capital
+    'NEARUSDT': float(os.environ.get('MAX_POS_NEAR',  50_000)),
+    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',   50_000)),
+}
 
 FMP_API_KEY      = os.environ.get('FMP_API_KEY', '')        # mantido como fallback terciário
 POLYGON_API_KEY  = os.environ.get('POLYGON_API_KEY', '')    # primário para stocks US/NYSE
@@ -706,7 +714,7 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
         committed = sum(t.get('position_value',0) for t in c_open)
         if committed+position_value > INITIAL_CAPITAL_CRYPTO*MAX_CAPITAL_PCT_CRYPTO/100:
             return False, 'CRYPTO_CAPITAL_LIMIT', 0
-        free_cap = cc; max_pos = MAX_POSITION_CRYPTO
+        free_cap = cc; max_pos = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)
     else:
         free_cap = sc; max_pos = MAX_POSITION_STOCKS
 
@@ -4359,7 +4367,8 @@ def auto_trade_crypto():
                     continue
 
                 # [v10.11] Posição crypto maior — 10 posições × $120K = $1.2M de $1.5M investido
-                desired_pos=min(crypto_capital*(0.08+score_factor*0.07)*risk_mult_c,MAX_POSITION_CRYPTO)
+                _sym_max = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)
+                desired_pos=min(crypto_capital*(0.08+score_factor*0.07)*risk_mult_c, _sym_max)
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:

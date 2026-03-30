@@ -86,7 +86,7 @@ if GUNICORN_WORKERS > 1:
 INITIAL_CAPITAL_STOCKS = float(os.environ.get('INITIAL_CAPITAL_STOCKS', 9_000_000))
 INITIAL_CAPITAL_CRYPTO = float(os.environ.get('INITIAL_CAPITAL_CRYPTO', 1_000_000))
 MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 250_000))
-MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 150_000))
+MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 200_000))  # [v10.14] 5 símbolos → posição maior
 
 FMP_API_KEY      = os.environ.get('FMP_API_KEY', '')        # mantido como fallback terciário
 POLYGON_API_KEY  = os.environ.get('POLYGON_API_KEY', '')    # primário para stocks US/NYSE
@@ -130,7 +130,7 @@ ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 90.0))
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 90.0))
 MAX_POSITIONS_STOCKS     = int(os.environ.get('MAX_POSITIONS_STOCKS', 15))
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 10))
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.14] 5 símbolos = máx 5 simultâneas
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
 # Settings ajustaveis em runtime (via /settings POST)
@@ -208,13 +208,17 @@ SHADOW_TRACK_REASONS   = {'confidence_low','market_closed','risk_blocked','symbo
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [v10.9-opt] Removidos por WR<45% e PnL negativo após 10 dias de dados:
-    # LINKUSDT (WR 43%, -$10.5K), XLMUSDT (WR 35%, -$7.8K),
-    # ATOMUSDT (WR 38%, -$4.5K), BCHUSDT (WR 39%, -$4.2K)
-    'BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT',
-    'ADAUSDT','DOGEUSDT','AVAXUSDT','TRXUSDT','DOTUSDT',
-    'MATICUSDT','LTCUSDT','UNIUSDT',
-    'NEARUSDT','APTUSDT','ARBUSDT'
+    # [v10.14] Corte cirúrgico para 5 melhores por P&L real (análise 30/03/2026)
+    # REMOVIDOS por P&L negativo acumulado:
+    # ADAUSDT  -$5.515 (WR 48%), AVAXUSDT -$3.885 (WR 49%), SOLUSDT -$3.583 (WR 47%)
+    # DOGEUSDT -$3.037 (WR 54%!), XRPUSDT -$1.243, DOTUSDT -$5.897, UNIUSDT -$427
+    # LTCUSDT -$240, APTUSDT -$297, MATICUSDT -N/A, TRXUSDT -$1.372
+    # MANTIDOS (únicos lucrativos + neutros):
+    'ETHUSDT',   # +$5.723  WR 55% — melhor de todos
+    'ARBUSDT',   # +$2.455  WR 54% — segundo melhor
+    'NEARUSDT',  # +$964    WR 55% — terceiro
+    'BTCUSDT',   # +$242    WR 53% — quase neutro, referência de mercado
+    'BNBUSDT',   # +$191    WR 50% — quase neutro, exchange coin estável
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',

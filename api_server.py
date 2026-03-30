@@ -2911,16 +2911,40 @@ def _db_save_cooldown(symbol, ts):
 # STOCK PRICE FEED — range=3mo para indicadores reais
 # ═══════════════════════════════════════════════════════════════
 STOCK_SYMBOLS_B3 = [
+    # ── Blue chips originais ──────────────────────────────
     'PETR4.SA','VALE3.SA','ITUB4.SA','BBDC4.SA','ABEV3.SA','WEGE3.SA',
     'RENT3.SA','LREN3.SA','SUZB3.SA','GGBR4.SA','EMBR3.SA','CSNA3.SA',
     'CMIG4.SA','CPLE6.SA','BBAS3.SA','VIVT3.SA','SBSP3.SA','CSAN3.SA',
-    'GOAU4.SA','USIM5.SA','BPAC11.SA','RADL3.SA','PRIO3.SA',  # RAIZ4.SA removida (loop bug)
-    'BRFS3.SA','MRFG3.SA','JBSS3.SA','EGIE3.SA','CMIN3.SA','AESB3.SA'
+    'GOAU4.SA','USIM5.SA','BPAC11.SA','RADL3.SA','PRIO3.SA',
+    'BRFS3.SA','MRFG3.SA','JBSS3.SA','EGIE3.SA','CMIN3.SA','AESB3.SA',
+    # ── Expansão v10.14 — watchlist + curadoria ──────────
+    'BBDC3.SA','BBSE3.SA',             # Bradesco ON + BB Seguridade
+    'ALOS3.SA','MULT3.SA','SMFT3.SA',  # shoppings + Smart Fit
+    'EQTL3.SA','TAEE11.SA','ENEV3.SA', # energia elétrica
+    'CPFE3.SA','CXSE3.SA',             # CPFL + Caixa Seguros
+    'VBBR3.SA','UGPA3.SA',             # Vibra + Ultrapar (combustíveis)
+    'KLBN11.SA',                        # Klabin (papel/celulose)
+    'TOTS3.SA','MGLU3.SA','CASH3.SA',  # tech/varejo BR
+    'HAPV3.SA','RDOR3.SA','HYPE3.SA',  # saúde
+    'COGN3.SA','YDUQ3.SA',             # educação (alta volatilidade)
+    'NTCO3.SA',                         # Natura/Grupo Boticário
+    'AZUL4.SA',                         # Azul Airlines
+    'CCRO3.SA',                         # CCR concessões
+    'MDIA3.SA','ALPA4.SA','POMO4.SA',  # consumo
+    'AMER3.SA','RECV3.SA',             # Americanas + PetroRecôncavo
 ]
 STOCK_SYMBOLS_US = [
+    # ── Blue chips originais ──────────────────────────────
     'AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','NFLX','AMD','INTC',
     'JPM','BAC','GS','MS','V','MA','JNJ','PFE','UNH','XOM','CVX','COP',
-    'DIS','UBER','LYFT','SPOT','COIN','SPY','QQQ','IWM'
+    'DIS','UBER','LYFT','SPOT','COIN','SPY','QQQ','IWM',
+    # ── Expansão v10.14 — watchlist + curadoria ──────────
+    'TSM','AVGO','MU','ARM','SMCI',    # semicondutores
+    'ADBE','CRM','NOW','ORCL','SNOW',  # enterprise cloud
+    'SHOP','MELI','HOOD','HUBS','TCOM',# e-commerce / fintech
+    'BABA',                             # China tech
+    'LLY','TME',                        # pharma + Tencent Music
+    'PLTR','OKLO','TGT',               # watchlist usuário
 ]
 ALL_STOCK_SYMBOLS = STOCK_SYMBOLS_B3 + STOCK_SYMBOLS_US
 

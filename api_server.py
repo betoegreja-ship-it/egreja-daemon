@@ -2342,12 +2342,17 @@ def run_pattern_discovery():
 
 def pattern_discovery_loop():
     """[v10.13] Loop de background — mineração de padrões a cada 6 horas."""
-    time.sleep(180)  # aguardar 3 min para inicializar
+    # Aguardar startup batendo coração para não ser marcado FROZEN
+    for _ in range(18):  # 3 minutos em intervals de 10s
+        beat('pattern_discovery')
+        time.sleep(10)
     try: run_pattern_discovery()
     except: pass
     while True:
-        beat('pattern_discovery')
-        time.sleep(6 * 3600)
+        # Dormir em pequenos incrementos batendo coração — evita FROZEN
+        for _ in range(int(6*3600/30)):  # 6h em pedaços de 30s
+            beat('pattern_discovery')
+            time.sleep(30)
         beat('pattern_discovery')
         try: run_pattern_discovery()
         except Exception as e: log.error(f'pattern_discovery_loop: {e}')
@@ -4843,13 +4848,22 @@ def watchdog():
             fn=thread_fns.get(name)
             if fn:
                 try:
-                    new_t=threading.Thread(target=fn,daemon=True); new_t.start()
-                    thread_health[name]=new_t
-                    thread_restart_count[name]=count+1
-                    thread_last_restart[name]=now
-                    thread_heartbeat[name]=now
-                    log.warning(f'WATCHDOG: {name} restarted (attempt {count+1})')
-                    send_whatsapp(f'ALERTA: {name} ({problem}) reiniciada (tentativa {count+1})')
+                    # [v10.14-FIX] Verificar limite de threads antes de criar novo
+                    import threading as _th
+                    active = _th.active_count()
+                    if active > 45:  # limite seguro (padrão Python = 50)
+                        log.error(f'WATCHDOG: {name} NÃO reiniciada — threads ativos={active} (limite atingido)')
+                        send_whatsapp(f'CRITICO: thread starvation! {active} threads ativos. Reiniciar o serviço.')
+                        # Marcar heartbeat para não tentar de novo em loop
+                        thread_heartbeat[name] = time.time()
+                    else:
+                        new_t=threading.Thread(target=fn,daemon=True); new_t.start()
+                        thread_health[name]=new_t
+                        thread_restart_count[name]=count+1
+                        thread_last_restart[name]=now
+                        thread_heartbeat[name]=now
+                        log.warning(f'WATCHDOG: {name} restarted (attempt {count+1}), threads={active}')
+                        send_whatsapp(f'ALERTA: {name} ({problem}) reiniciada (tentativa {count+1})')
                 except Exception as e: log.error(f'WATCHDOG restart {name}: {e}')
 
 def network_sync_loop():

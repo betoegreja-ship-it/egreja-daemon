@@ -4016,6 +4016,12 @@ def stock_execution_worker():
                     'id': None,
                 })
 
+            # [DEBUG] Log todos os sinais gerados antes de filtrar
+            venda_rows = [r for r in rows if r.get('signal')=='VENDA']
+            compra_rows = [r for r in rows if r.get('signal')=='COMPRA']
+            if venda_rows or compra_rows:
+                log.info(f'[WORKER-ROWS] {len(compra_rows)} COMPRA / {len(venda_rows)} VENDA gerados. Top VENDA: {[(r["symbol"],r["score"]) for r in venda_rows[:3]]}')
+
             for sig in rows:
                 score=sig.get('score',0); mkt=sig.get('market_type','')
                 signal_val=sig.get('signal',''); sym=sig.get('symbol','')

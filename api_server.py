@@ -268,10 +268,10 @@ def _get_pool():
             pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
             pool_cfg.pop('connection_timeout', None)
             _db_pool = MySQLConnectionPool(
-                pool_name='egreja', pool_size=35,
+                pool_name='egreja', pool_size=30,
                 autocommit=True, connection_timeout=10,
                 **pool_cfg)
-            log.info('[v10.7] MySQL connection pool inicializado (size=35)')
+            log.info('[v10.7] MySQL connection pool inicializado (size=30)')
         except Exception as e:
             log.error(f'MySQL pool init: {e}')
     return _db_pool

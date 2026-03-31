@@ -135,9 +135,9 @@ TWILIO_TO      = os.environ.get('TWILIO_WHATSAPP_TO', '')
 ALERTS_ENABLED = bool(TWILIO_SID and TWILIO_TOKEN and TWILIO_TO)
 ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 
-MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 90.0))
+MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
-MAX_POSITIONS_STOCKS     = int(os.environ.get('MAX_POSITIONS_STOCKS', 15))
+MAX_POSITIONS_STOCKS     = int(os.environ.get('MAX_POSITIONS_STOCKS', 60))  # [v10.14] todo o capital
 MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.14] 5 símbolos = máx 5 simultâneas
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
@@ -166,7 +166,7 @@ ARBI_MAX_DAILY_LOSS  = float(os.environ.get('ARBI_MAX_DAILY_LOSS_PCT', 1.5))
 ARBI_KILL_SWITCH     = False
 
 # Risco global
-MAX_OPEN_POSITIONS      = int(os.environ.get('MAX_OPEN_POSITIONS', 25))
+MAX_OPEN_POSITIONS      = int(os.environ.get('MAX_OPEN_POSITIONS', 65))  # [v10.14] 60 stocks + 5 crypto
 MAX_DAILY_DRAWDOWN_PCT  = float(os.environ.get('MAX_DAILY_DRAWDOWN_PCT', 2.0))
 MAX_WEEKLY_DRAWDOWN_PCT = float(os.environ.get('MAX_WEEKLY_DRAWDOWN_PCT', 5.0))
 MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 10))
@@ -332,6 +332,7 @@ arbi_spreads    = {}
 fx_rates        = {}
 
 symbol_cooldown = {}
+_trailing_stop_cooldown = {}  # sym → timestamp do último trailing stop
 symbol_sl_count  = {}   # [v10.9-CircuitBreaker] conta stop losses consecutivos por símbolo
 symbol_blocked   = set()  # [v10.9] símbolos bloqueados manualmente (admin)
 # Cooldown exponencial: 2 SLs→10min, 3→30min, 4+→2h
@@ -698,6 +699,12 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
 
     if len(all_open) >= MAX_OPEN_POSITIONS:
         return False, f'MAX_OPEN_POSITIONS ({len(all_open)}/{MAX_OPEN_POSITIONS})', 0
+
+    # [v10.14] Cooldown pós-TRAILING_STOP — evitar re-entrada que devolve ganhos
+    _ts_cooldown = _trailing_stop_cooldown.get(symbol, 0)
+    if _ts_cooldown and (time.time() - _ts_cooldown) < TRAILING_STOP_COOLDOWN_SEC:
+        _remaining = int((TRAILING_STOP_COOLDOWN_SEC - (time.time() - _ts_cooldown)) / 60)
+        return False, f'TRAILING_STOP_COOLDOWN ({_remaining}min restantes)', 0
 
     if strategy == 'stocks':
         sc_count = sum(1 for t in s_open if t.get('asset_type')=='stock')
@@ -3855,6 +3862,11 @@ def monitor_trades():
                 enqueue_persist('trade',c)
                 enqueue_persist('cooldown',symbol=c['symbol'],ts=symbol_cooldown.get(c['symbol'],time.time()))
                 alert_trade_closed(c)
+                # [v10.14] Cooldown 2h após TRAILING_STOP lucrativo — evita re-entrada que devolve ganhos
+                # Análise: 26/55 re-entradas perderam $17.5K (36.6% dos ganhos do trailing devolvidos)
+                if c.get('close_reason') == 'TRAILING_STOP' and float(c.get('pnl',0)) > 0:
+                    _trailing_stop_cooldown[c['symbol']] = time.time()
+                    log.info(f'[TRAIL-COOLDOWN] {c["symbol"]}: 2h cooldown após TRAILING_STOP +${float(c.get("pnl",0)):,.0f}')
                 # [L-7] Aprender com o resultado do trade
                 process_trade_outcome(c)
                 # [v10.13] Atualizar estado cross-market após fechar trade de stock

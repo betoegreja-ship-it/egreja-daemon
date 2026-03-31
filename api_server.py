@@ -2100,6 +2100,10 @@ DISCOVERY_DIMENSIONS = [
     'usdbrl_trend',       # dólar subindo/caindo
     # Símbolo — padrões por ativo específico
     'symbol_bucket',      # top_performer / normal / underperformer
+    # [v10.14] Arbi — dimensões específicas de arbitragem
+    'arbi_pair',          # pair_id específico (PETR4-PBR, CSN, etc.)
+    'arbi_spread_zone',   # HIGH/MID/LOW/MINIMAL baseado em spread de entrada
+    'arbi_direction',     # LONG_A / LONG_B
 ]
 
 # Combinações de 2 e 3 dimensões a explorar automaticamente
@@ -2288,16 +2292,31 @@ def run_pattern_discovery():
         if not conn: return
         cursor = conn.cursor(dictionary=True)
         # Buscar trades fechadas com features_json
+        # Stocks e crypto
         cursor.execute("""
             SELECT t.pnl, t.pnl_pct, t.features_json, t.asset_type, t.market,
                    t.opened_at, t.closed_at, t.close_reason, t.symbol,
-                   t.score
+                   t.score, NULL as pair_id, NULL as entry_spread
             FROM trades t
             WHERE t.status='CLOSED' AND t.pnl IS NOT NULL
             ORDER BY t.closed_at DESC
             LIMIT 2000
         """)
-        rows = cursor.fetchall()
+        rows = list(cursor.fetchall())
+
+        # [v10.14-FIX] Incluir arbi_trades com features sintéticas
+        try:
+            cursor.execute("""
+                SELECT pnl, pnl_pct, NULL as features_json, 'arbitrage' as asset_type,
+                       'ARBI' as market, opened_at, closed_at, close_reason,
+                       pair_id as symbol, NULL as score, pair_id, entry_spread
+                FROM arbi_trades
+                WHERE status='CLOSED' AND pnl IS NOT NULL
+                ORDER BY closed_at DESC LIMIT 500
+            """)
+            arbi_rows = cursor.fetchall()
+            rows.extend(arbi_rows)
+        except: pass
         cursor.close(); conn.close()
 
         processed = 0
@@ -2319,6 +2338,16 @@ def run_pattern_discovery():
                         'time_bucket': _time_bucket(dt),
                         'direction': 'LONG',  # maioria é LONG
                     }
+
+                # [v10.14] Features específicas de arbi
+                if row.get('asset_type') == 'arbitrage' or row.get('market') == 'ARBI':
+                    pair_id     = row.get('pair_id') or row.get('symbol', '?')
+                    entry_sp    = abs(float(row.get('entry_spread') or 0))
+                    features['arbi_pair']        = pair_id
+                    features['arbi_spread_zone'] = _spread_zone(entry_sp, pair_id)
+                    features['arbi_direction']   = features.get('direction', 'LONG_A')
+                    features['asset_type']       = 'arbitrage'
+                    features['market_type']      = 'ARBI'
                 # Garantir weekday e hour como strings
                 if 'weekday' in features:
                     features['weekday'] = str(features['weekday'])
@@ -4529,6 +4558,7 @@ def run_arbi_pattern_learning():
     try:
         cursor = conn.cursor(dictionary=True)
         # Buscar todas as trades de arbi fechadas
+        # [v10.14-FIX] Combinar memória (mais atualizado) + DB (histórico completo)
         cursor.execute("""
             SELECT pair_id, name, entry_spread, current_spread, pnl, pnl_pct,
                    status, close_reason, opened_at, closed_at, direction,
@@ -4538,8 +4568,32 @@ def run_arbi_pattern_learning():
             ORDER BY closed_at DESC
             LIMIT 500
         """)
-        rows = cursor.fetchall()
+        db_rows = cursor.fetchall()
         cursor.close(); conn.close()
+
+        # Adicionar trades da memória que podem não estar no DB ainda
+        mem_rows = []
+        with state_lock:
+            for t in arbi_closed:
+                mem_rows.append({
+                    'pair_id':      t.get('pair_id','?'),
+                    'name':         t.get('name','?'),
+                    'entry_spread': t.get('entry_spread', 0),
+                    'current_spread': t.get('current_spread', 0),
+                    'pnl':          t.get('pnl', 0),
+                    'pnl_pct':      t.get('pnl_pct', 0),
+                    'status':       'CLOSED',
+                    'close_reason': t.get('close_reason', ''),
+                    'opened_at':    t.get('opened_at', ''),
+                    'closed_at':    t.get('closed_at', ''),
+                    'direction':    t.get('direction', ''),
+                    'position_size': t.get('position_size', 0),
+                })
+
+        # Deduplicar por pair_id + opened_at (memória tem prioridade)
+        db_ids = {(r.get('pair_id',''), str(r.get('opened_at',''))[:16]) for r in mem_rows}
+        db_only = [r for r in db_rows if (r.get('pair_id',''), str(r.get('opened_at',''))[:16]) not in db_ids]
+        rows = mem_rows + db_only
 
         if not rows:
             return
@@ -4653,7 +4707,7 @@ def arbi_learning_loop():
     run_arbi_pattern_learning()
     while True:
         beat('arbi_learning_loop')
-        time.sleep(30 * 60)  # a cada 30 minutos
+        time.sleep(5 * 60)   # [v10.14] a cada 5 minutos — detecta padrões rápido
         beat('arbi_learning_loop')
         try:
             run_arbi_pattern_learning()
@@ -6518,7 +6572,7 @@ def learning_status():
     })
 
 @app.route('/learning/arbi')
-def arbi_learning_status():
+def arbi_learning_status_v2():
     """[v10.14] Estado do aprendizado de arbi por par."""
     with _arbi_learning_lock:
         cache = dict(_arbi_learning_cache)

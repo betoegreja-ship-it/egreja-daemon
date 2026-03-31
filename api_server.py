@@ -3972,9 +3972,14 @@ def stock_execution_worker():
                 _now_s = datetime.utcnow()
                 _mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
                 _st_adj, _st_blocked, _st_reason = get_temporal_stock_score(_now_s.hour, _now_s.weekday(), _mkt_type)
-                if _st_blocked:
+                # [v10.14-FIX] Temporal block NÃO bloqueia SHORTs — foi calibrado só com LONGs
+                # SHORTs têm comportamento diferente em janelas ruins para LONGs
+                _pre_temporal_dir = 'SHORT' if score <= 50 else 'LONG'
+                if _st_blocked and _pre_temporal_dir == 'LONG':
                     log.debug(f"STOCK_TEMPORAL_BLOCK: {sym} — {_st_reason}")
                     continue
+                elif _st_blocked and _pre_temporal_dir == 'SHORT':
+                    _st_adj = -5  # penaliza leve mas não bloqueia SHORT
                 _score_before_t = score
                 score = max(0, min(100, score + _st_adj))
                 # [v10.13] Padrões compostos descobertos automaticamente

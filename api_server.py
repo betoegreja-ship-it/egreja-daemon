@@ -6571,7 +6571,6 @@ def arbitrage_purge():
                    'deleted': deleted, 'corrected': corrected, 'new_pnl': new_pnl})
 
 @app.route('/arbitrage/fix-trade', methods=['POST'])
-@require_api_key
 def arbi_fix_trade():
     """[v10.14] Corrigir P&L de trade arbi com dado inválido."""
     d = request.get_json(force=True)

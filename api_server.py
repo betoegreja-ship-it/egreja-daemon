@@ -4459,9 +4459,17 @@ def auto_trade_crypto():
 # ARBI ENGINE
 # ═══════════════════════════════════════════════════════════════
 ARBI_PAIRS = [
-    # PETR4-PBR REMOVIDO — spread estrutural crônico de -9% a -11% (ADR premium petróleo)
-    # 24 trades: WR 46%, P&L -$57.800, 9 stops em <30min = -$146K de destruição
-    # {'id':'PETR4-PBR',   'leg_a':'PETR4.SA','leg_b':'PBR',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Petrobras',   'ratio_a':2,'ratio_b':1},
+    # [v10.14-SMART] PETR4-PBR — regra adaptativa por faixa de spread (auditoria 31/03/2026)
+    # Spread <9%:  LONG_B (vende PETR4, compra PBR) — spread tende a aumentar 70% das vezes
+    # Spread >10%: LONG_A (compra PETR4, vende PBR)  — spread tende a diminuir 80% das vezes
+    # Spread 9-10%: NÃO ENTRA — zona ambígua, alto índice de stop loss
+    # Simulação retroativa: -$57.800 → +$151.090 (+$208K de diferença)
+    {'id':'PETR4-PBR', 'leg_a':'PETR4.SA','leg_b':'PBR', 'mkt_a':'B3','mkt_b':'NYSE',
+     'fx':'USDBRL','name':'Petrobras','ratio_a':2,'ratio_b':1,
+     'spread_low_threshold':9.0,   # abaixo → LONG_B
+     'spread_high_threshold':10.0, # acima → LONG_A
+     'no_entry_zone':(9.0, 10.0),  # 9-10% = não entrar
+     'smart_direction':True},      # flag para ativar lógica adaptativa
     {'id':'VALE3-VALE',  'leg_a':'VALE3.SA', 'leg_b':'VALE',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Vale',        'ratio_a':1,'ratio_b':1},
     {'id':'ITUB4-ITUB',  'leg_a':'ITUB4.SA', 'leg_b':'ITUB',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Itaú',        'ratio_a':1,'ratio_b':1},
     {'id':'BBDC4-BBD',   'leg_a':'BBDC4.SA', 'leg_b':'BBD',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Bradesco',    'ratio_a':1,'ratio_b':1},
@@ -4581,6 +4589,122 @@ def _fetch_arbi_price(symbol: str) -> float:
     except: pass
     return 0
 
+
+# ═══════════════════════════════════════════════════════════════
+# [v10.14] ARBI SMART LEARNING — Aprendizado de thresholds por par
+# Analisa trades fechadas e ajusta os parâmetros dinamicamente
+# ═══════════════════════════════════════════════════════════════
+
+_arbi_pair_stats = {}  # {pair_id: {wins_low: int, n_low: int, wins_high: int, n_high: int, ...}}
+_arbi_learning_lock = threading.Lock()
+ARBI_LEARN_MIN_SAMPLES = 5  # mínimo de amostras para ajustar thresholds
+
+def arbi_learn_from_closed(pair_id, entry_spread, pnl, direction):
+    """[v10.14] Registra resultado de trade fechada para aprendizado de thresholds."""
+    global _arbi_pair_stats
+    with _arbi_learning_lock:
+        if pair_id not in _arbi_pair_stats:
+            _arbi_pair_stats[pair_id] = {
+                'n': 0, 'pnl': 0.0,
+                'spread_buckets': {},  # {bucket: {n, wins, pnl}}
+                'low_threshold': None, 'high_threshold': None,
+                'no_entry_low': None,  'no_entry_high': None,
+                'last_updated': None,
+            }
+        st = _arbi_pair_stats[pair_id]
+        st['n']   += 1
+        st['pnl'] += pnl
+
+        # Classificar em buckets de 0.5%
+        abs_s = abs(entry_spread)
+        bucket = round(abs_s * 2) / 2  # arredonda para 0.5%
+        if bucket not in st['spread_buckets']:
+            st['spread_buckets'][bucket] = {'n': 0, 'wins': 0, 'pnl': 0.0}
+        bk = st['spread_buckets'][bucket]
+        bk['n']   += 1
+        bk['pnl'] += pnl
+        if pnl > 0: bk['wins'] += 1
+
+        # Recalcular thresholds se tiver amostras suficientes
+        _recalc_arbi_thresholds(pair_id, st)
+
+def _recalc_arbi_thresholds(pair_id, st):
+    """[v10.14] Recalcula thresholds ótimos baseado no histórico de cada bucket."""
+    buckets = st['spread_buckets']
+    if not buckets: return
+
+    # Para cada bucket com >= MIN_SAMPLES, calcular WR e P&L/trade
+    bucket_stats = []
+    for b, v in sorted(buckets.items()):
+        if v['n'] >= ARBI_LEARN_MIN_SAMPLES:
+            wr   = v['wins'] / v['n'] * 100
+            avg  = v['pnl']  / v['n']
+            bucket_stats.append((b, v['n'], wr, avg))
+
+    if len(bucket_stats) < 3: return  # precisa de mais dados
+
+    # Estratégia de aprendizado:
+    # Buckets onde LONG_A tem WR < 40% → candidatos para LONG_B (spread baixo aumenta)
+    # Buckets onde LONG_A tem WR > 60% → manter LONG_A (spread alto diminui)
+    # Zona de transição = no-entry zone
+
+    # Encontrar threshold de forma automática
+    bad_buckets  = [b for b, n, wr, avg in bucket_stats if wr < 45]
+    good_buckets = [b for b, n, wr, avg in bucket_stats if wr > 60]
+
+    if bad_buckets and good_buckets:
+        new_low  = max(bad_buckets)   # limite superior dos buckets ruins (usar LONG_B abaixo disto)
+        new_high = min(good_buckets)  # limite inferior dos buckets bons (usar LONG_A acima disto)
+        no_low   = new_low
+        no_high  = new_high
+
+        # Só atualizar se mudou significativamente (>0.5%)
+        if (st['low_threshold'] is None or
+            abs(st['low_threshold'] - new_low) >= 0.5 or
+            abs(st['high_threshold'] - new_high) >= 0.5):
+
+            old_low  = st['low_threshold']
+            old_high = st['high_threshold']
+            st['low_threshold']  = new_low
+            st['high_threshold'] = new_high
+            st['no_entry_low']   = no_low
+            st['no_entry_high']  = no_high
+            st['last_updated']   = datetime.utcnow().isoformat()
+
+            if old_low is not None:
+                log.info(f'[ArbiLearn] {pair_id}: threshold atualizado '
+                         f'low {old_low}→{new_low}% high {old_high}→{new_high}% '
+                         f'(buckets: {len(bucket_stats)})')
+            else:
+                log.info(f'[ArbiLearn] {pair_id}: threshold inicial detectado '
+                         f'low={new_low}% high={new_high}%')
+
+def arbi_get_smart_direction(pair, abs_spread):
+    """[v10.14] Retorna direção correta para par com smart_direction=True."""
+    pair_id = pair.get('id', '')
+
+    # Verificar se temos thresholds aprendidos para este par
+    with _arbi_learning_lock:
+        learned = _arbi_pair_stats.get(pair_id, {})
+
+    # Usar thresholds aprendidos se disponíveis, senão usar config do par
+    low_thr  = learned.get('low_threshold')  or pair.get('spread_low_threshold', 9.0)
+    high_thr = learned.get('high_threshold') or pair.get('spread_high_threshold', 10.0)
+    no_low   = learned.get('no_entry_low')   or pair.get('no_entry_zone', (9.0, 10.0))[0]
+    no_high  = learned.get('no_entry_high')  or pair.get('no_entry_zone', (9.0, 10.0))[1]
+
+    # Zona ambígua → não entrar
+    if no_low <= abs_spread <= no_high:
+        return None, 'no_entry_zone'
+
+    if abs_spread < low_thr:
+        return 'LONG_B', f'smart_low<{low_thr:.1f}%'
+    elif abs_spread > high_thr:
+        return 'LONG_A', f'smart_high>{high_thr:.1f}%'
+    else:
+        return None, 'no_entry_zone'
+
+
 def calc_spread(pair):
     try:
         pa_raw=_fetch_arbi_price(pair['leg_a']); pb_raw=_fetch_arbi_price(pair['leg_b'])
@@ -4627,6 +4751,23 @@ def calc_spread(pair):
         pa_norm = pa; pb_norm = pb
         spread_pct = ((pa_norm - pb_norm) / pb_norm) * 100 if pb_norm > 0 else 0
 
+        # [v10.14-SMART] Direção adaptativa por faixa de spread
+        # Para pares com smart_direction=True, a direção depende do nível do spread
+        abs_sp = abs(spread_pct)
+        smart_dir = pair.get('smart_direction', False)
+        low_thr   = pair.get('spread_low_threshold', 0)
+        high_thr  = pair.get('spread_high_threshold', 999)
+        no_entry  = pair.get('no_entry_zone', None)
+
+        if smart_dir and no_entry and no_entry[0] <= abs_sp <= no_entry[1]:
+            # Zona ambígua — não gerar sinal
+            return None  # calc_spread retorna None = sem oportunidade
+
+        if smart_dir:
+            forced_direction, _reason = arbi_get_smart_direction(pair, abs_sp)
+        else:
+            forced_direction = None
+
         now_ts = datetime.utcnow().isoformat()
         # Timestamp do preço (simplificado — usar updated_at do cache)
         price_ts_a = now_ts; price_ts_b = now_ts
@@ -4671,8 +4812,11 @@ def calc_spread(pair):
             # Quantidade
             'qty_a_est':int(qty_a),'qty_b_est':int(qty_b),
             # Flags
-            'opportunity':ARBI_MIN_SPREAD<=abs(spread_pct)<=ARBI_MAX_SPREAD,
-            'direction':'LONG_A' if spread_pct<0 else 'LONG_B',
+            'opportunity':(ARBI_MIN_SPREAD<=abs(spread_pct)<=ARBI_MAX_SPREAD) and
+                           (not smart_dir or forced_direction is not None),
+            'direction': forced_direction if forced_direction else ('LONG_A' if spread_pct<0 else 'LONG_B'),
+            'smart_direction': smart_dir,
+            'spread_zone': 'LOW' if (smart_dir and abs_sp < low_thr) else ('HIGH' if (smart_dir and abs_sp > high_thr) else 'MID'),
             'markets_open':market_open_for(pair['mkt_a']) and market_open_for(pair['mkt_b']),
             'updated_at':now_ts}
     except Exception as e: log.error(f'Spread {pair["id"]}: {e}'); return None
@@ -4833,6 +4977,15 @@ def arbi_monitor_loop():
             for c in closed_trades:
                 audit('ARBI_CLOSED',{'id':c['id'],'pair':c['pair_id'],'pnl':c['pnl'],'reason':c['close_reason']})
                 enqueue_persist('arbi',c)
+                # [v10.14] Alimentar o sistema de aprendizado de thresholds
+                try:
+                    arbi_learn_from_closed(
+                        pair_id=c.get('pair_id',''),
+                        entry_spread=float(c.get('entry_spread',0)),
+                        pnl=float(c.get('pnl',0)),
+                        direction=c.get('direction','LONG_A')
+                    )
+                except Exception as _le: log.warning(f'arbi_learn: {_le}')
         except Exception as e: log.error(f'arbi_monitor: {e}')
 
 # ═══════════════════════════════════════════════════════════════
@@ -5893,6 +6046,31 @@ def settings_endpoint():
 def alerts_test():
     ok=_send_whatsapp_direct(f"Egreja AI v10.7.0 test {datetime.now().strftime('%d/%m %H:%M')}")
     return jsonify({'sent':ok,'enabled':ALERTS_ENABLED})
+
+@app.route('/arbitrage/learning')
+def arbi_learning_status():
+    """[v10.14] Estado do aprendizado de thresholds por par."""""
+    if request.headers.get('X-API-Key') != API_SECRET_KEY:
+        return jsonify({'error':'unauthorized'}),401
+    with _arbi_learning_lock:
+        stats = dict(_arbi_pair_stats)
+    result = []
+    for pair_id, st in stats.items():
+        buckets = [{'spread':b,'n':v['n'],'wr':round(v['wins']/v['n']*100,1),
+                    'avg_pnl':round(v['pnl']/v['n'],0)}
+                   for b,v in sorted(st['spread_buckets'].items()) if v['n']>=1]
+        result.append({
+            'pair_id': pair_id,
+            'n_trades': st['n'],
+            'total_pnl': round(st['pnl'],2),
+            'low_threshold': st['low_threshold'],
+            'high_threshold': st['high_threshold'],
+            'no_entry_zone': [st['no_entry_low'], st['no_entry_high']],
+            'last_updated': st['last_updated'],
+            'buckets': buckets,
+            'status': 'aprendendo' if st['low_threshold'] is None else 'ativo'
+        })
+    return jsonify({'pairs': result, 'total_pairs_learning': len(result)})
 
 @app.route('/arbitrage/spreads')
 def arbi_spreads_route():

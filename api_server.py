@@ -4496,6 +4496,171 @@ ARBI_PAIR_CONFIG = {
     },
 }
 
+
+# ═══════════════════════════════════════════════════════════════
+# [v10.14] ARBI PATTERN LEARNING — módulo autônomo de aprendizado
+# Analisa arbi_trades e ajusta parâmetros por par automaticamente
+# ═══════════════════════════════════════════════════════════════
+
+_arbi_learning_cache = {}  # pair_id → {zone → {n, wins, pnl}}
+_arbi_learning_lock  = threading.Lock()
+
+def _spread_zone(abs_spread: float, pair_id: str = '') -> str:
+    """Classifica o spread em zona para análise de padrão."""
+    if abs_spread >= 12.0:  return 'EXTREME'   # muito alto — possível erro
+    if abs_spread >= 10.0:  return 'HIGH'       # zona de reversão
+    if abs_spread >=  9.0:  return 'MID'        # zona incerta
+    if abs_spread >=  7.0:  return 'LOW'        # zona desfavorável
+    return 'MINIMAL'                            # spread pequeno — não opera
+
+def run_arbi_pattern_learning():
+    """[v10.14] Aprende padrões de spread por par a partir das trades históricas.
+    
+    Analisa a tabela arbi_trades e descobre:
+    - Qual zona de spread tem melhor WR para cada par
+    - Ajusta ARBI_PAIR_CONFIG dinamicamente
+    - Loga descobertas para auditoria
+    
+    Dimensões analisadas:
+    pair_id × spread_zone × weekday × hour_utc
+    """
+    conn = get_db()
+    if not conn: return
+    try:
+        cursor = conn.cursor(dictionary=True)
+        # Buscar todas as trades de arbi fechadas
+        cursor.execute("""
+            SELECT pair_id, name, entry_spread, current_spread, pnl, pnl_pct,
+                   status, close_reason, opened_at, closed_at, direction,
+                   position_size
+            FROM arbi_trades
+            WHERE status='CLOSED' AND pnl IS NOT NULL
+            ORDER BY closed_at DESC
+            LIMIT 500
+        """)
+        rows = cursor.fetchall()
+        cursor.close(); conn.close()
+
+        if not rows:
+            return
+
+        # Agrupar por par e zona de spread
+        from collections import defaultdict
+        by_pair_zone = defaultdict(lambda: defaultdict(lambda: {
+            'n':0,'wins':0,'pnl':0.0,'avg_duration_h':0.0,'stops':0
+        }))
+        by_pair_weekday = defaultdict(lambda: defaultdict(lambda: {'n':0,'wins':0,'pnl':0.0}))
+
+        for row in rows:
+            pair   = row.get('pair_id','?')
+            spread = abs(float(row.get('entry_spread') or 0))
+            pnl    = float(row.get('pnl') or 0)
+            zone   = _spread_zone(spread, pair)
+            win    = 1 if pnl > 0 else 0
+            reason = row.get('close_reason','')
+
+            # Por zona
+            z = by_pair_zone[pair][zone]
+            z['n']    += 1
+            z['wins'] += win
+            z['pnl']  += pnl
+            if reason == 'STOP_LOSS': z['stops'] += 1
+
+            # Por dia da semana
+            try:
+                dt = datetime.fromisoformat(str(row['opened_at']).replace('Z',''))
+                wd = dt.strftime('%A')  # Monday, Tuesday...
+                d = by_pair_weekday[pair][wd]
+                d['n'] += 1; d['wins'] += win; d['pnl'] += pnl
+            except: pass
+
+        # Atualizar cache e ARBI_PAIR_CONFIG
+        discoveries = []
+        with _arbi_learning_lock:
+            _arbi_learning_cache.clear()
+            for pair, zones in by_pair_zone.items():
+                _arbi_learning_cache[pair] = {}
+                best_zone = None; best_wr = 0; best_pnl = -999999
+
+                for zone, stats in zones.items():
+                    if stats['n'] == 0: continue
+                    wr  = stats['wins'] / stats['n'] * 100
+                    avg = stats['pnl']  / stats['n']
+                    stop_rate = stats['stops'] / stats['n'] * 100
+                    _arbi_learning_cache[pair][zone] = {
+                        'n': stats['n'], 'wr': round(wr,1),
+                        'avg_pnl': round(avg,0), 'stop_rate': round(stop_rate,1)
+                    }
+                    # Zona com WR ≥ 60% e avg positivo é candidata a best
+                    if wr >= 60 and avg > best_pnl and stats['n'] >= 3:
+                        best_wr   = wr
+                        best_pnl  = avg
+                        best_zone = zone
+
+                # Ajustar ARBI_PAIR_CONFIG baseado na melhor zona encontrada
+                zone_to_threshold = {
+                    'EXTREME': 12.0, 'HIGH': 10.0, 'MID': 9.0,
+                    'LOW': 7.0, 'MINIMAL': ARBI_MIN_SPREAD
+                }
+                if best_zone:
+                    new_min = zone_to_threshold.get(best_zone, ARBI_MIN_SPREAD)
+                    if pair in ARBI_PAIR_CONFIG:
+                        old_min = ARBI_PAIR_CONFIG[pair].get('min_spread', ARBI_MIN_SPREAD)
+                        if abs(new_min - old_min) >= 0.5:  # só atualiza se mudança significativa
+                            ARBI_PAIR_CONFIG[pair]['min_spread'] = new_min
+                            discoveries.append(
+                                f"{pair}: min_spread {old_min:.1f}%→{new_min:.1f}% "
+                                f"(best_zone={best_zone}, WR={best_wr:.0f}%, avg=${best_pnl:.0f})"
+                            )
+                    else:
+                        # Par novo — criar config dinâmico
+                        ARBI_PAIR_CONFIG[pair] = {
+                            'min_spread':   new_min,
+                            'tp_spread':    ARBI_TP_SPREAD,
+                            'sl_pct':       ARBI_SL_PCT,
+                            'max_spread':   15.0,
+                            'last_10_wr':   best_wr,
+                            'learn_window': 10,
+                            'note':         f'auto-learned: best_zone={best_zone}',
+                        }
+                        discoveries.append(
+                            f"{pair}: NOVO config — min_spread={new_min:.1f}% "
+                            f"(best_zone={best_zone}, WR={best_wr:.0f}%)"
+                        )
+
+        # Log das descobertas
+        log.info(f'[ArbiLearning] Analisados {len(rows)} trades de {len(by_pair_zone)} pares')
+        for d in discoveries:
+            log.info(f'[ArbiLearning] AJUSTE: {d}')
+
+        # Log do estado atual por par
+        for pair, zones in _arbi_learning_cache.items():
+            summary = ' | '.join(
+                f"{z}: WR={s['wr']:.0f}% n={s['n']} avg=${s['avg_pnl']:.0f}"
+                for z, s in sorted(zones.items())
+                if s['n'] >= 2
+            )
+            if summary:
+                log.info(f'[ArbiLearning] {pair}: {summary}')
+
+    except Exception as e:
+        log.error(f'run_arbi_pattern_learning: {e}')
+
+def arbi_learning_loop():
+    """[v10.14] Loop de aprendizado de arbi — roda a cada 30 minutos."""
+    time.sleep(120)  # aguardar startup
+    beat('arbi_learning_loop')
+    run_arbi_pattern_learning()
+    while True:
+        beat('arbi_learning_loop')
+        time.sleep(30 * 60)  # a cada 30 minutos
+        beat('arbi_learning_loop')
+        try:
+            run_arbi_pattern_learning()
+        except Exception as e:
+            log.error(f'arbi_learning_loop: {e}')
+
+
 def _arbi_pair_learning(pair_id, recent_trades):
     """[v10.14] Aprende o threshold ideal para cada par baseado nos últimos trades.
     Ajusta min_spread dinamicamente: se WR cai, sobe o threshold de entrada.
@@ -5212,6 +5377,7 @@ def start_background_threads():
         'persistence_worker':     persistence_worker,
         'alert_worker':           alert_worker,
         'pattern_discovery':      pattern_discovery_loop,   # [v10.13] mineração periódica
+        'arbi_learning_loop':     arbi_learning_loop,        # [v10.14] aprendizado específico de arbi
         'watchdog':               watchdog,
         'shadow_evaluator_loop':  shadow_evaluator_loop,   # [FIX-5]
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
@@ -6350,6 +6516,22 @@ def learning_status():
         'calibration':                calib,
         'timestamp':                  datetime.utcnow().isoformat(),
     })
+
+@app.route('/learning/arbi')
+def arbi_learning_status():
+    """[v10.14] Estado do aprendizado de arbi por par."""
+    with _arbi_learning_lock:
+        cache = dict(_arbi_learning_cache)
+    result = {}
+    for pair, zones in cache.items():
+        cfg = ARBI_PAIR_CONFIG.get(pair, ARBI_PAIR_CONFIG.get('_default', {}))
+        result[pair] = {
+            'current_min_spread': cfg.get('min_spread', ARBI_MIN_SPREAD),
+            'zones': zones,
+            'best_zone': max(zones.items(), key=lambda x: x[1].get('wr',0) if x[1].get('n',0)>=3 else 0)[0] if zones else None,
+        }
+    return jsonify({'pairs': result, 'total_pairs': len(result),
+                    'last_run': _last_discovery_run})
 
 @app.route('/learning/composite')
 def learning_composite():

@@ -6590,8 +6590,8 @@ def arbi_fix_trade():
         old_pnl  = float(row[1] or 0) if row else 0
         pos_size = float(row[0] or 1) if row else 1
         new_pnl_pct = round(new_pnl / pos_size * 100, 4)
-        cur.execute("UPDATE arbi_trades SET pnl=%s, pnl_pct=%s, pnl_gross=%s WHERE id=%s",
-                    (new_pnl, new_pnl_pct, new_pnl, trade_id))
+        cur.execute("UPDATE arbi_trades SET pnl=%s, pnl_pct=%s WHERE id=%s",
+                    (new_pnl, new_pnl_pct, trade_id))
         conn.commit()
         # Corrigir capital em memória
         global arbi_capital

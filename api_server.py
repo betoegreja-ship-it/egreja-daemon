@@ -700,11 +700,14 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
     if len(all_open) >= MAX_OPEN_POSITIONS:
         return False, f'MAX_OPEN_POSITIONS ({len(all_open)}/{MAX_OPEN_POSITIONS})', 0
 
-    # [v10.14] Cooldown pós-TRAILING_STOP — evitar re-entrada que devolve ganhos
-    _ts_cooldown = _trailing_stop_cooldown.get(symbol, 0)
-    if _ts_cooldown and (time.time() - _ts_cooldown) < TRAILING_STOP_COOLDOWN_SEC:
-        _remaining = int((TRAILING_STOP_COOLDOWN_SEC - (time.time() - _ts_cooldown)) / 60)
-        return False, f'TRAILING_STOP_COOLDOWN ({_remaining}min restantes)', 0
+    # [v10.14] Bloqueio DIA INTEIRO após TRAILING_STOP — re-entradas devolvem 36.6% dos ganhos
+    _ts_cooldown_ts = _trailing_stop_cooldown.get(symbol, 0)
+    if _ts_cooldown_ts:
+        from datetime import timezone
+        _ts_date = datetime.utcfromtimestamp(_ts_cooldown_ts).date()
+        _today   = datetime.utcnow().date()
+        if _ts_date == _today:  # mesmo dia UTC → bloquear
+            return False, f'TRAILING_STOP_DAY_BLOCK (trailing stop hoje, aguardar amanhã)', 0
 
     if strategy == 'stocks':
         sc_count = sum(1 for t in s_open if t.get('asset_type')=='stock')
@@ -2111,6 +2114,10 @@ DISCOVERY_DIMENSIONS = [
     'arbi_pair',          # pair_id específico (PETR4-PBR, CSN, etc.)
     'arbi_spread_zone',   # HIGH/MID/LOW/MINIMAL baseado em spread de entrada
     'arbi_direction',     # LONG_A / LONG_B
+    # [v10.14] Comportamentais — padrões que o sistema deve aprender sozinho
+    'reentry_after_trailing',  # YES/NO — re-entrada após trailing stop no mesmo dia
+    'same_day_count',          # 1st/2nd/3rd+ — quantas vezes o símbolo foi operado hoje
+    'close_reason_prev',       # TRAILING_STOP/STOP_LOSS/TIMEOUT — motivo da trade anterior
 ]
 
 # Combinações de 2 e 3 dimensões a explorar automaticamente
@@ -2139,6 +2146,17 @@ DISCOVERY_COMBOS_2D = [
     ('asset_type', 'time_bucket'),
     ('direction', 'weekday'),
     ('direction', 'time_bucket'),
+    ('reentry_after_trailing', 'direction'),
+    ('reentry_after_trailing', 'weekday'),
+    ('same_day_count', 'direction'),
+    ('close_reason_prev', 'direction'),
+    # [v10.14] Combos comportamentais — detecta padrões que destroem P&L
+    ('reentry_after_trailing', 'direction'),
+    ('reentry_after_trailing', 'asset_type'),
+    ('same_day_count', 'direction'),
+    ('same_day_count', 'close_reason_prev'),
+    ('close_reason_prev', 'direction'),
+    ('close_reason_prev', 'time_bucket'),
     ('direction', 'volatility_bucket'),
     ('stocks_regime', 'asset_type'),      # cross-market
     ('btc_trend', 'asset_type'),          # BTC → crypto/stocks
@@ -2328,6 +2346,14 @@ def run_pattern_discovery():
 
         processed = 0
         beat('pattern_discovery')  # heartbeat após query
+
+        # [v10.14] Pré-processar mapa de trades por símbolo/dia para features comportamentais
+        from collections import defaultdict as _dd
+        sym_day_map = _dd(list)
+        for _r in rows:
+            _sk = (_r.get('symbol',''), str(_r.get('opened_at',''))[:10])
+            sym_day_map[_sk].append(_r)
+
         for row in rows:
             try:
                 features = {}
@@ -2362,12 +2388,30 @@ def run_pattern_discovery():
                     dt = datetime.fromisoformat(str(row['opened_at']).replace('Z',''))
                     features['hour_utc'] = str(dt.hour)
                     features['is_market_open_hour'] = 'YES' if 13 <= dt.hour <= 19 else 'NO'
+                # [v10.14] Copiar features comportamentais do sig para features se presentes
+                for _bfeat in ('reentry_after_trailing', 'same_day_count', 'close_reason_prev'):
+                    if sig.get(_bfeat): features[_bfeat] = sig[_bfeat]
                 # Adicionar cross-market (histórico simplificado)
                 features['stocks_regime'] = 'NEUTRAL'
                 features['btc_trend'] = 'FLAT'
                 features['usdbrl_trend'] = 'FLAT'
                 pnl = float(row.get('pnl', 0) or 0)
                 pnl_pct = float(row.get('pnl_pct', 0) or 0)
+
+                # [v10.14] Features comportamentais — detectar padrões de re-entrada e sequência
+                sym_row   = row.get('symbol', '')
+                dt_row    = str(row.get('opened_at', ''))[:10]
+                sym_key   = (sym_row, dt_row)
+                _sym_day_trades = sym_day_map.get(sym_key, [])
+                # Ordenar por horário para encontrar trades anteriores
+                _before = [t for t in _sym_day_trades if str(t.get('opened_at','')) < str(row.get('opened_at',''))]
+                _prev_reason = _before[-1].get('close_reason','') if _before else ''
+                _reentry     = 'YES' if _prev_reason == 'TRAILING_STOP' else 'NO'
+                _same_count  = str(min(len(_before) + 1, 3)) if len(_before) < 3 else '3+'
+                features['reentry_after_trailing'] = _reentry
+                features['same_day_count']         = _same_count
+                features['close_reason_prev']      = _prev_reason or 'NONE'
+
                 update_composite_pattern(features, pnl, pnl_pct)
                 processed += 1
             except: pass
@@ -4160,6 +4204,13 @@ def stock_execution_worker():
                 mkt_open = market_open_for(mkt)
                 price_dict = stock_prices.get(sym, {})
                 sig_enriched = dict(sig)
+                # [v10.14] Features comportamentais para aprendizado
+                _sym_trades_today = [t for t in list(stocks_closed)
+                                     if t.get('symbol')==sym
+                                     and (t.get('closed_at','') or '')[:10] == datetime.utcnow().strftime('%Y-%m-%d')]
+                _last_close_reason = _sym_trades_today[0].get('close_reason','NONE') if _sym_trades_today else 'NONE'
+                _had_trailing_today = any(t.get('close_reason')=='TRAILING_STOP' for t in _sym_trades_today)
+                _same_day_count_str = '1st' if len(_sym_trades_today)==0 else ('2nd' if len(_sym_trades_today)==1 else '3rd+')
                 sig_enriched.update({
                     'price':        price,
                     'asset_type':   'stock',
@@ -4167,6 +4218,10 @@ def stock_execution_worker():
                     'trade_open':   sym in {t['symbol'] for t in stocks_open},
                     'atr_pct':      price_dict.get('atr_pct', 0.0),       # [v10.4]
                     'volume_ratio': price_dict.get('volume_ratio', 0.0),   # [v10.4]
+                    # [v10.14] Comportamentais
+                    'reentry_after_trailing': 'YES' if _had_trailing_today else 'NO',
+                    'same_day_count':         _same_day_count_str,
+                    'close_reason_prev':      _last_close_reason,
                 })
                 features = extract_features(sig_enriched, dict(market_regime), dq_score, now_dt)
                 features['_dq_score'] = dq_score
@@ -4526,6 +4581,7 @@ ARBI_PAIR_CONFIG = {
         'tp_spread':     0.8,   # TP: 0.8% de convergência desde entrada
         'sl_pct':        1.2,   # SL: 1.2% de divergência (mais largo que global)
         'max_spread':   13.0,   # spread acima disso = dado errado, ignorar
+        'max_pos':    30_000,   # [v10.14-FIX] posição máxima $30K (spread volátil, bug -$896K)
         'last_10_wr':   80.0,   # WR dos últimos trades nesta zona
         'learn_window':  10,    # quantas trades usar para aprender
         'note': 'spread estrutural -9% a -11%, só operar reversão extrema',
@@ -5079,6 +5135,10 @@ def calc_spread(pair):
         # pb = preço da leg_b normalizado ao equivalente da leg_a
         pa_norm = pa; pb_norm = pb
         spread_pct = ((pa_norm - pb_norm) / pb_norm) * 100 if pb_norm > 0 else 0
+        # [v10.14-SANITY] Rejeitar spreads impossíveis — dado corrompido (99% é impossível)
+        if abs(spread_pct) > 30.0:
+            log.warning(f'[ARBI-SANITY] {pair["id"]}: spread={spread_pct:.2f}% IMPOSSÍVEL (pa={pa:.4f} pb={pb:.4f}) — ignorado')
+            return None
 
         # [v10.14-SMART] Direção adaptativa por faixa de spread
         # Para pares com smart_direction=True, a direção depende do nível do spread
@@ -5179,7 +5239,11 @@ def arbi_scan_loop():
                 with state_lock:
                     _arbi_pnl_total = sum(t.get('pnl',0) for t in arbi_open) + sum(t.get('pnl',0) for t in arbi_closed)
                     _arbi_port_val  = ARBI_CAPITAL + _arbi_pnl_total
+                # [v10.14-FIX] Respeitar max_pos por par (protege contra spreads voláteis)
+                _pair_max_pos = ARBI_PAIR_CONFIG.get(pair['id'], {}).get('max_pos', None)
                 _dynamic_pos = max(round(_arbi_port_val / 3), ARBI_POS_SIZE)
+                if _pair_max_pos:
+                    _dynamic_pos = min(_dynamic_pos, _pair_max_pos)
                 risk_ok,risk_reason,approved_size=check_risk_arbi(pair['id'],_dynamic_pos)
                 if not risk_ok:
                     if 'KILL_SWITCH' in risk_reason: break
@@ -5285,23 +5349,27 @@ def arbi_monitor_loop():
                         trade['current_spread']=sd['spread_pct']
                         ea=abs(float(trade['entry_spread'])); ca=abs(float(trade['current_spread']))
                         trade['pnl_pct']=round(ea-ca,4)
-                        trade['pnl']=round(trade['pnl_pct']/100*float(trade['position_size']),2)
-                    trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
-                    peak=trade['peak_pnl_pct']
-                    h=trade.setdefault('pnl_history',[]); h.append(trade['pnl_pct'])
-                    if len(h)>5: h.pop(0)
-                    reason=None
-                    mkt_a=trade.get('mkt_a',''); mkt_b=trade.get('mkt_b','')
-                    both_open=(market_open_for(mkt_a) and market_open_for(mkt_b))
-                    if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD:  reason='TAKE_PROFIT'
-                    elif peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
-                    elif trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
-                    elif not both_open and age_h>=0.5:                       reason='MARKET_CLOSE'
-                    elif age_h>=ARBI_TIMEOUT_H:
+                        # [v10.14-FIX] Sanity check: spread > 50% = preço inválido (0 ou NaN)
+                if abs(float(trade.get('current_spread', 0))) > 50.0:
+                    log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO (preço 0?), ignorando update")
+                    continue
+                trade['pnl']=round(trade['pnl_pct']/100*float(trade['position_size']),2)
+                trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
+                peak=trade['peak_pnl_pct']
+                h=trade.setdefault('pnl_history',[]); h.append(trade['pnl_pct'])
+                if len(h)>5: h.pop(0)
+                reason=None
+                mkt_a=trade.get('mkt_a',''); mkt_b=trade.get('mkt_b','')
+                both_open=(market_open_for(mkt_a) and market_open_for(mkt_b))
+                if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD:  reason='TAKE_PROFIT'
+                elif peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
+                elif trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
+                elif not both_open and age_h>=0.5:                       reason='MARKET_CLOSE'
+                elif age_h>=ARBI_TIMEOUT_H:
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else: reason='TIMEOUT'
-                    if reason:
+                if reason:
                         arbi_capital+=trade['position_size']+trade['pnl']
                         c=dict(trade); c.update({'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         arbi_closed.insert(0,c)
@@ -5572,6 +5640,41 @@ def watchlist_get():
 # ═══════════════════════════════════════════════════════════════
 # ROUTES
 # ═══════════════════════════════════════════════════════════════
+@app.route('/admin/fix_corrupted_arbi_trade', methods=['POST'])
+def fix_corrupted_arbi_trade():
+    """[v10.14] Corrige trade arbi com dado corrompido (spread impossível)."""
+    global arbi_capital
+    data = request.json or {}
+    trade_id = data.get('trade_id','')
+    correct_pnl = float(data.get('correct_pnl', 0))
+    if not trade_id:
+        return jsonify({'error': 'trade_id required'}), 400
+    conn = get_db()
+    if not conn: return jsonify({'error': 'db error'}), 500
+    try:
+        c = conn.cursor(dictionary=True)
+        c.execute("SELECT * FROM arbi_trades WHERE id=%s", (trade_id,))
+        row = c.fetchone()
+        if not row: return jsonify({'error': 'trade not found'}), 404
+        old_pnl = float(row.get('pnl',0))
+        old_spread = float(row.get('current_spread',0))
+        # Corrigir no banco
+        c.execute("UPDATE arbi_trades SET pnl=%s, pnl_pct=%s, current_spread=%s, close_reason=%s WHERE id=%s",
+                  (correct_pnl, correct_pnl/float(row.get('position_size',1))*100, row.get('entry_spread',0),
+                   'CORRUPTED_DATA_FIXED', trade_id))
+        conn.commit()
+        # Ajustar arbi_capital em memória
+        with state_lock:
+            adjustment = correct_pnl - old_pnl
+            arbi_capital += adjustment
+        log.warning(f'[ADMIN] Trade {trade_id} corrigida: pnl {old_pnl:+.0f}→{correct_pnl:+.0f} spread {old_spread:.2f}%→{row.get("entry_spread",0):.2f}% adj_capital={adjustment:+.0f}')
+        return jsonify({'ok': True, 'old_pnl': old_pnl, 'new_pnl': correct_pnl, 'capital_adjustment': adjustment})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try: conn.close()
+        except: pass
+
 @app.route('/health')
 def health():
     with state_lock: open_count=len(stocks_open)+len(crypto_open)

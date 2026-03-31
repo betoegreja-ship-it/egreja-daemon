@@ -4458,6 +4458,84 @@ def auto_trade_crypto():
 # ═══════════════════════════════════════════════════════════════
 # ARBI ENGINE
 # ═══════════════════════════════════════════════════════════════
+# [v10.14] Thresholds dinâmicos por par — baseados em auditoria histórica
+# Substitui o ARBI_MIN_SPREAD global para pares com comportamento específico
+# Aprendido automaticamente via _arbi_pair_learning()
+ARBI_PAIR_CONFIG = {
+    # PETR4-PBR: spread estrutural crônico -9% a -11%
+    # Auditoria 24 trades: zona ≥10%=WR80%, zona <9%=WR30%
+    # Só entra com spread ≥ 10% para capturar reversão à média
+    'PETR4-PBR': {
+        'min_spread':   10.0,   # threshold de entrada (dinâmico — aprende)
+        'tp_spread':     0.8,   # TP: 0.8% de convergência desde entrada
+        'sl_pct':        1.2,   # SL: 1.2% de divergência (mais largo que global)
+        'max_spread':   13.0,   # spread acima disso = dado errado, ignorar
+        'last_10_wr':   80.0,   # WR dos últimos trades nesta zona
+        'learn_window':  10,    # quantas trades usar para aprender
+        'note': 'spread estrutural -9% a -11%, só operar reversão extrema',
+    },
+    # TIMS3-TIMB: ratio 5:1, poucas trades — usar padrão conservador
+    'TIMS3-TIMB': {
+        'min_spread':    1.5,
+        'tp_spread':     0.3,
+        'sl_pct':        1.0,
+        'max_spread':   10.0,
+        'last_10_wr':  100.0,
+        'learn_window':  10,
+        'note': 'ratio 5:1, spread pequeno, operar conservador',
+    },
+    # Default para todos os outros pares — usar parâmetros globais
+    '_default': {
+        'min_spread': None,   # usa ARBI_MIN_SPREAD global
+        'tp_spread':  None,   # usa ARBI_TP_SPREAD global
+        'sl_pct':     None,   # usa ARBI_SL_PCT global
+        'max_spread': 15.0,
+        'last_10_wr': None,
+        'learn_window': 10,
+        'note': 'parâmetros globais',
+    },
+}
+
+def _arbi_pair_learning(pair_id, recent_trades):
+    """[v10.14] Aprende o threshold ideal para cada par baseado nos últimos trades.
+    Ajusta min_spread dinamicamente: se WR cai, sobe o threshold de entrada.
+    """
+    cfg = ARBI_PAIR_CONFIG.get(pair_id, ARBI_PAIR_CONFIG['_default'])
+    if not recent_trades or len(recent_trades) < 3:
+        return cfg
+    
+    # Agrupar por zona de spread de entrada
+    zones = {'high': [], 'mid': [], 'low': []}
+    for t in recent_trades[-cfg.get('learn_window', 10):]:
+        abs_spread = abs(float(t.get('entry_spread', 0)))
+        pnl = float(t.get('pnl', 0))
+        if abs_spread >= 10.0:   zones['high'].append(pnl)
+        elif abs_spread >= 9.0:  zones['mid'].append(pnl)
+        else:                    zones['low'].append(pnl)
+    
+    # Calcular WR por zona
+    def wr(lst): return sum(1 for p in lst if p > 0) / len(lst) * 100 if lst else 0
+    wr_high = wr(zones['high'])
+    wr_mid  = wr(zones['mid'])
+    wr_low  = wr(zones['low'])
+    
+    # Ajustar threshold: usar a menor zona com WR ≥ 60%
+    new_min = cfg.get('min_spread', ARBI_MIN_SPREAD)
+    if wr_high >= 60 and len(zones['high']) >= 3:
+        new_min = 10.0  # zona alta funciona
+    if wr_mid  >= 60 and len(zones['mid'])  >= 3:
+        new_min = 9.0   # zona média também funciona → relaxar
+    if wr_low  < 40 and len(zones['low'])   >= 3:
+        new_min = max(new_min, 9.5)  # zona baixa ruim → endurecer
+    
+    # Atualizar config em memória
+    if pair_id in ARBI_PAIR_CONFIG:
+        ARBI_PAIR_CONFIG[pair_id]['min_spread'] = new_min
+        ARBI_PAIR_CONFIG[pair_id]['last_10_wr'] = wr_high
+        log.info(f'[ARBI-LEARN] {pair_id}: min_spread={new_min:.1f}% WR_high={wr_high:.0f}% WR_mid={wr_mid:.0f}% WR_low={wr_low:.0f}%')
+    
+    return ARBI_PAIR_CONFIG.get(pair_id, cfg)
+
 ARBI_PAIRS = [
     # [v10.14-SMART] PETR4-PBR — regra adaptativa por faixa de spread (auditoria 31/03/2026)
     # Spread <9%:  LONG_B (vende PETR4, compra PBR) — spread tende a aumentar 70% das vezes
@@ -4835,7 +4913,13 @@ def arbi_scan_loop():
 
                 with state_lock: arbi_spreads[pair['id']]=spread
 
-                if abs(spread.get('spread_pct',0)) > ARBI_MAX_SPREAD:
+                # [v10.14] Threshold dinâmico por par
+                _pair_cfg = ARBI_PAIR_CONFIG.get(pair['id'], ARBI_PAIR_CONFIG['_default'])
+                _min_sp   = _pair_cfg['min_spread'] if _pair_cfg['min_spread'] else ARBI_MIN_SPREAD
+                _max_sp   = _pair_cfg.get('max_spread', ARBI_MAX_SPREAD)
+                spread['opportunity'] = _min_sp <= abs(spread.get('spread_pct',0)) <= _max_sp
+
+                if abs(spread.get('spread_pct',0)) > _max_sp:
                     log.warning(f'[ARBI-SANITY] {pair["id"]} spread {spread["spread_pct"]:+.2f}% acima do teto {ARBI_MAX_SPREAD}% — possível preço inválido, ignorando')
                 if not spread['opportunity'] or not spread['markets_open']:
                     time.sleep(1.5); continue
@@ -4976,6 +5060,10 @@ def arbi_monitor_loop():
 
             for c in closed_trades:
                 audit('ARBI_CLOSED',{'id':c['id'],'pair':c['pair_id'],'pnl':c['pnl'],'reason':c['close_reason']})
+                # [v10.14] Aprendizado por par — ajusta threshold após cada fechamento
+                _pair_recent = [t for t in list(arbi_closed)[:20] if t.get('pair_id')==c['pair_id']]
+                if len(_pair_recent) >= 3:
+                    _arbi_pair_learning(c['pair_id'], _pair_recent)
                 enqueue_persist('arbi',c)
                 # [v10.14] Alimentar o sistema de aprendizado de thresholds
                 try:

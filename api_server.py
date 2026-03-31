@@ -85,7 +85,7 @@ if GUNICORN_WORKERS > 1:
 
 INITIAL_CAPITAL_STOCKS = float(os.environ.get('INITIAL_CAPITAL_STOCKS', 9_000_000))
 INITIAL_CAPITAL_CRYPTO = float(os.environ.get('INITIAL_CAPITAL_CRYPTO', 1_000_000))
-MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 250_000))
+MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 350_000))  # [v10.14] proporcional ao capital atual
 MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 600_000))  # [v10.14] máximo global
 # [v10.14] Posição máxima por símbolo — BTC e ETH são as âncoras de capital
 CRYPTO_MAX_POSITION_BY_SYM = {
@@ -714,7 +714,9 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
         if sc_count >= MAX_POSITIONS_STOCKS:
             return False, f'MAX_POSITIONS_STOCKS ({sc_count}/{MAX_POSITIONS_STOCKS})', 0
         committed = sum(t.get('position_value',0) for t in s_open)
-        if committed+position_value > INITIAL_CAPITAL_STOCKS*MAX_CAPITAL_PCT_STOCKS/100:
+        # [v10.14] Usar capital ATUAL (inclui ganhos) não o inicial fixo
+        _effective_cap_s = max(stocks_capital, INITIAL_CAPITAL_STOCKS)
+        if committed+position_value > _effective_cap_s*MAX_CAPITAL_PCT_STOCKS/100:
             return False, 'STOCKS_CAPITAL_LIMIT', 0
         free_cap = sc; max_pos = MAX_POSITION_STOCKS
     elif strategy == 'crypto':
@@ -722,7 +724,9 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
         if cc_count >= MAX_POSITIONS_CRYPTO:
             return False, f'MAX_POSITIONS_CRYPTO ({cc_count}/{MAX_POSITIONS_CRYPTO})', 0
         committed = sum(t.get('position_value',0) for t in c_open)
-        if committed+position_value > INITIAL_CAPITAL_CRYPTO*MAX_CAPITAL_PCT_CRYPTO/100:
+        # [v10.14] Usar capital ATUAL (inclui ganhos) não o inicial fixo
+        _effective_cap_c = max(crypto_capital, INITIAL_CAPITAL_CRYPTO)
+        if committed+position_value > _effective_cap_c*MAX_CAPITAL_PCT_CRYPTO/100:
             return False, 'CRYPTO_CAPITAL_LIMIT', 0
         free_cap = cc; max_pos = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)
     else:
@@ -4848,7 +4852,7 @@ ARBI_PAIRS = [
     # Proteções: min_spread 10% (zona HIGH WR67%), max_pos $30K fixo, sanity spread >20%
     # Bug anterior (-$896K) foi por posição $1M + preço PBR=0 → corrigido
     {'id':'PETR4-PBR', 'leg_a':'PETR4.SA','leg_b':'PBR', 'mkt_a':'B3','mkt_b':'NYSE',
-     'fx':'USDBRL','name':'Petrobras','ratio_a':2,'ratio_b':1,'max_pos':30_000},
+     'fx':'USDBRL','name':'Petrobras','ratio_a':2,'ratio_b':1},
     {'id':'ITUB4-ITUB',  'leg_a':'ITUB4.SA', 'leg_b':'ITUB',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Itaú',        'ratio_a':1,'ratio_b':1},
     {'id':'BBDC4-BBD',   'leg_a':'BBDC4.SA', 'leg_b':'BBD',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Bradesco',    'ratio_a':1,'ratio_b':1},
     {'id':'ABEV3-ABEV',  'leg_a':'ABEV3.SA', 'leg_b':'ABEV',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Ambev',       'ratio_a':1,'ratio_b':1},
@@ -5231,7 +5235,10 @@ def arbi_scan_loop():
                 # [v10.11] Position size dinâmico = portfolio_arbi / 3 (cresce com lucros)
                 with state_lock:
                     _arbi_pnl_total = sum(t.get('pnl',0) for t in arbi_open) + sum(t.get('pnl',0) for t in arbi_closed)
-                    _arbi_port_val  = ARBI_CAPITAL + _arbi_pnl_total
+                    # [v10.14] Usar max(arbi_capital_atual, ARBI_CAPITAL+pnl) — pega o maior
+                    # Isso garante que ganhos acumulados são usados para posições maiores
+                    _arbi_port_val  = max(arbi_capital + sum(t.get('position_size',0) for t in arbi_open),
+                                         ARBI_CAPITAL + _arbi_pnl_total)
                 # [v10.14-FIX] Respeitar max_pos por par (protege contra spreads voláteis)
                 _pair_max_pos = ARBI_PAIR_CONFIG.get(pair['id'], {}).get('max_pos', None)
                 _dynamic_pos = max(round(_arbi_port_val / 3), ARBI_POS_SIZE)

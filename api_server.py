@@ -4844,18 +4844,9 @@ def _arbi_pair_learning(pair_id, recent_trades):
     return ARBI_PAIR_CONFIG.get(pair_id, cfg)
 
 ARBI_PAIRS = [
-    # [v10.14-SMART] PETR4-PBR — regra adaptativa por faixa de spread (auditoria 31/03/2026)
-    # Spread <9%:  LONG_B (vende PETR4, compra PBR) — spread tende a aumentar 70% das vezes
-    # Spread >10%: LONG_A (compra PETR4, vende PBR)  — spread tende a diminuir 80% das vezes
-    # Spread 9-10%: NÃO ENTRA — zona ambígua, alto índice de stop loss
-    # Simulação retroativa: -$57.800 → +$151.090 (+$208K de diferença)
-    {'id':'PETR4-PBR', 'leg_a':'PETR4.SA','leg_b':'PBR', 'mkt_a':'B3','mkt_b':'NYSE',
-     'fx':'USDBRL','name':'Petrobras','ratio_a':2,'ratio_b':1,
-     'spread_low_threshold':9.0,   # abaixo → LONG_B
-     'spread_high_threshold':10.0, # acima → LONG_A
-     'no_entry_zone':(9.0, 10.0),  # 9-10% = não entrar
-     'smart_direction':True},      # flag para ativar lógica adaptativa
-    {'id':'VALE3-VALE',  'leg_a':'VALE3.SA', 'leg_b':'VALE',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Vale',        'ratio_a':1,'ratio_b':1},
+    # PETR4-PBR REMOVIDO PERMANENTEMENTE — bug de preço causou perda artificial de -$884K
+    # spread = 99.99% quando PBR price = 0, posição $1M → pnl_pct = -89.6% fictício
+    # Histórico real: -$57.800 em 24 trades, insustentável para qualquer estratégia
     {'id':'ITUB4-ITUB',  'leg_a':'ITUB4.SA', 'leg_b':'ITUB',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Itaú',        'ratio_a':1,'ratio_b':1},
     {'id':'BBDC4-BBD',   'leg_a':'BBDC4.SA', 'leg_b':'BBD',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Bradesco',    'ratio_a':1,'ratio_b':1},
     {'id':'ABEV3-ABEV',  'leg_a':'ABEV3.SA', 'leg_b':'ABEV',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Ambev',       'ratio_a':1,'ratio_b':1},
@@ -5351,7 +5342,11 @@ def arbi_monitor_loop():
                         trade['pnl_pct']=round(ea-ca,4)
                         # [v10.14-FIX] Sanity check: spread > 50% = preço inválido (0 ou NaN)
                 if abs(float(trade.get('current_spread', 0))) > 50.0:
-                    log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO (preço 0?), ignorando update")
+                    log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO — resetando pnl_pct para 0")
+                    # [v10.14-FIX] Não apenas ignorar — resetar pnl_pct para evitar que SL dispare com dado ruim
+                    trade['current_spread'] = trade.get('entry_spread', 0)  # voltar ao spread de entrada
+                    trade['pnl_pct'] = 0.0
+                    trade['pnl'] = 0.0
                     continue
                 trade['pnl']=round(trade['pnl_pct']/100*float(trade['position_size']),2)
                 trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
@@ -6574,6 +6569,43 @@ def arbitrage_purge():
     audit('ARBI_PURGE', {'id': trade_id, 'old_pnl': old_pnl, 'new_pnl': new_pnl, 'deleted': deleted})
     return jsonify({'ok': True, 'trade_id': trade_id, 'old_pnl': old_pnl,
                    'deleted': deleted, 'corrected': corrected, 'new_pnl': new_pnl})
+
+@app.route('/arbitrage/fix-trade', methods=['POST'])
+@require_api_key
+def arbi_fix_trade():
+    """[v10.14] Corrigir P&L de trade arbi com dado inválido."""
+    d = request.get_json(force=True)
+    trade_id = d.get('trade_id')
+    new_pnl   = float(d.get('pnl', 0))
+    reason    = d.get('reason', 'data_correction')
+    if not trade_id:
+        return jsonify({'error': 'trade_id required'}), 400
+    conn = get_db()
+    if not conn: return jsonify({'error': 'db'}), 500
+    try:
+        cur = conn.cursor()
+        pos_size = 0
+        cur.execute("SELECT position_size, pnl FROM arbi_trades WHERE id=%s", (trade_id,))
+        row = cur.fetchone()
+        if not row: return jsonify({'error': 'not found'}), 404
+        old_pnl  = float(row[1] or 0) if row else 0
+        pos_size = float(row[0] or 1) if row else 1
+        new_pnl_pct = round(new_pnl / pos_size * 100, 4)
+        cur.execute("UPDATE arbi_trades SET pnl=%s, pnl_pct=%s, pnl_gross=%s WHERE id=%s",
+                    (new_pnl, new_pnl_pct, new_pnl, trade_id))
+        conn.commit()
+        # Corrigir capital em memória
+        global arbi_capital
+        diff = new_pnl - old_pnl
+        with state_lock:
+            arbi_capital += diff  # devolver diferença ao capital
+        log.info(f'[ARBI-FIX] {trade_id}: pnl {old_pnl:+,.0f} → {new_pnl:+,.0f} (diff={diff:+,.0f}) reason={reason}')
+        return jsonify({'ok': True, 'old_pnl': old_pnl, 'new_pnl': new_pnl, 'diff': diff, 'capital_adj': diff})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try: cur.close(); conn.close()
+        except: pass
 
 @app.route('/arbitrage/trades')
 def arbi_trades_route():

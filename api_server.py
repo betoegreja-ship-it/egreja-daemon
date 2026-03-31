@@ -268,10 +268,10 @@ def _get_pool():
             pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
             pool_cfg.pop('connection_timeout', None)
             _db_pool = MySQLConnectionPool(
-                pool_name='egreja', pool_size=20,
+                pool_name='egreja', pool_size=35,
                 autocommit=True, connection_timeout=10,
                 **pool_cfg)
-            log.info('[v10.7] MySQL connection pool inicializado (size=10)')
+            log.info('[v10.7] MySQL connection pool inicializado (size=35)')
         except Exception as e:
             log.error(f'MySQL pool init: {e}')
     return _db_pool
@@ -4702,6 +4702,11 @@ def run_arbi_pattern_learning():
 
     except Exception as e:
         log.error(f'run_arbi_pattern_learning: {e}')
+    finally:
+        try:
+            if cursor: cursor.close()
+            if conn: conn.close()
+        except: pass
 
 def arbi_learning_loop():
     """[v10.14] Loop de aprendizado de arbi — roda a cada 30 minutos."""

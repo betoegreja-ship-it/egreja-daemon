@@ -4844,9 +4844,11 @@ def _arbi_pair_learning(pair_id, recent_trades):
     return ARBI_PAIR_CONFIG.get(pair_id, cfg)
 
 ARBI_PAIRS = [
-    # PETR4-PBR REMOVIDO PERMANENTEMENTE — bug de preço causou perda artificial de -$884K
-    # spread = 99.99% quando PBR price = 0, posição $1M → pnl_pct = -89.6% fictício
-    # Histórico real: -$57.800 em 24 trades, insustentável para qualquer estratégia
+    # PETR4-PBR REATIVADO — alta liquidez, importante para mercado real
+    # Proteções: min_spread 10% (zona HIGH WR67%), max_pos $30K fixo, sanity spread >20%
+    # Bug anterior (-$896K) foi por posição $1M + preço PBR=0 → corrigido
+    {'id':'PETR4-PBR', 'leg_a':'PETR4.SA','leg_b':'PBR', 'mkt_a':'B3','mkt_b':'NYSE',
+     'fx':'USDBRL','name':'Petrobras','ratio_a':2,'ratio_b':1,'max_pos':30_000},
     {'id':'ITUB4-ITUB',  'leg_a':'ITUB4.SA', 'leg_b':'ITUB',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Itaú',        'ratio_a':1,'ratio_b':1},
     {'id':'BBDC4-BBD',   'leg_a':'BBDC4.SA', 'leg_b':'BBD',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Bradesco',    'ratio_a':1,'ratio_b':1},
     {'id':'ABEV3-ABEV',  'leg_a':'ABEV3.SA', 'leg_b':'ABEV',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Ambev',       'ratio_a':1,'ratio_b':1},
@@ -5341,7 +5343,7 @@ def arbi_monitor_loop():
                         ea=abs(float(trade['entry_spread'])); ca=abs(float(trade['current_spread']))
                         trade['pnl_pct']=round(ea-ca,4)
                         # [v10.14-FIX] Sanity check: spread > 50% = preço inválido (0 ou NaN)
-                if abs(float(trade.get('current_spread', 0))) > 50.0:
+                if abs(float(trade.get('current_spread', 0))) > 20.0:  # [v10.14] 20% = dado inválido (antes 50%)
                     log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO — resetando pnl_pct para 0")
                     # [v10.14-FIX] Não apenas ignorar — resetar pnl_pct para evitar que SL dispare com dado ruim
                     trade['current_spread'] = trade.get('entry_spread', 0)  # voltar ao spread de entrada

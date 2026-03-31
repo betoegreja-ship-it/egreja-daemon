@@ -4154,8 +4154,11 @@ def stock_execution_worker():
 
                 # [v10.9-DeadZone] Bloquear faixa de confiança com performance historicamente negativa
                 # Dados mostram: 55-64 = 38-44% WR e -$53K em perdas. Faixa 40-54 e 65+ OK.
+                # [v10.14-FIX] Dead zone NÃO se aplica a SHORTs puros — foi calibrada só com LONGs
+                # SHORTs têm WR 53.8% histórico — penalizá-los com dead zone é um bug estrutural
                 _lc = conf.get('final_confidence', 50)
-                if LEARNING_DEAD_ZONE_LOW <= _lc < LEARNING_DEAD_ZONE_HIGH:
+                _is_short_signal = (direction == 'SHORT')
+                if not _is_short_signal and LEARNING_DEAD_ZONE_LOW <= _lc < LEARNING_DEAD_ZONE_HIGH:
                     _confirmed_sig_id = record_signal_event(sig_enriched, features, feat_hash, conf, insight,
                                         source_type='stock_signal_db', existing_signal_id=_sig_pre_id,
                                         origin_signal_key=origin_key)

@@ -3966,8 +3966,14 @@ def stock_execution_worker():
                             _pattern_blocked = True
                             break
                 score = max(0, min(100, score + _score_adj))
-                if _pattern_blocked and score < MIN_SCORE_AUTO + 5:
-                    continue  # bloquear sinal de padrão ruim
+                # [v10.14-FIX] _pattern_blocked: checar por DIREÇÃO
+                # LONG fraco: score < 75 → bloquear
+                # SHORT fraco: score > 25 → bloquear (SHORTs fortes têm score BAIXO)
+                _pre_dir = 'LONG' if score > 50 else 'SHORT'
+                _is_weak_long  = (_pre_dir == 'LONG'  and score < MIN_SCORE_AUTO + 5)
+                _is_weak_short = (_pre_dir == 'SHORT' and score > (100 - MIN_SCORE_AUTO - 5))
+                if _pattern_blocked and (_is_weak_long or _is_weak_short):
+                    continue  # bloquear sinal fraco de padrão ruim
                 # [v10.13] Ajuste temporal para stocks
                 _now_s = datetime.utcnow()
                 _mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
@@ -4015,12 +4021,6 @@ def stock_execution_worker():
                     'created_at': now_iso,
                     'id': None,
                 })
-
-            # [DEBUG] Log todos os sinais gerados antes de filtrar
-            venda_rows = [r for r in rows if r.get('signal')=='VENDA']
-            compra_rows = [r for r in rows if r.get('signal')=='COMPRA']
-            if venda_rows or compra_rows:
-                log.info(f'[WORKER-ROWS] {len(compra_rows)} COMPRA / {len(venda_rows)} VENDA gerados. Top VENDA: {[(r["symbol"],r["score"]) for r in venda_rows[:3]]}')
 
             for sig in rows:
                 score=sig.get('score',0); mkt=sig.get('market_type','')

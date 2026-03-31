@@ -4459,7 +4459,9 @@ def auto_trade_crypto():
 # ARBI ENGINE
 # ═══════════════════════════════════════════════════════════════
 ARBI_PAIRS = [
-    {'id':'PETR4-PBR',   'leg_a':'PETR4.SA','leg_b':'PBR',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Petrobras',   'ratio_a':2,'ratio_b':1},
+    # PETR4-PBR REMOVIDO — spread estrutural crônico de -9% a -11% (ADR premium petróleo)
+    # 24 trades: WR 46%, P&L -$57.800, 9 stops em <30min = -$146K de destruição
+    # {'id':'PETR4-PBR',   'leg_a':'PETR4.SA','leg_b':'PBR',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Petrobras',   'ratio_a':2,'ratio_b':1},
     {'id':'VALE3-VALE',  'leg_a':'VALE3.SA', 'leg_b':'VALE',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Vale',        'ratio_a':1,'ratio_b':1},
     {'id':'ITUB4-ITUB',  'leg_a':'ITUB4.SA', 'leg_b':'ITUB',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Itaú',        'ratio_a':1,'ratio_b':1},
     {'id':'BBDC4-BBD',   'leg_a':'BBDC4.SA', 'leg_b':'BBD',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Bradesco',    'ratio_a':1,'ratio_b':1},

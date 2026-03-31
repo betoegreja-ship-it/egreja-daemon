@@ -4176,9 +4176,7 @@ def stock_execution_worker():
                     record_shadow_decision(_confirmed_sig_id, sig_enriched, 'learning_dead_zone')
                     _cache_reason('learning_dead_zone')
                     continue
-                # [v10.14-DEBUG] Log para rastrear SHORTs que passam do dead zone
-                if _is_short_signal:
-                    log.info(f'[SHORT-TRACE] {sym} score={score:.0f} conf={_lc:.1f} mkt_open={market_open_for(mkt)} dead_zone_bypassed=OK')
+
 
                 # Filtros de execução — gravar signal_event + shadow antes de qualquer continue/break
                 # [v10.6.3-Fix1] _confirmed_sig_id: começa com _sig_pre_id e é atualizado para o ID

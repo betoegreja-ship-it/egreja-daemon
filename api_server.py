@@ -6607,6 +6607,43 @@ def arbi_spreads_route():
         'total_pairs':len(ARBI_PAIRS),'monitored':len(spreads),'fx_rates':fx_rates,
         'arbi_kill_switch':ARBI_KILL_SWITCH,'updated_at':datetime.utcnow().isoformat()})
 
+@app.route('/arbitrage/force-close', methods=['POST'])
+def arbi_force_close():
+    """[v10.14] Fechar trade arbi manualmente — remove da memória e fecha no banco."""
+    global arbi_capital
+    data = request.json or {}
+    trade_id = data.get('trade_id', '')
+    if not trade_id:
+        return jsonify({'error': 'trade_id required'}), 400
+    with state_lock:
+        trade = next((t for t in arbi_open if t.get('id') == trade_id), None)
+        if not trade:
+            return jsonify({'error': 'trade not found in open list'}), 404
+        # Fechar em memória
+        pnl = float(trade.get('pnl', 0) or 0)
+        pos = float(trade.get('position_size', 0) or 0)
+        arbi_capital += pos + pnl
+        closed = dict(trade)
+        closed.update({'status': 'CLOSED', 'close_reason': 'MANUAL_CLOSE', 
+                       'closed_at': datetime.utcnow().isoformat(), 'pnl': pnl})
+        arbi_closed.insert(0, closed)
+        arbi_open[:] = [t for t in arbi_open if t['id'] != trade_id]
+    # Fechar no banco
+    conn = get_db()
+    if conn:
+        try:
+            c = conn.cursor()
+            c.execute("UPDATE arbi_trades SET status='CLOSED', close_reason='MANUAL_CLOSE', closed_at=NOW() WHERE id=%s", (trade_id,))
+            conn.commit()
+        except Exception as e:
+            log.error(f'arbi_force_close db: {e}')
+        finally:
+            try: conn.close()
+            except: pass
+    audit('ARBI_CLOSED', {'id': trade_id, 'pair': trade.get('pair_id'), 'pnl': pnl, 'reason': 'MANUAL_CLOSE'})
+    log.info(f'[MANUAL] Arbi trade {trade_id} fechada: pos=${pos:,.0f} pnl={pnl:>+,.0f} capital_adj={pos+pnl:>+,.0f}')
+    return jsonify({'ok': True, 'trade_id': trade_id, 'pnl': pnl, 'position': pos, 'capital_returned': pos + pnl})
+
 @app.route('/arbitrage/purge', methods=['POST'])
 @require_auth
 def arbitrage_purge():

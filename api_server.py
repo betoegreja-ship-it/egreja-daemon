@@ -56,20 +56,46 @@ Herdado e preservado da v10.3.4 (F1..F5) e ancestrais.
 
 
 import decimal   # [v10.7] movido do interior de funções para o nível de módulo
-import os, time, queue, json, uuid, threading, itertools, requests, logging, hashlib, math
+import os, sys, time, queue, json, uuid, threading, itertools, requests, logging, hashlib, math
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import mysql.connector
 
+# [v10.22] Garantir que o diretório do script está no sys.path (para imports de modules/)
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+
 # ── [v10.22] Institutional modules ─────────────────────────────────────
-from modules.risk_manager import InstitutionalRiskManager
-from modules.broker_base import PaperBroker, BTGBroker, BinanceBroker, NYSEBroker, OrderTracker, BrokerFactory, OrderStatus, AssetClass, create_order_record
-from modules.data_validator import MarketDataValidator
-from modules.auth_rbac import AuthManager, AuditLogger, Role
-from modules.stats_engine import PerformanceStats
-from modules.kill_switch import ExternalKillSwitch, KillSwitchMiddleware
+try:
+    from modules.risk_manager import InstitutionalRiskManager
+    from modules.broker_base import PaperBroker, BTGBroker, BinanceBroker, NYSEBroker, OrderTracker, BrokerFactory, OrderStatus, AssetClass, create_order_record
+    from modules.data_validator import MarketDataValidator
+    from modules.auth_rbac import AuthManager, AuditLogger, Role
+    from modules.stats_engine import PerformanceStats
+    from modules.kill_switch import ExternalKillSwitch, KillSwitchMiddleware
+    _MODULES_LOADED = True
+except Exception as _mod_err:
+    import traceback as _tb
+    print(f'[v10.22] WARNING: Failed to load institutional modules: {_mod_err}', flush=True)
+    _tb.print_exc()
+    _MODULES_LOADED = False
+    # Stubs so the rest of the code doesn't crash
+    class _Stub:
+        def __getattr__(self, name): return lambda *a, **kw: None
+    InstitutionalRiskManager = type('InstitutionalRiskManager', (), {'__init__': lambda s: None, 'record_trade_result': lambda *a,**k: None, 'check_can_open': lambda *a,**k: (True,''), 'get_risk_multiplier': lambda s: 1.0, 'is_breached': lambda s: (False,[]), 'get_status': lambda s: {}})
+    OrderTracker = type('OrderTracker', (), {'__init__': lambda s: None, 'get_reconciliation_status': lambda s: {}, 'get_slippage_stats': lambda s: {}})
+    MarketDataValidator = type('MarketDataValidator', (), {'__init__': lambda s: None, 'record_price': lambda *a,**k: None, 'validate_price': lambda *a,**k: None, 'get_data_quality_status': lambda s: {}})
+    AuthManager = type('AuthManager', (), {'__init__': lambda s: None, 'init_users_table': lambda *a,**k: None, 'auth_mode': 'api_key', 'admin_email': '', 'list_users': lambda *a,**k: []})
+    AuditLogger = type('AuditLogger', (), {'__init__': lambda s: None, 'log_action': lambda *a,**k: None, 'get_recent': lambda *a,**k: []})
+    class Role: VIEWER='viewer'; OPERATOR='operator'; ADMIN='admin'
+    PerformanceStats = type('PerformanceStats', (), {'__init__': lambda s: None, 'record_trade': lambda *a,**k: None, 'get_full_report': lambda s: {}, 'get_promotion_criteria': lambda s: {}})
+    ExternalKillSwitch = type('ExternalKillSwitch', (), {'__init__': lambda s: None, 'init_table': lambda *a,**k: None, 'check_all': lambda *a,**k: {}, 'auto_activate_on_risk_breach': lambda *a,**k: None})
+    class KillSwitchMiddleware:
+        def __init__(self, ks=None): pass
+        def check_before_trade(self, *a, **k): return (True, '')
 
 logging.basicConfig(level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Egreja Investment AI — API Server v10.7.0
+Egreja Investment AI — API Server v10.16.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v10.6.4 → v10.7.0: Polling inteligente + 6 cirurgias (dedup stocks+crypto, dead code, klines unificado, signal_id real)
 
@@ -204,7 +204,7 @@ DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
 
 # ── Learning Engine config ────────────────────────────────────────
-LEARNING_VERSION       = '10.7.0'
+LEARNING_VERSION       = '10.16.0'
 LEARNING_MIN_SAMPLES   = int(os.environ.get('LEARNING_MIN_SAMPLES', 10))   # amostras mínimas para confiar no histórico
 LEARNING_EWMA_ALPHA    = float(os.environ.get('LEARNING_EWMA_ALPHA', 0.15)) # recência (0=ignore histórico, 1=só recente)
 RISK_MULT_MIN          = float(os.environ.get('RISK_MULT_MIN', 0.30))       # [L-9][v10.15] multiplicador mínimo (era 0.50)
@@ -214,6 +214,22 @@ RISK_MULT_MAX          = float(os.environ.get('RISK_MULT_MAX', 1.50))       # [L
 LEARNING_DEAD_ZONE_LOW  = float(os.environ.get('LEARNING_DEAD_ZONE_LOW',  55.0))  # início da dead zone
 LEARNING_DEAD_ZONE_HIGH = float(os.environ.get('LEARNING_DEAD_ZONE_HIGH', 65.0))  # fim da dead zone (= threshold HIGH)
 SHADOW_TRACK_REASONS   = {'confidence_low','market_closed','risk_blocked','symbol_open','kill_switch','cooldown','capital'}
+# ── [v10.16] Daily drawdown per strategy ──────────────────────────────────
+DAILY_DD_STOCKS_PCT   = float(os.environ.get('DAILY_DD_STOCKS_PCT', 1.5))   # max 1.5% drawdown diário em stocks
+DAILY_DD_CRYPTO_PCT   = float(os.environ.get('DAILY_DD_CRYPTO_PCT', 2.0))   # max 2.0% drawdown diário em crypto (mais volátil)
+# ── [v10.16] Auto-blacklist: suspende símbolo com histórico ruim ──────────
+BLACKLIST_MIN_TRADES    = int(os.environ.get('BLACKLIST_MIN_TRADES', 20))     # mínimo de trades para avaliar
+BLACKLIST_MAX_AVG_PNL   = float(os.environ.get('BLACKLIST_MAX_AVG_PNL', -40)) # avg PnL < -$40 = blacklist
+BLACKLIST_MAX_WR        = float(os.environ.get('BLACKLIST_MAX_WR', 42))       # WR < 42% = blacklist
+BLACKLIST_REVIEW_H      = float(os.environ.get('BLACKLIST_REVIEW_H', 24))     # reavaliar a cada 24h
+# ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
+ATR_SL_MULTIPLIER_STOCK  = float(os.environ.get('ATR_SL_MULTIPLIER_STOCK', 2.5))  # SL = ATR * 2.5 para stocks
+ATR_SL_MULTIPLIER_CRYPTO = float(os.environ.get('ATR_SL_MULTIPLIER_CRYPTO', 2.0)) # SL = ATR * 2.0 para crypto
+ATR_SL_MIN_PCT           = float(os.environ.get('ATR_SL_MIN_PCT', 0.8))           # SL mínimo 0.8%
+ATR_SL_MAX_PCT           = float(os.environ.get('ATR_SL_MAX_PCT', 4.0))           # SL máximo 4.0%
+# ── [v10.16] Inactivity alert ─────────────────────────────────────────────
+INACTIVITY_ALERT_H_STOCKS = float(os.environ.get('INACTIVITY_ALERT_H_STOCKS', 4))  # alertar se 0 trades stocks em 4h (horário de mercado)
+INACTIVITY_ALERT_H_CRYPTO = float(os.environ.get('INACTIVITY_ALERT_H_CRYPTO', 8))  # alertar se 0 trades crypto em 8h
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
@@ -367,6 +383,16 @@ thread_fns           = {}
 thread_restart_count = {}
 thread_last_restart  = {}
 thread_heartbeat     = {}
+
+# ── [v10.16] State: daily drawdown per strategy ──────────────────────────
+_daily_dd_stocks = {'date': '', 'pnl': 0.0, 'blocked': False}
+_daily_dd_crypto = {'date': '', 'pnl': 0.0, 'blocked': False}
+# ── [v10.16] Auto-blacklist state ─────────────────────────────────────────
+_symbol_blacklist: dict = {}       # symbol → {'reason': str, 'until': float(timestamp), 'stats': dict}
+_blacklist_last_eval: float = 0.0  # timestamp da última avaliação
+# ── [v10.16] Inactivity tracking ──────────────────────────────────────────
+_last_trade_opened = {'stocks': 0.0, 'crypto': 0.0}  # timestamp do último trade aberto
+_inactivity_alerted = {'stocks': False, 'crypto': False}
 
 def gen_id(prefix='TRD'):
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
@@ -1768,6 +1794,242 @@ def track_calibration(trade: dict):
                 wr = b_data['wins'] / b_data['total'] * 100
                 avg = b_data['sum_pnl_pct'] / b_data['total']
                 log.info(f'[ML-CALIB] {b_name}: WR={wr:.1f}% avg_pnl={avg:.3f}% n={b_data["total"]}')
+
+# ── [v10.16] Daily Drawdown per Strategy ──────────────────────────────────
+def check_strategy_daily_dd(strategy: str) -> tuple:
+    """[v10.16] Verifica se a estratégia atingiu o drawdown diário.
+    Retorna (blocked: bool, reason: str).
+    """
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    if strategy == 'stocks':
+        dd_state = _daily_dd_stocks
+        limit = DAILY_DD_STOCKS_PCT
+        cap = INITIAL_CAPITAL_STOCKS
+        closed_list = stocks_closed
+    elif strategy == 'crypto':
+        dd_state = _daily_dd_crypto
+        limit = DAILY_DD_CRYPTO_PCT
+        cap = INITIAL_CAPITAL_CRYPTO
+        closed_list = crypto_closed
+    else:
+        return False, 'OK'
+    # Reset diário
+    if dd_state['date'] != today:
+        dd_state['date'] = today
+        dd_state['pnl'] = 0.0
+        dd_state['blocked'] = False
+    # Calcular PnL do dia
+    daily_pnl = sum(t.get('pnl', 0) for t in closed_list
+                     if (t.get('closed_at', '') or '')[:10] == today)
+    dd_state['pnl'] = daily_pnl
+    dd_pct = abs(min(daily_pnl, 0)) / max(cap, 1) * 100
+    if dd_pct >= limit:
+        dd_state['blocked'] = True
+        return True, f'STRATEGY_DAILY_DD_{strategy.upper()} ({dd_pct:.2f}%/{limit:.1f}%)'
+    dd_state['blocked'] = False
+    return False, 'OK'
+
+
+# ── [v10.16] Auto-blacklist de símbolos perdedores ────────────────────────
+def evaluate_symbol_blacklist():
+    """[v10.16] Avalia performance por símbolo e blacklista perdedores.
+    Roda periodicamente (a cada BLACKLIST_REVIEW_H).
+    """
+    global _blacklist_last_eval
+    now = time.time()
+    if now - _blacklist_last_eval < BLACKLIST_REVIEW_H * 3600:
+        return  # ainda não é hora de reavaliar
+    _blacklist_last_eval = now
+    with state_lock:
+        all_closed = list(stocks_closed) + list(crypto_closed)
+    # Agrupar por símbolo
+    by_sym = {}
+    for t in all_closed:
+        s = t.get('symbol', '')
+        if not s: continue
+        if s not in by_sym:
+            by_sym[s] = {'n': 0, 'wins': 0, 'total_pnl': 0.0, 'asset_type': t.get('asset_type', '')}
+        by_sym[s]['n'] += 1
+        by_sym[s]['total_pnl'] += float(t.get('pnl', 0) or 0)
+        if float(t.get('pnl', 0) or 0) > 0:
+            by_sym[s]['wins'] += 1
+    # Avaliar
+    newly_blocked = 0
+    newly_unblocked = 0
+    for sym, stats in by_sym.items():
+        if stats['n'] < BLACKLIST_MIN_TRADES:
+            continue
+        avg_pnl = stats['total_pnl'] / stats['n']
+        wr = stats['wins'] / stats['n'] * 100
+        should_block = avg_pnl < BLACKLIST_MAX_AVG_PNL and wr < BLACKLIST_MAX_WR
+        if should_block:
+            if sym not in _symbol_blacklist:
+                newly_blocked += 1
+            _symbol_blacklist[sym] = {
+                'reason': f'avg_pnl=${avg_pnl:.0f} wr={wr:.0f}% n={stats["n"]}',
+                'until': now + BLACKLIST_REVIEW_H * 3600,
+                'stats': {'avg_pnl': round(avg_pnl, 2), 'wr': round(wr, 1), 'n': stats['n']},
+            }
+        elif sym in _symbol_blacklist:
+            # Símbolo melhorou — desbloquear
+            del _symbol_blacklist[sym]
+            newly_unblocked += 1
+    # Limpar blacklists expirados
+    expired = [s for s, v in _symbol_blacklist.items() if v['until'] < now]
+    for s in expired:
+        del _symbol_blacklist[s]
+    if newly_blocked or newly_unblocked:
+        log.info(f'[BLACKLIST] Avaliação: +{newly_blocked} bloqueados, -{newly_unblocked} desbloqueados, total={len(_symbol_blacklist)}')
+        for sym, info in _symbol_blacklist.items():
+            log.info(f'  [BLACKLIST] {sym}: {info["reason"]}')
+
+
+def is_symbol_blacklisted(symbol: str) -> tuple:
+    """[v10.16] Retorna (blocked: bool, reason: str)."""
+    info = _symbol_blacklist.get(symbol)
+    if info and info['until'] > time.time():
+        return True, f'SYMBOL_BLACKLISTED ({info["reason"]})'
+    return False, 'OK'
+
+
+# ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
+def get_adaptive_sl_pct(trade: dict) -> float:
+    """[v10.16] Calcula stop-loss adaptativo baseado no ATR do ativo.
+    Retorna o SL como percentual positivo (ex: 2.5 = -2.5%).
+    """
+    atr_pct = float(trade.get('_atr_pct', 0) or trade.get('atr_pct', 0) or 0)
+    asset_type = trade.get('asset_type', 'stock')
+    if atr_pct <= 0:
+        # Sem ATR: usar default fixo
+        return 2.0 if asset_type == 'stock' else 2.0
+    mult = ATR_SL_MULTIPLIER_STOCK if asset_type == 'stock' else ATR_SL_MULTIPLIER_CRYPTO
+    sl_pct = atr_pct * mult
+    # Clampar entre mínimo e máximo
+    sl_pct = max(ATR_SL_MIN_PCT, min(ATR_SL_MAX_PCT, sl_pct))
+    return round(sl_pct, 2)
+
+
+# ── [v10.16] Score Snapshot para auditoria de trades ──────────────────────
+def make_score_snapshot(sig: dict, features: dict, conf: dict, extras: dict = None) -> dict:
+    """[v10.16] Cria snapshot completo dos componentes de score para auditoria."""
+    snap = {
+        'score': sig.get('score'),
+        'rsi': sig.get('rsi'),
+        'ema9': sig.get('ema9'),
+        'ema21': sig.get('ema21'),
+        'ema50': sig.get('ema50'),
+        'atr_pct': sig.get('atr_pct'),
+        'volume_ratio': sig.get('volume_ratio'),
+        'direction': features.get('direction'),
+        'regime_mode': features.get('regime_mode'),
+        'volatility_bucket': features.get('volatility_bucket'),
+        'atr_bucket': features.get('atr_bucket'),
+        'volume_bucket': features.get('volume_bucket'),
+        'weekday': features.get('weekday'),
+        'time_bucket': features.get('time_bucket'),
+        'rsi_bucket': features.get('rsi_bucket'),
+        'ema_alignment': features.get('ema_alignment'),
+        'final_confidence': conf.get('final_confidence'),
+        'risk_multiplier': conf.get('risk_multiplier') if isinstance(conf, dict) else None,
+        'timestamp': datetime.utcnow().isoformat(),
+    }
+    if extras:
+        snap.update(extras)
+    return {k: v for k, v in snap.items() if v is not None}
+
+
+# ── [v10.16] Inactivity Alert ─────────────────────────────────────────────
+def check_inactivity_alert():
+    """[v10.16] Verifica se houve inatividade anormal e alerta."""
+    now = time.time()
+    # Stocks: só checar durante horário de mercado
+    if market_open_for('NYSE') or market_open_for('B3'):
+        last_stk = _last_trade_opened.get('stocks', now)
+        hours_since_stk = (now - last_stk) / 3600 if last_stk > 0 else 0
+        if hours_since_stk >= INACTIVITY_ALERT_H_STOCKS and not _inactivity_alerted.get('stocks'):
+            _inactivity_alerted['stocks'] = True
+            log.warning(f'[INACTIVITY] STOCKS: {hours_since_stk:.1f}h sem novas trades (limite={INACTIVITY_ALERT_H_STOCKS}h)')
+            try:
+                if ALERTS_ENABLED:
+                    _send_whatsapp_direct(f'⚠️ INATIVIDADE: {hours_since_stk:.1f}h sem trades de stocks')
+            except: pass
+        elif hours_since_stk < INACTIVITY_ALERT_H_STOCKS:
+            _inactivity_alerted['stocks'] = False
+    # Crypto: 24/7
+    last_cry = _last_trade_opened.get('crypto', now)
+    hours_since_cry = (now - last_cry) / 3600 if last_cry > 0 else 0
+    if hours_since_cry >= INACTIVITY_ALERT_H_CRYPTO and not _inactivity_alerted.get('crypto'):
+        _inactivity_alerted['crypto'] = True
+        log.warning(f'[INACTIVITY] CRYPTO: {hours_since_cry:.1f}h sem novas trades (limite={INACTIVITY_ALERT_H_CRYPTO}h)')
+        try:
+            if ALERTS_ENABLED:
+                _send_whatsapp_direct(f'⚠️ INATIVIDADE: {hours_since_cry:.1f}h sem trades de crypto')
+        except: pass
+    elif hours_since_cry < INACTIVITY_ALERT_H_CRYPTO:
+        _inactivity_alerted['crypto'] = False
+
+
+# ── [v10.16] Trace ID por ciclo de worker ─────────────────────────────────
+def gen_trace_id(worker_name: str) -> str:
+    """[v10.16] Gera trace ID único para cada ciclo de worker."""
+    return f'{worker_name[:3].upper()}-{uuid.uuid4().hex[:8]}'
+
+
+# ── [v10.16] Settings Validation on Boot ──────────────────────────────────
+def validate_settings_on_boot():
+    """[v10.16] Valida todas as configurações críticas na inicialização.
+    Loga config efetiva e aborta se houver conflito.
+    """
+    errors = []
+    warnings = []
+    # Validações de range
+    if MAX_POSITIONS_CRYPTO < 1 or MAX_POSITIONS_CRYPTO > 20:
+        errors.append(f'MAX_POSITIONS_CRYPTO={MAX_POSITIONS_CRYPTO} fora de range [1,20]')
+    if MAX_POSITIONS_STOCKS < 1 or MAX_POSITIONS_STOCKS > 100:
+        errors.append(f'MAX_POSITIONS_STOCKS={MAX_POSITIONS_STOCKS} fora de range [1,100]')
+    if MIN_SCORE_AUTO < 50 or MIN_SCORE_AUTO > 95:
+        errors.append(f'MIN_SCORE_AUTO={MIN_SCORE_AUTO} fora de range [50,95]')
+    if MIN_SCORE_AUTO_CRYPTO < 40 or MIN_SCORE_AUTO_CRYPTO > 90:
+        errors.append(f'MIN_SCORE_AUTO_CRYPTO={MIN_SCORE_AUTO_CRYPTO} fora de range [40,90]')
+    if RISK_MULT_MIN >= RISK_MULT_MAX:
+        errors.append(f'RISK_MULT_MIN={RISK_MULT_MIN} >= RISK_MULT_MAX={RISK_MULT_MAX}')
+    if RISK_MULT_MIN < 0.1 or RISK_MULT_MAX > 3.0:
+        errors.append(f'Risk multiplier range [{RISK_MULT_MIN},{RISK_MULT_MAX}] fora de limites seguros [0.1,3.0]')
+    if MAX_DAILY_DRAWDOWN_PCT > 10:
+        warnings.append(f'MAX_DAILY_DRAWDOWN_PCT={MAX_DAILY_DRAWDOWN_PCT}% é alto (>10%)')
+    if KILL_SWITCH_USD < 1000:
+        warnings.append(f'KILL_SWITCH_USD=${KILL_SWITCH_USD} é muito baixo')
+    if STOCK_SL_PCT > 5 or STOCK_SL_PCT < 0.5:
+        warnings.append(f'STOCK_SL_PCT={STOCK_SL_PCT}% fora de range recomendado [0.5,5.0]')
+    if DAILY_DD_STOCKS_PCT > MAX_DAILY_DRAWDOWN_PCT:
+        warnings.append(f'DAILY_DD_STOCKS_PCT={DAILY_DD_STOCKS_PCT}% > MAX_DAILY_DRAWDOWN_PCT={MAX_DAILY_DRAWDOWN_PCT}%')
+    # Conflitos lógicos
+    if MAX_OPEN_POSITIONS < MAX_POSITIONS_STOCKS:
+        errors.append(f'MAX_OPEN_POSITIONS={MAX_OPEN_POSITIONS} < MAX_POSITIONS_STOCKS={MAX_POSITIONS_STOCKS}')
+    # Log efetivo
+    log.info('═══════════════════════════════════════════════════════════')
+    log.info(f'[BOOT] Settings Validation v10.16')
+    log.info(f'  Capital: Stocks ${INITIAL_CAPITAL_STOCKS:,.0f} | Crypto ${INITIAL_CAPITAL_CRYPTO:,.0f} | Arbi ${ARBI_CAPITAL:,.0f}')
+    log.info(f'  Positions: Stocks max={MAX_POSITIONS_STOCKS} | Crypto max={MAX_POSITIONS_CRYPTO} | Global max={MAX_OPEN_POSITIONS}')
+    log.info(f'  Thresholds: Stocks min_score={MIN_SCORE_AUTO} | Crypto min_score={MIN_SCORE_AUTO_CRYPTO}')
+    log.info(f'  Risk: mult=[{RISK_MULT_MIN},{RISK_MULT_MAX}] | daily_dd={MAX_DAILY_DRAWDOWN_PCT}% | kill=${KILL_SWITCH_USD:,.0f}')
+    log.info(f'  Strategy DD: stocks={DAILY_DD_STOCKS_PCT}% | crypto={DAILY_DD_CRYPTO_PCT}%')
+    log.info(f'  SL/TP: stock_sl={STOCK_SL_PCT}% stock_tp={STOCK_TP_PCT}% | ATR mult stock={ATR_SL_MULTIPLIER_STOCK} crypto={ATR_SL_MULTIPLIER_CRYPTO}')
+    log.info(f'  Blacklist: min_trades={BLACKLIST_MIN_TRADES} max_avg_pnl=${BLACKLIST_MAX_AVG_PNL} max_wr={BLACKLIST_MAX_WR}%')
+    log.info(f'  Learning: enabled={LEARNING_ENABLED} ewma={LEARNING_EWMA_ALPHA} dead_zone=[{LEARNING_DEAD_ZONE_LOW},{LEARNING_DEAD_ZONE_HIGH}]')
+    log.info(f'  Shadow: eval_window={SHADOW_EVAL_WINDOW_MIN}min')
+    log.info(f'  Inactivity: stocks={INACTIVITY_ALERT_H_STOCKS}h crypto={INACTIVITY_ALERT_H_CRYPTO}h')
+    log.info('═══════════════════════════════════════════════════════════')
+    for w in warnings:
+        log.warning(f'[BOOT-WARN] {w}')
+    if errors:
+        for e in errors:
+            log.error(f'[BOOT-ERROR] {e}')
+        if ENV == 'production':
+            raise RuntimeError(f'[v10.16] Settings validation failed: {errors}')
+        else:
+            log.warning('[BOOT] Settings errors detected but ENV != production — continuing')
+
 
 # ═══════════════════════════════════════════════════════════════
 # [L-2] SIGNAL MEMORY — snapshot de cada sinal no DB
@@ -3961,8 +4223,9 @@ def monitor_trades():
                     if len(h)>5: h.pop(0)
                     trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
                     peak=trade['peak_pnl_pct']; mkt=trade.get('market',''); reason=None
+                    _adaptive_sl_s = get_adaptive_sl_pct(trade)  # [v10.16] ATR-based
                     if peak>=1.5 and trade['pnl_pct']<=peak-0.5:   reason='TRAILING_STOP'  # [v10.9-opt] era 2.0/1.0
-                    elif trade['pnl_pct']<=-2.0:                    reason='STOP_LOSS'  # [v10.9-opt] era -1.5
+                    elif trade['pnl_pct']<=-_adaptive_sl_s:          reason='STOP_LOSS'  # [v10.16] ATR-based (era fixo -2.0%)
                     elif age_h>=2.0:
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
@@ -4017,8 +4280,9 @@ def monitor_trades():
                     if len(h)>5: h.pop(0)
                     trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
                     peak=trade['peak_pnl_pct']; reason=None
+                    _adaptive_sl_c = get_adaptive_sl_pct(trade)  # [v10.16] ATR-based
                     if peak>=2.0 and trade['pnl_pct']<=peak-1.0:   reason='TRAILING_STOP'
-                    elif trade['pnl_pct']<=-2.0:                    reason='STOP_LOSS'
+                    elif trade['pnl_pct']<=-_adaptive_sl_c:          reason='STOP_LOSS'  # [v10.16] ATR-based (era fixo -2.0%)
                     elif age_h>=4.0:
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
@@ -4425,6 +4689,16 @@ def stock_execution_worker():
                 _stocks_port_total = s.get('stocks_portfolio_value', INITIAL_CAPITAL_STOCKS) if False else                     max(stocks_capital + sum(t.get('position_value',0) for t in stocks_open), INITIAL_CAPITAL_STOCKS)
                 _pos_target = _stocks_port_total / MAX_POSITIONS_STOCKS * (0.8 + score_factor * 0.4)
                 desired_pos = min(max(_pos_target * risk_mult, 50_000), MAX_POSITION_STOCKS)
+                # [v10.16] Strategy daily drawdown check
+                _dd_blocked_s, _dd_reason_s = check_strategy_daily_dd('stocks')
+                if _dd_blocked_s:
+                    log.info(f'[STK-DD-BLOCK] {sym}: {_dd_reason_s}')
+                    break  # não adianta checar mais sinais
+                # [v10.16] Auto-blacklist check
+                _bl_blocked_s, _bl_reason_s = is_symbol_blacklisted(sym)
+                if _bl_blocked_s:
+                    log.info(f'[STK-BL-BLOCK] {sym}: {_bl_reason_s}')
+                    continue
                 # [v10.15] ML Gate para stocks — bloqueia se padrões/fatores indicam perda
                 _ml_ok_s, _ml_reason_s, _ml_score_s = should_trade_ml(
                     features, conf, asset_type='stock')
@@ -4487,6 +4761,9 @@ def stock_execution_worker():
                             'insight_summary':     insight,
                             'learning_version':    LEARNING_VERSION,
                             '_features':           features,
+                            # [v10.16] Score snapshot + ATR para SL adaptativo
+                            '_score_snapshot':     make_score_snapshot(sig_enriched, features, conf),
+                            '_atr_pct':            sig.get('atr_pct', 0),
                         }
                         stocks_open.append(trade)
                     else:
@@ -4517,6 +4794,7 @@ def stock_execution_worker():
                 audit('TRADE_OPENED',{'id':pre_trade_id,'symbol':sym,'direction':direction,'score':score,'pos':round(price*qty)})
                 enqueue_persist('trade',trade)
                 if score>=ALERT_MIN_SCORE: alert_signal(dict(sig))
+                _last_trade_opened['stocks'] = time.time()  # [v10.16] inactivity tracking
                 log.info(f'STK {sym} {direction} qty={qty} score={score}')
         except Exception as e:
             import traceback as _tb
@@ -4612,17 +4890,20 @@ def auto_trade_crypto():
                 if abs(_t_adj + _cm_adj) >= 5:
                     log.info(f"[CRYPTO-SADJ] {display}: {_score_before}→{score} (t={_t_adj:+d} cm={_cm_adj:+d} disc={_disc_adj_c:+d})")
 
+                # [v10.16] Strategy daily drawdown check
+                _dd_blocked_c, _dd_reason_c = check_strategy_daily_dd('crypto')
+                if _dd_blocked_c:
+                    log.info(f'[CRYPTO-DD-BLOCK] {display}: {_dd_reason_c}')
+                    break
+                # [v10.16] Auto-blacklist check
+                _bl_blocked_c, _bl_reason_c = is_symbol_blacklisted(display)
+                if _bl_blocked_c:
+                    log.info(f'[CRYPTO-BL-BLOCK] {display}: {_bl_reason_c}')
+                    continue
                 # [v10.14] Aplicar threshold — não entrar em sinais fracos
                 _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
                 if not _entry_ok:
                     log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
-                    continue
-
-                # [v10.15] ML Gate — consulta padrões e fatores antes de prosseguir
-                _ml_ok, _ml_reason, _ml_score = should_trade_ml(
-                    _feats_disc_c, conf_c, asset_type='crypto')
-                if not _ml_ok:
-                    log.info(f'[CRYPTO-ML-BLOCK] {display}: {_ml_reason} score={score}')
                     continue
 
                 score_factor=min(abs(score-50)/50.0,1.0)
@@ -4661,6 +4942,18 @@ def auto_trade_crypto():
                 conf_c      = calc_learning_confidence(sig_enriched_c, features_c, feat_hash_c)
                 insight_c   = generate_insight(sig_enriched_c, features_c, feat_hash_c, conf_c)
                 risk_mult_c = get_risk_multiplier(conf_c)
+
+                # [v10.15] ML Gate — consulta padrões e fatores (movido para após conf_c existir)
+                _ml_ok, _ml_reason, _ml_score = should_trade_ml(
+                    features_c, conf_c, asset_type='crypto')
+                if not _ml_ok:
+                    log.info(f'[CRYPTO-ML-BLOCK] {display}: {_ml_reason} score={score}')
+                    _csig_ml = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
+                                        source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
+                                        origin_signal_key=origin_key_c)
+                    record_shadow_decision(_csig_ml, sig_enriched_c, _ml_reason)
+                    with learning_lock: processed_signal_ids[ms_key_c] = {'sig_id': _csig_ml, 'reason': _ml_reason}
+                    continue
 
                 # [v10.9-DeadZone] Dead zone crypto — skip se movimento ≥ 2.5% (sinal real)
                 _lc_c = conf_c.get('final_confidence', 50)
@@ -4737,6 +5030,9 @@ def auto_trade_crypto():
                             'insight_summary':     insight_c,
                             'learning_version':    LEARNING_VERSION,
                             '_features':           features_c,
+                            # [v10.16] Score snapshot + ATR para SL adaptativo
+                            '_score_snapshot':     make_score_snapshot(sig_enriched_c, features_c, conf_c),
+                            '_atr_pct':            atr_pct_c,
                         }
                         crypto_open.append(trade)
                     else:
@@ -4765,6 +5061,7 @@ def auto_trade_crypto():
                 update_order_status(order,'SENT')
                 update_order_status(order,'FILLED',price,round(qty,6))
 
+                _last_trade_opened['crypto'] = time.time()  # [v10.16] inactivity tracking
                 audit('TRADE_OPENED',{'id':pre_trade_id,'symbol':display,'direction':direction,'score':score})
                 enqueue_persist('trade',trade)
         except Exception as e:
@@ -5608,6 +5905,12 @@ def arbi_monitor_loop():
 def watchdog():
     while True:
         beat('watchdog')
+        # [v10.16] Periodic checks
+        try:
+            evaluate_symbol_blacklist()
+            check_inactivity_alert()
+        except Exception as _wdg_e:
+            log.debug(f'watchdog v10.16 checks: {_wdg_e}')
         time.sleep(30)
         now=time.time()
 
@@ -5895,6 +6198,8 @@ def health():
     return jsonify({
         'status':'ok','db':'connected' if test_db() else 'unavailable',
         'open_trades':open_count,'kill_switch':RISK_KILL_SWITCH,'arbi_kill_switch':ARBI_KILL_SWITCH,
+        'strategy_dd': {'stocks': _daily_dd_stocks, 'crypto': _daily_dd_crypto},
+        'blacklisted_symbols': list(_symbol_blacklist.keys()),
         'market_regime':market_regime,'alerts':ALERTS_ENABLED,
         'stock_prices_cached':len(stock_prices),'crypto_prices_cached':len(crypto_prices),
         'persist_queue_size':urgent_queue.qsize(),
@@ -7998,6 +8303,7 @@ if __name__ == '__main__':
     port=int(os.environ.get('PORT',3001))
     log.info(f'━━━ Egreja Investment AI v10.7.0 | {ENV.upper()} | port {port} | single-process ━━━')
     log.info(f'FMP: {"SET" if FMP_API_KEY else "NOT SET"} | Auth: {"ENABLED" if API_SECRET_KEY else "DISABLED (dev)"} | Alerts: {"ON" if ALERTS_ENABLED else "OFF"}')
+    validate_settings_on_boot()  # [v10.16]
     log.info(f'Stocks ${INITIAL_CAPITAL_STOCKS/1e6:.0f}M | Crypto ${INITIAL_CAPITAL_CRYPTO/1e6:.0f}M | Arbi ${ARBI_CAPITAL/1e3:.0f}K (SEGREGATED)')
     log.info(f'Queue thresholds: WARN={URGENT_QUEUE_WARN} / CRIT={URGENT_QUEUE_CRIT}')
 

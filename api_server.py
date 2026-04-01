@@ -4446,6 +4446,11 @@ def auto_trade_crypto():
                 if abs(_t_adj + _cm_adj) >= 5:
                     log.debug(f"SCORE_ADJ crypto {display}: {_score_before}→{score} (t={_t_adj:+d} cm={_cm_adj:+d} disc={_disc_adj_c:+d})")
 
+                # [v10.14] Aplicar threshold — não entrar em sinais fracos
+                _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
+                if not _entry_ok:
+                    continue
+
                 score_factor=min(abs(score-50)/50.0,1.0)
 
                 # [v10.4-F2-dedup] Chave por janela de tempo de 90s — não por preço (instável em altcoins)

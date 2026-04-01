@@ -1996,8 +1996,8 @@ def _update_cross_market_from_stocks():
         # BTC como proxy de sentimento crypto
         btc_chg = 0.0
         with state_lock:
-            btc_ticker = crypto_prices.get('BTCUSDT', {})
-            if btc_ticker: btc_chg = float(btc_ticker.get('change_24h', 0) or 0)
+            # [v10.14-FIX] crypto_prices contém float, não dict — usar crypto_momentum
+            btc_chg = float(crypto_momentum.get('BTCUSDT', 0) or 0)
         # USDBRL
         usdbrl_chg = 0.0
         try:
@@ -4050,7 +4050,20 @@ def stock_execution_worker():
                 elif _st_blocked and _pre_temporal_dir == 'SHORT':
                     _st_adj = -5  # penaliza leve mas não bloqueia SHORT
                 _score_before_t = score
-                score = max(0, min(100, score + _st_adj))
+                # [v10.14-FIX] Temporal: LONGS beneficiam de hora boa (score+)
+                # SHORTs TAMBÉM devem beneficiar — mas score de SHORT é BAIXO
+                # Bom horário com adj positivo → ajuda LONG mas PREJUDICA SHORT
+                # Fix: para direção SHORT (score < 50), inverter o sinal do ajuste
+                _pre_dir_t = 'LONG' if score > 50 else ('SHORT' if score < 50 else 'NEUTRAL')
+                if _pre_dir_t == 'SHORT' and _st_adj > 0:
+                    # Hora boa ajuda SHORT TAMBÉM → subtrair (mantém score baixo)
+                    _st_adj_effective = -_st_adj
+                elif _pre_dir_t == 'SHORT' and _st_adj < 0:
+                    # Hora ruim → penalizar SHORT (subir score tira da zona SHORT)
+                    _st_adj_effective = -_st_adj  # penalidade vira boost (sai da zona)
+                else:
+                    _st_adj_effective = _st_adj
+                score = max(0, min(100, score + _st_adj_effective))
                 # [v10.13] Padrões compostos descobertos automaticamente
                 _feats_disc = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bkt,
                                'ema_alignment': 'BULLISH' if ema9>ema21 else 'BEARISH',

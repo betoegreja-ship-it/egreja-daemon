@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Egreja Investment AI — API Server v10.16.0
+Egreja Investment AI — API Server v10.17.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v10.6.4 → v10.7.0: Polling inteligente + 6 cirurgias (dedup stocks+crypto, dead code, klines unificado, signal_id real)
 
@@ -204,7 +204,7 @@ DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
 
 # ── Learning Engine config ────────────────────────────────────────
-LEARNING_VERSION       = '10.16.0'
+LEARNING_VERSION       = '10.17.0'
 LEARNING_MIN_SAMPLES   = int(os.environ.get('LEARNING_MIN_SAMPLES', 10))   # amostras mínimas para confiar no histórico
 LEARNING_EWMA_ALPHA    = float(os.environ.get('LEARNING_EWMA_ALPHA', 0.15)) # recência (0=ignore histórico, 1=só recente)
 RISK_MULT_MIN          = float(os.environ.get('RISK_MULT_MIN', 0.30))       # [L-9][v10.15] multiplicador mínimo (era 0.50)
@@ -230,6 +230,21 @@ ATR_SL_MAX_PCT           = float(os.environ.get('ATR_SL_MAX_PCT', 4.0))         
 # ── [v10.16] Inactivity alert ─────────────────────────────────────────────
 INACTIVITY_ALERT_H_STOCKS = float(os.environ.get('INACTIVITY_ALERT_H_STOCKS', 4))  # alertar se 0 trades stocks em 4h (horário de mercado)
 INACTIVITY_ALERT_H_CRYPTO = float(os.environ.get('INACTIVITY_ALERT_H_CRYPTO', 8))  # alertar se 0 trades crypto em 8h
+# ── [v10.17] Flat Exit — fecha trades estagnadas ──────────────────────────
+FLAT_EXIT_MIN_AGE_MIN     = float(os.environ.get('FLAT_EXIT_MIN_AGE_MIN', 45))     # minutos mínimos antes de avaliar flat
+FLAT_EXIT_MAX_VARIATION   = float(os.environ.get('FLAT_EXIT_MAX_VARIATION', 0.30))  # variação máxima (%) para considerar flat
+# ── [v10.17] Trailing stop triggers (mais baixos) ────────────────────────
+TRAILING_PEAK_STOCKS      = float(os.environ.get('TRAILING_PEAK_STOCKS', 1.0))     # era 1.5% — ativa trailing mais cedo
+TRAILING_DROP_STOCKS      = float(os.environ.get('TRAILING_DROP_STOCKS', 0.4))     # era 0.5% — retração menor
+TRAILING_PEAK_CRYPTO      = float(os.environ.get('TRAILING_PEAK_CRYPTO', 1.5))     # era 2.0% — ativa trailing mais cedo
+TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 0.7))     # era 1.0% — retração menor
+# ── [v10.17] Directional exposure limit ───────────────────────────────────
+MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))       # max 70% das posições na mesma direção
+# ── [v10.17] Dynamic timeout ─────────────────────────────────────────────
+DYNAMIC_TIMEOUT_ENABLED   = os.environ.get('DYNAMIC_TIMEOUT_ENABLED', 'true').lower() != 'false'
+DYNAMIC_TIMEOUT_MULT      = float(os.environ.get('DYNAMIC_TIMEOUT_MULT', 1.3))    # timeout = avg_dur * 1.3
+DYNAMIC_TIMEOUT_MIN_H     = float(os.environ.get('DYNAMIC_TIMEOUT_MIN_H', 1.5))   # timeout mínimo 1.5h
+DYNAMIC_TIMEOUT_MAX_H     = float(os.environ.get('DYNAMIC_TIMEOUT_MAX_H', 6.0))   # timeout máximo 6h
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
@@ -393,6 +408,8 @@ _blacklist_last_eval: float = 0.0  # timestamp da última avaliação
 # ── [v10.16] Inactivity tracking ──────────────────────────────────────────
 _last_trade_opened = {'stocks': 0.0, 'crypto': 0.0}  # timestamp do último trade aberto
 _inactivity_alerted = {'stocks': False, 'crypto': False}
+# ── [v10.17] Symbol duration tracker (avg hours per symbol) ───────────────
+_symbol_avg_duration: dict = {}  # symbol → {'sum_h': float, 'n': int, 'avg_h': float}
 
 def gen_id(prefix='TRD'):
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
@@ -1969,6 +1986,109 @@ def check_inactivity_alert():
         _inactivity_alerted['crypto'] = False
 
 
+# ── [v10.17] Flat Exit — detecta trades estagnadas e fecha para liberar capital ──
+def is_trade_flat(trade: dict, now: datetime) -> bool:
+    """[v10.17] Retorna True se a trade está flat (variação < threshold por tempo mínimo).
+    Condições:
+    - Idade > FLAT_EXIT_MIN_AGE_MIN
+    - |pnl_pct| < FLAT_EXIT_MAX_VARIATION (quase zero)
+    - Peak nunca passou de 0.5% (nunca teve momentum real)
+    - Últimos 3 pontos de pnl_history ~iguais (sem tendência)
+    """
+    age_min = (now - datetime.fromisoformat(trade['opened_at'])).total_seconds() / 60
+    if age_min < FLAT_EXIT_MIN_AGE_MIN:
+        return False
+    pnl_pct = abs(float(trade.get('pnl_pct', 0) or 0))
+    peak = abs(float(trade.get('peak_pnl_pct', 0) or 0))
+    if pnl_pct > FLAT_EXIT_MAX_VARIATION:
+        return False
+    if peak > 0.5:  # teve momentum significativo em algum momento
+        return False
+    # Verificar se pnl_history mostra estagnação
+    h = trade.get('pnl_history', [])
+    if len(h) >= 3:
+        recent = h[-3:]
+        spread = max(recent) - min(recent)
+        if spread > 0.3:  # houve movimento recente
+            return False
+    return True
+
+
+# ── [v10.17] Directional Exposure Check ───────────────────────────────────
+def check_directional_exposure(direction: str, strategy: str = 'stocks') -> tuple:
+    """[v10.17] Verifica se abrir mais uma posição nesta direção excede o limite.
+    Retorna (blocked: bool, reason: str, stats: dict).
+    """
+    with state_lock:
+        if strategy == 'stocks':
+            open_list = list(stocks_open)
+        elif strategy == 'crypto':
+            open_list = list(crypto_open)
+        else:
+            open_list = list(stocks_open) + list(crypto_open)
+    total = len(open_list)
+    if total < 3:  # com menos de 3 posições, não faz sentido limitar
+        return False, 'OK', {'total': total, 'long': 0, 'short': 0}
+    longs = sum(1 for t in open_list if t.get('direction') == 'LONG')
+    shorts = sum(1 for t in open_list if t.get('direction') == 'SHORT')
+    # Calcular percentual da direção pedida
+    same_dir = longs if direction == 'LONG' else shorts
+    pct = (same_dir / total) * 100 if total > 0 else 0
+    stats = {'total': total, 'long': longs, 'short': shorts, 'same_dir_pct': round(pct, 1)}
+    if pct >= MAX_DIRECTIONAL_PCT:
+        return True, f'DIRECTIONAL_LIMIT ({direction}={same_dir}/{total}={pct:.0f}%>{MAX_DIRECTIONAL_PCT:.0f}%)', stats
+    return False, 'OK', stats
+
+
+# ── [v10.17] Regime-aware sizing multiplier ───────────────────────────────
+def get_regime_multiplier() -> tuple:
+    """[v10.17] Retorna (size_mult, sl_mult, reason) baseado no regime de mercado.
+    RANGING:  size menor (0.8x), SL mais tight (0.85x) — mean-reversion
+    TRENDING: size maior (1.2x), SL mais largo (1.3x) — momentum
+    HIGH_VOL: size menor (0.6x), SL mais largo (1.5x) — proteção
+    NORMAL:   1.0x, 1.0x
+    """
+    mode = market_regime.get('mode', 'UNKNOWN')
+    vol = market_regime.get('volatility', 'NORMAL')
+    if mode == 'HIGH_VOL':
+        return 0.6, 1.5, f'regime={mode} vol={vol}'
+    elif mode == 'TRENDING':
+        if vol == 'HIGH':
+            return 1.0, 1.3, f'regime={mode} vol={vol}'
+        return 1.2, 1.3, f'regime={mode} vol={vol}'
+    elif mode == 'RANGING':
+        return 0.8, 0.85, f'regime={mode} vol={vol}'
+    return 1.0, 1.0, f'regime={mode} vol={vol}'
+
+
+# ── [v10.17] Dynamic timeout per symbol ───────────────────────────────────
+def get_dynamic_timeout_h(symbol: str, default_h: float) -> float:
+    """[v10.17] Retorna timeout em horas baseado no histórico do símbolo.
+    Se o símbolo tem histórico, usa avg_dur * DYNAMIC_TIMEOUT_MULT.
+    Se não, usa o default.
+    """
+    if not DYNAMIC_TIMEOUT_ENABLED:
+        return default_h
+    stats = _symbol_avg_duration.get(symbol)
+    if stats and stats.get('n', 0) >= 5:  # mínimo 5 trades para confiar
+        avg_h = stats['avg_h']
+        timeout = avg_h * DYNAMIC_TIMEOUT_MULT
+        return max(DYNAMIC_TIMEOUT_MIN_H, min(DYNAMIC_TIMEOUT_MAX_H, timeout))
+    return default_h
+
+
+def update_symbol_duration(symbol: str, duration_h: float):
+    """[v10.17] Atualiza a duração média do símbolo (EWMA)."""
+    if symbol not in _symbol_avg_duration:
+        _symbol_avg_duration[symbol] = {'sum_h': 0.0, 'n': 0, 'avg_h': duration_h}
+    s = _symbol_avg_duration[symbol]
+    s['sum_h'] += duration_h
+    s['n'] += 1
+    # EWMA com alpha=0.2 para reagir a mudanças recentes
+    alpha = 0.2
+    s['avg_h'] = round(alpha * duration_h + (1 - alpha) * s['avg_h'], 2)
+
+
 # ── [v10.16] Trace ID por ciclo de worker ─────────────────────────────────
 def gen_trace_id(worker_name: str) -> str:
     """[v10.16] Gera trace ID único para cada ciclo de worker."""
@@ -2019,6 +2139,12 @@ def validate_settings_on_boot():
     log.info(f'  Learning: enabled={LEARNING_ENABLED} ewma={LEARNING_EWMA_ALPHA} dead_zone=[{LEARNING_DEAD_ZONE_LOW},{LEARNING_DEAD_ZONE_HIGH}]')
     log.info(f'  Shadow: eval_window={SHADOW_EVAL_WINDOW_MIN}min')
     log.info(f'  Inactivity: stocks={INACTIVITY_ALERT_H_STOCKS}h crypto={INACTIVITY_ALERT_H_CRYPTO}h')
+    log.info(f'  [v10.17] Flat exit: age>{FLAT_EXIT_MIN_AGE_MIN}min var<{FLAT_EXIT_MAX_VARIATION}%')
+    log.info(f'  [v10.17] Trailing: stocks peak={TRAILING_PEAK_STOCKS}% drop={TRAILING_DROP_STOCKS}% | crypto peak={TRAILING_PEAK_CRYPTO}% drop={TRAILING_DROP_CRYPTO}%')
+    log.info(f'  [v10.17] Directional limit: {MAX_DIRECTIONAL_PCT}%')
+    log.info(f'  [v10.17] Dynamic timeout: enabled={DYNAMIC_TIMEOUT_ENABLED} mult={DYNAMIC_TIMEOUT_MULT} range=[{DYNAMIC_TIMEOUT_MIN_H},{DYNAMIC_TIMEOUT_MAX_H}]h')
+    log.info(f'  [v10.17] Regime: {market_regime.get("mode","?")} vol={market_regime.get("volatility","?")}')
+
     log.info('═══════════════════════════════════════════════════════════')
     for w in warnings:
         log.warning(f'[BOOT-WARN] {w}')
@@ -4224,9 +4350,16 @@ def monitor_trades():
                     trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
                     peak=trade['peak_pnl_pct']; mkt=trade.get('market',''); reason=None
                     _adaptive_sl_s = get_adaptive_sl_pct(trade)  # [v10.16] ATR-based
-                    if peak>=1.5 and trade['pnl_pct']<=peak-0.5:   reason='TRAILING_STOP'  # [v10.9-opt] era 2.0/1.0
-                    elif trade['pnl_pct']<=-_adaptive_sl_s:          reason='STOP_LOSS'  # [v10.16] ATR-based (era fixo -2.0%)
-                    elif age_h>=2.0:
+                    _regime_sm, _regime_sl_m, _regime_r = get_regime_multiplier()  # [v10.17]
+                    _eff_sl_s = round(_adaptive_sl_s * _regime_sl_m, 2)  # [v10.17] SL ajustado por regime
+                    _timeout_s = get_dynamic_timeout_h(sym, 2.0)  # [v10.17] timeout dinâmico (default 2h)
+                    if peak>=TRAILING_PEAK_STOCKS and trade['pnl_pct']<=peak-TRAILING_DROP_STOCKS:
+                        reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.0%, drop≥0.4% (era 1.5/0.5)
+                    elif trade['pnl_pct']<=-_eff_sl_s:
+                        reason='STOP_LOSS'  # [v10.17] ATR × regime (era fixo -2.0%)
+                    elif is_trade_flat(trade, now):
+                        reason='FLAT_EXIT'  # [v10.17] trade estagnada — liberar capital
+                    elif age_h>=_timeout_s:
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else:                                      reason='TIMEOUT'
@@ -4281,9 +4414,16 @@ def monitor_trades():
                     trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
                     peak=trade['peak_pnl_pct']; reason=None
                     _adaptive_sl_c = get_adaptive_sl_pct(trade)  # [v10.16] ATR-based
-                    if peak>=2.0 and trade['pnl_pct']<=peak-1.0:   reason='TRAILING_STOP'
-                    elif trade['pnl_pct']<=-_adaptive_sl_c:          reason='STOP_LOSS'  # [v10.16] ATR-based (era fixo -2.0%)
-                    elif age_h>=4.0:
+                    _regime_cm, _regime_csl_m, _regime_cr = get_regime_multiplier()  # [v10.17]
+                    _eff_sl_c = round(_adaptive_sl_c * _regime_csl_m, 2)  # [v10.17] SL ajustado por regime
+                    _timeout_c = get_dynamic_timeout_h(trade['symbol'], 4.0)  # [v10.17] timeout dinâmico (default 4h)
+                    if peak>=TRAILING_PEAK_CRYPTO and trade['pnl_pct']<=peak-TRAILING_DROP_CRYPTO:
+                        reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.5%, drop≥0.7% (era 2.0/1.0)
+                    elif trade['pnl_pct']<=-_eff_sl_c:
+                        reason='STOP_LOSS'  # [v10.17] ATR × regime
+                    elif is_trade_flat(trade, now):
+                        reason='FLAT_EXIT'  # [v10.17] trade estagnada — liberar capital
+                    elif age_h>=_timeout_c:
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else:                                      reason='TIMEOUT'
@@ -4302,6 +4442,11 @@ def monitor_trades():
                 crypto_open[:] = [t for t in crypto_open if t['id'] not in to_close_c]
 
             for c in closed_stocks:
+                # [v10.17] Track duration for dynamic timeout
+                try:
+                    _dur_h = (datetime.fromisoformat(c['closed_at']) - datetime.fromisoformat(c['opened_at'])).total_seconds() / 3600
+                    update_symbol_duration(c['symbol'], _dur_h)
+                except: pass
                 audit('TRADE_CLOSED',{'id':c['id'],'symbol':c['symbol'],'pnl':c['pnl'],'reason':c['close_reason']})
                 enqueue_persist('trade',c)
                 enqueue_persist('cooldown',symbol=c['symbol'],ts=symbol_cooldown.get(c['symbol'],time.time()))
@@ -4318,6 +4463,11 @@ def monitor_trades():
                     try: _update_cross_market_from_stocks()
                     except: pass
             for c in closed_cryptos:
+                # [v10.17] Track duration for dynamic timeout
+                try:
+                    _dur_h = (datetime.fromisoformat(c['closed_at']) - datetime.fromisoformat(c['opened_at'])).total_seconds() / 3600
+                    update_symbol_duration(c['symbol'], _dur_h)
+                except: pass
                 audit('TRADE_CLOSED',{'id':c['id'],'symbol':c['symbol'],'pnl':c['pnl'],'reason':c['close_reason']})
                 enqueue_persist('trade',c)
                 enqueue_persist('cooldown',symbol=c['symbol'],ts=symbol_cooldown.get(c['symbol'],time.time()))
@@ -4687,8 +4837,9 @@ def stock_execution_worker():
                 # stocks_capital = capital livre (pode ser pequeno quando cheio de trades)
                 # Usar: MAX_POSITION_STOCKS como teto real, e floor de $50K
                 _stocks_port_total = s.get('stocks_portfolio_value', INITIAL_CAPITAL_STOCKS) if False else                     max(stocks_capital + sum(t.get('position_value',0) for t in stocks_open), INITIAL_CAPITAL_STOCKS)
+                _regime_size_m, _regime_sl_tmp, _regime_info = get_regime_multiplier()  # [v10.17]
                 _pos_target = _stocks_port_total / MAX_POSITIONS_STOCKS * (0.8 + score_factor * 0.4)
-                desired_pos = min(max(_pos_target * risk_mult, 50_000), MAX_POSITION_STOCKS)
+                desired_pos = min(max(_pos_target * risk_mult * _regime_size_m, 50_000), MAX_POSITION_STOCKS)  # [v10.17] regime sizing
                 # [v10.16] Strategy daily drawdown check
                 _dd_blocked_s, _dd_reason_s = check_strategy_daily_dd('stocks')
                 if _dd_blocked_s:
@@ -4698,6 +4849,11 @@ def stock_execution_worker():
                 _bl_blocked_s, _bl_reason_s = is_symbol_blacklisted(sym)
                 if _bl_blocked_s:
                     log.info(f'[STK-BL-BLOCK] {sym}: {_bl_reason_s}')
+                    continue
+                # [v10.17] Directional exposure check
+                _dir_blocked_s, _dir_reason_s, _dir_stats_s = check_directional_exposure(direction, 'stocks')
+                if _dir_blocked_s:
+                    log.info(f'[STK-DIR-BLOCK] {sym}: {_dir_reason_s}')
                     continue
                 # [v10.15] ML Gate para stocks — bloqueia se padrões/fatores indicam perda
                 _ml_ok_s, _ml_reason_s, _ml_score_s = should_trade_ml(
@@ -4900,6 +5056,11 @@ def auto_trade_crypto():
                 if _bl_blocked_c:
                     log.info(f'[CRYPTO-BL-BLOCK] {display}: {_bl_reason_c}')
                     continue
+                # [v10.17] Directional exposure check
+                _dir_blocked_c, _dir_reason_c, _dir_stats_c = check_directional_exposure(direction, 'crypto')
+                if _dir_blocked_c:
+                    log.info(f'[CRYPTO-DIR-BLOCK] {display}: {_dir_reason_c}')
+                    continue
                 # [v10.14] Aplicar threshold — não entrar em sinais fracos
                 _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
                 if not _entry_ok:
@@ -4974,8 +5135,9 @@ def auto_trade_crypto():
                 _crypto_port_total = max(
                     crypto_capital + sum(t.get('position_value',0) for t in crypto_open),
                     INITIAL_CAPITAL_CRYPTO)
+                _regime_csize_m, _regime_csl_tmp, _regime_cinfo = get_regime_multiplier()  # [v10.17]
                 _crypto_pos_target = _crypto_port_total / MAX_POSITIONS_CRYPTO * (0.7 + score_factor * 0.3)
-                desired_pos = min(max(_crypto_pos_target * risk_mult_c, 50_000), _sym_max)
+                desired_pos = min(max(_crypto_pos_target * risk_mult_c * _regime_csize_m, 50_000), _sym_max)  # [v10.17] regime sizing
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:

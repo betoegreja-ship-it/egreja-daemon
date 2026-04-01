@@ -4102,6 +4102,8 @@ def stock_execution_worker():
                         elif _pat_wr >= 0.70: _eff_min = MIN_SCORE_AUTO            # padrão ok
                 is_long=score>=_eff_min and signal_val=='COMPRA'
                 is_short=score<=(100-_eff_min) and signal_val=='VENDA'
+                if is_short:
+                    log.info(f'[SHORT-DBG] {sym} score={score} _eff_min={_eff_min} is_short={is_short} signal_val={signal_val}')
                 if not (is_long or is_short): continue
 
                 # [v10.9-TrendFilter] Bloquear LONGs em ações com queda >5% nos últimos 5 preços
@@ -4243,6 +4245,8 @@ def stock_execution_worker():
                 # SHORTs têm WR 53.8% histórico — penalizá-los com dead zone é um bug estrutural
                 _lc = conf.get('final_confidence', 50)
                 _is_short_signal = (direction == 'SHORT')
+                if _is_short_signal:
+                    log.info(f'[SHORT-DBG2] {sym} conf={_lc:.1f} dead_zone={LEARNING_DEAD_ZONE_LOW}-{LEARNING_DEAD_ZONE_HIGH} skip_dz={_is_short_signal}')
                 if not _is_short_signal and LEARNING_DEAD_ZONE_LOW <= _lc < LEARNING_DEAD_ZONE_HIGH:
                     _confirmed_sig_id = record_signal_event(sig_enriched, features, feat_hash, conf, insight,
                                         source_type='stock_signal_db', existing_signal_id=_sig_pre_id,
@@ -4288,7 +4292,7 @@ def stock_execution_worker():
                                         origin_signal_key=origin_key)
                     record_shadow_decision(_confirmed_sig_id, sig_enriched, real_reason)
                     _cache_reason('kill_switch' if is_permanent_risk else real_reason)
-                    log.info(f'Risk-1 {sym}: {risk_reason}')
+                    log.info(f'Risk-1 {sym}: {risk_reason} (dir={direction})')
                     if is_permanent_risk: break
                     continue
                 qty=int(approved_size/price)
@@ -4374,10 +4378,13 @@ def auto_trade_crypto():
         try:
             if market_regime.get('mode')=='HIGH_VOL':
                 log.info('Crypto paused: HIGH_VOL'); continue
+            log.info(f'[CRYPTO-LOOP] precos={len(crypto_prices)} momentum={len(crypto_momentum)} regime={market_regime.get("mode")}')
             for sym in CRYPTO_SYMBOLS:
                 display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)
                 change_24h=crypto_momentum.get(sym,0)
-                if price<=0 or abs(change_24h)<0.5: continue
+                if price<=0 or abs(change_24h)<0.5:
+                    log.info(f'[CRYPTO-SKIP] {display}: price={price:.2f} change={change_24h:.2f}%')
+                    continue
                 direction='LONG' if change_24h>0 else 'SHORT'
 
                 # [v10.4] Score composto multi-fator (substitui change_24h * 5)
@@ -5773,7 +5780,7 @@ def signals():
     try:
         cursor=conn.cursor(dictionary=True)
         cutoff=(datetime.utcnow()-timedelta(minutes=SIGNAL_MAX_AGE_MIN)).strftime('%Y-%m-%d %H:%M:%S')
-        cursor.execute('SELECT * FROM market_signals WHERE created_at>=%s ORDER BY score DESC LIMIT 500',(cutoff,))
+        cursor.execute('SELECT * FROM market_signals WHERE created_at>=%s ORDER BY ABS(score-50) DESC LIMIT 500',(cutoff,))
         rows=cursor.fetchall(); cursor.close(); conn.close()
         for row in rows:
             for k,v in row.items():
@@ -5810,15 +5817,34 @@ def signals():
             ema9 = pd.get('ema9', 0)  or 0
             ema21= pd.get('ema21',0)  or 0
             ema50= pd.get('ema50',0)  or 0
-            # Calcular score simples: RSI + EMA trend
+            # [v10.14] Score composto igual ao worker — não apenas RSI+EMA simples
             score = 50
-            if rsi < 40: score += 15
+            if   rsi < 30: score += 25
+            elif rsi < 40: score += 15
+            elif rsi < 50: score += 5
+            elif rsi > 70: score -= 25
             elif rsi > 60: score -= 15
+            elif rsi > 50: score -= 5
+            ema50 = pd.get('ema50', 0) or 0
             if ema9 > 0 and ema21 > 0:
-                if ema9 > ema21: score += 10
-                else: score -= 10
+                if ema9 > ema21:
+                    score += 12
+                    if ema50 > 0 and ema21 > ema50: score += 8
+                else:
+                    score -= 12
+                    if ema50 > 0 and ema21 < ema50: score -= 8
+            vol_ratio = pd.get('volume_ratio', 0) or 0
+            if vol_ratio > 1.5: score += 8
+            elif vol_ratio < 0.5: score -= 5
+            atr_pct = pd.get('atr_pct', 0) or 0
+            if 0 < atr_pct < 1.5: score += 5
+            elif atr_pct > 4.0: score -= 10
+            price_sig = pd.get('price', 0) or 0
+            if price_sig > 0 and ema9 > 0:
+                if price_sig > ema9 * 1.01: score += 7
+                elif price_sig < ema9 * 0.99: score -= 7
             score = max(0, min(100, score))
-            signal = 'COMPRA' if score >= 70 else ('VENDA' if score <= 30 else 'MANTER')
+            signal = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')
             stock_signals_from_mem.append({
                 'symbol': sym, 'price': pd.get('price', 0),
                 'signal': signal, 'score': score,

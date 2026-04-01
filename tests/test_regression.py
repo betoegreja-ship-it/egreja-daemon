@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Egreja Investment AI — Regression + Integration Tests v10.20
+Egreja Investment AI — Regression + Integration Tests v10.21
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Testes de regressão REAIS + testes de integração.
 Import do api_server.py FALHA ALTO se quebrado (não silencia com SkipTest).
@@ -819,6 +819,144 @@ class TestIntegrationLedgerFromDB(unittest.TestCase):
             self.assertAlmostEqual(r['delta'], 0, places=0)
             self.assertEqual(r['ledger_events'], 3)
             self.assertEqual(r['source'], 'mysql')  # loaded from DB, not memory
+        finally:
+            srv._capital_ledger[:] = orig_ledger
+
+
+# ═══════════════════════════════════════════════════════════════
+# v10.21 — Idempotency in ledger_record
+# ═══════════════════════════════════════════════════════════════
+class TestLedgerIdempotency(unittest.TestCase):
+    """[v10.21] ledger_record deve ignorar RESERVE/RELEASE duplicados para o mesmo trade_id."""
+
+    @patch.object(srv, 'enqueue_persist')
+    def test_duplicate_reserve_blocked(self, mock_enqueue):
+        """Segundo RESERVE com mesmo trade_id+strategy é ignorado."""
+        orig = srv._capital_ledger[:]
+        try:
+            srv._capital_ledger.clear()
+            srv.ledger_record('stocks', 'RESERVE', 'AAPL', 100_000, 8_900_000, 'T-001')
+            srv.ledger_record('stocks', 'RESERVE', 'AAPL', 100_000, 8_900_000, 'T-001')
+            with srv._ledger_lock:
+                count = sum(1 for e in srv._capital_ledger
+                            if e['trade_id'] == 'T-001' and e['event'] == 'RESERVE')
+            self.assertEqual(count, 1, "Duplicate RESERVE should be blocked")
+        finally:
+            srv._capital_ledger[:] = orig
+
+    @patch.object(srv, 'enqueue_persist')
+    def test_different_trade_ids_not_blocked(self, mock_enqueue):
+        """RESERVE com trade_ids diferentes NÃO é bloqueado."""
+        orig = srv._capital_ledger[:]
+        try:
+            srv._capital_ledger.clear()
+            srv.ledger_record('stocks', 'RESERVE', 'AAPL', 100_000, 8_900_000, 'T-001')
+            srv.ledger_record('stocks', 'RESERVE', 'MSFT', 100_000, 8_800_000, 'T-002')
+            with srv._ledger_lock:
+                reserves = [e for e in srv._capital_ledger if e['event'] == 'RESERVE']
+            self.assertEqual(len(reserves), 2)
+        finally:
+            srv._capital_ledger[:] = orig
+
+    @patch.object(srv, 'enqueue_persist')
+    def test_pnl_credit_not_deduplicated(self, mock_enqueue):
+        """PNL_CREDIT não é deduplicado (apenas RESERVE/RELEASE)."""
+        orig = srv._capital_ledger[:]
+        try:
+            srv._capital_ledger.clear()
+            srv.ledger_record('stocks', 'PNL_CREDIT', 'AAPL', 5_000, 9_005_000, 'T-001')
+            srv.ledger_record('stocks', 'PNL_CREDIT', 'AAPL', 5_000, 9_005_000, 'T-001')
+            with srv._ledger_lock:
+                credits = [e for e in srv._capital_ledger if e['event'] == 'PNL_CREDIT']
+            self.assertEqual(len(credits), 2, "PNL_CREDIT should NOT be deduplicated")
+        finally:
+            srv._capital_ledger[:] = orig
+
+
+# ═══════════════════════════════════════════════════════════════
+# v10.21 — Baseline in _replay_ledger_events
+# ═══════════════════════════════════════════════════════════════
+class TestReplayLedgerBaseline(unittest.TestCase):
+    """[v10.21] _replay_ledger_events deve usar BASELINE como ponto de partida quando presente."""
+
+    def test_replay_with_baseline_ignores_initial(self):
+        """Quando há evento BASELINE, initial é ignorado e baseline amount é o ponto de partida."""
+        events = [
+            {'event': 'RESERVE', 'amount': 50_000},     # pré-baseline, deve ser ignorado
+            {'event': 'BASELINE', 'amount': 3_000_000},  # corte formal
+            {'event': 'RESERVE', 'amount': 100_000},     # pós-baseline
+            {'event': 'RELEASE', 'amount': 100_000},
+            {'event': 'PNL_CREDIT', 'amount': 5_000},
+        ]
+        result = srv._replay_ledger_events(events, initial=9_000_000)
+        # 3M (baseline) - 100K (reserve) + 100K (release) + 5K (pnl) = 3_005_000
+        self.assertAlmostEqual(result, 3_005_000, places=0)
+
+    def test_replay_without_baseline_uses_initial(self):
+        """Sem BASELINE, usa initial normalmente."""
+        events = [
+            {'event': 'RESERVE', 'amount': 100_000},
+            {'event': 'RELEASE', 'amount': 100_000},
+            {'event': 'PNL_CREDIT', 'amount': 8_000},
+        ]
+        result = srv._replay_ledger_events(events, initial=9_000_000)
+        # 9M - 100K + 100K + 8K = 9_008_000
+        self.assertAlmostEqual(result, 9_008_000, places=0)
+
+
+# ═══════════════════════════════════════════════════════════════
+# v10.21 — _record_baseline_if_needed
+# ═══════════════════════════════════════════════════════════════
+class TestRecordBaselineIfNeeded(unittest.TestCase):
+    """[v10.21] _record_baseline_if_needed registra BASELINE para strategies sem um."""
+
+    @patch.object(srv, 'enqueue_persist')
+    @patch.object(srv, 'get_db')
+    def test_records_baseline_when_none_exists(self, mock_get_db, mock_enqueue):
+        """Se DB retorna count=0 para BASELINE, registra um novo."""
+        orig_ledger = srv._capital_ledger[:]
+        orig_stocks = srv.stocks_capital
+        try:
+            srv._capital_ledger.clear()
+            srv.stocks_capital = 8_500_000
+
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            mock_cursor.fetchone.return_value = (0,)  # no existing baseline
+            mock_conn.cursor.return_value = mock_cursor
+            mock_get_db.return_value = mock_conn
+
+            srv._record_baseline_if_needed()
+
+            with srv._ledger_lock:
+                baselines = [e for e in srv._capital_ledger if e['event'] == 'BASELINE']
+            # Should have 3 baselines (stocks, crypto, arbi)
+            self.assertEqual(len(baselines), 3)
+            strats = {b['strategy'] for b in baselines}
+            self.assertEqual(strats, {'stocks', 'crypto', 'arbi'})
+        finally:
+            srv._capital_ledger[:] = orig_ledger
+            srv.stocks_capital = orig_stocks
+
+    @patch.object(srv, 'enqueue_persist')
+    @patch.object(srv, 'get_db')
+    def test_skips_baseline_when_exists(self, mock_get_db, mock_enqueue):
+        """Se DB retorna count>0, NÃO registra novo BASELINE."""
+        orig_ledger = srv._capital_ledger[:]
+        try:
+            srv._capital_ledger.clear()
+
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            mock_cursor.fetchone.return_value = (1,)  # already has baseline
+            mock_conn.cursor.return_value = mock_cursor
+            mock_get_db.return_value = mock_conn
+
+            srv._record_baseline_if_needed()
+
+            with srv._ledger_lock:
+                baselines = [e for e in srv._capital_ledger if e['event'] == 'BASELINE']
+            self.assertEqual(len(baselines), 0, "Should not create baseline if one exists")
         finally:
             srv._capital_ledger[:] = orig_ledger
 

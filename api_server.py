@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Egreja Investment AI — API Server v10.18.0
+Egreja Investment AI — API Server v10.21.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v10.6.4 → v10.7.0: Polling inteligente + 6 cirurgias (dedup stocks+crypto, dead code, klines unificado, signal_id real)
 
@@ -73,6 +73,9 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
+VERSION = 'v10.21.0'
+_boot_time = time.time()
+
 ENV = os.environ.get('ENV', 'dev').lower()
 
 # [C-3] Single-process enforcement
@@ -1831,11 +1834,21 @@ def track_calibration(trade: dict):
 # ── [v10.18] Capital Ledger ──────────────────────────────────────────────
 def ledger_record(strategy: str, event: str, symbol: str, amount: float,
                   balance_after: float, trade_id: str = ''):
-    """[v10.18] Registra evento no capital ledger (memória + DB assíncrono)."""
+    """[v10.18] Registra evento no capital ledger (memória + DB assíncrono).
+    Eventos: RESERVE | RELEASE | PNL_CREDIT | BASELINE (v10.21)"""
+    # [v10.21] Idempotência: proteger contra duplicata de RESERVE/RELEASE no mesmo trade
+    if event in ('RESERVE', 'RELEASE') and trade_id:
+        with _ledger_lock:
+            recent = _capital_ledger[-50:] if len(_capital_ledger) > 50 else _capital_ledger
+            for prev in reversed(recent):
+                if (prev.get('trade_id') == trade_id and prev.get('event') == event
+                        and prev.get('strategy') == strategy):
+                    log.warning(f'[LEDGER-DEDUP] Skipping duplicate {event} for {trade_id}')
+                    return  # já registrado — pular
     evt = {
         'ts': datetime.utcnow().isoformat(),
         'strategy': strategy,
-        'event': event,          # RESERVE | RELEASE | PNL_CREDIT
+        'event': event,
         'symbol': symbol,
         'amount': round(amount, 2),
         'balance_after': round(balance_after, 2),
@@ -1888,9 +1901,51 @@ def _reconcile_strategy_arbi(memory_capital: float, initial: float,
         'ts': datetime.utcnow().isoformat(),
     }
 
+def _record_baseline_if_needed():
+    """[v10.21] Registra evento BASELINE no ledger para cada estratégia que nunca teve um.
+    O BASELINE marca a data de corte contábil — eventos anteriores são drift pré-ledger.
+    Chamado no boot, uma vez."""
+    for strat, cap_var, initial in [
+        ('stocks', stocks_capital, INITIAL_CAPITAL_STOCKS),
+        ('crypto', crypto_capital, INITIAL_CAPITAL_CRYPTO),
+        ('arbi', arbi_capital, ARBI_CAPITAL),
+    ]:
+        # Verificar se já existe um BASELINE no DB
+        conn = get_db()
+        if not conn: continue
+        has_baseline = False
+        try:
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM capital_ledger WHERE strategy=%s AND event='BASELINE'",
+                      (strat,))
+            count = c.fetchone()[0]
+            has_baseline = count > 0
+            c.close(); conn.close()
+        except Exception as e:
+            log.debug(f'baseline check {strat}: {e}')
+            try: conn.close()
+            except: pass
+        if not has_baseline:
+            # Registrar baseline: amount = capital atual no momento do corte
+            # balance_after = capital atual (o ponto de partida do ledger)
+            ledger_record(strat, 'BASELINE', 'SYSTEM', cap_var, cap_var, 'BASELINE')
+            log.info(f'[LEDGER-BASELINE] {strat}: registered baseline at ${cap_var:,.0f} '
+                     f'(initial=${initial:,.0f}, drift=${cap_var - initial:,.0f})')
+
 def _replay_ledger_events(events: list, initial: float) -> float:
-    """[v10.20] Replay puro de eventos de ledger. Retorna saldo calculado."""
-    balance = initial
+    """[v10.20/v10.21] Replay de eventos de ledger. Se há BASELINE, usa como ponto de partida."""
+    # [v10.21] Se existe evento BASELINE, começar dali (ignora initial)
+    baseline_balance = None
+    baseline_idx = -1
+    for i, evt in enumerate(events):
+        if evt.get('event') == 'BASELINE':
+            baseline_balance = float(evt.get('amount', 0))
+            baseline_idx = i
+    if baseline_balance is not None:
+        balance = baseline_balance
+        events = events[baseline_idx + 1:]  # replay só pós-baseline
+    else:
+        balance = initial
     for evt in events:
         ev_type = evt.get('event', '')
         amount = float(evt.get('amount', 0))
@@ -6731,6 +6786,57 @@ def health():
         'threads':hb_status,'timestamp':datetime.utcnow().isoformat()
     })
 
+@app.route('/ops')
+@require_auth
+def ops_dashboard():
+    """[v10.21] Dashboard operacional — reconciliação, ledger, calibração."""
+    now = time.time()
+    # Ledger stats
+    with _ledger_lock:
+        ledger_total = len(_capital_ledger)
+        ledger_by_strat = {}
+        ledger_by_event = {}
+        for e in _capital_ledger:
+            s = e.get('strategy', '?')
+            ev = e.get('event', '?')
+            ledger_by_strat[s] = ledger_by_strat.get(s, 0) + 1
+            ledger_by_event[ev] = ledger_by_event.get(ev, 0) + 1
+        last_ledger = _capital_ledger[-1] if _capital_ledger else None
+    # Reconciliation
+    last_recon_age = round(now - _last_reconciliation, 1) if _last_reconciliation else None
+    recent_recon = _reconciliation_log[-10:] if _reconciliation_log else []
+    recon_alerts = [r for r in _reconciliation_log[-30:] if r.get('alert')]
+    # Calibration
+    last_cal_age = round(now - _last_calibration_persist, 1) if _last_calibration_persist else None
+    # Capital snapshot
+    capital = {
+        'stocks': round(stocks_capital, 2),
+        'crypto': round(crypto_capital, 2),
+        'arbi': round(arbi_capital, 2),
+    }
+    return jsonify({
+        'version': VERSION,
+        'uptime_s': round(now - _boot_time, 1),
+        'capital': capital,
+        'ledger': {
+            'total_events': ledger_total,
+            'by_strategy': ledger_by_strat,
+            'by_event': ledger_by_event,
+            'last_event': last_ledger,
+        },
+        'reconciliation': {
+            'last_run_age_s': last_recon_age,
+            'interval_s': RECONCILIATION_INTERVAL_S,
+            'recent': recent_recon,
+            'alerts_last_30': recon_alerts,
+        },
+        'calibration': {
+            'last_persist_age_s': last_cal_age,
+            'interval_s': CALIBRATION_PERSIST_INTERVAL,
+        },
+        'timestamp': datetime.utcnow().isoformat(),
+    })
+
 @app.route('/')
 def index():
     return jsonify({
@@ -8822,7 +8928,7 @@ def admin_db_cleanup():
 # ═══════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     port=int(os.environ.get('PORT',3001))
-    log.info(f'━━━ Egreja Investment AI v10.18.0 | {ENV.upper()} | port {port} | single-process ━━━')
+    log.info(f'━━━ Egreja Investment AI v10.21.0 | {ENV.upper()} | port {port} | single-process ━━━')
     log.info(f'FMP: {"SET" if FMP_API_KEY else "NOT SET"} | Auth: {"ENABLED" if API_SECRET_KEY else "DISABLED (dev)"} | Alerts: {"ON" if ALERTS_ENABLED else "OFF"}')
     validate_settings_on_boot()  # [v10.16]
     load_calibration()  # [v10.18] restaurar calibração persistida
@@ -8861,6 +8967,7 @@ if __name__ == '__main__':
     fetch_stock_prices()
     init_watchlist_table()
     init_trades_tables()
+    _record_baseline_if_needed()  # [v10.21] registra BASELINE formal para strategies sem histórico no ledger
     init_learning_cache()   # [L-3] carrega histórico de aprendizado em memória
     _update_market_regime()
     take_portfolio_snapshot()

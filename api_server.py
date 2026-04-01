@@ -4456,6 +4456,7 @@ def auto_trade_crypto():
                 # [v10.14] Aplicar threshold — não entrar em sinais fracos
                 _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
                 if not _entry_ok:
+                    log.info(f'[CRYPTO-THRESH] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} → SKIP')
                     continue
 
                 score_factor=min(abs(score-50)/50.0,1.0)
@@ -4468,6 +4469,7 @@ def auto_trade_crypto():
                     cached_c = processed_signal_ids.get(ms_key_c)
 
                 if cached_c and cached_c['reason'] in ('executed', 'kill_switch'):
+                    log.info(f'[CRYPTO-CACHED] {display}: reason={cached_c["reason"]} → SKIP')
                     continue
 
                 _sig_pre_id_c = cached_c['sig_id'] if cached_c else gen_id('SIG')

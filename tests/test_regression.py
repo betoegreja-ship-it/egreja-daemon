@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Egreja Investment AI — Regression Tests v10.19
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Testes de regressão REAIS — importam e chamam funções do api_server.py.
-DB, state_lock e enqueue_persist são mockados; lógica de negócio testada de verdade.
+Egreja Investment AI — Regression + Integration Tests v10.20
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Testes de regressão REAIS + testes de integração.
+Import do api_server.py FALHA ALTO se quebrado (não silencia com SkipTest).
+DB e enqueue_persist mockados; lógica de negócio testada de verdade.
 
 Execução: python -m pytest tests/test_regression.py -v
 """
@@ -50,25 +51,10 @@ os.environ.setdefault('ENV', 'test')
 os.environ.setdefault('API_SECRET_KEY', 'test_key')
 os.environ.setdefault('DATABASE_URL', '')
 
-# ── Import api_server ────────────────────────────────────────────────────
+# ── Import api_server — FAIL HARD if broken ──────────────────────────────
+# [v10.20] Se o import quebrar, a suíte inteira fica vermelha. Sem SkipTest silencioso.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-try:
-    import api_server as srv
-except Exception:
-    # If full import fails due to DB/network, that's ok for unit tests
-    # We'll skip tests that need it
-    srv = None
-
-
-def requires_srv(test_func):
-    """Decorator to skip test if api_server failed to import."""
-    def wrapper(*args, **kwargs):
-        if srv is None:
-            raise unittest.SkipTest('api_server import failed')
-        return test_func(*args, **kwargs)
-    wrapper.__name__ = test_func.__name__
-    wrapper.__doc__ = test_func.__doc__
-    return wrapper
+import api_server as srv
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -77,7 +63,6 @@ def requires_srv(test_func):
 class TestIsTradeFlatReal(unittest.TestCase):
     """Bug: capital preso em trades estagnadas. Fix: v10.17 is_trade_flat."""
 
-    @requires_srv
     def test_flat_stock_triggers_after_min_age(self):
         """Stock trade com 60min e variação 0.1% → flat."""
         now = datetime.utcnow()
@@ -90,7 +75,6 @@ class TestIsTradeFlatReal(unittest.TestCase):
         }
         self.assertTrue(srv.is_trade_flat(trade, now))
 
-    @requires_srv
     def test_flat_stock_too_young(self):
         """Stock trade com 20min → NÃO flat (min age = 45min)."""
         now = datetime.utcnow()
@@ -103,7 +87,6 @@ class TestIsTradeFlatReal(unittest.TestCase):
         }
         self.assertFalse(srv.is_trade_flat(trade, now))
 
-    @requires_srv
     def test_crypto_min_hold_15min(self):
         """Crypto trade com 10min → NÃO flat (min hold = 15min)."""
         now = datetime.utcnow()
@@ -116,7 +99,6 @@ class TestIsTradeFlatReal(unittest.TestCase):
         }
         self.assertFalse(srv.is_trade_flat(trade, now))
 
-    @requires_srv
     def test_crypto_flat_after_min_hold(self):
         """Crypto trade com 50min e variação 0.1% → flat."""
         now = datetime.utcnow()
@@ -129,7 +111,6 @@ class TestIsTradeFlatReal(unittest.TestCase):
         }
         self.assertTrue(srv.is_trade_flat(trade, now))
 
-    @requires_srv
     def test_not_flat_if_peak_high(self):
         """Trade que teve momentum alto (peak >0.5%) → NÃO flat."""
         now = datetime.utcnow()
@@ -149,7 +130,6 @@ class TestIsTradeFlatReal(unittest.TestCase):
 class TestCheckDirectionalExposureReal(unittest.TestCase):
     """Bug: sem limite, 100% posições podiam ser LONG. Fix: v10.17."""
 
-    @requires_srv
     def test_blocks_excess_longs(self):
         """80% LONG → bloqueia novo LONG."""
         # Temporarily replace stocks_open
@@ -163,7 +143,6 @@ class TestCheckDirectionalExposureReal(unittest.TestCase):
         finally:
             srv.stocks_open[:] = original
 
-    @requires_srv
     def test_allows_balanced_direction(self):
         """50% LONG → permite novo LONG."""
         original = srv.stocks_open[:]
@@ -175,7 +154,6 @@ class TestCheckDirectionalExposureReal(unittest.TestCase):
         finally:
             srv.stocks_open[:] = original
 
-    @requires_srv
     def test_ignores_small_set(self):
         """Com <3 trades, NÃO bloqueia (sem sentido estatístico)."""
         original = srv.stocks_open[:]
@@ -193,13 +171,11 @@ class TestCheckDirectionalExposureReal(unittest.TestCase):
 class TestGetDynamicTimeoutReal(unittest.TestCase):
     """Bug: timeout fixo não reflete duração real. Fix: v10.17."""
 
-    @requires_srv
     def test_returns_default_without_history(self):
         """Sem histórico → retorna default."""
         timeout = srv.get_dynamic_timeout_h('UNKNOWN_SYM', 3.0)
         self.assertEqual(timeout, 3.0)
 
-    @requires_srv
     def test_uses_history_when_available(self):
         """Com ≥5 trades de histórico, usa avg * mult."""
         original = srv._symbol_avg_duration.copy()
@@ -214,7 +190,6 @@ class TestGetDynamicTimeoutReal(unittest.TestCase):
             srv._symbol_avg_duration.clear()
             srv._symbol_avg_duration.update(original)
 
-    @requires_srv
     def test_clamps_to_min(self):
         """Avg muito curto → clamp ao mínimo."""
         original = srv._symbol_avg_duration.copy()
@@ -226,7 +201,6 @@ class TestGetDynamicTimeoutReal(unittest.TestCase):
             srv._symbol_avg_duration.clear()
             srv._symbol_avg_duration.update(original)
 
-    @requires_srv
     def test_clamps_to_max(self):
         """Avg muito longo → clamp ao máximo."""
         original = srv._symbol_avg_duration.copy()
@@ -245,20 +219,17 @@ class TestGetDynamicTimeoutReal(unittest.TestCase):
 class TestCheckCryptoConvictionReal(unittest.TestCase):
     """v10.18: Conviction filter para crypto."""
 
-    @requires_srv
     def test_blocks_low_conviction_small_move(self):
         """Conf<58 e change<3% → bloqueado."""
         ok, reason = srv.check_crypto_conviction({'final_confidence': 52}, 1.5, 'ETH')
         self.assertFalse(ok)
         self.assertIn('conviction_low', reason)
 
-    @requires_srv
     def test_allows_low_conviction_big_move(self):
         """Conf<58 mas change≥3% → permitido."""
         ok, reason = srv.check_crypto_conviction({'final_confidence': 52}, 4.5, 'ETH')
         self.assertTrue(ok)
 
-    @requires_srv
     def test_allows_high_conviction(self):
         """Conf≥58 → sempre permitido."""
         ok, reason = srv.check_crypto_conviction({'final_confidence': 65}, 0.5, 'ETH')
@@ -271,7 +242,6 @@ class TestCheckCryptoConvictionReal(unittest.TestCase):
 class TestReconcileStrategyReal(unittest.TestCase):
     """v10.18: Reconciliação por fórmula detecta desvios."""
 
-    @requires_srv
     def test_perfect_balance(self):
         """Sem desvio → ok=True, delta≈0."""
         open_trades = [{'position_value': 200_000}, {'position_value': 300_000}]
@@ -285,7 +255,6 @@ class TestReconcileStrategyReal(unittest.TestCase):
         self.assertTrue(r['ok'])
         self.assertAlmostEqual(r['delta'], 0, places=0)
 
-    @requires_srv
     def test_detects_drift(self):
         """Com desvio artificial → delta > 0."""
         open_trades = [{'position_value': 200_000}]
@@ -297,7 +266,6 @@ class TestReconcileStrategyReal(unittest.TestCase):
         self.assertAlmostEqual(r['delta'], 50_000, places=0)
         self.assertGreater(r['delta_pct'], 0)
 
-    @requires_srv
     def test_arbi_reconciliation(self):
         """Reconciliação de arbi usa position_size."""
         open_trades = [{'position_size': 100_000}]
@@ -316,7 +284,6 @@ class TestReconcileStrategyReal(unittest.TestCase):
 class TestReconcileViaLedgerReal(unittest.TestCase):
     """v10.19: Reconciliação via replay do ledger."""
 
-    @requires_srv
     def test_empty_ledger_ok(self):
         """Sem eventos → ok=True."""
         # Ensure empty
@@ -329,7 +296,6 @@ class TestReconcileViaLedgerReal(unittest.TestCase):
         finally:
             srv._capital_ledger[:] = original
 
-    @requires_srv
     def test_ledger_replay_matches(self):
         """Replay de RESERVE+RELEASE+PNL_CREDIT deve bater com memória."""
         original = srv._capital_ledger[:]
@@ -351,7 +317,6 @@ class TestReconcileViaLedgerReal(unittest.TestCase):
         finally:
             srv._capital_ledger[:] = original
 
-    @requires_srv
     def test_ledger_detects_drift(self):
         """Se memória diverge do replay, delta > 0."""
         original = srv._capital_ledger[:]
@@ -378,7 +343,7 @@ class TestReconcileViaLedgerReal(unittest.TestCase):
 class TestLedgerRecordReal(unittest.TestCase):
     """v10.18: ledger_record deve registrar em memória e enfileirar."""
 
-    @requires_srv
+
     @patch.object(srv, 'enqueue_persist')
     def test_ledger_record_appends_and_enqueues(self, mock_enqueue):
         """ledger_record adiciona ao _capital_ledger e chama enqueue_persist."""
@@ -396,7 +361,7 @@ class TestLedgerRecordReal(unittest.TestCase):
         call_args = mock_enqueue.call_args
         self.assertEqual(call_args[0][0], 'ledger_event')
 
-    @requires_srv
+
     @patch.object(srv, 'enqueue_persist')
     def test_ledger_trims_at_5000(self, mock_enqueue):
         """Ledger deve podar para 3000 quando passa de 5000."""
@@ -415,7 +380,6 @@ class TestLedgerRecordReal(unittest.TestCase):
 class TestGetRegimeMultiplierReal(unittest.TestCase):
     """v10.17: Regime-aware sizing."""
 
-    @requires_srv
     def test_high_vol_regime(self):
         """HIGH_VOL → size 0.6x, SL 1.5x."""
         original = dict(srv.market_regime)
@@ -428,7 +392,6 @@ class TestGetRegimeMultiplierReal(unittest.TestCase):
         finally:
             srv.market_regime.update(original)
 
-    @requires_srv
     def test_trending_regime(self):
         """TRENDING → size 1.2x, SL 1.3x."""
         original = dict(srv.market_regime)
@@ -441,7 +404,6 @@ class TestGetRegimeMultiplierReal(unittest.TestCase):
         finally:
             srv.market_regime.update(original)
 
-    @requires_srv
     def test_ranging_regime(self):
         """RANGING → size 0.8x, SL 0.85x."""
         original = dict(srv.market_regime)
@@ -454,7 +416,6 @@ class TestGetRegimeMultiplierReal(unittest.TestCase):
         finally:
             srv.market_regime.update(original)
 
-    @requires_srv
     def test_normal_regime(self):
         """NORMAL/UNKNOWN → size 1.0x, SL 1.0x."""
         original = dict(srv.market_regime)
@@ -474,7 +435,7 @@ class TestGetRegimeMultiplierReal(unittest.TestCase):
 class TestCalibrationPersistenceReal(unittest.TestCase):
     """v10.18: Calibração persiste e restaura via MySQL."""
 
-    @requires_srv
+
     @patch.object(srv, 'get_db')
     def test_persist_calibration_writes_bands(self, mock_get_db):
         """persist_calibration escreve as 3 bands no DB."""
@@ -491,7 +452,7 @@ class TestCalibrationPersistenceReal(unittest.TestCase):
         self.assertEqual(mock_cursor.execute.call_count, 3)
         mock_conn.commit.assert_called_once()
 
-    @requires_srv
+
     @patch.object(srv, 'get_db')
     def test_load_calibration_restores_bands(self, mock_get_db):
         """load_calibration restaura valores do DB."""
@@ -525,7 +486,6 @@ class TestCalibrationPersistenceReal(unittest.TestCase):
 class TestTrackCalibrationReal(unittest.TestCase):
     """v10.15: track_calibration atualiza contagem em memória."""
 
-    @requires_srv
     def test_tracks_winning_trade(self):
         """Trade com pnl_pct > 0.1 → wins++."""
         original = {k: dict(v) for k, v in srv._calibration_tracker.items()}
@@ -540,7 +500,6 @@ class TestTrackCalibrationReal(unittest.TestCase):
             for k, v in original.items():
                 srv._calibration_tracker[k] = v
 
-    @requires_srv
     def test_tracks_losing_trade(self):
         """Trade com pnl_pct < -0.1 → losses++."""
         original = {k: dict(v) for k, v in srv._calibration_tracker.items()}
@@ -560,13 +519,12 @@ class TestTrackCalibrationReal(unittest.TestCase):
 class TestDbSaveLedgerEventExists(unittest.TestCase):
     """Critical bug (v10.18): _db_save_ledger_event was missing → persistence crash."""
 
-    @requires_srv
     def test_function_exists(self):
         """_db_save_ledger_event deve existir como callable."""
         self.assertTrue(hasattr(srv, '_db_save_ledger_event'))
         self.assertTrue(callable(srv._db_save_ledger_event))
 
-    @requires_srv
+
     @patch.object(srv, 'get_db')
     def test_function_handles_event(self, mock_get_db):
         """_db_save_ledger_event insere no MySQL sem crash."""
@@ -582,6 +540,287 @@ class TestDbSaveLedgerEventExists(unittest.TestCase):
         srv._db_save_ledger_event(evt)
         mock_cursor.execute.assert_called_once()
         mock_conn.commit.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════
+# INTEGRATION TESTS — open → close → ledger → reconcile
+# ═══════════════════════════════════════════════════════════════
+class TestIntegrationStockTradeCycle(unittest.TestCase):
+    """[v10.20] Integration: simula ciclo completo de trade de stocks."""
+
+    @patch.object(srv, 'enqueue_persist')
+    def test_full_stock_cycle(self, mock_enqueue):
+        """Open stock → ledger RESERVE → close → ledger RELEASE+PNL → reconcile OK."""
+        # Save state
+        orig_capital = srv.stocks_capital
+        orig_open = srv.stocks_open[:]
+        orig_closed = srv.stocks_closed[:]
+        orig_ledger = srv._capital_ledger[:]
+        try:
+            # Reset
+            srv.stocks_capital = 3_000_000
+            srv.stocks_open.clear()
+            srv.stocks_closed.clear()
+            srv._capital_ledger.clear()
+
+            # === OPEN: simulate stock trade open ===
+            trade_id = 'STK-integ-001'
+            symbol = 'AAPL'
+            position_value = 200_000
+            entry_price = 200.0
+            qty = 1000
+
+            srv.stocks_capital -= position_value
+            srv.ledger_record('stocks', 'RESERVE', symbol, position_value,
+                              srv.stocks_capital, trade_id)
+
+            trade = {
+                'id': trade_id, 'symbol': symbol, 'market': 'NYSE',
+                'asset_type': 'stock', 'direction': 'LONG',
+                'entry_price': entry_price, 'current_price': entry_price,
+                'quantity': qty, 'position_value': position_value,
+                'pnl': 0, 'pnl_pct': 0, 'peak_pnl_pct': 0,
+                'opened_at': datetime.utcnow().isoformat(), 'status': 'OPEN',
+            }
+            srv.stocks_open.append(trade)
+
+            # Verify after open
+            self.assertEqual(srv.stocks_capital, 2_800_000)
+            self.assertEqual(len(srv.stocks_open), 1)
+            self.assertEqual(len(srv._capital_ledger), 1)
+            self.assertEqual(srv._capital_ledger[-1]['event'], 'RESERVE')
+
+            # === CLOSE: simulate trade close with profit ===
+            exit_price = 205.0
+            pnl = round((exit_price - entry_price) * qty, 2)  # +5000
+            trade['pnl'] = pnl
+            trade['pnl_pct'] = round((exit_price / entry_price - 1) * 100, 2)
+
+            # Replicate monitor_trades ledger logic (v10.19 order)
+            srv.stocks_capital += position_value
+            srv.ledger_record('stocks', 'RELEASE', symbol, position_value,
+                              srv.stocks_capital, trade_id)
+            srv.stocks_capital += pnl
+            srv.ledger_record('stocks', 'PNL_CREDIT', symbol, pnl,
+                              srv.stocks_capital, trade_id)
+
+            closed_trade = dict(trade)
+            closed_trade.update({
+                'exit_price': exit_price, 'status': 'CLOSED',
+                'close_reason': 'TRAILING_STOP',
+                'closed_at': datetime.utcnow().isoformat(),
+            })
+            srv.stocks_closed.insert(0, closed_trade)
+            srv.stocks_open.clear()
+
+            # Verify after close
+            self.assertEqual(srv.stocks_capital, 3_005_000)  # 3M + 5K profit
+            self.assertEqual(len(srv.stocks_open), 0)
+            self.assertEqual(len(srv.stocks_closed), 1)
+            self.assertEqual(len(srv._capital_ledger), 3)  # RESERVE + RELEASE + PNL_CREDIT
+
+            # === RECONCILE: camada 1 (fórmula) ===
+            r1 = srv._reconcile_strategy('stocks', srv.stocks_capital, 3_000_000,
+                                         list(srv.stocks_open), list(srv.stocks_closed))
+            self.assertTrue(r1['ok'], f'Formula recon failed: delta={r1["delta"]}')
+            self.assertAlmostEqual(r1['delta'], 0, places=0)
+
+            # === RECONCILE: camada 2 (ledger replay) ===
+            r2 = srv._reconcile_via_ledger('stocks', 3_000_000, srv.stocks_capital)
+            self.assertTrue(r2['ok'], f'Ledger recon failed: delta={r2["delta"]}')
+            self.assertAlmostEqual(r2['delta'], 0, places=0)
+            self.assertEqual(r2['ledger_events'], 3)
+
+            # === Verify ledger order is contábil ===
+            events = srv._capital_ledger
+            self.assertEqual(events[0]['event'], 'RESERVE')
+            self.assertEqual(events[1]['event'], 'RELEASE')
+            self.assertEqual(events[2]['event'], 'PNL_CREDIT')
+            # RELEASE balance should be pre-PnL (capital + position but not + pnl)
+            self.assertEqual(events[1]['balance_after'], 3_000_000)  # margin returned, before PnL
+            self.assertEqual(events[2]['balance_after'], 3_005_000)  # after PnL credit
+
+        finally:
+            srv.stocks_capital = orig_capital
+            srv.stocks_open[:] = orig_open
+            srv.stocks_closed[:] = orig_closed
+            srv._capital_ledger[:] = orig_ledger
+
+
+class TestIntegrationCryptoTradeCycle(unittest.TestCase):
+    """[v10.20] Integration: simula ciclo completo de trade de crypto."""
+
+    @patch.object(srv, 'enqueue_persist')
+    def test_full_crypto_cycle_with_loss(self, mock_enqueue):
+        """Open crypto → ledger RESERVE → close with loss → RELEASE+PNL → reconcile OK."""
+        orig_capital = srv.crypto_capital
+        orig_open = srv.crypto_open[:]
+        orig_closed = srv.crypto_closed[:]
+        orig_ledger = srv._capital_ledger[:]
+        try:
+            srv.crypto_capital = 1_000_000
+            srv.crypto_open.clear()
+            srv.crypto_closed.clear()
+            srv._capital_ledger.clear()
+
+            trade_id = 'CRY-integ-001'
+            symbol = 'ETH'
+            approved_size = 150_000
+            entry_price = 3000.0
+            qty = approved_size / entry_price  # 50
+
+            # OPEN
+            srv.crypto_capital -= approved_size
+            srv.ledger_record('crypto', 'RESERVE', symbol, approved_size,
+                              srv.crypto_capital, trade_id)
+            trade = {
+                'id': trade_id, 'symbol': symbol, 'market': 'CRYPTO',
+                'asset_type': 'crypto', 'direction': 'LONG',
+                'entry_price': entry_price, 'current_price': entry_price,
+                'quantity': round(qty, 6), 'position_value': round(approved_size, 2),
+                'pnl': 0, 'pnl_pct': 0, 'peak_pnl_pct': 0,
+                'opened_at': datetime.utcnow().isoformat(), 'status': 'OPEN',
+            }
+            srv.crypto_open.append(trade)
+            self.assertEqual(srv.crypto_capital, 850_000)
+
+            # CLOSE with loss
+            exit_price = 2940.0  # -2%
+            pnl = round((exit_price - entry_price) * qty, 2)  # -3000
+            trade['pnl'] = pnl
+
+            srv.crypto_capital += approved_size
+            srv.ledger_record('crypto', 'RELEASE', symbol, approved_size,
+                              srv.crypto_capital, trade_id)
+            srv.crypto_capital += pnl
+            srv.ledger_record('crypto', 'PNL_CREDIT', symbol, pnl,
+                              srv.crypto_capital, trade_id)
+            srv.crypto_open.clear()
+            closed_trade = dict(trade)
+            closed_trade['status'] = 'CLOSED'
+            closed_trade['close_reason'] = 'STOP_LOSS'
+            closed_trade['closed_at'] = datetime.utcnow().isoformat()
+            srv.crypto_closed.insert(0, closed_trade)
+
+            # Verify capital
+            self.assertEqual(srv.crypto_capital, 1_000_000 + pnl)  # 997_000
+
+            # Reconcile camada 1
+            r1 = srv._reconcile_strategy('crypto', srv.crypto_capital, 1_000_000,
+                                         list(srv.crypto_open), list(srv.crypto_closed))
+            self.assertTrue(r1['ok'])
+            self.assertAlmostEqual(r1['delta'], 0, places=0)
+
+            # Reconcile camada 2
+            r2 = srv._reconcile_via_ledger('crypto', 1_000_000, srv.crypto_capital)
+            self.assertTrue(r2['ok'])
+            self.assertAlmostEqual(r2['delta'], 0, places=0)
+        finally:
+            srv.crypto_capital = orig_capital
+            srv.crypto_open[:] = orig_open
+            srv.crypto_closed[:] = orig_closed
+            srv._capital_ledger[:] = orig_ledger
+
+
+class TestIntegrationArbiTradeCycle(unittest.TestCase):
+    """[v10.20] Integration: simula ciclo completo de trade de arbitragem."""
+
+    @patch.object(srv, 'enqueue_persist')
+    def test_full_arbi_cycle(self, mock_enqueue):
+        """Open arbi → ledger RESERVE → close → RELEASE+PNL → reconcile formula + ledger OK."""
+        orig_capital = srv.arbi_capital
+        orig_open = srv.arbi_open[:]
+        orig_closed = srv.arbi_closed[:]
+        orig_ledger = srv._capital_ledger[:]
+        try:
+            srv.arbi_capital = 4_500_000
+            srv.arbi_open.clear()
+            srv.arbi_closed.clear()
+            srv._capital_ledger.clear()
+
+            trade_id = 'ARB-integ-001'
+            name = 'VALE3-VALE'
+            pos = 100_000
+
+            # OPEN
+            srv.arbi_capital -= pos
+            srv.ledger_record('arbi', 'RESERVE', name, pos, srv.arbi_capital, trade_id)
+            trade = {
+                'id': trade_id, 'pair_id': 'VALE3-VALE', 'name': name,
+                'position_size': pos, 'pnl': 0, 'pnl_pct': 0,
+                'opened_at': datetime.utcnow().isoformat(), 'status': 'OPEN',
+            }
+            srv.arbi_open.append(trade)
+            self.assertEqual(srv.arbi_capital, 4_400_000)
+
+            # CLOSE with profit
+            pnl = 2_500
+            trade['pnl'] = pnl
+            srv.arbi_capital += pos
+            srv.ledger_record('arbi', 'RELEASE', name, pos, srv.arbi_capital, trade_id)
+            srv.arbi_capital += pnl
+            srv.ledger_record('arbi', 'PNL_CREDIT', name, pnl, srv.arbi_capital, trade_id)
+            srv.arbi_open.clear()
+            closed_trade = dict(trade)
+            closed_trade['status'] = 'CLOSED'
+            closed_trade['close_reason'] = 'TARGET'
+            closed_trade['closed_at'] = datetime.utcnow().isoformat()
+            srv.arbi_closed.insert(0, closed_trade)
+
+            self.assertEqual(srv.arbi_capital, 4_502_500)
+
+            # Reconcile formula (arbi-specific)
+            r1 = srv._reconcile_strategy_arbi(srv.arbi_capital, 4_500_000,
+                                              list(srv.arbi_open), list(srv.arbi_closed))
+            self.assertTrue(r1['ok'])
+            self.assertAlmostEqual(r1['delta'], 0, places=0)
+            self.assertEqual(r1['strategy'], 'arbi')
+
+            # Reconcile ledger
+            r2 = srv._reconcile_via_ledger('arbi', 4_500_000, srv.arbi_capital)
+            self.assertTrue(r2['ok'])
+            self.assertAlmostEqual(r2['delta'], 0, places=0)
+            self.assertEqual(r2['ledger_events'], 3)
+        finally:
+            srv.arbi_capital = orig_capital
+            srv.arbi_open[:] = orig_open
+            srv.arbi_closed[:] = orig_closed
+            srv._capital_ledger[:] = orig_ledger
+
+
+class TestIntegrationLedgerFromDB(unittest.TestCase):
+    """[v10.20] Integration: reconciliação via ledger carrega do MySQL quando memória vazia."""
+
+    @patch.object(srv, 'enqueue_persist')
+    @patch.object(srv, 'get_db')
+    def test_ledger_falls_back_to_mysql(self, mock_get_db, mock_enqueue):
+        """Com ledger vazio em memória, _reconcile_via_ledger busca do MySQL."""
+        orig_ledger = srv._capital_ledger[:]
+        try:
+            srv._capital_ledger.clear()
+
+            # Mock DB: retorna 3 eventos (simula pós-deploy)
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall.return_value = [
+                {'event': 'RESERVE', 'amount': 200_000},
+                {'event': 'RELEASE', 'amount': 200_000},
+                {'event': 'PNL_CREDIT', 'amount': 8_000},
+            ]
+            mock_conn.cursor.return_value = mock_cursor
+            mock_get_db.return_value = mock_conn
+
+            initial = 9_000_000
+            # Expected from DB: 9M - 200K + 200K + 8K = 9_008_000
+            memory = 9_008_000
+            r = srv._reconcile_via_ledger('stocks', initial, memory)
+
+            self.assertTrue(r['ok'])
+            self.assertAlmostEqual(r['delta'], 0, places=0)
+            self.assertEqual(r['ledger_events'], 3)
+            self.assertEqual(r['source'], 'mysql')  # loaded from DB, not memory
+        finally:
+            srv._capital_ledger[:] = orig_ledger
 
 
 if __name__ == '__main__':

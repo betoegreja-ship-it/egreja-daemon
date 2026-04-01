@@ -1888,15 +1888,8 @@ def _reconcile_strategy_arbi(memory_capital: float, initial: float,
         'ts': datetime.utcnow().isoformat(),
     }
 
-def _reconcile_via_ledger(strategy: str, initial: float, memory_capital: float) -> dict:
-    """[v10.19] Reconciliação via replay do ledger — segunda camada de verificação.
-    Soma todos os eventos do ledger para a estratégia e compara com saldo em memória."""
-    with _ledger_lock:
-        events = [e for e in _capital_ledger if e.get('strategy') == strategy]
-    if not events:
-        return {'strategy': strategy, 'ledger_events': 0, 'ok': True, 'delta': 0, 'delta_pct': 0,
-                'ts': datetime.utcnow().isoformat()}
-    # Replay: initial + sum(RELEASE + PNL_CREDIT) - sum(RESERVE)
+def _replay_ledger_events(events: list, initial: float) -> float:
+    """[v10.20] Replay puro de eventos de ledger. Retorna saldo calculado."""
     balance = initial
     for evt in events:
         ev_type = evt.get('event', '')
@@ -1905,6 +1898,44 @@ def _reconcile_via_ledger(strategy: str, initial: float, memory_capital: float) 
             balance -= amount
         elif ev_type in ('RELEASE', 'PNL_CREDIT'):
             balance += amount
+    return balance
+
+def _load_ledger_from_db(strategy: str) -> list:
+    """[v10.20] Carrega eventos do capital_ledger do MySQL para uma estratégia."""
+    conn = get_db()
+    if not conn: return []
+    try:
+        c = conn.cursor(dictionary=True)
+        c.execute("SELECT event, amount FROM capital_ledger WHERE strategy=%s ORDER BY id ASC",
+                  (strategy,))
+        rows = c.fetchall()
+        c.close(); conn.close()
+        return [{'event': r['event'], 'amount': float(r['amount'])} for r in rows]
+    except Exception as e:
+        log.error(f'_load_ledger_from_db({strategy}): {e}')
+        try: conn.close()
+        except: pass
+        return []
+
+def _reconcile_via_ledger(strategy: str, initial: float, memory_capital: float) -> dict:
+    """[v10.20] Reconciliação via replay do ledger — segunda camada de verificação.
+    Camada 2a: replay da memória (rápido, cobre runtime).
+    Camada 2b: replay do MySQL (lento, cobre pós-deploy — usa DB quando memória vazia)."""
+    with _ledger_lock:
+        mem_events = [e for e in _capital_ledger if e.get('strategy') == strategy]
+    # Se temos eventos em memória, usar (mais rápido e preciso para drift runtime)
+    # Se não temos (pós-deploy), carregar do MySQL para reconciliação histórica
+    if mem_events:
+        events = mem_events
+        source = 'memory'
+    else:
+        events = _load_ledger_from_db(strategy)
+        source = 'mysql'
+    if not events:
+        return {'strategy': f'{strategy}_ledger', 'ledger_events': 0, 'ok': True,
+                'delta': 0, 'delta_pct': 0, 'source': 'none',
+                'ts': datetime.utcnow().isoformat()}
+    balance = _replay_ledger_events(events, initial)
     delta = memory_capital - balance
     delta_pct = abs(delta) / max(initial, 1) * 100
     return {
@@ -1912,6 +1943,7 @@ def _reconcile_via_ledger(strategy: str, initial: float, memory_capital: float) 
         'memory_capital': round(memory_capital, 2),
         'ledger_capital': round(balance, 2),
         'ledger_events': len(events),
+        'source': source,
         'delta': round(delta, 2),
         'delta_pct': round(delta_pct, 4),
         'ok': delta_pct < RECONCILIATION_ALERT_PCT,
@@ -1936,9 +1968,10 @@ def run_reconciliation():
                                            list(crypto_open), list(crypto_closed))
             r_arbi = _reconcile_strategy_arbi(arbi_capital, ARBI_CAPITAL,
                                               list(arbi_open), list(arbi_closed))
-            # Camada 2: reconciliação via ledger
+            # [v10.20] Camada 2: reconciliação via ledger (memória ou MySQL)
             r_stocks_ldg = _reconcile_via_ledger('stocks', INITIAL_CAPITAL_STOCKS, stocks_capital)
             r_crypto_ldg = _reconcile_via_ledger('crypto', INITIAL_CAPITAL_CRYPTO, crypto_capital)
+            r_arbi_ldg   = _reconcile_via_ledger('arbi', ARBI_CAPITAL, arbi_capital)
         for r in [r_stocks, r_crypto, r_arbi]:
             _reconciliation_log.append(r)
             if not r['ok']:
@@ -1949,8 +1982,8 @@ def run_reconciliation():
                 send_whatsapp(msg)
             else:
                 log.info(f'[RECON-OK] {r["strategy"]}: delta=${r["delta"]:,.0f} ({r["delta_pct"]:.2f}%)')
-        # [v10.19] Camada 2: ledger-based reconciliation
-        for r_ldg in [r_stocks_ldg, r_crypto_ldg]:
+        # [v10.20] Camada 2: ledger-based reconciliation (stocks + crypto + arbi)
+        for r_ldg in [r_stocks_ldg, r_crypto_ldg, r_arbi_ldg]:
             _reconciliation_log.append(r_ldg)
             if not r_ldg['ok']:
                 msg = (f'[RECON-LEDGER-ALERT] {r_ldg["strategy"]}: delta=${r_ldg["delta"]:,.0f} '
@@ -1974,8 +2007,8 @@ def run_reconciliation():
                         (r['ts'], r['strategy'], r['memory_capital'], r['calculated_capital'],
                          r['committed'], r['realized_pnl'], r['delta'], r['delta_pct'],
                          1 if r['ok'] else 0))
-                # [v10.19] Ledger reconciliation — persiste delta e contagem de eventos
-                for r_ldg in [r_stocks_ldg, r_crypto_ldg]:
+                # [v10.20] Ledger reconciliation — persiste delta e contagem de eventos
+                for r_ldg in [r_stocks_ldg, r_crypto_ldg, r_arbi_ldg]:
                     c.execute("""INSERT INTO reconciliation_log
                         (ts, strategy, memory_capital, calculated_capital, committed,
                          realized_pnl, delta, delta_pct, ok)
@@ -6238,6 +6271,8 @@ def arbi_scan_loop():
                     elif approved_size<=0 or arbi_capital<=0: pass
                     else:
                         pos=min(approved_size,arbi_capital); arbi_capital-=pos
+                        # [v10.20] Ledger: RESERVE arbi
+                        ledger_record('arbi', 'RESERVE', pair['name'], round(pos, 2), arbi_capital, trade_id)
                         _entry_ts = datetime.utcnow().isoformat()
                         # [v10.14-Audit] Preço de entrada por lado
                         # LONG_A: compra leg_a (ask) e vende leg_b (bid)
@@ -6350,7 +6385,14 @@ def arbi_monitor_loop():
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else: reason='TIMEOUT'
                     if reason:
-                        arbi_capital+=trade['position_size']+trade['pnl']
+                        # [v10.20] Ledger: RELEASE + PNL_CREDIT arbi (ordem contábil correta)
+                        arbi_capital += trade['position_size']
+                        ledger_record('arbi', 'RELEASE', trade.get('name', trade.get('pair_id', '')),
+                                      trade['position_size'], arbi_capital, trade['id'])
+                        arbi_capital += trade['pnl']
+                        if trade['pnl'] != 0:
+                            ledger_record('arbi', 'PNL_CREDIT', trade.get('name', trade.get('pair_id', '')),
+                                          trade['pnl'], arbi_capital, trade['id'])
                         c=dict(trade); c.update({'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         arbi_closed.insert(0,c)
                         # [v10.9] Sem limite em memória — histórico completo

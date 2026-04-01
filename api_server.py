@@ -151,7 +151,7 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
-MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.14] crypto threshold 55 (worker score ~8pts menor que display)  # [v10.14] crypto: 65 (mais volátil)
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 48))  # [v10.14] crypto threshold 48  # [v10.14] crypto: 65 (mais volátil)
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
@@ -4447,13 +4447,16 @@ def auto_trade_crypto():
                 # [v10.14-FIX] Limitar penalidade temporal para sinais fortes
                 # Se crypto se move >4%, o mercado está em tendência — não bloquear com viés histórico
                 _raw_change = float(ticker_data.get('change_pct', 0))
-                _strong_signal = abs(_raw_change) > 4.0
+                _strong_signal = abs(_raw_change) > 2.0  # [v10.14-FIX] 2% suficiente para override temporal
                 if _strong_signal and (_t_adj + _cm_adj) < 0:
-                    # Penalidade máxima -8 para sinais fortes (não -25)
+                    # Sinal forte: penalidade máxima -8
                     _capped_t = max(_t_adj + _cm_adj, -8)
                     score = max(0, min(100, score + _capped_t))
                 else:
-                    score = max(0, min(100, score + _t_adj + _cm_adj))
+                    # Sinal normal: penalidade máxima -12 (crypto 24/7 — não penalizar tanto)
+                    _total_t = _t_adj + _cm_adj
+                    _capped_t = max(_total_t, -12) if _total_t < 0 else _total_t
+                    score = max(0, min(100, score + _capped_t))
                 # [v10.13] Padrões compostos
                 _rsi_c = float(ticker_data.get('rsi',50) or 50)
                 _feats_disc_c = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bucket(_rsi_c),

@@ -733,7 +733,7 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
         _effective_cap_c = max(_crypto_portfolio_total, INITIAL_CAPITAL_CRYPTO)
         if committed+position_value > _effective_cap_c*MAX_CAPITAL_PCT_CRYPTO/100:
             return False, 'CRYPTO_CAPITAL_LIMIT', 0
-        free_cap = cc; max_pos = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)
+        free_cap = cc; max_pos = CRYPTO_MAX_POSITION_BY_SYM.get(symbol, MAX_POSITION_CRYPTO)
     else:
         free_cap = sc; max_pos = MAX_POSITION_STOCKS
 
@@ -4445,7 +4445,7 @@ def auto_trade_crypto():
                 _now_c = datetime.utcnow()
                 _t_adj, _t_blocked, _t_reason = get_temporal_crypto_score(_now_c.hour, _now_c.weekday())
                 if _t_blocked:
-                    log.debug(f"TEMPORAL_BLOCK crypto {display}: {_t_reason}")
+                    log.info(f"[CRYPTO-TBLOCK] {display}: {_t_reason}")
                     continue
                 _cm_adj = get_cross_market_crypto_adj()
                 _score_before = score
@@ -4476,16 +4476,17 @@ def auto_trade_crypto():
                 except Exception as _ge:
                     _disc_adj_c, _disc_blocked_c, _disc_key_c = 0, False, ''
                 if _disc_blocked_c:
-                    log.debug(f"COMPOSITE_BLOCK crypto {display}: {_disc_key_c}")
+                    log.info(f"[CRYPTO-CBLOCK] {display}: {_disc_key_c}")
                     continue
                 if _disc_adj_c != 0:
                     score = max(0, min(100, score + _disc_adj_c))
                 if abs(_t_adj + _cm_adj) >= 5:
-                    log.debug(f"SCORE_ADJ crypto {display}: {_score_before}→{score} (t={_t_adj:+d} cm={_cm_adj:+d} disc={_disc_adj_c:+d})")
+                    log.info(f"[CRYPTO-SADJ] {display}: {_score_before}→{score} (t={_t_adj:+d} cm={_cm_adj:+d} disc={_disc_adj_c:+d})")
 
                 # [v10.14] Aplicar threshold — não entrar em sinais fracos
                 _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
                 if not _entry_ok:
+                    log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
                     continue
 
                 score_factor=min(abs(score-50)/50.0,1.0)

@@ -7094,9 +7094,9 @@ def kill_switch_status():
     return jsonify(ext_kill_switch.check_all(get_db))
 
 # ── [v10.22] Risk endpoints ─────────────────────────────────────────
-@app.route('/risk/status')
+@app.route('/risk/institutional')
 @require_auth
-def risk_status():
+def risk_institutional():
     """[v10.22] Institutional risk status."""
     return jsonify(risk_manager.get_status())
 

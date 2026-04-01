@@ -1161,6 +1161,7 @@ def get_temporal_crypto_score(hour_utc: int, weekday: int) -> tuple:
     dow_adj  = CRYPTO_DOW_SCORE.get(weekday, 0)
     
     # Boost para janelas prioritárias
+    window_key = (weekday, hour_utc)
     priority_boost = CRYPTO_PRIORITY_WINDOWS.get(window_key, 0)
     
     total_adj = hour_adj + dow_adj + priority_boost

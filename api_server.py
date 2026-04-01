@@ -5361,31 +5361,30 @@ def arbi_monitor_loop():
                         trade['current_spread']=sd['spread_pct']
                         ea=abs(float(trade['entry_spread'])); ca=abs(float(trade['current_spread']))
                         trade['pnl_pct']=round(ea-ca,4)
-                        # [v10.14-FIX] Sanity check: spread > 50% = preço inválido (0 ou NaN)
-                if abs(float(trade.get('current_spread', 0))) > 20.0:  # [v10.14] 20% = dado inválido (antes 50%)
-                    log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO — resetando pnl_pct para 0")
-                    # [v10.14-FIX] Não apenas ignorar — resetar pnl_pct para evitar que SL dispare com dado ruim
-                    trade['current_spread'] = trade.get('entry_spread', 0)  # voltar ao spread de entrada
-                    trade['pnl_pct'] = 0.0
-                    trade['pnl'] = 0.0
-                    continue
-                trade['pnl']=round(trade['pnl_pct']/100*float(trade['position_size']),2)
-                trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
-                peak=trade['peak_pnl_pct']
-                h=trade.setdefault('pnl_history',[]); h.append(trade['pnl_pct'])
-                if len(h)>5: h.pop(0)
-                reason=None
-                mkt_a=trade.get('mkt_a',''); mkt_b=trade.get('mkt_b','')
-                both_open=(market_open_for(mkt_a) and market_open_for(mkt_b))
-                if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD:  reason='TAKE_PROFIT'
-                elif peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
-                elif trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
-                elif not both_open and age_h>=0.5:                       reason='MARKET_CLOSE'
-                elif age_h>=ARBI_TIMEOUT_H:
+                        # [v10.14-FIX] Sanity check: spread > 20% = preço inválido
+                        if abs(float(trade.get('current_spread', 0))) > 20.0:
+                            log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO")
+                            trade['current_spread'] = trade.get('entry_spread', 0)
+                            trade['pnl_pct'] = 0.0
+                            trade['pnl'] = 0.0
+                            continue
+                    trade['pnl']=round(trade['pnl_pct']/100*float(trade['position_size']),2)
+                    trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
+                    peak=trade['peak_pnl_pct']
+                    h=trade.setdefault('pnl_history',[]); h.append(trade['pnl_pct'])
+                    if len(h)>5: h.pop(0)
+                    reason=None
+                    mkt_a=trade.get('mkt_a',''); mkt_b=trade.get('mkt_b','')
+                    both_open=(market_open_for(mkt_a) and market_open_for(mkt_b))
+                    if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD:  reason='TAKE_PROFIT'
+                    elif peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
+                    elif trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
+                    elif not both_open and age_h>=0.5:                       reason='MARKET_CLOSE'
+                    elif age_h>=ARBI_TIMEOUT_H:
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else: reason='TIMEOUT'
-                if reason:
+                    if reason:
                         arbi_capital+=trade['position_size']+trade['pnl']
                         c=dict(trade); c.update({'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         arbi_closed.insert(0,c)

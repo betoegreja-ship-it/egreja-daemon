@@ -792,8 +792,13 @@ def check_risk_arbi(pair_id, position_value):
     _arbi_cap_total = max(cap + sum(t.get('position_size',0) for t in arbi_open), ARBI_CAPITAL, 1)
     dd=abs(daily_loss)/_arbi_cap_total*100
     if dd>=ARBI_MAX_DAILY_LOSS:
-        ARBI_KILL_SWITCH=True; send_whatsapp(f'ARBI KILL SWITCH: drawdown {dd:.2f}% (base ${_arbi_cap_total:,.0f})')
+        if not ARBI_KILL_SWITCH:
+            ARBI_KILL_SWITCH=True; send_whatsapp(f'ARBI KILL SWITCH: drawdown {dd:.2f}% (base ${_arbi_cap_total:,.0f})')
         return False, f'ARBI_DAILY_DRAWDOWN ({dd:.2f}%)', 0
+    # [v10.14] Auto-reset: drawdown voltou abaixo do threshold
+    if ARBI_KILL_SWITCH and dd < ARBI_MAX_DAILY_LOSS * 0.7:
+        ARBI_KILL_SWITCH = False
+        log.info(f'[ARBI] Kill switch auto-resetado: drawdown={dd:.2f}% < {ARBI_MAX_DAILY_LOSS*0.7:.2f}%')
     return True, 'OK', round(min(position_value, ARBI_POS_SIZE, cap), 2)
 
 def _trigger_kill_switch(dd_pct, period):
@@ -6598,6 +6603,15 @@ def arbi_learning_status():
             'status': 'aprendendo' if st['low_threshold'] is None else 'ativo'
         })
     return jsonify({'pairs': result, 'total_pairs_learning': len(result)})
+
+@app.route('/admin/arbi-kill-switch/reset', methods=['POST'])
+@require_auth
+def arbi_kill_switch_reset():
+    """[v10.14] Reseta o ARBI_KILL_SWITCH manualmente."""
+    global ARBI_KILL_SWITCH
+    ARBI_KILL_SWITCH = False
+    log.info('[ADMIN] ARBI_KILL_SWITCH resetado manualmente')
+    return jsonify({'ok': True, 'arbi_kill_switch': ARBI_KILL_SWITCH})
 
 @app.route('/arbitrage/spreads')
 def arbi_spreads_route():

@@ -2330,7 +2330,7 @@ def run_pattern_discovery():
             FROM trades t
             WHERE t.status='CLOSED' AND t.pnl IS NOT NULL
             ORDER BY t.closed_at DESC
-            LIMIT 2000
+            LIMIT 200000
         """)
         rows = list(cursor.fetchall())
 

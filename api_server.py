@@ -715,8 +715,11 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
         if sc_count >= MAX_POSITIONS_STOCKS:
             return False, f'MAX_POSITIONS_STOCKS ({sc_count}/{MAX_POSITIONS_STOCKS})', 0
         committed = sum(t.get('position_value',0) for t in s_open)
-        # [v10.14] Usar capital ATUAL (inclui ganhos) não o inicial fixo
-        _effective_cap_s = max(stocks_capital, INITIAL_CAPITAL_STOCKS)
+        # [v10.14] Capital check: usar portfolio TOTAL (livre + comprometido) = inclui ganhos
+        # stocks_capital = capital livre | committed = valor das posições abertas
+        # portfolio_total = stocks_capital + committed (reflete ganhos acumulados)
+        _stocks_portfolio_total = stocks_capital + committed
+        _effective_cap_s = max(_stocks_portfolio_total, INITIAL_CAPITAL_STOCKS)
         if committed+position_value > _effective_cap_s*MAX_CAPITAL_PCT_STOCKS/100:
             return False, 'STOCKS_CAPITAL_LIMIT', 0
         free_cap = sc; max_pos = MAX_POSITION_STOCKS
@@ -725,8 +728,9 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
         if cc_count >= MAX_POSITIONS_CRYPTO:
             return False, f'MAX_POSITIONS_CRYPTO ({cc_count}/{MAX_POSITIONS_CRYPTO})', 0
         committed = sum(t.get('position_value',0) for t in c_open)
-        # [v10.14] Usar capital ATUAL (inclui ganhos) não o inicial fixo
-        _effective_cap_c = max(crypto_capital, INITIAL_CAPITAL_CRYPTO)
+        # [v10.14] Crypto capital check: portfolio total inclui ganhos
+        _crypto_portfolio_total = crypto_capital + committed
+        _effective_cap_c = max(_crypto_portfolio_total, INITIAL_CAPITAL_CRYPTO)
         if committed+position_value > _effective_cap_c*MAX_CAPITAL_PCT_CRYPTO/100:
             return False, 'CRYPTO_CAPITAL_LIMIT', 0
         free_cap = cc; max_pos = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)

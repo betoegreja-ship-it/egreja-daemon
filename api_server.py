@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Egreja Investment AI — API Server v10.21.0
+Egreja Investment AI — API Server v10.22.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v10.6.4 → v10.7.0: Polling inteligente + 6 cirurgias (dedup stocks+crypto, dead code, klines unificado, signal_id real)
 
@@ -63,6 +63,14 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import mysql.connector
 
+# ── [v10.22] Institutional modules ─────────────────────────────────────
+from modules.risk_manager import InstitutionalRiskManager
+from modules.broker_base import PaperBroker, BTGBroker, BinanceBroker, NYSEBroker, OrderTracker, BrokerFactory, OrderStatus, AssetClass, create_order_record
+from modules.data_validator import MarketDataValidator
+from modules.auth_rbac import AuthManager, AuditLogger, Role
+from modules.stats_engine import PerformanceStats
+from modules.kill_switch import ExternalKillSwitch, KillSwitchMiddleware
+
 logging.basicConfig(level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger('egreja')
@@ -73,8 +81,18 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
-VERSION = 'v10.21.0'
+VERSION = 'v10.22.0'
 _boot_time = time.time()
+
+# ── [v10.22] Module instances ──────────────────────────────────────────
+risk_manager = InstitutionalRiskManager()
+order_tracker = OrderTracker()
+data_validator = MarketDataValidator()
+auth_manager = AuthManager()
+audit_logger = AuditLogger()
+perf_stats = PerformanceStats()
+ext_kill_switch = ExternalKillSwitch()
+kill_switch_middleware = KillSwitchMiddleware(ext_kill_switch)
 
 ENV = os.environ.get('ENV', 'dev').lower()
 
@@ -3666,6 +3684,106 @@ def init_all_tables():
             delta DECIMAL(14,2), delta_pct DECIMAL(8,4), ok TINYINT DEFAULT 1,
             INDEX idx_recon_ts (ts))""")
 
+        # ── [v10.22] UNIQUE constraint on capital_ledger ─────────────
+        try:
+            cursor.execute("""CREATE UNIQUE INDEX uq_ledger_event
+                ON capital_ledger (strategy, trade_id, event)""")
+        except Exception as _e:
+            if 'Duplicate' not in str(_e) and 'exists' not in str(_e).lower():
+                log.debug(f'Migration uq_ledger: {_e}')
+
+        # ── [v10.22] RBAC Users ──────────────────────────────────────
+        cursor.execute("""CREATE TABLE IF NOT EXISTS rbac_users (
+            email VARCHAR(120) PRIMARY KEY,
+            role VARCHAR(20) NOT NULL DEFAULT 'viewer',
+            api_key_hash VARCHAR(128),
+            created_by VARCHAR(120),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_access DATETIME,
+            is_active TINYINT(1) DEFAULT 1,
+            INDEX idx_rbac_role (role))""")
+
+        # ── [v10.22] Audit Log (immutable) ───────────────────────────
+        cursor.execute("""CREATE TABLE IF NOT EXISTS audit_log (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+            email VARCHAR(120),
+            action VARCHAR(50),
+            detail TEXT,
+            ip_address VARCHAR(45),
+            INDEX idx_audit_ts (ts),
+            INDEX idx_audit_email (email))""")
+
+        # ── [v10.22] Kill Switch State ───────────────────────────────
+        cursor.execute("""CREATE TABLE IF NOT EXISTS kill_switch_state (
+            scope VARCHAR(20) PRIMARY KEY,
+            active TINYINT(1) DEFAULT 0,
+            activated_by VARCHAR(120),
+            activated_at DATETIME,
+            reason TEXT,
+            auto_resume_at DATETIME NULL)""")
+
+        cursor.execute("""CREATE TABLE IF NOT EXISTS kill_switch_log (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+            scope VARCHAR(20),
+            action VARCHAR(30),
+            activated_by VARCHAR(120),
+            reason TEXT,
+            INDEX idx_ks_ts (ts))""")
+
+        # ── [v10.22] Order Tracking ──────────────────────────────────
+        cursor.execute("""CREATE TABLE IF NOT EXISTS order_tracking (
+            order_id VARCHAR(60) PRIMARY KEY,
+            trade_id VARCHAR(40),
+            symbol VARCHAR(20),
+            side VARCHAR(5),
+            order_type VARCHAR(15),
+            asset_class VARCHAR(15),
+            quantity DECIMAL(20,6),
+            decision_price DECIMAL(18,6),
+            sent_price DECIMAL(18,6),
+            executed_price DECIMAL(18,6),
+            average_price DECIMAL(18,6),
+            slippage DECIMAL(10,4),
+            latency_ms INT,
+            status VARCHAR(20),
+            fees_estimated DECIMAL(10,4),
+            fees_actual DECIMAL(10,4),
+            idempotency_key VARCHAR(80),
+            retry_count INT DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_ot_trade (trade_id),
+            INDEX idx_ot_symbol (symbol),
+            UNIQUE KEY uq_idempotency (idempotency_key))""")
+
+        # ── [v10.22] Performance Stats Snapshots ─────────────────────
+        cursor.execute("""CREATE TABLE IF NOT EXISTS stats_snapshots (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+            strategy VARCHAR(20),
+            total_trades INT,
+            win_rate DECIMAL(6,4),
+            profit_factor DECIMAL(10,4),
+            sharpe DECIMAL(10,4),
+            sortino DECIMAL(10,4),
+            max_drawdown_pct DECIMAL(10,4),
+            expectancy DECIMAL(10,4),
+            edge_stability DECIMAL(6,2),
+            payload_json LONGTEXT,
+            INDEX idx_ss_ts (ts),
+            INDEX idx_ss_strat (strategy))""")
+
+        # ── [v10.22] Risk Events ─────────────────────────────────────
+        cursor.execute("""CREATE TABLE IF NOT EXISTS risk_events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+            event_type VARCHAR(50),
+            strategy VARCHAR(20),
+            detail TEXT,
+            INDEX idx_re_ts (ts))""")
+
         # ── Migração: adicionar colunas de learning nas tabelas existentes ─
         for col_sql in [
             "ALTER TABLE trades ADD COLUMN signal_id           VARCHAR(40)  NULL",
@@ -4752,6 +4870,17 @@ def monitor_trades():
                         if trade['pnl'] != 0:
                             ledger_record('stocks', 'PNL_CREDIT', trade['symbol'],
                                           trade['pnl'], stocks_capital, trade['id'])
+                        # [v10.22] Record to institutional modules
+                        risk_manager.record_trade_result('stocks', trade['symbol'], trade['pnl'], trade['position_value'], stocks_capital)
+                        perf_stats.record_trade({
+                            'strategy': 'stocks', 'symbol': trade['symbol'],
+                            'pnl': trade['pnl'], 'pnl_pct': trade['pnl_pct'],
+                            'entry_price': trade['entry_price'], 'exit_price': price,
+                            'opened_at': trade['opened_at'], 'closed_at': now.isoformat(),
+                            'confidence': trade.get('learning_confidence', 0),
+                            'exit_type': reason, 'asset_type': 'stock',
+                            'regime': market_regime.get('mode', 'UNKNOWN'),
+                        })
                         # [v10.9-CB] Circuit breaker: SL consecutivo aumenta cooldown
                         if reason == 'STOP_LOSS':
                             symbol_sl_count[sym] = symbol_sl_count.get(sym, 0) + 1
@@ -4816,6 +4945,17 @@ def monitor_trades():
                         if trade['pnl'] != 0:
                             ledger_record('crypto', 'PNL_CREDIT', trade['symbol'],
                                           trade['pnl'], crypto_capital, trade['id'])
+                        # [v10.22] Record to institutional modules
+                        risk_manager.record_trade_result('crypto', trade['symbol'], trade['pnl'], trade['position_value'], crypto_capital)
+                        perf_stats.record_trade({
+                            'strategy': 'crypto', 'symbol': trade['symbol'],
+                            'pnl': trade['pnl'], 'pnl_pct': trade['pnl_pct'],
+                            'entry_price': trade['entry_price'], 'exit_price': price,
+                            'opened_at': trade['opened_at'], 'closed_at': now.isoformat(),
+                            'confidence': trade.get('learning_confidence', 0),
+                            'exit_type': reason, 'asset_type': 'crypto',
+                            'regime': market_regime.get('mode', 'UNKNOWN'),
+                        })
                         symbol_cooldown[trade['symbol']]=time.time()
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         try:
@@ -5285,6 +5425,16 @@ def stock_execution_worker():
                 _cache_reason('executed')
 
                 with state_lock:
+                    # [v10.22] Pre-trade risk + kill switch check
+                    ks_ok, ks_reason = kill_switch_middleware.check_before_trade('stocks', get_db)
+                    if not ks_ok:
+                        log.warning(f'[KILL-SWITCH] Stock blocked: {ks_reason}')
+                        continue
+                    risk_ok, risk_reason = risk_manager.check_can_open('stocks', sym, price*qty, stocks_capital)
+                    if not risk_ok:
+                        log.warning(f'[RISK-BLOCK] Stock {sym}: {risk_reason}')
+                        continue
+
                     ok2,reason2=_second_validation(sym,mkt,'stocks')
                     if ok2 and stocks_capital>=price*qty:
                         stocks_capital -= price*qty
@@ -5575,6 +5725,16 @@ def auto_trade_crypto():
                     processed_signal_ids[ms_key_c] = {'sig_id': sig_id_c, 'reason': 'executed'}
 
                 with state_lock:
+                    # [v10.22] Pre-trade risk + kill switch check
+                    ks_ok, ks_reason = kill_switch_middleware.check_before_trade('crypto', get_db)
+                    if not ks_ok:
+                        log.warning(f'[KILL-SWITCH] Crypto blocked: {ks_reason}')
+                        continue
+                    risk_ok_pre, risk_reason_pre = risk_manager.check_can_open('crypto', display, approved_size, crypto_capital)
+                    if not risk_ok_pre:
+                        log.warning(f'[RISK-BLOCK] Crypto {display}: {risk_reason_pre}')
+                        continue
+
                     ok2,reason2=_second_validation(display,'CRYPTO','crypto')
                     if ok2 and crypto_capital>=approved_size:
                         qty=approved_size/price; crypto_capital-=approved_size
@@ -6449,6 +6609,16 @@ def arbi_monitor_loop():
                         if trade['pnl'] != 0:
                             ledger_record('arbi', 'PNL_CREDIT', trade.get('name', trade.get('pair_id', '')),
                                           trade['pnl'], arbi_capital, trade['id'])
+                        # [v10.22] Record to institutional modules
+                        risk_manager.record_trade_result('arbi', trade.get('pair_id', ''), trade['pnl'], trade['position_size'], arbi_capital)
+                        perf_stats.record_trade({
+                            'strategy': 'arbi', 'symbol': trade.get('pair_id', ''),
+                            'pnl': trade['pnl'], 'pnl_pct': trade.get('pnl_pct', 0),
+                            'entry_price': trade.get('leg1_entry', 0), 'exit_price': trade.get('leg1_exit', 0),
+                            'opened_at': trade.get('opened_at', now.isoformat()), 'closed_at': now.isoformat(),
+                            'confidence': 0, 'exit_type': reason, 'asset_type': 'arbi',
+                            'regime': market_regime.get('mode', 'UNKNOWN'),
+                        })
                         c=dict(trade); c.update({'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         arbi_closed.insert(0,c)
                         # [v10.9] Sem limite em memória — histórico completo
@@ -6485,6 +6655,27 @@ def watchdog():
             check_inactivity_alert()
             persist_calibration()    # [v10.18] salvar calibração a cada 5min
             run_reconciliation()     # [v10.18] reconciliar capital a cada 10min
+
+            # [v10.22] Institutional risk check
+            try:
+                breached, reasons = risk_manager.is_breached()
+                if breached:
+                    log.warning(f'[RISK-BREACH] {reasons}')
+                    ext_kill_switch.auto_activate_on_risk_breach(reasons, get_db)
+            except Exception as _risk_e:
+                log.debug(f'watchdog risk check: {_risk_e}')
+
+            # [v10.22] Market data quality check
+            try:
+                with state_lock:
+                    for sym, pd in stock_prices.items():
+                        if pd and pd.get('price', 0) > 0:
+                            data_validator.record_price(sym, pd['price'], 'stock_poller')
+                    for sym, pd in crypto_prices.items():
+                        if pd and pd.get('price', 0) > 0:
+                            data_validator.record_price(sym, pd['price'], 'crypto_poller')
+            except Exception as _dv_e:
+                log.debug(f'watchdog data validator: {_dv_e}')
         except Exception as _wdg_e:
             log.debug(f'watchdog v10.16+ checks: {_wdg_e}')
         time.sleep(30)
@@ -6834,8 +7025,100 @@ def ops_dashboard():
             'last_persist_age_s': last_cal_age,
             'interval_s': CALIBRATION_PERSIST_INTERVAL,
         },
+        # [v10.22] Institutional modules status
+        'risk': risk_manager.get_status(),
+        'kill_switch': ext_kill_switch.check_all(get_db),
+        'broker': {
+            'order_tracker': order_tracker.get_reconciliation_status(),
+            'slippage': order_tracker.get_slippage_stats(),
+        },
+        'data_quality': data_validator.get_data_quality_status(),
+        'performance': perf_stats.get_full_report(),
+        'auth': {'mode': auth_manager.auth_mode, 'admin': auth_manager.admin_email},
         'timestamp': datetime.utcnow().isoformat(),
     })
+
+# ── [v10.22] Kill Switch endpoints ───────────────────────────────────
+@app.route('/kill-switch/activate', methods=['POST'])
+@require_auth
+def kill_switch_activate():
+    """[v10.22] Activate kill switch via API."""
+    data = request.get_json() or {}
+    scope = data.get('scope', 'global')
+    reason = data.get('reason', 'Manual activation via API')
+    auto_resume = data.get('auto_resume_minutes')
+    ext_kill_switch.activate(scope, reason, 'API', auto_resume, get_db)
+    audit_logger.log_action('API', 'KILL_SWITCH', f'Activated {scope}: {reason}', get_db)
+    return jsonify({'ok': True, 'scope': scope, 'reason': reason})
+
+@app.route('/kill-switch/deactivate', methods=['POST'])
+@require_auth
+def kill_switch_deactivate():
+    """[v10.22] Deactivate kill switch via API."""
+    data = request.get_json() or {}
+    scope = data.get('scope', 'global')
+    ext_kill_switch.deactivate(scope, 'API', get_db)
+    audit_logger.log_action('API', 'KILL_SWITCH', f'Deactivated {scope}', get_db)
+    return jsonify({'ok': True, 'scope': scope})
+
+@app.route('/kill-switch/status')
+@require_auth
+def kill_switch_status():
+    """[v10.22] Kill switch status."""
+    return jsonify(ext_kill_switch.check_all(get_db))
+
+# ── [v10.22] Risk endpoints ─────────────────────────────────────────
+@app.route('/risk/status')
+@require_auth
+def risk_status():
+    """[v10.22] Institutional risk status."""
+    return jsonify(risk_manager.get_status())
+
+# ── [v10.22] Performance endpoints ──────────────────────────────────
+@app.route('/stats/report')
+@require_auth
+def stats_report():
+    """[v10.22] Full performance report."""
+    return jsonify(perf_stats.get_full_report())
+
+@app.route('/stats/promotion')
+@require_auth
+def stats_promotion():
+    """[v10.22] Capital promotion criteria check."""
+    return jsonify(perf_stats.get_promotion_criteria())
+
+# ── [v10.22] RBAC endpoints ────────────────────────────────────────
+@app.route('/admin/users', methods=['GET'])
+@require_auth
+def admin_list_users():
+    """[v10.22] List all RBAC users."""
+    return jsonify(auth_manager.list_users(get_db))
+
+@app.route('/admin/users', methods=['POST'])
+@require_auth
+def admin_add_user():
+    """[v10.22] Add a new user (admin only)."""
+    data = request.get_json() or {}
+    email = data.get('email', '')
+    role = data.get('role', 'viewer')
+    ok, msg = auth_manager.add_user(email, role, 'admin', get_db)
+    if ok:
+        audit_logger.log_action('admin', 'USER_ADD', f'{email} as {role}', get_db)
+    return jsonify({'ok': ok, 'message': msg})
+
+@app.route('/admin/audit')
+@require_auth
+def admin_audit():
+    """[v10.22] View audit log."""
+    limit = request.args.get('limit', 100, type=int)
+    return jsonify(audit_logger.get_recent(limit, get_db))
+
+# ── [v10.22] Data quality endpoint ──────────────────────────────────
+@app.route('/data/quality')
+@require_auth
+def data_quality():
+    """[v10.22] Market data quality status."""
+    return jsonify(data_validator.get_data_quality_status())
 
 @app.route('/')
 def index():
@@ -8928,7 +9211,7 @@ def admin_db_cleanup():
 # ═══════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     port=int(os.environ.get('PORT',3001))
-    log.info(f'━━━ Egreja Investment AI v10.21.0 | {ENV.upper()} | port {port} | single-process ━━━')
+    log.info(f'━━━ Egreja Investment AI v10.22.0 | {ENV.upper()} | port {port} | single-process ━━━')
     log.info(f'FMP: {"SET" if FMP_API_KEY else "NOT SET"} | Auth: {"ENABLED" if API_SECRET_KEY else "DISABLED (dev)"} | Alerts: {"ON" if ALERTS_ENABLED else "OFF"}')
     validate_settings_on_boot()  # [v10.16]
     load_calibration()  # [v10.18] restaurar calibração persistida
@@ -8968,6 +9251,13 @@ if __name__ == '__main__':
     init_watchlist_table()
     init_trades_tables()
     _record_baseline_if_needed()  # [v10.21] registra BASELINE formal para strategies sem histórico no ledger
+
+    # [v10.22] Initialize institutional modules
+    ext_kill_switch.init_table(get_db)
+    auth_manager.init_users_table(get_db)
+    audit_logger.init_table(get_db) if hasattr(audit_logger, 'init_table') else None
+    log.info('[v10.22] Institutional modules initialized: risk, broker, data_validator, auth, stats, kill_switch')
+
     init_learning_cache()   # [L-3] carrega histórico de aprendizado em memória
     _update_market_regime()
     take_portfolio_snapshot()

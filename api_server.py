@@ -4290,7 +4290,12 @@ def stock_execution_worker():
                     continue
 
                 # [v10.11] Posição maior para reduzir capital parado — 15 posições × $200K+ = $3M investido
-                desired_pos=min(stocks_capital*(0.12+score_factor*0.10)*risk_mult, MAX_POSITION_STOCKS)
+                # [v10.14] Posição baseada no portfolio TOTAL de stocks (não só capital livre)
+                # stocks_capital = capital livre (pode ser pequeno quando cheio de trades)
+                # Usar: MAX_POSITION_STOCKS como teto real, e floor de $50K
+                _stocks_port_total = s.get('stocks_portfolio_value', INITIAL_CAPITAL_STOCKS) if False else                     max(stocks_capital + sum(t.get('position_value',0) for t in stocks_open), INITIAL_CAPITAL_STOCKS)
+                _pos_target = _stocks_port_total / MAX_POSITIONS_STOCKS * (0.8 + score_factor * 0.4)
+                desired_pos = min(max(_pos_target * risk_mult, 50_000), MAX_POSITION_STOCKS)
                 risk_ok,risk_reason,approved_size=check_risk(sym,mkt,desired_pos,'stocks')
                 if not risk_ok:
                     # [v10.3.4-F1] Preservar o motivo REAL do bloqueio, não colapsar em 'risk_blocked'
@@ -4520,7 +4525,12 @@ def auto_trade_crypto():
 
                 # [v10.11] Posição crypto maior — 10 posições × $120K = $1.2M de $1.5M investido
                 _sym_max = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)
-                desired_pos=min(crypto_capital*(0.08+score_factor*0.07)*risk_mult_c, _sym_max)
+                # [v10.14] Posição baseada no portfolio TOTAL de crypto
+                _crypto_port_total = max(
+                    crypto_capital + sum(t.get('position_value',0) for t in crypto_open),
+                    INITIAL_CAPITAL_CRYPTO)
+                _crypto_pos_target = _crypto_port_total / MAX_POSITIONS_CRYPTO * (0.7 + score_factor * 0.3)
+                desired_pos = min(max(_crypto_pos_target * risk_mult_c, 50_000), _sym_max)
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:
@@ -4622,9 +4632,9 @@ ARBI_PAIR_CONFIG = {
         'tp_spread':     0.8,   # TP: 0.8% de convergência desde entrada
         'sl_pct':        1.2,   # SL: 1.2% de divergência (mais largo que global)
         'max_spread':   13.0,   # spread acima disso = dado errado, ignorar
-        'max_pos':    30_000,   # [v10.14-FIX] posição máxima $30K (spread volátil, bug -$896K)
-        'last_10_wr':   80.0,   # WR dos últimos trades nesta zona
-        'learn_window':  10,    # quantas trades usar para aprender
+        # max_pos removido — usa posição dinâmica igual aos outros pares (~portfolio/3)
+        'last_10_wr':   80.0,
+        'learn_window':  10,
         'note': 'spread estrutural -9% a -11%, só operar reversão extrema',
     },
     # TIMS3-TIMB: ratio 5:1, poucas trades — usar padrão conservador
@@ -5272,10 +5282,13 @@ def arbi_scan_loop():
                 # [v10.11] Position size dinâmico = portfolio_arbi / 3 (cresce com lucros)
                 with state_lock:
                     _arbi_pnl_total = sum(t.get('pnl',0) for t in arbi_open) + sum(t.get('pnl',0) for t in arbi_closed)
-                    # [v10.14] Usar max(arbi_capital_atual, ARBI_CAPITAL+pnl) — pega o maior
-                    # Isso garante que ganhos acumulados são usados para posições maiores
-                    _arbi_port_val  = max(arbi_capital + sum(t.get('position_size',0) for t in arbi_open),
-                                         ARBI_CAPITAL + _arbi_pnl_total)
+                    # [v10.14] Portfolio arbi REAL = capital livre + posições abertas + todo P&L
+                    # Isso faz os ganhos acumulados participarem das novas posições
+                    _committed_arbi = sum(t.get('position_size',0) for t in arbi_open)
+                    _arbi_port_val  = max(
+                        arbi_capital + _committed_arbi,           # capital livre + comprometido
+                        ARBI_CAPITAL + _arbi_pnl_total,           # inicial + pnl total
+                        ARBI_CAPITAL)                             # mínimo = capital inicial
                 # [v10.14-FIX] Respeitar max_pos por par (protege contra spreads voláteis)
                 _pair_max_pos = ARBI_PAIR_CONFIG.get(pair['id'], {}).get('max_pos', None)
                 _dynamic_pos = max(round(_arbi_port_val / 3), ARBI_POS_SIZE)

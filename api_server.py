@@ -4480,7 +4480,6 @@ def auto_trade_crypto():
 
                 # [v10.14] Aplicar threshold — não entrar em sinais fracos
                 _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
-                log.info(f'[CRYPTO-SCORE] {display}: score={score} thr={MIN_SCORE_AUTO_CRYPTO} ok={_entry_ok} ch={change_24h:.1f}%')
                 if not _entry_ok:
                     continue
 
@@ -4521,9 +4520,12 @@ def auto_trade_crypto():
                 insight_c   = generate_insight(sig_enriched_c, features_c, feat_hash_c, conf_c)
                 risk_mult_c = get_risk_multiplier(conf_c)
 
-                # [v10.9-DeadZone] Mesma dead zone para crypto
+                # [v10.9-DeadZone] Dead zone crypto — skip se movimento ≥ 2.5% (sinal real)
                 _lc_c = conf_c.get('final_confidence', 50)
-                if LEARNING_DEAD_ZONE_LOW <= _lc_c < LEARNING_DEAD_ZONE_HIGH:
+                _raw_change_c = float(ticker_data.get('change_pct', 0) if ticker_data else change_24h)
+                _skip_dz_c = abs(_raw_change_c) >= 2.5 or abs(change_24h) >= 2.5
+                if not _skip_dz_c and LEARNING_DEAD_ZONE_LOW <= _lc_c < LEARNING_DEAD_ZONE_HIGH:
+                    log.info(f'[CRYPTO-DZ] {display}: conf={_lc_c:.1f} change={_raw_change_c:.1f}% → dead_zone BLOCK')
                     _csig_id = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
                                         source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
                                         origin_signal_key=origin_key_c)
@@ -4577,7 +4579,6 @@ def auto_trade_crypto():
 
                 with state_lock:
                     ok2,reason2=_second_validation(display,'CRYPTO','crypto')
-                    log.info(f'[CRYPTO-OPEN] {display}: ok2={ok2} reason={reason2} capital={crypto_capital:.0f} approved={approved_size:.0f}')
                     if ok2 and crypto_capital>=approved_size:
                         qty=approved_size/price; crypto_capital-=approved_size
                         trade={

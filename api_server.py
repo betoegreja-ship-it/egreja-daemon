@@ -4480,6 +4480,7 @@ def auto_trade_crypto():
 
                 # [v10.14] Aplicar threshold — não entrar em sinais fracos
                 _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
+                log.info(f'[CRYPTO-SCORE] {display}: score={score} thr={MIN_SCORE_AUTO_CRYPTO} ok={_entry_ok} ch={change_24h:.1f}%')
                 if not _entry_ok:
                     continue
 

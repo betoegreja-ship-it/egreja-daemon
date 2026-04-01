@@ -4625,7 +4625,9 @@ def auto_trade_crypto():
 
                 audit('TRADE_OPENED',{'id':pre_trade_id,'symbol':display,'direction':direction,'score':score})
                 enqueue_persist('trade',trade)
-        except Exception as e: log.error(f'auto_trade_crypto: {e}')
+        except Exception as e:
+            import traceback
+            log.error(f'auto_trade_crypto: {e}\n{traceback.format_exc()}')
 
 # ═══════════════════════════════════════════════════════════════
 # ARBI ENGINE

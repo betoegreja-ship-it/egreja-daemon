@@ -1933,6 +1933,7 @@ def _reconcile_via_ledger(strategy: str, initial: float, memory_capital: float) 
         source = 'mysql'
     if not events:
         return {'strategy': f'{strategy}_ledger', 'ledger_events': 0, 'ok': True,
+                'memory_capital': round(memory_capital, 2), 'ledger_capital': round(initial, 2),
                 'delta': 0, 'delta_pct': 0, 'source': 'none',
                 'ts': datetime.utcnow().isoformat()}
     balance = _replay_ledger_events(events, initial)

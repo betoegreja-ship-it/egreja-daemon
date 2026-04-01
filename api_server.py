@@ -138,7 +138,7 @@ ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.14] 5 símbolos = máx 5 simultâneas
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 3))  # [v10.15] 3 símbolos (era 5) — mais seletivo
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
 # Settings ajustaveis em runtime (via /settings POST)
@@ -151,7 +151,7 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
-MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 48))  # [v10.14] crypto threshold 48  # [v10.14] crypto: 65 (mais volátil)
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
@@ -207,8 +207,8 @@ WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
 LEARNING_VERSION       = '10.7.0'
 LEARNING_MIN_SAMPLES   = int(os.environ.get('LEARNING_MIN_SAMPLES', 10))   # amostras mínimas para confiar no histórico
 LEARNING_EWMA_ALPHA    = float(os.environ.get('LEARNING_EWMA_ALPHA', 0.15)) # recência (0=ignore histórico, 1=só recente)
-RISK_MULT_MIN          = float(os.environ.get('RISK_MULT_MIN', 0.50))       # [L-9] multiplicador mínimo conservador
-RISK_MULT_MAX          = float(os.environ.get('RISK_MULT_MAX', 1.15))       # [L-9] multiplicador máximo
+RISK_MULT_MIN          = float(os.environ.get('RISK_MULT_MIN', 0.30))       # [L-9][v10.15] multiplicador mínimo (era 0.50)
+RISK_MULT_MAX          = float(os.environ.get('RISK_MULT_MAX', 1.50))       # [L-9][v10.15] multiplicador máximo (era 1.15)
 # [v10.9-Learning] Dead zone de confiança: faixa onde o histórico mostra performance negativa
 # Dados de 10 dias: faixa 55-64 = 38-44% WR, -$53K em perdas. Não executar.
 LEARNING_DEAD_ZONE_LOW  = float(os.environ.get('LEARNING_DEAD_ZONE_LOW',  55.0))  # início da dead zone
@@ -1054,18 +1054,43 @@ CRYPTO_DOW_SCORE = {
     6: +15,  # Domingo: 64.7% WR — melhor dia, +$12.7K total
 }
 
-# Blocos hora×dia específicos para BLOQUEAR (WR<30%, n>=5)
-CRYPTO_BLOCKED_WINDOWS = {
-    # (weekday, hour_utc): motivo
-    (0, 0): 'Seg00h_WR0pct',    (4, 14): 'Sex14h_WR0pct',
-    (5, 22): 'Sab22h_WR0pct',   (2, 19): 'Qua19h_WR0pct',
-    (1, 18): 'Ter18h_WR9pct',   (3, 22): 'Qui22h_WR9pct',
-    (3, 19): 'Qui19h_WR9pct',   (4, 20): 'Sex20h_WR11pct',
-    (3, 18): 'Qui18h_WR12pct',  (2, 21): 'Qua21h_WR35pct',
-    (4, 19): 'Sex19h_WR15pct',  (5, 21): 'Sab21h_WR17pct',
-    (1, 21): 'Ter21h_WR29pct',  (4, 16): 'Sex16h_WR22pct',
-    (1, 15): 'Ter15h_WR35pct',  (3, 15): 'Qui15h_WR0pct',
-}
+# [v10.15] CRYPTO_BLOCKED_WINDOWS agora é DINÂMICO — calculado a partir do factor_stats real.
+# A tabela estática foi removida. A função _is_crypto_window_blocked() consulta
+# factor_stats em tempo real e só bloqueia se houver evidência forte (WR<25%, n>=15).
+CRYPTO_BLOCKED_WINDOWS = {}  # vazio — substituído por _is_crypto_window_blocked()
+
+def _is_crypto_window_blocked(weekday: int, hour_utc: int) -> tuple:
+    """[v10.15] Bloqueio dinâmico baseado em factor_stats real.
+    Só bloqueia se weekday E hour_utc AMBOS indicarem performance ruim.
+    Retorna (blocked: bool, reason: str).
+    """
+    DOW_NAMES = {0:'Seg',1:'Ter',2:'Qua',3:'Qui',4:'Sex',5:'Sab',6:'Dom'}
+    with learning_lock:
+        # Checar weekday factor
+        wd_fs = factor_stats_cache.get(('weekday', str(weekday)), {})
+        wd_n = wd_fs.get('total_samples', 0)
+        wd_exp = wd_fs.get('expectancy', 0)
+        wd_wr = (wd_fs.get('wins', 0) / wd_n * 100) if wd_n > 0 else 50
+        # Checar time_bucket factor (mapear hour → bucket)
+        if hour_utc < 6:    tb = 'OVERNIGHT'
+        elif hour_utc < 10: tb = 'PRE_MARKET'
+        elif hour_utc < 12: tb = 'MORNING'
+        elif hour_utc < 14: tb = 'MIDDAY'
+        elif hour_utc < 17: tb = 'AFTERNOON'
+        elif hour_utc < 20: tb = 'EVENING'
+        else:               tb = 'NIGHT'
+        tb_fs = factor_stats_cache.get(('time_bucket', tb), {})
+        tb_n = tb_fs.get('total_samples', 0)
+        tb_exp = tb_fs.get('expectancy', 0)
+        tb_wr = (tb_fs.get('wins', 0) / tb_n * 100) if tb_n > 0 else 50
+    # Só bloqueia se AMBOS fatores são ruins com amostras suficientes
+    wd_bad = wd_n >= 15 and wd_wr < 25 and wd_exp < -0.1
+    tb_bad = tb_n >= 15 and tb_wr < 25 and tb_exp < -0.1
+    if wd_bad and tb_bad:
+        reason = f"{DOW_NAMES.get(weekday,'?')}{hour_utc}h_WR{wd_wr:.0f}pct_n{wd_n}_DYNAMIC"
+        return True, reason
+    return False, ''
+
 
 # Janelas prioritárias (WR>=80%, n>=5) — score boost adicional
 CRYPTO_PRIORITY_WINDOWS = {
@@ -1126,10 +1151,10 @@ def get_temporal_crypto_score(hour_utc: int, weekday: int) -> tuple:
     blocked: True se a janela deve ser completamente bloqueada
     reason: string descritiva para logging
     """
-    # Checar bloqueio específico
-    window_key = (weekday, hour_utc)
-    if window_key in CRYPTO_BLOCKED_WINDOWS:
-        return 0, True, CRYPTO_BLOCKED_WINDOWS[window_key]
+    # [v10.15] Bloqueio dinâmico baseado em factor_stats real (substituiu tabela estática)
+    _dyn_blocked, _dyn_reason = _is_crypto_window_blocked(weekday, hour_utc)
+    if _dyn_blocked:
+        return 0, True, _dyn_reason
     
     # Score hora + dia
     hour_adj = CRYPTO_HOUR_SCORE.get(hour_utc, 0)
@@ -1630,12 +1655,74 @@ def generate_insight(sig: dict, features: dict, feature_hash: str, conf: dict) -
     return '. '.join(parts) + '.'
 
 def get_risk_multiplier(conf: dict) -> float:
-    """[L-9] Multiplica size do position de forma conservadora."""
-    band = conf.get('confidence_band', 'MEDIUM')
-    if band == 'HIGH':   mult = RISK_MULT_MAX
-    elif band == 'LOW':  mult = RISK_MULT_MIN
-    else:                mult = 1.0
+    """[L-9][v10.15] Multiplica size do position — agora contínuo, não discreto.
+    Usa final_confidence (0-100) para interpolar linearmente entre MIN e MAX.
+    conf=50 → mult=1.0 (neutro); conf=100 → MAX; conf=0 → MIN.
+    """
+    fc = float(conf.get('final_confidence', 50) or 50)
+    # Normalizar: 50=neutro(1.0), 100=MAX, 0=MIN
+    if fc >= 50:
+        # 50→100 mapeia para 1.0→RISK_MULT_MAX
+        t = (fc - 50) / 50.0  # 0→1
+        mult = 1.0 + t * (RISK_MULT_MAX - 1.0)
+    else:
+        # 0→50 mapeia para RISK_MULT_MIN→1.0
+        t = fc / 50.0  # 0→1
+        mult = RISK_MULT_MIN + t * (1.0 - RISK_MULT_MIN)
     return round(max(RISK_MULT_MIN, min(RISK_MULT_MAX, mult)), 3)
+
+
+def should_trade_ml(features: dict, conf: dict, asset_type: str = 'stock') -> tuple:
+    """[v10.15] ML gate — consulta pattern_stats e factor_stats para decidir se deve operar.
+    Retorna (should_trade: bool, reason: str, ml_score: float).
+    ml_score: -1.0 (forte rejeição) a +1.0 (forte aprovação), 0=neutro.
+    """
+    if not LEARNING_ENABLED or LEARNING_DEGRADED:
+        return True, 'learning_disabled', 0.0
+
+    fc = float(conf.get('final_confidence', 50) or 50)
+    feat_hash = conf.get('feature_hash', '')
+
+    # 1. Checar pattern histórico
+    pattern_score = 0.0
+    with learning_lock:
+        ps = pattern_stats_cache.get(feat_hash, {})
+    if ps.get('total_samples', 0) >= 15:
+        p_exp = ps.get('expectancy', 0)
+        p_wr = ps.get('wins', 0) / max(ps['total_samples'], 1) * 100
+        # Rejeitar padrões consistentemente perdedores
+        if p_exp < -0.15 and p_wr < 40:
+            return False, f'ML_PATTERN_REJECT(exp={p_exp:.3f},wr={p_wr:.0f}%,n={ps["total_samples"]})', -0.8
+        pattern_score = min(max(p_exp * 2, -1.0), 1.0)
+
+    # 2. Checar fatores críticos
+    bad_factors = 0; good_factors = 0
+    critical_factors = ['atr_bucket', 'volatility_bucket', 'regime_mode', 'volume_bucket', 'weekday']
+    with learning_lock:
+        for ftype in critical_factors:
+            fval = str(features.get(ftype, ''))
+            if not fval: continue
+            fs = factor_stats_cache.get((ftype, fval), {})
+            if fs.get('total_samples', 0) < 10: continue
+            f_exp = fs.get('expectancy', 0)
+            f_cw = fs.get('confidence_weight', 0.5)
+            if f_exp < -0.1 and f_cw < 0.35:
+                bad_factors += 1
+            elif f_exp > 0.05 and f_cw > 0.45:
+                good_factors += 1
+
+    # Rejeitar se 3+ fatores críticos são negativos e nenhum é positivo
+    if bad_factors >= 3 and good_factors == 0:
+        return False, f'ML_FACTORS_REJECT(bad={bad_factors},good={good_factors})', -0.6
+
+    # 3. Confiança muito baixa = rejeitar
+    if fc < 30 and asset_type == 'crypto':
+        return False, f'ML_LOW_CONF(fc={fc:.1f})', -0.5
+
+    # Calcular ml_score geral
+    conf_score = (fc - 50) / 50.0  # -1 a +1
+    ml_score = 0.4 * conf_score + 0.4 * pattern_score + 0.2 * ((good_factors - bad_factors) / max(len(critical_factors), 1))
+    return True, 'ML_OK', round(ml_score, 3)
 
 def get_top_factors(n_best: int = 5, n_worst: int = 5) -> dict:
     """[L-6] Retorna fatores com melhor e pior performance histórica."""
@@ -1653,6 +1740,33 @@ def get_top_factors(n_best: int = 5, n_worst: int = 5) -> dict:
         'top_positive': [_fmt(i) for i in items[:n_best]],
         'top_negative': [_fmt(i) for i in reversed(items[-n_worst:]) if items],
     }
+
+
+# [v10.15] Calibração contínua — tracking em memória de confidence vs outcome
+_calibration_tracker = {
+    'HIGH': {'wins': 0, 'losses': 0, 'total': 0, 'sum_pnl_pct': 0.0},
+    'MEDIUM': {'wins': 0, 'losses': 0, 'total': 0, 'sum_pnl_pct': 0.0},
+    'LOW': {'wins': 0, 'losses': 0, 'total': 0, 'sum_pnl_pct': 0.0},
+}
+
+def track_calibration(trade: dict):
+    """[v10.15] Atualiza calibração in-memory quando trade fecha."""
+    band = trade.get('_confidence_band') or trade.get('confidence_band', 'MEDIUM')
+    pnl_pct = float(trade.get('pnl_pct', 0) or 0)
+    if band not in _calibration_tracker: band = 'MEDIUM'
+    ct = _calibration_tracker[band]
+    ct['total'] += 1
+    ct['sum_pnl_pct'] += pnl_pct
+    if pnl_pct > 0.1:   ct['wins'] += 1
+    elif pnl_pct < -0.1: ct['losses'] += 1
+    # Log a cada 50 trades para visibilidade
+    total_all = sum(b['total'] for b in _calibration_tracker.values())
+    if total_all > 0 and total_all % 50 == 0:
+        for b_name, b_data in _calibration_tracker.items():
+            if b_data['total'] > 0:
+                wr = b_data['wins'] / b_data['total'] * 100
+                avg = b_data['sum_pnl_pct'] / b_data['total']
+                log.info(f'[ML-CALIB] {b_name}: WR={wr:.1f}% avg_pnl={avg:.3f}% n={b_data["total"]}')
 
 # ═══════════════════════════════════════════════════════════════
 # [L-2] SIGNAL MEMORY — snapshot de cada sinal no DB
@@ -1742,8 +1856,9 @@ def record_signal_event(sig: dict, features: dict, feature_hash: str,
         return ''
 
 def update_signal_attribution(signal_id: str, trade_id: str, order_id: str):
-    """[FIX-2] Vincula trade_id/order_id ao signal_event existente imediatamente após abertura."""
+    """[FIX-2][v10.15] Vincula trade_id/order_id ao signal_event — crítico para calibração."""
     if not LEARNING_ENABLED or not signal_id: return
+    log.info(f'[ML-ATTRIB] {signal_id} → trade={trade_id} order={order_id}')
     try:
         update = {
             'signal_id': signal_id,
@@ -2081,6 +2196,9 @@ def process_trade_outcome(trade: dict):
         if sig_id:
             update_signal_outcome(sig_id, trade.get('id',''), trade.get('order_id',''),
                                    pnl, pnl_pct, trade.get('close_reason',''))
+        # [v10.15] Calibração contínua
+        try: track_calibration(trade)
+        except: pass
 
         # [v10.13] Atualizar padrões compostos descobertos automaticamente
         if features:
@@ -2512,7 +2630,7 @@ def init_learning_cache():
 # ═══════════════════════════════════════════════════════════════
 # [FIX-5] SHADOW EVALUATOR LOOP — avalia decisões PENDING
 # ═══════════════════════════════════════════════════════════════
-SHADOW_EVAL_WINDOW_MIN = int(os.environ.get('SHADOW_EVAL_WINDOW_MIN', 60))   # minutos até avaliar
+SHADOW_EVAL_WINDOW_MIN = int(os.environ.get('SHADOW_EVAL_WINDOW_MIN', 30))   # [v10.15] minutos até avaliar (era 60)
 
 def shadow_evaluator_loop():
     """[FIX-5] Avalia shadow_decisions PENDING após janela configurável.
@@ -2521,7 +2639,7 @@ def shadow_evaluator_loop():
     """
     while True:
         beat('shadow_evaluator_loop')
-        time.sleep(600)   # verifica a cada 10 minutos
+        time.sleep(120)   # [v10.15] verifica a cada 2 min (era 10 min)
         beat('shadow_evaluator_loop')
         if not LEARNING_ENABLED or LEARNING_DEGRADED: continue
         try:
@@ -2577,6 +2695,7 @@ def shadow_evaluator_loop():
                         evaluated_at=%s WHERE shadow_id=%s""",
                         (current_price, round(hyp_pnl, 4), round(hyp_pnl_pct, 4),
                          status, datetime.utcnow().isoformat(), dec['shadow_id']))
+                    dec_conn.commit()  # [v10.15] commit explícito — sem isso o UPDATE nunca persiste!
                     cx.close()
 
                     # Buscar feature_hash via signal_events — mesma conexão
@@ -4305,6 +4424,15 @@ def stock_execution_worker():
                 _stocks_port_total = s.get('stocks_portfolio_value', INITIAL_CAPITAL_STOCKS) if False else                     max(stocks_capital + sum(t.get('position_value',0) for t in stocks_open), INITIAL_CAPITAL_STOCKS)
                 _pos_target = _stocks_port_total / MAX_POSITIONS_STOCKS * (0.8 + score_factor * 0.4)
                 desired_pos = min(max(_pos_target * risk_mult, 50_000), MAX_POSITION_STOCKS)
+                # [v10.15] ML Gate para stocks — bloqueia se padrões/fatores indicam perda
+                _ml_ok_s, _ml_reason_s, _ml_score_s = should_trade_ml(
+                    features, conf, asset_type='stock')
+                if not _ml_ok_s:
+                    log.info(f'[STK-ML-BLOCK] {sym}: {_ml_reason_s} score={score}')
+                    record_shadow_decision(_confirmed_sig_id, sig_enriched, _ml_reason_s)
+                    with learning_lock:
+                        processed_signal_ids[ms_key] = {'sig_id': _confirmed_sig_id, 'reason': _ml_reason_s}
+                    continue
                 risk_ok,risk_reason,approved_size=check_risk(sym,mkt,desired_pos,'stocks')
                 if not risk_ok:
                     # [v10.3.4-F1] Preservar o motivo REAL do bloqueio, não colapsar em 'risk_blocked'
@@ -4487,6 +4615,13 @@ def auto_trade_crypto():
                 _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
                 if not _entry_ok:
                     log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
+                    continue
+
+                # [v10.15] ML Gate — consulta padrões e fatores antes de prosseguir
+                _ml_ok, _ml_reason, _ml_score = should_trade_ml(
+                    _feats_disc_c, conf_c, asset_type='crypto')
+                if not _ml_ok:
+                    log.info(f'[CRYPTO-ML-BLOCK] {display}: {_ml_reason} score={score}')
                     continue
 
                 score_factor=min(abs(score-50)/50.0,1.0)
@@ -6815,7 +6950,8 @@ def learning_status():
 
     # [FIX-6] Calcular métricas de calibração a partir do banco (últimos 500 sinais)
     calib = {'avg_confidence_winners': None, 'avg_confidence_losers': None,
-             'confidence_band_stats': {}, 'total_attributed': 0}
+             'confidence_band_stats': {}, 'total_attributed': 0,
+             'realtime_calibration': dict(_calibration_tracker)}
     try:
         conn = get_db()
         if conn:

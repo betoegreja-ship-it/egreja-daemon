@@ -4577,6 +4577,7 @@ def auto_trade_crypto():
 
                 with state_lock:
                     ok2,reason2=_second_validation(display,'CRYPTO','crypto')
+                    log.info(f'[CRYPTO-OPEN] {display}: ok2={ok2} reason={reason2} capital={crypto_capital:.0f} approved={approved_size:.0f}')
                     if ok2 and crypto_capital>=approved_size:
                         qty=approved_size/price; crypto_capital-=approved_size
                         trade={

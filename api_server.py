@@ -151,6 +151,7 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 62))  # [v10.14] crypto mais sensível a movimentos  # [v10.14] crypto: 65 (mais volátil)
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
@@ -3585,8 +3586,9 @@ def _crypto_composite_score(ticker: dict, klines: dict, direction: str) -> int:
     # Fator 2: volume ratio vs média 20d
     avg_vol20 = sum(vols_k[-20:]) / len(vols_k[-20:]) if len(vols_k) >= 20 else 0
     vol_ratio = vol_24 / avg_vol20 if avg_vol20 > 0 else 1.0
-    # 0.3→0 | 1.0→50 | 2.0→75 | 4.0→100
-    vol_factor = min(100, (vol_ratio / 4.0) * 100)
+    # [v10.14-FIX] Escala corrigida: 0.5→25 | 1.0→50 | 1.5→65 | 2.0→80 | 3.0→100
+    # Vol normal (1x) = 50 (neutro), não 25 (que penalizava desnecessariamente)
+    vol_factor = min(100, max(0, (vol_ratio - 0.5) / 2.5 * 100))
 
     # Fator 3: posição no range do dia (0=low, 100=high)
     day_range = high_24 - low_24
@@ -3598,9 +3600,10 @@ def _crypto_composite_score(ticker: dict, klines: dict, direction: str) -> int:
     # Fator 4: liquidez (n_trades normalizado — >100k = max)
     liq_factor = min(100, (n_tr / 100_000) * 100) if n_tr > 0 else 50.0
 
-    # Combinar com pesos
-    raw = (0.40 * change_factor + 0.30 * vol_factor +
-           0.20 * range_pos     + 0.10 * liq_factor)
+    # [v10.14-FIX] Pesos: change=65% (dominante), vol=10%, range=15%, liq=10%
+    # Crypto: o movimento de preço é o sinal mais confiável — volume é confirmação secundária
+    raw = (0.65 * change_factor + 0.10 * vol_factor +
+           0.15 * range_pos     + 0.10 * liq_factor)
     composite = max(5, min(95, int(raw)))
 
     # Para SHORT: inverter (score baixo = sinal de venda forte)
@@ -4069,7 +4072,7 @@ def stock_execution_worker():
                     log.debug(f"COMPOSITE_ADJ stock {sym}: {_disc_adj:+d} via {_disc_key}")
                 if abs(_st_adj) >= 5:
                     log.debug(f"STOCK_SCORE_ADJ: {sym} {_score_before_t}→{score} ({_st_reason})")
-                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')
+                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO_CRYPTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO_CRYPTO) else 'MANTER')  # [v10.14]
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),
                     'score': score, 'signal': signal_val,
@@ -4412,7 +4415,16 @@ def auto_trade_crypto():
                     continue
                 _cm_adj = get_cross_market_crypto_adj()
                 _score_before = score
-                score = max(0, min(100, score + _t_adj + _cm_adj))
+                # [v10.14-FIX] Limitar penalidade temporal para sinais fortes
+                # Se crypto se move >4%, o mercado está em tendência — não bloquear com viés histórico
+                _raw_change = float(ticker_data.get('change_pct', 0))
+                _strong_signal = abs(_raw_change) > 4.0
+                if _strong_signal and (_t_adj + _cm_adj) < 0:
+                    # Penalidade máxima -8 para sinais fortes (não -25)
+                    _capped_t = max(_t_adj + _cm_adj, -8)
+                    score = max(0, min(100, score + _capped_t))
+                else:
+                    score = max(0, min(100, score + _t_adj + _cm_adj))
                 # [v10.13] Padrões compostos
                 _rsi_c = float(ticker_data.get('rsi',50) or 50)
                 _feats_disc_c = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bucket(_rsi_c),

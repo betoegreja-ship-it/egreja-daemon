@@ -151,7 +151,7 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
-MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 60))  # [v10.14] crypto threshold 60  # [v10.14] crypto: 65 (mais volátil)
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.14] crypto threshold 55 (worker score ~8pts menor que display)  # [v10.14] crypto: 65 (mais volátil)
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
@@ -4456,7 +4456,6 @@ def auto_trade_crypto():
                 # [v10.14] Aplicar threshold — não entrar em sinais fracos
                 _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
                 if not _entry_ok:
-                    log.info(f'[CRYPTO-THRESH] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} → SKIP')
                     continue
 
                 score_factor=min(abs(score-50)/50.0,1.0)
@@ -4469,7 +4468,6 @@ def auto_trade_crypto():
                     cached_c = processed_signal_ids.get(ms_key_c)
 
                 if cached_c and cached_c['reason'] in ('executed', 'kill_switch'):
-                    log.info(f'[CRYPTO-CACHED] {display}: reason={cached_c["reason"]} → SKIP')
                     continue
 
                 _sig_pre_id_c = cached_c['sig_id'] if cached_c else gen_id('SIG')

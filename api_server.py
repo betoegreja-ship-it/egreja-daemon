@@ -7142,7 +7142,7 @@ def admin_audit():
 # ── [v10.22] Data quality endpoint ──────────────────────────────────
 @app.route('/data/quality')
 @require_auth
-def data_quality():
+def data_quality_v1022():
     """[v10.22] Market data quality status."""
     return jsonify(data_validator.get_data_quality_status())
 

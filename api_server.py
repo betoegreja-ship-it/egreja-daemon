@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Egreja Investment AI — API Server v10.17.0
+Egreja Investment AI — API Server v10.18.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 v10.6.4 → v10.7.0: Polling inteligente + 6 cirurgias (dedup stocks+crypto, dead code, klines unificado, signal_id real)
 
@@ -245,6 +245,14 @@ DYNAMIC_TIMEOUT_ENABLED   = os.environ.get('DYNAMIC_TIMEOUT_ENABLED', 'true').lo
 DYNAMIC_TIMEOUT_MULT      = float(os.environ.get('DYNAMIC_TIMEOUT_MULT', 1.3))    # timeout = avg_dur * 1.3
 DYNAMIC_TIMEOUT_MIN_H     = float(os.environ.get('DYNAMIC_TIMEOUT_MIN_H', 1.5))   # timeout mínimo 1.5h
 DYNAMIC_TIMEOUT_MAX_H     = float(os.environ.get('DYNAMIC_TIMEOUT_MAX_H', 6.0))   # timeout máximo 6h
+# ── [v10.18] Calibration persistence ─────────────────────────────────────
+CALIBRATION_PERSIST_INTERVAL = int(os.environ.get('CALIBRATION_PERSIST_INTERVAL', 300))  # 5 min
+# ── [v10.18] Reconciliation ─────────────────────────────────────────────
+RECONCILIATION_INTERVAL_S    = int(os.environ.get('RECONCILIATION_INTERVAL_S', 600))     # 10 min
+RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))    # alertar se >2% desvio
+# ── [v10.18] Crypto conviction filter ───────────────────────────────────
+CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 58))        # confiança mínima para crypto
+CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15))          # hold mínimo (min) para flat exit
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
@@ -410,6 +418,13 @@ _last_trade_opened = {'stocks': 0.0, 'crypto': 0.0}  # timestamp do último trad
 _inactivity_alerted = {'stocks': False, 'crypto': False}
 # ── [v10.17] Symbol duration tracker (avg hours per symbol) ───────────────
 _symbol_avg_duration: dict = {}  # symbol → {'sum_h': float, 'n': int, 'avg_h': float}
+# ── [v10.18] Capital ledger ──────────────────────────────────────────────
+_capital_ledger: list = []        # [{ts, strategy, event, symbol, amount, balance_after, trade_id}]
+_ledger_lock = threading.Lock()
+# ── [v10.18] Calibration & reconciliation persistence ────────────────────
+_last_calibration_persist: float = 0.0
+_last_reconciliation: float = 0.0
+_reconciliation_log: list = []    # últimas N reconciliações
 
 def gen_id(prefix='TRD'):
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
@@ -548,6 +563,7 @@ def persistence_worker():
             elif kind == 'pattern_stats':      _db_upsert_pattern_stats(task['data'])
             elif kind == 'factor_stats':       _db_upsert_factor_stats(task['data'])
             elif kind == 'shadow_decision':    _db_save_shadow_decision(task['data'])
+            elif kind == 'ledger_event':       _db_save_ledger_event(task['data'])
             urgent_queue.task_done()
 
             # [V9-2] Monitorar crescimento da fila após cada processamento
@@ -1812,6 +1828,229 @@ def track_calibration(trade: dict):
                 avg = b_data['sum_pnl_pct'] / b_data['total']
                 log.info(f'[ML-CALIB] {b_name}: WR={wr:.1f}% avg_pnl={avg:.3f}% n={b_data["total"]}')
 
+# ── [v10.18] Capital Ledger ──────────────────────────────────────────────
+def ledger_record(strategy: str, event: str, symbol: str, amount: float,
+                  balance_after: float, trade_id: str = ''):
+    """[v10.18] Registra evento no capital ledger (memória + DB assíncrono)."""
+    evt = {
+        'ts': datetime.utcnow().isoformat(),
+        'strategy': strategy,
+        'event': event,          # RESERVE | RELEASE | PNL_CREDIT
+        'symbol': symbol,
+        'amount': round(amount, 2),
+        'balance_after': round(balance_after, 2),
+        'trade_id': trade_id,
+    }
+    with _ledger_lock:
+        _capital_ledger.append(evt)
+        if len(_capital_ledger) > 5000:
+            _capital_ledger[:] = _capital_ledger[-3000:]
+    enqueue_persist('ledger_event', evt)
+
+# ── [v10.18] Reconciliation Engine ──────────────────────────────────────
+def _reconcile_strategy(name: str, memory_capital: float, initial: float,
+                        open_trades: list, closed_trades: list) -> dict:
+    """[v10.18] Reconcilia capital de uma estratégia."""
+    committed = sum(t.get('position_value', 0) for t in open_trades)
+    realized_pnl = sum(float(t.get('pnl', 0) or 0) for t in closed_trades)
+    calculated = initial + realized_pnl - committed
+    delta = memory_capital - calculated
+    delta_pct = abs(delta) / max(initial, 1) * 100
+    return {
+        'strategy': name,
+        'memory_capital': round(memory_capital, 2),
+        'calculated_capital': round(calculated, 2),
+        'committed': round(committed, 2),
+        'realized_pnl': round(realized_pnl, 2),
+        'delta': round(delta, 2),
+        'delta_pct': round(delta_pct, 4),
+        'ok': delta_pct < RECONCILIATION_ALERT_PCT,
+        'ts': datetime.utcnow().isoformat(),
+    }
+
+def _reconcile_strategy_arbi(memory_capital: float, initial: float,
+                             open_trades: list, closed_trades: list) -> dict:
+    """[v10.19] Reconcilia capital de arbitragem (usa position_size em vez de position_value)."""
+    committed = sum(t.get('position_size', 0) for t in open_trades)
+    realized_pnl = sum(float(t.get('pnl', 0) or 0) for t in closed_trades)
+    calculated = initial + realized_pnl - committed
+    delta = memory_capital - calculated
+    delta_pct = abs(delta) / max(initial, 1) * 100
+    return {
+        'strategy': 'arbi',
+        'memory_capital': round(memory_capital, 2),
+        'calculated_capital': round(calculated, 2),
+        'committed': round(committed, 2),
+        'realized_pnl': round(realized_pnl, 2),
+        'delta': round(delta, 2),
+        'delta_pct': round(delta_pct, 4),
+        'ok': delta_pct < RECONCILIATION_ALERT_PCT,
+        'ts': datetime.utcnow().isoformat(),
+    }
+
+def _reconcile_via_ledger(strategy: str, initial: float, memory_capital: float) -> dict:
+    """[v10.19] Reconciliação via replay do ledger — segunda camada de verificação.
+    Soma todos os eventos do ledger para a estratégia e compara com saldo em memória."""
+    with _ledger_lock:
+        events = [e for e in _capital_ledger if e.get('strategy') == strategy]
+    if not events:
+        return {'strategy': strategy, 'ledger_events': 0, 'ok': True, 'delta': 0, 'delta_pct': 0,
+                'ts': datetime.utcnow().isoformat()}
+    # Replay: initial + sum(RELEASE + PNL_CREDIT) - sum(RESERVE)
+    balance = initial
+    for evt in events:
+        ev_type = evt.get('event', '')
+        amount = float(evt.get('amount', 0))
+        if ev_type == 'RESERVE':
+            balance -= amount
+        elif ev_type in ('RELEASE', 'PNL_CREDIT'):
+            balance += amount
+    delta = memory_capital - balance
+    delta_pct = abs(delta) / max(initial, 1) * 100
+    return {
+        'strategy': f'{strategy}_ledger',
+        'memory_capital': round(memory_capital, 2),
+        'ledger_capital': round(balance, 2),
+        'ledger_events': len(events),
+        'delta': round(delta, 2),
+        'delta_pct': round(delta_pct, 4),
+        'ok': delta_pct < RECONCILIATION_ALERT_PCT,
+        'ts': datetime.utcnow().isoformat(),
+    }
+
+def run_reconciliation():
+    """[v10.18/v10.19] Roda reconciliação de capital — chamado pelo watchdog a cada 10min.
+    Camada 1: fórmula (initial + pnl - committed).
+    Camada 2: replay do ledger (initial + eventos).
+    Inclui stocks, crypto e arbi."""
+    global _last_reconciliation
+    now = time.time()
+    if now - _last_reconciliation < RECONCILIATION_INTERVAL_S:
+        return
+    _last_reconciliation = now
+    try:
+        with state_lock:
+            r_stocks = _reconcile_strategy('stocks', stocks_capital, INITIAL_CAPITAL_STOCKS,
+                                           list(stocks_open), list(stocks_closed))
+            r_crypto = _reconcile_strategy('crypto', crypto_capital, INITIAL_CAPITAL_CRYPTO,
+                                           list(crypto_open), list(crypto_closed))
+            r_arbi = _reconcile_strategy_arbi(arbi_capital, ARBI_CAPITAL,
+                                              list(arbi_open), list(arbi_closed))
+            # Camada 2: reconciliação via ledger
+            r_stocks_ldg = _reconcile_via_ledger('stocks', INITIAL_CAPITAL_STOCKS, stocks_capital)
+            r_crypto_ldg = _reconcile_via_ledger('crypto', INITIAL_CAPITAL_CRYPTO, crypto_capital)
+        for r in [r_stocks, r_crypto, r_arbi]:
+            _reconciliation_log.append(r)
+            if not r['ok']:
+                msg = (f'[RECON-ALERT] {r["strategy"]}: delta=${r["delta"]:,.0f} '
+                       f'({r["delta_pct"]:.2f}%) mem=${r["memory_capital"]:,.0f} '
+                       f'calc=${r["calculated_capital"]:,.0f}')
+                log.warning(msg)
+                send_whatsapp(msg)
+            else:
+                log.info(f'[RECON-OK] {r["strategy"]}: delta=${r["delta"]:,.0f} ({r["delta_pct"]:.2f}%)')
+        # [v10.19] Camada 2: ledger-based reconciliation
+        for r_ldg in [r_stocks_ldg, r_crypto_ldg]:
+            _reconciliation_log.append(r_ldg)
+            if not r_ldg['ok']:
+                msg = (f'[RECON-LEDGER-ALERT] {r_ldg["strategy"]}: delta=${r_ldg["delta"]:,.0f} '
+                       f'({r_ldg["delta_pct"]:.2f}%) events={r_ldg["ledger_events"]}')
+                log.warning(msg)
+                send_whatsapp(msg)
+            elif r_ldg.get('ledger_events', 0) > 0:
+                log.info(f'[RECON-LEDGER-OK] {r_ldg["strategy"]}: delta=${r_ldg["delta"]:,.0f} events={r_ldg["ledger_events"]}')
+        if len(_reconciliation_log) > 300:
+            _reconciliation_log[:] = _reconciliation_log[-150:]
+        # Persistir no DB
+        conn = get_db()
+        if conn:
+            try:
+                c = conn.cursor()
+                for r in [r_stocks, r_crypto, r_arbi]:
+                    c.execute("""INSERT INTO reconciliation_log
+                        (ts, strategy, memory_capital, calculated_capital, committed,
+                         realized_pnl, delta, delta_pct, ok)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (r['ts'], r['strategy'], r['memory_capital'], r['calculated_capital'],
+                         r['committed'], r['realized_pnl'], r['delta'], r['delta_pct'],
+                         1 if r['ok'] else 0))
+                # [v10.19] Ledger reconciliation — persiste delta e contagem de eventos
+                for r_ldg in [r_stocks_ldg, r_crypto_ldg]:
+                    c.execute("""INSERT INTO reconciliation_log
+                        (ts, strategy, memory_capital, calculated_capital, committed,
+                         realized_pnl, delta, delta_pct, ok)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (r_ldg['ts'], r_ldg['strategy'], r_ldg['memory_capital'],
+                         r_ldg.get('ledger_capital', 0), 0, 0,
+                         r_ldg['delta'], r_ldg['delta_pct'], 1 if r_ldg['ok'] else 0))
+                conn.commit(); c.close(); conn.close()
+            except Exception as e:
+                log.error(f'reconciliation persist: {e}')
+                try: conn.close()
+                except: pass
+    except Exception as e:
+        log.error(f'run_reconciliation: {e}')
+
+# ── [v10.18] Calibration Persistence ────────────────────────────────────
+def persist_calibration():
+    """[v10.18] Salva _calibration_tracker no MySQL a cada 5min."""
+    global _last_calibration_persist
+    now = time.time()
+    if now - _last_calibration_persist < CALIBRATION_PERSIST_INTERVAL:
+        return
+    _last_calibration_persist = now
+    conn = get_db()
+    if not conn: return
+    try:
+        c = conn.cursor()
+        for band, data in _calibration_tracker.items():
+            c.execute("""INSERT INTO calibration_tracker (band, wins, losses, total, sum_pnl_pct, updated_at)
+                VALUES (%s,%s,%s,%s,%s,NOW())
+                ON DUPLICATE KEY UPDATE
+                wins=VALUES(wins), losses=VALUES(losses), total=VALUES(total),
+                sum_pnl_pct=VALUES(sum_pnl_pct), updated_at=NOW()""",
+                (band, data['wins'], data['losses'], data['total'], data['sum_pnl_pct']))
+        conn.commit(); c.close(); conn.close()
+        log.debug('[CALIB-PERSIST] calibration_tracker saved to MySQL')
+    except Exception as e:
+        log.error(f'persist_calibration: {e}')
+        try: conn.close()
+        except: pass
+
+def load_calibration():
+    """[v10.18] Carrega _calibration_tracker do MySQL no boot — sobrevive a deploys."""
+    conn = get_db()
+    if not conn: return
+    try:
+        c = conn.cursor(dictionary=True)
+        c.execute("SELECT band, wins, losses, total, sum_pnl_pct FROM calibration_tracker")
+        loaded = 0
+        for row in c.fetchall():
+            band = row['band']
+            if band in _calibration_tracker:
+                _calibration_tracker[band]['wins'] = int(row['wins'])
+                _calibration_tracker[band]['losses'] = int(row['losses'])
+                _calibration_tracker[band]['total'] = int(row['total'])
+                _calibration_tracker[band]['sum_pnl_pct'] = float(row['sum_pnl_pct'])
+                loaded += 1
+        c.close(); conn.close()
+        if loaded > 0:
+            log.info(f'[CALIB-LOAD] Loaded {loaded} bands from MySQL: '
+                     + ', '.join(f'{b}={d["total"]}t' for b, d in _calibration_tracker.items() if d['total'] > 0))
+    except Exception as e:
+        log.error(f'load_calibration: {e}')
+        try: conn.close()
+        except: pass
+
+# ── [v10.18] Crypto Conviction Filter ───────────────────────────────────
+def check_crypto_conviction(conf_c: dict, change_24h: float, display: str) -> tuple:
+    """[v10.18] Filtro de convicção para crypto — bloqueia trades com confiança baixa
+    e movimento insuficiente. Retorna (ok: bool, reason: str)."""
+    final_conf = conf_c.get('final_confidence', 50)
+    if final_conf < CRYPTO_MIN_CONVICTION and abs(change_24h) < 3.0:
+        return False, f'conviction_low conf={final_conf:.1f} change={change_24h:.1f}%'
+    return True, ''
+
 # ── [v10.16] Daily Drawdown per Strategy ──────────────────────────────────
 def check_strategy_daily_dd(strategy: str) -> tuple:
     """[v10.16] Verifica se a estratégia atingiu o drawdown diário.
@@ -1996,7 +2235,9 @@ def is_trade_flat(trade: dict, now: datetime) -> bool:
     - Últimos 3 pontos de pnl_history ~iguais (sem tendência)
     """
     age_min = (now - datetime.fromisoformat(trade['opened_at'])).total_seconds() / 60
-    if age_min < FLAT_EXIT_MIN_AGE_MIN:
+    # [v10.18] Min hold time for crypto — evitar flat exit prematuro
+    _min_age = CRYPTO_MIN_HOLD_MIN if trade.get('asset_type') == 'crypto' else FLAT_EXIT_MIN_AGE_MIN
+    if age_min < _min_age:
         return False
     pnl_pct = abs(float(trade.get('pnl_pct', 0) or 0))
     peak = abs(float(trade.get('peak_pnl_pct', 0) or 0))
@@ -2455,6 +2696,23 @@ def _db_upsert_factor_stats(s: dict):
         conn.commit(); c.close(); conn.close()
     except Exception as e:
         log.error(f'_db_upsert_factor_stats: {e}')
+
+def _db_save_ledger_event(evt: dict):
+    """[v10.18] Persiste evento do capital ledger no MySQL."""
+    conn = get_db()
+    if not conn: return
+    try:
+        c = conn.cursor()
+        c.execute("""INSERT INTO capital_ledger (ts, strategy, event, symbol, amount, balance_after, trade_id)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (evt.get('ts'), evt.get('strategy'), evt.get('event'),
+             evt.get('symbol',''), evt.get('amount',0), evt.get('balance_after',0),
+             evt.get('trade_id','')))
+        conn.commit(); c.close()
+    except Exception as e:
+        log.error(f'_db_save_ledger_event: {e}')
+    finally:
+        conn.close()
 
 def _db_save_shadow_decision(shadow: dict):
     conn = get_db()
@@ -3293,6 +3551,31 @@ def init_all_tables():
             event_type VARCHAR(50), entity_id VARCHAR(50),
             payload_json TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_la_event (event_type))""")
+
+        # ── [v10.18] Calibration Tracker ─────────────────────────────────
+        cursor.execute("""CREATE TABLE IF NOT EXISTS calibration_tracker (
+            band VARCHAR(20) PRIMARY KEY,
+            wins INT DEFAULT 0, losses INT DEFAULT 0, total INT DEFAULT 0,
+            sum_pnl_pct DECIMAL(12,4) DEFAULT 0,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+
+        # ── [v10.18] Capital Ledger ──────────────────────────────────────
+        cursor.execute("""CREATE TABLE IF NOT EXISTS capital_ledger (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts DATETIME, strategy VARCHAR(20), event VARCHAR(20),
+            symbol VARCHAR(20), amount DECIMAL(14,2), balance_after DECIMAL(14,2),
+            trade_id VARCHAR(40),
+            INDEX idx_ledger_strategy (strategy),
+            INDEX idx_ledger_ts (ts))""")
+
+        # ── [v10.18] Reconciliation Log ──────────────────────────────────
+        cursor.execute("""CREATE TABLE IF NOT EXISTS reconciliation_log (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts DATETIME, strategy VARCHAR(20),
+            memory_capital DECIMAL(14,2), calculated_capital DECIMAL(14,2),
+            committed DECIMAL(14,2), realized_pnl DECIMAL(14,2),
+            delta DECIMAL(14,2), delta_pct DECIMAL(8,4), ok TINYINT DEFAULT 1,
+            INDEX idx_recon_ts (ts))""")
 
         # ── Migração: adicionar colunas de learning nas tabelas existentes ─
         for col_sql in [
@@ -4371,7 +4654,15 @@ def monitor_trades():
                         #   LONG:  pnl = (exit - entry) * qty  → retorna exit_price * qty   ✓
                         #   SHORT: pnl = (entry - exit) * qty  → retorna collateral + ganho ✓
                         # NÃO usar exit_price * qty para SHORT (seria capital incorreto)
-                        stocks_capital += trade['position_value'] + trade['pnl']
+                        # [v10.18] Ledger: RELEASE margin first, then PNL_CREDIT
+                        # Saldo contábil correto: RELEASE devolve margem, PNL_CREDIT ajusta lucro/prejuízo
+                        stocks_capital += trade['position_value']
+                        ledger_record('stocks', 'RELEASE', trade['symbol'],
+                                      trade['position_value'], stocks_capital, trade['id'])
+                        stocks_capital += trade['pnl']
+                        if trade['pnl'] != 0:
+                            ledger_record('stocks', 'PNL_CREDIT', trade['symbol'],
+                                          trade['pnl'], stocks_capital, trade['id'])
                         # [v10.9-CB] Circuit breaker: SL consecutivo aumenta cooldown
                         if reason == 'STOP_LOSS':
                             symbol_sl_count[sym] = symbol_sl_count.get(sym, 0) + 1
@@ -4428,8 +4719,14 @@ def monitor_trades():
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else:                                      reason='TIMEOUT'
                     if reason:
-                        # [v10.7-Fix2] position_value + pnl — correto para LONG e SHORT
-                        crypto_capital += trade['position_value'] + trade['pnl']
+                        # [v10.18] Ledger: RELEASE margin first, then PNL_CREDIT
+                        crypto_capital += trade['position_value']
+                        ledger_record('crypto', 'RELEASE', trade['symbol'],
+                                      trade['position_value'], crypto_capital, trade['id'])
+                        crypto_capital += trade['pnl']
+                        if trade['pnl'] != 0:
+                            ledger_record('crypto', 'PNL_CREDIT', trade['symbol'],
+                                          trade['pnl'], crypto_capital, trade['id'])
                         symbol_cooldown[trade['symbol']]=time.time()
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         try:
@@ -4902,6 +5199,9 @@ def stock_execution_worker():
                     ok2,reason2=_second_validation(sym,mkt,'stocks')
                     if ok2 and stocks_capital>=price*qty:
                         stocks_capital -= price*qty
+                        # [v10.18] Ledger: RESERVE
+                        ledger_record('stocks', 'RESERVE', sym,
+                                      round(price*qty, 2), stocks_capital, pre_trade_id)
                         # [V91-1] order_id já está no trade dentro do lock
                         trade = {
                             'id':pre_trade_id,'symbol':sym,'market':mkt,'asset_type':'stock',
@@ -5104,6 +5404,17 @@ def auto_trade_crypto():
                 insight_c   = generate_insight(sig_enriched_c, features_c, feat_hash_c, conf_c)
                 risk_mult_c = get_risk_multiplier(conf_c)
 
+                # [v10.18] Conviction filter — confiança mínima + movimento mínimo
+                _conv_ok, _conv_reason = check_crypto_conviction(conf_c, change_24h, display)
+                if not _conv_ok:
+                    log.info(f'[CRYPTO-CONV-BLOCK] {display}: {_conv_reason}')
+                    _csig_conv = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
+                                        source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
+                                        origin_signal_key=origin_key_c)
+                    record_shadow_decision(_csig_conv, sig_enriched_c, 'conviction_low')
+                    with learning_lock: processed_signal_ids[ms_key_c] = {'sig_id': _csig_conv, 'reason': 'conviction_low'}
+                    continue
+
                 # [v10.15] ML Gate — consulta padrões e fatores (movido para após conf_c existir)
                 _ml_ok, _ml_reason, _ml_score = should_trade_ml(
                     features_c, conf_c, asset_type='crypto')
@@ -5178,6 +5489,9 @@ def auto_trade_crypto():
                     ok2,reason2=_second_validation(display,'CRYPTO','crypto')
                     if ok2 and crypto_capital>=approved_size:
                         qty=approved_size/price; crypto_capital-=approved_size
+                        # [v10.18] Ledger: RESERVE
+                        ledger_record('crypto', 'RESERVE', display,
+                                      round(approved_size, 2), crypto_capital, pre_trade_id)
                         trade={
                             'id':pre_trade_id,'symbol':display,'market':'CRYPTO','asset_type':'crypto',
                             'direction':direction,'entry_price':price,'current_price':price,
@@ -6071,8 +6385,10 @@ def watchdog():
         try:
             evaluate_symbol_blacklist()
             check_inactivity_alert()
+            persist_calibration()    # [v10.18] salvar calibração a cada 5min
+            run_reconciliation()     # [v10.18] reconciliar capital a cada 10min
         except Exception as _wdg_e:
-            log.debug(f'watchdog v10.16 checks: {_wdg_e}')
+            log.debug(f'watchdog v10.16+ checks: {_wdg_e}')
         time.sleep(30)
         now=time.time()
 
@@ -8463,9 +8779,10 @@ def admin_db_cleanup():
 # ═══════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     port=int(os.environ.get('PORT',3001))
-    log.info(f'━━━ Egreja Investment AI v10.7.0 | {ENV.upper()} | port {port} | single-process ━━━')
+    log.info(f'━━━ Egreja Investment AI v10.18.0 | {ENV.upper()} | port {port} | single-process ━━━')
     log.info(f'FMP: {"SET" if FMP_API_KEY else "NOT SET"} | Auth: {"ENABLED" if API_SECRET_KEY else "DISABLED (dev)"} | Alerts: {"ON" if ALERTS_ENABLED else "OFF"}')
     validate_settings_on_boot()  # [v10.16]
+    load_calibration()  # [v10.18] restaurar calibração persistida
     log.info(f'Stocks ${INITIAL_CAPITAL_STOCKS/1e6:.0f}M | Crypto ${INITIAL_CAPITAL_CRYPTO/1e6:.0f}M | Arbi ${ARBI_CAPITAL/1e3:.0f}K (SEGREGATED)')
     log.info(f'Queue thresholds: WARN={URGENT_QUEUE_WARN} / CRIT={URGENT_QUEUE_CRIT}')
 

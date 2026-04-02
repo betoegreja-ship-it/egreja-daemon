@@ -450,7 +450,7 @@ class TestModulesAccessibleFromServer(unittest.TestCase):
         self.assertIsInstance(srv.ext_kill_switch, ExternalKillSwitch)
 
     def test_version_is_v1024(self):
-        self.assertEqual(srv.VERSION, 'v10.24.1')
+        self.assertEqual(srv.VERSION, 'v10.24.2')
 
     def test_ops_metrics_exists(self):
         self.assertIsNotNone(srv.ops_metrics)

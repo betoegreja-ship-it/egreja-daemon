@@ -113,7 +113,7 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
-VERSION = 'v10.24.1'
+VERSION = 'v10.24.2'
 _boot_time = time.time()
 
 # ── [v10.23] Module instances ──────────────────────────────────────────
@@ -5633,8 +5633,10 @@ def auto_trade_crypto():
                 if _dir_blocked_c:
                     log.info(f'[CRYPTO-DIR-BLOCK] {display}: {_dir_reason_c}')
                     continue
-                # [v10.14] Aplicar threshold — não entrar em sinais fracos
-                _entry_ok = (direction == 'LONG'  and score >= MIN_SCORE_AUTO_CRYPTO) or                             (direction == 'SHORT' and score <= (100 - MIN_SCORE_AUTO_CRYPTO))
+                # [v10.24.2-FIX] _crypto_composite_score() já inverte o score para SHORT
+                # (linha 4650: composite = 100 - composite). Portanto score ALTO = sinal
+                # forte para AMBAS as direções. Threshold único: score >= MIN_SCORE_AUTO_CRYPTO.
+                _entry_ok = score >= MIN_SCORE_AUTO_CRYPTO
                 if not _entry_ok:
                     log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
                     continue

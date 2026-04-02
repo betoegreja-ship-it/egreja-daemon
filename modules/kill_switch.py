@@ -90,32 +90,18 @@ class ExternalKillSwitch:
             db = get_db_func()
             cursor = db.cursor()
 
-            # [v10.24.4] Migration: rename 'key' column to 'scope_key' if old table exists
-            # 'key' is a MySQL reserved word that caused SQL errors in production
-            try:
-                cursor.execute("SELECT scope_key FROM kill_switch_state LIMIT 1")
-                cursor.fetchall()  # consume result
-            except Exception:
-                # Column doesn't exist — try to rename from old 'key' column, or create fresh
-                try:
-                    cursor.execute("ALTER TABLE kill_switch_state CHANGE COLUMN `key` scope_key VARCHAR(32) NOT NULL")
-                    logger.info("Migrated kill_switch_state: renamed 'key' → 'scope_key'")
-                    db.commit()
-                except Exception:
-                    pass  # table doesn't exist yet, will be created below
-
             # Main state table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS kill_switch_state (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    scope_key VARCHAR(32) NOT NULL UNIQUE,
+                    `key` VARCHAR(32) NOT NULL UNIQUE,
                     active BOOLEAN NOT NULL DEFAULT FALSE,
                     activated_by VARCHAR(255),
                     activated_at TIMESTAMP,
                     reason TEXT,
                     auto_resume_at TIMESTAMP NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_key (scope_key),
+                    INDEX idx_key (`key`),
                     INDEX idx_active (active),
                     INDEX idx_auto_resume (auto_resume_at)
                 )
@@ -139,7 +125,7 @@ class ExternalKillSwitch:
             # Initialize all scopes if not present
             for scope in KillSwitchScope:
                 cursor.execute("""
-                    INSERT IGNORE INTO kill_switch_state (scope_key, active, activated_by)
+                    INSERT IGNORE INTO kill_switch_state (`key`, active, activated_by)
                     VALUES (%s, FALSE, NULL)
                 """, (scope.value,))
 
@@ -198,7 +184,7 @@ class ExternalKillSwitch:
                     activated_at = %s,
                     reason = %s,
                     auto_resume_at = %s
-                WHERE scope_key = %s
+                WHERE `key` = %s
             """, (activated_by, now, reason, auto_resume_at, scope))
 
             # Log action
@@ -263,7 +249,7 @@ class ExternalKillSwitch:
                     activated_at = NULL,
                     reason = NULL,
                     auto_resume_at = NULL
-                WHERE scope_key = %s
+                WHERE `key` = %s
             """, (scope,))
 
             # Log action
@@ -335,7 +321,7 @@ class ExternalKillSwitch:
             cursor.execute("""
                 SELECT active, reason, auto_resume_at
                 FROM kill_switch_state
-                WHERE scope_key = %s
+                WHERE `key` = %s
             """, (scope,))
 
             row = cursor.fetchone()
@@ -360,7 +346,7 @@ class ExternalKillSwitch:
                         activated_at = NULL,
                         reason = NULL,
                         auto_resume_at = NULL
-                    WHERE scope_key = %s
+                    WHERE `key` = %s
                 """, (scope,))
 
                 cursor.execute("""
@@ -408,9 +394,9 @@ class ExternalKillSwitch:
             cursor = db.cursor()
 
             cursor.execute("""
-                SELECT scope_key, active, reason, activated_by, activated_at, auto_resume_at
+                SELECT `key`, active, reason, activated_by, activated_at, auto_resume_at
                 FROM kill_switch_state
-                ORDER BY scope_key
+                ORDER BY `key`
             """)
 
             for row in cursor.fetchall():

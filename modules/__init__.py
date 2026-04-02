@@ -1,5 +1,5 @@
 """
-Egreja Investment AI — Modular Architecture v10.23
+Egreja Investment AI — Modular Architecture v10.24
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Institutional-grade modules extracted from the monolith.
 Each module is self-contained with no circular dependencies.

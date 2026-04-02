@@ -113,7 +113,7 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
-VERSION = 'v10.23.0'
+VERSION = 'v10.24.0'
 _boot_time = time.time()
 
 # ── [v10.23] Module instances ──────────────────────────────────────────
@@ -265,8 +265,8 @@ RISK_MULT_MIN          = float(os.environ.get('RISK_MULT_MIN', 0.30))       # [L
 RISK_MULT_MAX          = float(os.environ.get('RISK_MULT_MAX', 1.50))       # [L-9][v10.15] multiplicador máximo (era 1.15)
 # [v10.9-Learning] Dead zone de confiança: faixa onde o histórico mostra performance negativa
 # Dados de 10 dias: faixa 55-64 = 38-44% WR, -$53K em perdas. Não executar.
-LEARNING_DEAD_ZONE_LOW  = float(os.environ.get('LEARNING_DEAD_ZONE_LOW',  55.0))  # início da dead zone
-LEARNING_DEAD_ZONE_HIGH = float(os.environ.get('LEARNING_DEAD_ZONE_HIGH', 65.0))  # fim da dead zone (= threshold HIGH)
+LEARNING_DEAD_ZONE_LOW  = float(os.environ.get('LEARNING_DEAD_ZONE_LOW',  58.0))  # [v10.24] era 55 — estreitado para não colidir com conviction=52
+LEARNING_DEAD_ZONE_HIGH = float(os.environ.get('LEARNING_DEAD_ZONE_HIGH', 63.0))  # [v10.24] era 65 — dead zone mais cirúrgica [58,63)
 SHADOW_TRACK_REASONS   = {'confidence_low','market_closed','risk_blocked','symbol_open','kill_switch','cooldown','capital'}
 # ── [v10.16] Daily drawdown per strategy ──────────────────────────────────
 DAILY_DD_STOCKS_PCT   = float(os.environ.get('DAILY_DD_STOCKS_PCT', 1.5))   # max 1.5% drawdown diário em stocks
@@ -305,7 +305,7 @@ CALIBRATION_PERSIST_INTERVAL = int(os.environ.get('CALIBRATION_PERSIST_INTERVAL'
 RECONCILIATION_INTERVAL_S    = int(os.environ.get('RECONCILIATION_INTERVAL_S', 600))     # 10 min
 RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))    # alertar se >2% desvio
 # ── [v10.18] Crypto conviction filter ───────────────────────────────────
-CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 58))        # confiança mínima para crypto
+CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 52))        # [v10.24] era 58 — muito restritivo, bloqueava quase tudo em mercado lateral
 CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15))          # hold mínimo (min) para flat exit
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
@@ -2187,7 +2187,7 @@ def check_crypto_conviction(conf_c: dict, change_24h: float, display: str) -> tu
     """[v10.18] Filtro de convicção para crypto — bloqueia trades com confiança baixa
     e movimento insuficiente. Retorna (ok: bool, reason: str)."""
     final_conf = conf_c.get('final_confidence', 50)
-    if final_conf < CRYPTO_MIN_CONVICTION and abs(change_24h) < 3.0:
+    if final_conf < CRYPTO_MIN_CONVICTION and abs(change_24h) < 2.0:  # [v10.24] era 3.0 — 2% já é movimento suficiente para validar
         return False, f'conviction_low conf={final_conf:.1f} change={change_24h:.1f}%'
     return True, ''
 
@@ -5187,7 +5187,7 @@ def stock_execution_worker():
                     log.debug(f"COMPOSITE_ADJ stock {sym}: {_disc_adj:+d} via {_disc_key}")
                 if abs(_st_adj) >= 5:
                     log.debug(f"STOCK_SCORE_ADJ: {sym} {_score_before_t}→{score} ({_st_reason})")
-                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO_CRYPTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO_CRYPTO) else 'MANTER')  # [v10.14]
+                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')  # [v10.24-FIX] was MIN_SCORE_AUTO_CRYPTO — bug: stock signals used crypto threshold
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),
                     'score': score, 'signal': signal_val,
@@ -5544,7 +5544,7 @@ def auto_trade_crypto():
             for sym in CRYPTO_SYMBOLS:
                 display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)
                 change_24h=crypto_momentum.get(sym,0)
-                if price<=0 or abs(change_24h)<0.5:
+                if price<=0 or abs(change_24h)<0.3:  # [v10.24] era 0.5 — muito restritivo para mercado lateral
                     log.info(f'[CRYPTO-SKIP] {display}: price={price:.2f} change={change_24h:.2f}%')
                     continue
                 direction='LONG' if change_24h>0 else 'SHORT'
@@ -7409,7 +7409,7 @@ def signals():
                     # fallback se klines ainda não carregadas (startup)
                     base  = min(50 + int(strength * 5), 95)
                     score = base if change_24h > 0 else (100 - base)
-                signal = 'COMPRA' if score >= 70 else ('VENDA' if score <= 30 else 'MANTER')
+                signal = 'COMPRA' if score >= MIN_SCORE_AUTO_CRYPTO else ('VENDA' if score <= (100 - MIN_SCORE_AUTO_CRYPTO) else 'MANTER')  # [v10.24-FIX] era 70/30 hardcoded — deve usar mesmo threshold do motor
 
             crypto_signals.append({
                 'symbol':display,'price':price,'signal':signal,'score':score,

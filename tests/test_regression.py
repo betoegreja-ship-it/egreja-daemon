@@ -220,19 +220,19 @@ class TestCheckCryptoConvictionReal(unittest.TestCase):
     """v10.18: Conviction filter para crypto."""
 
     def test_blocks_low_conviction_small_move(self):
-        """Conf<58 e change<3% → bloqueado."""
-        ok, reason = srv.check_crypto_conviction({'final_confidence': 52}, 1.5, 'ETH')
+        """Conf<52 e change<2% → bloqueado. [v10.24] thresholds ajustados."""
+        ok, reason = srv.check_crypto_conviction({'final_confidence': 45}, 1.0, 'ETH')
         self.assertFalse(ok)
         self.assertIn('conviction_low', reason)
 
     def test_allows_low_conviction_big_move(self):
-        """Conf<58 mas change≥3% → permitido."""
-        ok, reason = srv.check_crypto_conviction({'final_confidence': 52}, 4.5, 'ETH')
+        """Conf<52 mas change≥2% → permitido. [v10.24] thresholds ajustados."""
+        ok, reason = srv.check_crypto_conviction({'final_confidence': 45}, 2.5, 'ETH')
         self.assertTrue(ok)
 
     def test_allows_high_conviction(self):
-        """Conf≥58 → sempre permitido."""
-        ok, reason = srv.check_crypto_conviction({'final_confidence': 65}, 0.5, 'ETH')
+        """Conf≥52 → sempre permitido. [v10.24] threshold ajustado."""
+        ok, reason = srv.check_crypto_conviction({'final_confidence': 55}, 0.5, 'ETH')
         self.assertTrue(ok)
 
 

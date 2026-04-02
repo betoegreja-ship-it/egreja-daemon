@@ -619,7 +619,7 @@ class PerformanceStats:
                 trades_by_month[month_key].append(trade)
 
             return {
-                month: self._compute_metrics(trades)
+                month: self._compute_metrics(trades_by_month[month])
                 for month in sorted(trades_by_month.keys())
                 if trades_by_month[month]
             }

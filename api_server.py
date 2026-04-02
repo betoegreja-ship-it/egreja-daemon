@@ -3593,6 +3593,13 @@ def init_all_tables():
             peak_pnl_pct DECIMAL(10,4) DEFAULT 0, fx_rate DECIMAL(10,4),
             status VARCHAR(10) DEFAULT 'OPEN', close_reason VARCHAR(20),
             opened_at DATETIME, closed_at DATETIME, extensions INT DEFAULT 0)""")
+        # [v10.23] Colunas de custo de aluguel
+        for _col_sql in [
+            "ALTER TABLE arbi_trades ADD COLUMN lending_cost DECIMAL(10,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN lending_rate_annual DECIMAL(6,4) DEFAULT 0",
+        ]:
+            try: cursor.execute(_col_sql); conn.commit()
+            except: pass  # coluna já existe
         cursor.execute("""CREATE TABLE IF NOT EXISTS audit_events (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             event_type VARCHAR(50), entity_type VARCHAR(30), entity_id VARCHAR(50),
@@ -4020,8 +4027,10 @@ def _db_save_arbi_trade(trade):
         cursor=conn.cursor(); t=trade
         cursor.execute("""INSERT INTO arbi_trades (id,pair_id,name,leg_a,leg_b,mkt_a,mkt_b,
             direction,buy_leg,buy_mkt,short_leg,short_mkt,entry_spread,current_spread,
-            position_size,pnl,pnl_pct,peak_pnl_pct,fx_rate,status,close_reason,opened_at,closed_at,extensions)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            position_size,pnl,pnl_pct,peak_pnl_pct,fx_rate,status,close_reason,opened_at,closed_at,extensions,
+            fx_cost,slippage_cost_a,slippage_cost_b,exchange_fee_a,exchange_fee_b,
+            lending_cost,lending_rate_annual,total_cost_estimated)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_spread=VALUES(current_spread),pnl=VALUES(pnl),
             pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
             status=VALUES(status),close_reason=VALUES(close_reason),
@@ -4031,7 +4040,10 @@ def _db_save_arbi_trade(trade):
              t.get('short_leg'),t.get('short_mkt'),t.get('entry_spread'),t.get('current_spread'),
              t.get('position_size'),t.get('pnl',0),t.get('pnl_pct',0),t.get('peak_pnl_pct',0),
              t.get('fx_rate'),t.get('status','OPEN'),t.get('close_reason'),
-             t.get('opened_at'),t.get('closed_at'),t.get('extensions',0)))
+             t.get('opened_at'),t.get('closed_at'),t.get('extensions',0),
+             t.get('fx_cost',0),t.get('slippage_cost_a',0),t.get('slippage_cost_b',0),
+             t.get('exchange_fee_a',0),t.get('exchange_fee_b',0),
+             t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0)))
         conn.commit(); cursor.close(); conn.close()
     except Exception as e: log.error(f'db_save_arbi_trade: {e}')
 
@@ -6539,6 +6551,13 @@ def arbi_scan_loop():
                         _slippage_a_bps = round(min(pos / 5e6 * 10, 5), 2)  # estimativa conservadora
                         _slippage_b_bps = round(min(pos / 5e6 * 10, 5), 2)
                         _slippage_cost  = round(pos * (_slippage_a_bps + _slippage_b_bps) / 10000, 2)
+                        # [v10.23] Custo de aluguel de ações (stock lending) para a perna short
+                        # Taxas anuais típicas: B3 blue chips ~2% a.a., NYSE ADRs ~0.5% a.a.
+                        # Custo = (position_size/2) × taxa_anual × (timeout_h / 8760)
+                        _lending_rates = {'B3': 0.020, 'NYSE': 0.005, 'LSE': 0.008, 'EURONEXT': 0.008}  # % anual
+                        _short_mkt = pair['mkt_b'] if spread['direction']=='LONG_A' else pair['mkt_a']
+                        _lending_rate = _lending_rates.get(_short_mkt, 0.010)
+                        _lending_cost = round((pos / 2) * _lending_rate * (ARBI_TIMEOUT_H / 8760), 2)
                         _qty_a = spread.get('qty_a_est', 0)
                         _qty_b = spread.get('qty_b_est', 0)
                         trade={'id':trade_id,'pair_id':pair['id'],'name':pair['name'],
@@ -6577,7 +6596,9 @@ def arbi_scan_loop():
                             'slippage_cost_a':round(_slippage_cost/2,2),
                             'slippage_cost_b':round(_slippage_cost/2,2),
                             'slippage_bps_total':round(_slippage_a_bps+_slippage_b_bps,2),
-                            'total_cost_estimated':round(_fee_b3 + _fx_cost + _slippage_cost,2),
+                            'lending_cost':_lending_cost,
+                            'lending_rate_annual':_lending_rate,
+                            'total_cost_estimated':round(_fee_b3 + _fx_cost + _slippage_cost + _lending_cost,2),
                             # Audit flags
                             'audit_flag':'valid',
                             'simulation_model_version':'v2.0',

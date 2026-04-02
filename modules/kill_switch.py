@@ -90,18 +90,31 @@ class ExternalKillSwitch:
             db = get_db_func()
             cursor = db.cursor()
 
+            # [v10.24.5] Robust migration: handle both 'key' and 'scope_key' columns
+            try:
+                cursor.execute("SELECT scope_key FROM kill_switch_state LIMIT 1")
+                cursor.fetchall()
+                logger.debug("kill_switch_state: scope_key column exists")
+            except Exception:
+                try:
+                    cursor.execute("ALTER TABLE kill_switch_state CHANGE COLUMN `key` scope_key VARCHAR(32) NOT NULL")
+                    logger.info("Migrated kill_switch_state: renamed 'key' -> 'scope_key'")
+                    db.commit()
+                except Exception:
+                    pass  # table doesn't exist yet, will be created below
+
             # Main state table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS kill_switch_state (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    `key` VARCHAR(32) NOT NULL UNIQUE,
+                    scope_key VARCHAR(32) NOT NULL UNIQUE,
                     active BOOLEAN NOT NULL DEFAULT FALSE,
                     activated_by VARCHAR(255),
                     activated_at TIMESTAMP,
                     reason TEXT,
                     auto_resume_at TIMESTAMP NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_key (`key`),
+                    INDEX idx_key (scope_key),
                     INDEX idx_active (active),
                     INDEX idx_auto_resume (auto_resume_at)
                 )
@@ -113,7 +126,7 @@ class ExternalKillSwitch:
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     scope VARCHAR(32) NOT NULL,
                     action VARCHAR(32) NOT NULL,
-                    by VARCHAR(255),
+                    `by` VARCHAR(255),
                     reason TEXT,
                     ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     INDEX idx_scope (scope),
@@ -125,7 +138,7 @@ class ExternalKillSwitch:
             # Initialize all scopes if not present
             for scope in KillSwitchScope:
                 cursor.execute("""
-                    INSERT IGNORE INTO kill_switch_state (`key`, active, activated_by)
+                    INSERT IGNORE INTO kill_switch_state (scope_key, active, activated_by)
                     VALUES (%s, FALSE, NULL)
                 """, (scope.value,))
 
@@ -184,7 +197,7 @@ class ExternalKillSwitch:
                     activated_at = %s,
                     reason = %s,
                     auto_resume_at = %s
-                WHERE `key` = %s
+                WHERE scope_key = %s
             """, (activated_by, now, reason, auto_resume_at, scope))
 
             # Log action
@@ -249,7 +262,7 @@ class ExternalKillSwitch:
                     activated_at = NULL,
                     reason = NULL,
                     auto_resume_at = NULL
-                WHERE `key` = %s
+                WHERE scope_key = %s
             """, (scope,))
 
             # Log action
@@ -321,7 +334,7 @@ class ExternalKillSwitch:
             cursor.execute("""
                 SELECT active, reason, auto_resume_at
                 FROM kill_switch_state
-                WHERE `key` = %s
+                WHERE scope_key = %s
             """, (scope,))
 
             row = cursor.fetchone()
@@ -346,7 +359,7 @@ class ExternalKillSwitch:
                         activated_at = NULL,
                         reason = NULL,
                         auto_resume_at = NULL
-                    WHERE `key` = %s
+                    WHERE scope_key = %s
                 """, (scope,))
 
                 cursor.execute("""
@@ -394,9 +407,9 @@ class ExternalKillSwitch:
             cursor = db.cursor()
 
             cursor.execute("""
-                SELECT `key`, active, reason, activated_by, activated_at, auto_resume_at
+                SELECT scope_key, active, reason, activated_by, activated_at, auto_resume_at
                 FROM kill_switch_state
-                ORDER BY `key`
+                ORDER BY scope_key
             """)
 
             for row in cursor.fetchall():

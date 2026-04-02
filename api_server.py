@@ -113,7 +113,7 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
-VERSION = 'v10.24.0'
+VERSION = 'v10.24.1'
 _boot_time = time.time()
 
 # ── [v10.23] Module instances ──────────────────────────────────────────
@@ -4787,7 +4787,7 @@ def _update_market_regime():
     with state_lock: mom=dict(crypto_momentum)
     if not mom: return
     vals=list(mom.values()); n=len(vals)
-    trending=sum(1 for v in vals if abs(v)>2.0); high_vol=sum(1 for v in vals if abs(v)>5.0)
+    trending=sum(1 for v in vals if abs(v)>2.0); high_vol=sum(1 for v in vals if abs(v)>8.0)  # [v10.24.1] era 5.0 — crypto volátil por natureza, 5% é normal
     mode='HIGH_VOL' if high_vol/n>0.4 else ('TRENDING' if trending/n>0.6 else 'RANGING')
     avg=sum(abs(v) for v in vals)/n
     vol='HIGH' if avg>4 else ('LOW' if avg<1 else 'NORMAL')
@@ -5539,7 +5539,7 @@ def auto_trade_crypto():
         beat('auto_trade_crypto')
         try:
             if market_regime.get('mode')=='HIGH_VOL':
-                log.info('Crypto paused: HIGH_VOL'); continue
+                log.info('[CRYPTO] HIGH_VOL regime — sizing reduced 0.6x via get_regime_multiplier')  # [v10.24.1] não bloquear mais — sizing já é reduzido
             log.info(f'[CRYPTO-LOOP] precos={len(crypto_prices)} momentum={len(crypto_momentum)} regime={market_regime.get("mode")}')
             for sym in CRYPTO_SYMBOLS:
                 display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)

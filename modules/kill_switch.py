@@ -105,6 +105,9 @@ class ExternalKillSwitch:
                 elif 'key' in cols:
                     self._key_col = '`key`'
                     logger.info("kill_switch_state: using column `key`")
+                elif 'scope' in cols:
+                    self._key_col = 'scope'
+                    logger.info("kill_switch_state: using column scope")
                 else:
                     self._key_col = '`key`'
                     logger.warning(f"kill_switch_state: no key column found in {cols}, will use `key`")

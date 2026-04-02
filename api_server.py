@@ -215,7 +215,7 @@ ARBI_MAX_SPREAD      = float(os.environ.get('ARBI_MAX_SPREAD', 15.0))  # [v10.9]
 ARBI_TP_SPREAD       = float(os.environ.get('ARBI_TP_SPREAD',  0.20))   # [v10.14] BTG: era 0.5%
 ARBI_SL_PCT          = float(os.environ.get('ARBI_SL_PCT',    0.80))   # [v10.14] BTG: era 1.5%
 ARBI_TIMEOUT_H       = float(os.environ.get('ARBI_TIMEOUT_H',  48))    # [v10.14] BTG: era 72h
-ARBI_POS_SIZE        = float(os.environ.get('ARBI_POS_SIZE', 50_000))  # [v10.23] TOTAL das 2 pernas (long+short); cada perna = POS_SIZE/2
+ARBI_POS_SIZE        = float(os.environ.get('ARBI_POS_SIZE', 50_000))
 ARBI_MAX_POSITIONS   = int(os.environ.get('ARBI_MAX_POSITIONS', 8))
 ARBI_MAX_DAILY_LOSS  = float(os.environ.get('ARBI_MAX_DAILY_LOSS_PCT', 1.5))
 ARBI_KILL_SWITCH     = False
@@ -6621,9 +6621,7 @@ def arbi_monitor_loop():
                             trade['pnl_pct'] = 0.0
                             trade['pnl'] = 0.0
                             continue
-                    # [v10.23-FIX] position_size = TOTAL das 2 pernas; spread_change aplica-se a UMA perna
-                    # PnL real = spread_change × (position_size / 2) — cada perna = metade do total
-                    trade['pnl']=round(trade['pnl_pct']/100*float(trade['position_size'])/2,2)
+                    trade['pnl']=round(trade['pnl_pct']/100*float(trade['position_size']),2)
                     trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
                     peak=trade['peak_pnl_pct']
                     h=trade.setdefault('pnl_history',[]); h.append(trade['pnl_pct'])
@@ -6976,7 +6974,7 @@ def fix_corrupted_arbi_trade():
         old_spread = float(row.get('current_spread',0))
         # Corrigir no banco
         c.execute("UPDATE arbi_trades SET pnl=%s, pnl_pct=%s, current_spread=%s, close_reason=%s WHERE id=%s",
-                  (correct_pnl, correct_pnl/float(row.get('position_size',1))*200, row.get('entry_spread',0),
+                  (correct_pnl, correct_pnl/float(row.get('position_size',1))*100, row.get('entry_spread',0),
                    'CORRUPTED_DATA_FIXED', trade_id))
         conn.commit()
         # Ajustar arbi_capital em memória

@@ -77,6 +77,17 @@ try:
     from modules.stats_engine import PerformanceStats
     from modules.kill_switch import ExternalKillSwitch, KillSwitchMiddleware, ResumeMode
     from modules.ops_metrics import OpsMetricsCollector, AlertLevel
+    # [v10.25] Derivatives module imports
+    from modules.derivatives.config import get_config as get_deriv_config, DerivativesConfig, ActiveStatus
+    from modules.derivatives.schema import create_derivatives_tables
+    from modules.derivatives.providers import ProviderManager, SimulatedMarketDataProvider
+    from modules.derivatives.services import (OptionsChainCache, FuturesChainCache, DividendEventService,
+        RatesCurveService, GreeksCalculator, CalibrationService, StrategyScorecard, StructuredOrderExecutor,
+        NAVCalculatorService, ImpliedVolEngine)
+    from modules.derivatives.liquidity import LiquidityScoreEngine, PromotionEngine, ActiveStatusRegistry
+    from modules.derivatives.strategies import (pcp_scan_loop, fst_scan_loop, roll_arb_scan_loop,
+        etf_basket_scan_loop, skew_arb_scan_loop, interlisted_scan_loop, dividend_arb_scan_loop, vol_arb_scan_loop)
+    from modules.derivatives.endpoints import create_strategies_blueprint
     _MODULES_LOADED = True
 except Exception as _mod_err:
     import traceback as _tb
@@ -102,12 +113,76 @@ except Exception as _mod_err:
     OpsMetricsCollector = type('OpsMetricsCollector', (), {'__init__': lambda s: None, 'record_memory': lambda s: {}, 'record_drift': lambda *a,**k: None, 'record_worker_cycle': lambda *a,**k: None, 'record_endpoint_latency': lambda *a,**k: None, 'record_circuit_breaker_event': lambda *a,**k: None, 'get_status': lambda s: {}, 'generate_daily_audit': lambda s: {}, 'get_drift_report': lambda s: {}, 'get_active_alerts': lambda s: {}})
     class AlertLevel:
         OK='OK'; WARNING='WARNING'; CRITICAL='CRITICAL'; FREEZE='FREEZE'
+    # [v10.25] Derivatives stubs (fallback if modules not installed)
+    class DerivativesConfig:
+        STRATEGIES = []
+    def get_deriv_config(): return DerivativesConfig()
+    class ActiveStatus:
+        OBSERVE='OBSERVE'; SHADOW_EXEC='SHADOW_EXEC'; PAPER_SMALL='PAPER_SMALL'; PAPER_FULL='PAPER_FULL'; DISABLED='DISABLED'
+    def create_derivatives_tables(c): pass
+    class SimulatedMarketDataProvider: pass
+    class ProviderManager:
+        def __init__(self): pass
+        def get_provider(self): return None
+    class LiquidityScoreEngine: pass
+    class PromotionEngine: pass
+    class ActiveStatusRegistry: pass
+    OptionsChainCache = FuturesChainCache = DividendEventService = RatesCurveService = None
+    GreeksCalculator = CalibrationService = StrategyScorecard = StructuredOrderExecutor = None
+    NAVCalculatorService = ImpliedVolEngine = None
+    def create_strategies_blueprint(**kw):
+        from flask import Blueprint; return Blueprint('strategies', __name__)
+    pcp_scan_loop = fst_scan_loop = roll_arb_scan_loop = etf_basket_scan_loop = None
+    skew_arb_scan_loop = interlisted_scan_loop = dividend_arb_scan_loop = vol_arb_scan_loop = None
 
 logging.basicConfig(level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger('egreja')
 
 app = Flask(__name__)
+
+# ═══ [v10.25] DERIVATIVES MODULE INITIALIZATION ═══
+_deriv_config = get_deriv_config()
+_deriv_provider_mgr = ProviderManager()
+try:
+    _sim_provider = SimulatedMarketDataProvider()
+    _deriv_provider_mgr._providers = {'simulated': _sim_provider}
+    _deriv_provider_mgr._active = _sim_provider
+    log.info('[v10.25] Derivatives: SimulatedMarketDataProvider active (paper mode)')
+except Exception as e:
+    log.warning(f'[v10.25] Derivatives provider init: {e}')
+
+_deriv_services = {}
+try:
+    _deriv_services['options_cache'] = OptionsChainCache() if OptionsChainCache else None
+    _deriv_services['futures_cache'] = FuturesChainCache() if FuturesChainCache else None
+    _deriv_services['dividend_svc'] = DividendEventService() if DividendEventService else None
+    _deriv_services['rates_svc'] = RatesCurveService() if RatesCurveService else None
+    _deriv_services['greeks_calc'] = GreeksCalculator() if GreeksCalculator else None
+    _deriv_services['calibration_svc'] = CalibrationService() if CalibrationService else None
+    _deriv_services['scorecard_svc'] = StrategyScorecard() if StrategyScorecard else None
+    _deriv_services['order_executor'] = StructuredOrderExecutor() if StructuredOrderExecutor else None
+    _deriv_services['nav_calc'] = NAVCalculatorService() if NAVCalculatorService else None
+    _deriv_services['iv_engine'] = ImpliedVolEngine() if ImpliedVolEngine else None
+    _deriv_services['liquidity_engine'] = LiquidityScoreEngine() if LiquidityScoreEngine else None
+    _deriv_services['promotion_engine'] = PromotionEngine() if PromotionEngine else None
+    _deriv_services['status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None
+    log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
+except Exception as e:
+    log.warning(f'[v10.25] Derivatives services init: {e}')
+# ═══ END DERIVATIVES INIT ═══
+
+# [v10.25] Register derivatives strategies blueprint
+try:
+    _strategies_bp = create_strategies_blueprint(
+        get_db_fn=lambda: get_db() if 'get_db' in dir() else None,
+        log=log if 'log' in dir() else logging.getLogger('egreja'),
+        auth_mgr=None,  # will be set after auth_manager init
+    )
+    app.register_blueprint(_strategies_bp, url_prefix='/strategies')
+    log.info('[v10.25] Derivatives strategies blueprint registered at /strategies/*')
+except Exception as e:
+    log.warning(f'[v10.25] Strategies blueprint registration: {e}')
 CORS(app)
 
 # ═══════════════════════════════════════════════════════════════
@@ -252,7 +327,16 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'watchdog':               90,
     'shadow_evaluator_loop':  1800,  # 30 min
     'network_sync_loop':      150,   # [v10.9] 2.5min
-    'report_scheduler':       150,   # acorda a cada 60s — 30 sleeps de 60s mas beat intermediário
+    'report_scheduler':       150,   # acorda a cada 60s — 30 sleeps de 60s mas beat intermediário,
+    # [v10.25] Derivatives scan loops
+    'pcp_scan_loop': 300,
+    'fst_scan_loop': 300,
+    'roll_arb_scan_loop': 300,
+    'etf_basket_scan_loop': 300,
+    'skew_arb_scan_loop': 300,
+    'interlisted_scan_loop': 300,
+    'dividend_arb_scan_loop': 600,
+    'vol_arb_scan_loop': 300,
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -3851,6 +3935,12 @@ def init_all_tables():
         except Exception as e:
             if 'Duplicate key name' not in str(e) and 'already exists' not in str(e).lower():
                 log.debug(f'Migration uq_origin: {e}')
+        # [v10.25] Derivatives tables
+        try:
+            create_derivatives_tables(conn)
+            log.info('[v10.25] Derivatives tables created/verified')
+        except Exception as e:
+            log.warning(f'[v10.25] Derivatives tables: {e}')
         conn.commit(); cursor.close(); conn.close()
         log.info('All tables created/verified')
     except Exception as e: log.error(f'init_all_tables: {e}')
@@ -6872,6 +6962,38 @@ def start_background_threads():
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
     }
+    # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
+    _deriv_loop_args = dict(
+        beat_fn=beat, get_db_fn=get_db, log=log,
+        provider_mgr=_deriv_provider_mgr if '_deriv_provider_mgr' in dir() else None,
+        services=_deriv_services if '_deriv_services' in dir() else {},
+        risk_check_fn=lambda strat, sym, notional: (True, 'OK'),  # paper mode: always approve
+        audit_fn=lambda evt, data: log.debug(f'[DERIV-AUDIT] {evt}: {data}'),
+    )
+    _deriv_loops = {
+        'pcp_scan_loop': pcp_scan_loop,
+        'fst_scan_loop': fst_scan_loop,
+        'roll_arb_scan_loop': roll_arb_scan_loop,
+        'etf_basket_scan_loop': etf_basket_scan_loop,
+        'skew_arb_scan_loop': skew_arb_scan_loop,
+        'interlisted_scan_loop': interlisted_scan_loop,
+        'dividend_arb_scan_loop': dividend_arb_scan_loop,
+        'vol_arb_scan_loop': vol_arb_scan_loop,
+    }
+    for dname, dfn in _deriv_loops.items():
+        if dfn is None:
+            log.warning(f'[v10.25] {dname} not available (stub mode)')
+            continue
+        def _make_deriv_wrapper(fn, name, args):
+            def wrapper():
+                try:
+                    fn(**args)
+                except Exception as e:
+                    log.error(f'[v10.25] {name} crashed: {e}')
+                    import traceback; traceback.print_exc()
+            return wrapper
+        _wrapped = _make_deriv_wrapper(dfn, dname, _deriv_loop_args)
+        defs[dname] = _wrapped
     now=time.time()
     for name,fn in defs.items():
         thread_fns[name]=fn; thread_restart_count[name]=0

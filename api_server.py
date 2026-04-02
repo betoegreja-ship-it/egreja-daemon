@@ -113,7 +113,7 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
-VERSION = 'v10.24.4'
+VERSION = 'v10.24.5'
 _boot_time = time.time()
 
 # ── [v10.23] Module instances ──────────────────────────────────────────
@@ -2418,7 +2418,7 @@ def check_directional_exposure(direction: str, strategy: str = 'stocks') -> tupl
     pct = (same_dir / total) * 100 if total > 0 else 0
     stats = {'total': total, 'long': longs, 'short': shorts, 'same_dir_pct': round(pct, 1)}
     _dir_limit = MAX_DIRECTIONAL_PCT_CRYPTO if strategy == 'crypto' else MAX_DIRECTIONAL_PCT  # [v10.24.4]
-    if pct >= _dir_limit:
+    if pct > _dir_limit:  # [v10.24.5] > not >= so 100% limit allows all-same-direction
         return True, f'DIRECTIONAL_LIMIT ({direction}={same_dir}/{total}={pct:.0f}%>{_dir_limit:.0f}%)', stats
     return False, 'OK', stats
 

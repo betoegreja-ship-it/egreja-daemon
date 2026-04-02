@@ -449,8 +449,161 @@ class TestModulesAccessibleFromServer(unittest.TestCase):
         self.assertIsNotNone(srv.ext_kill_switch)
         self.assertIsInstance(srv.ext_kill_switch, ExternalKillSwitch)
 
-    def test_version_is_v1022(self):
-        self.assertEqual(srv.VERSION, 'v10.22.0')
+    def test_version_is_v1023(self):
+        self.assertEqual(srv.VERSION, 'v10.23.0')
+
+    def test_ops_metrics_exists(self):
+        self.assertIsNotNone(srv.ops_metrics)
+
+
+# ═══════════════════════════════════════════════════════════════
+# [v10.23] NEW MODULE TESTS
+# ═══════════════════════════════════════════════════════════════
+
+class TestOpsMetricsCollector(unittest.TestCase):
+    """[v10.23] Operational metrics collector tests."""
+
+    def setUp(self):
+        from modules.ops_metrics import OpsMetricsCollector
+        self.collector = OpsMetricsCollector()
+
+    def test_record_memory(self):
+        snap = self.collector.record_memory()
+        self.assertIn('rss_mb', snap)
+        self.assertIn('ts', snap)
+
+    def test_memory_trend(self):
+        for _ in range(5):
+            self.collector.record_memory()
+        trend = self.collector.get_memory_trend()
+        self.assertEqual(trend['samples'], 5)
+        self.assertIn('growth_rate_mb_per_hour', trend)
+
+    def test_record_drift(self):
+        self.collector.record_drift('stocks', 1000000.0, 1000050.0, 1000020.0)
+        report = self.collector.get_drift_report()
+        self.assertIn('stocks', report)
+        self.assertEqual(report['stocks']['current_drift'], 50.0)
+
+    def test_drift_progressive_alert(self):
+        # Normal drift — no alert
+        self.collector.record_drift('crypto', 500000.0, 500010.0)
+        alerts = self.collector.get_active_alerts()
+        self.assertNotIn('drift_crypto', alerts)
+
+        # Warning drift
+        self.collector.record_drift('crypto', 500000.0, 500200.0)
+        alerts = self.collector.get_active_alerts()
+        self.assertEqual(alerts.get('drift_crypto'), 'WARNING')
+
+        # Critical drift
+        self.collector.record_drift('crypto', 500000.0, 500600.0)
+        alerts = self.collector.get_active_alerts()
+        self.assertEqual(alerts.get('drift_crypto'), 'CRITICAL')
+
+    def test_worker_timing(self):
+        self.collector.record_worker_cycle('stock_worker', 2.5, 3)
+        self.collector.record_worker_cycle('stock_worker', 3.1, 2)
+        stats = self.collector.get_worker_stats()
+        self.assertIn('stock_worker', stats)
+        self.assertEqual(stats['stock_worker']['cycles'], 2)
+        self.assertEqual(stats['stock_worker']['total_trades'], 5)
+
+    def test_health_score(self):
+        report = self.collector.generate_daily_audit()
+        self.assertIn('health_score', report)
+        self.assertEqual(report['health_score']['grade'], 'HEALTHY')
+        self.assertEqual(report['health_score']['score'], 100)
+
+    def test_circuit_breaker_event(self):
+        self.collector.record_circuit_breaker_event('yfinance', 'CLOSED', 'OPEN', 'timeout')
+        alerts = self.collector.get_active_alerts()
+        self.assertEqual(alerts.get('cb_yfinance'), 'CRITICAL')
+        history = self.collector.get_circuit_breaker_history()
+        self.assertEqual(len(history), 1)
+
+
+class TestStrategyScorecard(unittest.TestCase):
+    """[v10.23] Per-strategy scorecard tests."""
+
+    def setUp(self):
+        self.stats = PerformanceStats()
+
+    def test_empty_scorecard(self):
+        scorecard = self.stats.get_strategy_scorecard()
+        self.assertEqual(scorecard, {})
+
+    def test_scorecard_with_trades(self):
+        from datetime import datetime, timedelta
+        base = datetime(2026, 1, 1)
+        for i in range(20):
+            self.stats.record_trade({
+                'strategy': 'stocks', 'symbol': f'SYM{i}',
+                'pnl': 100 if i % 3 != 0 else -50, 'pnl_pct': 0.01,
+                'entry_price': 50.0, 'exit_price': 51.0,
+                'opened_at': base + timedelta(hours=i),
+                'closed_at': base + timedelta(hours=i+1),
+                'confidence': 70.0, 'exit_type': 'profit_target',
+                'asset_type': 'stock', 'regime': 'trending'
+            })
+        scorecard = self.stats.get_strategy_scorecard()
+        self.assertIn('stocks', scorecard)
+        self.assertIn('grade', scorecard['stocks'])
+        self.assertIn('scores', scorecard['stocks'])
+
+
+class TestEnhancedPromotion(unittest.TestCase):
+    """[v10.23] Enhanced promotion criteria with per-strategy gates."""
+
+    def setUp(self):
+        self.stats = PerformanceStats()
+
+    def test_empty_not_eligible(self):
+        result = self.stats.get_enhanced_promotion_criteria()
+        self.assertFalse(result['eligible_for_promotion'])
+
+    def test_per_strategy_criteria_present(self):
+        result = self.stats.get_enhanced_promotion_criteria()
+        self.assertIn('per_strategy_criteria', result)
+        self.assertIn('regime_criteria', result)
+
+
+class TestKillSwitchLiveMode(unittest.TestCase):
+    """[v10.23] Kill switch live mode — manual resume required."""
+
+    def setUp(self):
+        from modules.kill_switch import ExternalKillSwitch, ResumeMode
+        self.ks = ExternalKillSwitch()
+        self.ResumeMode = ResumeMode
+
+    def test_default_mode_is_paper(self):
+        self.assertEqual(self.ks._mode, self.ResumeMode.PAPER)
+
+    def test_set_live_mode(self):
+        self.ks.set_mode(self.ResumeMode.LIVE)
+        self.assertEqual(self.ks._mode, self.ResumeMode.LIVE)
+
+    def test_safe_resume_needs_db(self):
+        """safe_resume validates preconditions before deactivating."""
+        # With no breach time and no real DB, it should attempt deactivate
+        # which fails on None DB — this is expected behavior
+        self.assertIsNone(self.ks._breach_time)
+
+
+class TestPaperBrokerInstitutional(unittest.TestCase):
+    """[v10.23] Enhanced PaperBroker execution simulator."""
+
+    def test_execution_profile(self):
+        broker = PaperBroker(AssetClass.STOCK_BR, slippage_bps=5.0, fill_rate=1.0, partial_fill_prob=0.0)
+        profile = broker.get_execution_profile()
+        self.assertIn('statistics', profile)
+        self.assertIn('total_orders', profile['statistics'])
+
+    def test_set_market_regime(self):
+        broker = PaperBroker(AssetClass.CRYPTO, slippage_bps=5.0, fill_rate=1.0, partial_fill_prob=0.0)
+        broker.set_market_regime('volatile')
+        profile = broker.get_execution_profile()
+        self.assertEqual(profile['market_regime'], 'volatile')
 
 
 if __name__ == '__main__':

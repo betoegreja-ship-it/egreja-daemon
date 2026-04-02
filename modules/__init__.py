@@ -1,5 +1,5 @@
 """
-Egreja Investment AI — Modular Architecture v10.22
+Egreja Investment AI — Modular Architecture v10.23
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Institutional-grade modules extracted from the monolith.
 Each module is self-contained with no circular dependencies.
@@ -14,7 +14,8 @@ from modules.broker_base import (
 from modules.data_validator import MarketDataValidator, PriceAnomalyDetector, HistoricalSnapshot
 from modules.auth_rbac import AuthManager, AuditLogger, Role
 from modules.stats_engine import PerformanceStats
-from modules.kill_switch import ExternalKillSwitch, KillSwitchMiddleware
+from modules.kill_switch import ExternalKillSwitch, KillSwitchMiddleware, ResumeMode
+from modules.ops_metrics import OpsMetricsCollector, AlertLevel
 
 __all__ = [
     'InstitutionalRiskManager',
@@ -24,7 +25,8 @@ __all__ = [
     'MarketDataValidator', 'PriceAnomalyDetector', 'HistoricalSnapshot',
     'AuthManager', 'AuditLogger', 'Role',
     'PerformanceStats',
-    'ExternalKillSwitch', 'KillSwitchMiddleware',
+    'ExternalKillSwitch', 'KillSwitchMiddleware', 'ResumeMode',
+    'OpsMetricsCollector', 'AlertLevel',
 ]
 
-__version__ = '10.22.0'
+__version__ = '10.23.0'

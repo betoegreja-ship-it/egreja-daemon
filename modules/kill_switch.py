@@ -35,6 +35,13 @@ class KillSwitchAction(Enum):
     AUTO_ACTIVATE = 'AUTO_ACTIVATE'
 
 
+class ResumeMode(Enum):
+    """Resume mode after kill switch activation."""
+    PAPER = 'paper'      # auto-resume allowed
+    SHADOW = 'shadow'    # auto-resume allowed
+    LIVE = 'live'        # manual resume ONLY
+
+
 class ExternalKillSwitch:
     """
     MySQL-backed kill switch that survives process restarts and deployments.
@@ -59,8 +66,14 @@ class ExternalKillSwitch:
         self._cache = {}
         self._last_cache_time = {}
 
+        # Resume mode settings
+        self._mode = ResumeMode.PAPER
+        self._breach_time: Optional[datetime] = None
+        self._min_resume_delay_minutes = int(os.getenv('KILL_SWITCH_MIN_RESUME_DELAY', '30'))
+
         logger.info(
-            f"ExternalKillSwitch initialized with CHECK_INTERVAL_S={self.CHECK_INTERVAL_S}s"
+            f"ExternalKillSwitch initialized with CHECK_INTERVAL_S={self.CHECK_INTERVAL_S}s, "
+            f"RESUME_MODE={self._mode.value}, MIN_RESUME_DELAY={self._min_resume_delay_minutes}m"
         )
 
     def init_table(self, get_db_func) -> bool:
@@ -456,6 +469,17 @@ class ExternalKillSwitch:
             if db:
                 db.close()
 
+    def set_mode(self, mode: ResumeMode) -> None:
+        """
+        Set the resume mode for kill switch auto-resumption.
+
+        Args:
+            mode: ResumeMode.PAPER | ResumeMode.SHADOW | ResumeMode.LIVE
+        """
+        with self._cache_lock:
+            self._mode = mode
+            logger.info(f"Kill switch resume mode set to: {mode.value}")
+
     def auto_activate_on_risk_breach(
         self,
         breaches: List[str],
@@ -464,8 +488,9 @@ class ExternalKillSwitch:
         """
         Automatically activate global kill switch on risk manager breach.
 
-        Called by risk manager when limits are exceeded. Activates global
-        kill switch with 60-minute auto-resume.
+        Called by risk manager when limits are exceeded.
+        - PAPER/SHADOW mode: 60-minute auto-resume
+        - LIVE mode: NO auto-resume, manual resume required
 
         Args:
             breaches: List of breach descriptions (e.g., ['Max daily loss exceeded'])
@@ -476,15 +501,99 @@ class ExternalKillSwitch:
         """
         reason = f"RISK BREACH: {'; '.join(breaches)}"
 
-        logger.critical(f"Risk breach detected: {reason}")
+        logger.critical(f"Risk breach detected: {reason} (mode={self._mode.value})")
+
+        # Record breach time for safe_resume validation
+        with self._cache_lock:
+            self._breach_time = datetime.utcnow()
+
+        # Determine auto-resume based on mode
+        auto_resume_minutes = None
+        if self._mode in [ResumeMode.PAPER, ResumeMode.SHADOW]:
+            auto_resume_minutes = 60
+        # LIVE mode: auto_resume_minutes stays None (no auto-resume)
 
         return self.activate(
             scope=KillSwitchScope.GLOBAL.value,
             reason=reason,
             activated_by='SYSTEM',
-            auto_resume_minutes=60,
+            auto_resume_minutes=auto_resume_minutes,
             get_db_func=get_db_func
         )
+
+    def safe_resume(
+        self,
+        scope: str,
+        resumed_by: str,
+        get_db_func,
+        data_validator=None,
+        risk_manager=None
+    ) -> Tuple[bool, str]:
+        """
+        Safely resume trading after kill switch activation.
+
+        Validates readiness before allowing resume in LIVE mode:
+        1. Risk manager is not currently breached
+        2. No circuit breakers are OPEN (if data_validator provided)
+        3. Reconciliation status is OK (optional check)
+        4. Minimum time has elapsed since breach (default 30 min)
+
+        Args:
+            scope: Kill switch scope to resume ('global', 'stocks', 'crypto', 'arbi')
+            resumed_by: Email or identifier of who is resuming
+            get_db_func: Callable that returns a DB connection
+            data_validator: Optional object with circuit_breakers property
+            risk_manager: Optional risk manager instance with is_breached() method
+
+        Returns:
+            Tuple[bool, str]: (success, reason/error_message)
+        """
+        with self._cache_lock:
+            # Check 1: Risk manager breach status
+            if risk_manager and hasattr(risk_manager, 'is_breached'):
+                try:
+                    if risk_manager.is_breached():
+                        return False, "Risk manager is currently breached - cannot resume"
+                except Exception as e:
+                    logger.error(f"Error checking risk manager breach: {e}")
+                    return False, f"Failed to verify risk manager status: {e}"
+
+            # Check 2: Circuit breaker status
+            if data_validator and hasattr(data_validator, 'circuit_breakers'):
+                try:
+                    for cb_name, cb_state in data_validator.circuit_breakers.items():
+                        if hasattr(cb_state, 'is_open') and cb_state.is_open():
+                            return False, f"Circuit breaker '{cb_name}' is OPEN - cannot resume"
+                except Exception as e:
+                    logger.error(f"Error checking circuit breakers: {e}")
+                    return False, f"Failed to verify circuit breaker status: {e}"
+
+            # Check 3: Minimum time elapsed since breach
+            if self._breach_time:
+                elapsed = datetime.utcnow() - self._breach_time
+                elapsed_minutes = elapsed.total_seconds() / 60
+                if elapsed_minutes < self._min_resume_delay_minutes:
+                    remaining = self._min_resume_delay_minutes - int(elapsed_minutes)
+                    return False, f"Minimum resume delay not met. Wait {remaining} more minutes."
+            else:
+                # If no breach_time recorded, allow resume
+                logger.warning("No breach_time recorded, proceeding with resume check")
+
+        # All checks passed, perform deactivation
+        success = self.deactivate(
+            scope=scope,
+            deactivated_by=resumed_by,
+            get_db_func=get_db_func
+        )
+
+        if success:
+            with self._cache_lock:
+                self._breach_time = None  # Clear breach time after successful resume
+
+            logger.info(f"Successfully resumed kill switch for {scope} by {resumed_by}")
+            return True, f"Kill switch {scope} resumed successfully"
+        else:
+            return False, f"Failed to deactivate kill switch for {scope}"
 
 
 class KillSwitchMiddleware:

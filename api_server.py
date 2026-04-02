@@ -68,14 +68,15 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-# ── [v10.22] Institutional modules ─────────────────────────────────────
+# ── [v10.23] Institutional modules ─────────────────────────────────────
 try:
     from modules.risk_manager import InstitutionalRiskManager
     from modules.broker_base import PaperBroker, BTGBroker, BinanceBroker, NYSEBroker, OrderTracker, BrokerFactory, OrderStatus, AssetClass, create_order_record
     from modules.data_validator import MarketDataValidator
     from modules.auth_rbac import AuthManager, AuditLogger, Role
     from modules.stats_engine import PerformanceStats
-    from modules.kill_switch import ExternalKillSwitch, KillSwitchMiddleware
+    from modules.kill_switch import ExternalKillSwitch, KillSwitchMiddleware, ResumeMode
+    from modules.ops_metrics import OpsMetricsCollector, AlertLevel
     _MODULES_LOADED = True
 except Exception as _mod_err:
     import traceback as _tb
@@ -96,6 +97,11 @@ except Exception as _mod_err:
     class KillSwitchMiddleware:
         def __init__(self, ks=None): pass
         def check_before_trade(self, *a, **k): return (True, '')
+    class ResumeMode:
+        PAPER='paper'; SHADOW='shadow'; LIVE='live'
+    OpsMetricsCollector = type('OpsMetricsCollector', (), {'__init__': lambda s: None, 'record_memory': lambda s: {}, 'record_drift': lambda *a,**k: None, 'record_worker_cycle': lambda *a,**k: None, 'record_endpoint_latency': lambda *a,**k: None, 'record_circuit_breaker_event': lambda *a,**k: None, 'get_status': lambda s: {}, 'generate_daily_audit': lambda s: {}, 'get_drift_report': lambda s: {}, 'get_active_alerts': lambda s: {}})
+    class AlertLevel:
+        OK='OK'; WARNING='WARNING'; CRITICAL='CRITICAL'; FREEZE='FREEZE'
 
 logging.basicConfig(level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -107,10 +113,10 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
-VERSION = 'v10.22.0'
+VERSION = 'v10.23.0'
 _boot_time = time.time()
 
-# ── [v10.22] Module instances ──────────────────────────────────────────
+# ── [v10.23] Module instances ──────────────────────────────────────────
 risk_manager = InstitutionalRiskManager()
 order_tracker = OrderTracker()
 data_validator = MarketDataValidator()
@@ -119,6 +125,7 @@ audit_logger = AuditLogger()
 perf_stats = PerformanceStats()
 ext_kill_switch = ExternalKillSwitch()
 kill_switch_middleware = KillSwitchMiddleware(ext_kill_switch)
+ops_metrics = OpsMetricsCollector()
 
 ENV = os.environ.get('ENV', 'dev').lower()
 
@@ -7061,6 +7068,11 @@ def ops_dashboard():
         'data_quality': data_validator.get_data_quality_status(),
         'performance': perf_stats.get_full_report(),
         'auth': {'mode': auth_manager.auth_mode, 'admin': auth_manager.admin_email},
+        # [v10.23] Operational metrics
+        'ops_health': ops_metrics.get_status(),
+        'scorecard': perf_stats.get_strategy_scorecard() if hasattr(perf_stats, 'get_strategy_scorecard') else {},
+        'drift_report': ops_metrics.get_drift_report(),
+        'active_alerts': ops_metrics.get_active_alerts(),
         'timestamp': datetime.utcnow().isoformat(),
     })
 
@@ -7145,6 +7157,101 @@ def admin_audit():
 def data_quality_v1022():
     """[v10.22] Market data quality status."""
     return jsonify(data_validator.get_data_quality_status())
+
+# ── [v10.23] Enhanced endpoints ──────────────────────────────────────
+
+@app.route('/stats/scorecard')
+@require_auth
+def stats_scorecard_v1023():
+    """[v10.23] Per-strategy scorecard with traffic light."""
+    try:
+        return jsonify(perf_stats.get_strategy_scorecard())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/stats/promotion/enhanced')
+@require_auth
+def stats_promotion_enhanced_v1023():
+    """[v10.23] Enhanced promotion criteria with per-strategy + regime gates."""
+    try:
+        return jsonify(perf_stats.get_enhanced_promotion_criteria())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/ops/metrics')
+@require_auth
+def ops_metrics_v1023():
+    """[v10.23] Operational metrics — memory, drift, workers, alerts."""
+    try:
+        ops_metrics.record_memory()
+        return jsonify(ops_metrics.get_status())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/ops/audit')
+@require_auth
+def ops_daily_audit_v1023():
+    """[v10.23] Full daily audit report for soak testing."""
+    try:
+        ops_metrics.record_memory()
+        return jsonify(ops_metrics.generate_daily_audit())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/ops/drift')
+@require_auth
+def ops_drift_report_v1023():
+    """[v10.23] Reconciliation drift history with progressive alerts."""
+    try:
+        return jsonify(ops_metrics.get_drift_report())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/ops/alerts')
+@require_auth
+def ops_alerts_v1023():
+    """[v10.23] Active alerts + recent history."""
+    try:
+        return jsonify({
+            'active': ops_metrics.get_active_alerts(),
+            'history': ops_metrics.get_alert_history(50)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/kill-switch/safe-resume', methods=['POST'])
+@require_auth
+def kill_switch_safe_resume_v1023():
+    """[v10.23] Safe resume with pre-checks (live mode)."""
+    try:
+        data = request.get_json(silent=True) or {}
+        scope = data.get('scope', 'global')
+        resumed_by = data.get('resumed_by', 'api')
+        success, reason = ext_kill_switch.safe_resume(
+            scope=scope,
+            resumed_by=resumed_by,
+            get_db_func=get_db,
+            data_validator=data_validator,
+            risk_manager=risk_manager
+        )
+        return jsonify({'success': success, 'reason': reason})
+    except Exception as e:
+        return jsonify({'success': False, 'reason': str(e)}), 500
+
+@app.route('/broker/execution-profile')
+@require_auth
+def broker_execution_profile_v1023():
+    """[v10.23] PaperBroker execution simulator statistics."""
+    try:
+        from modules.broker_base import BrokerFactory, AssetClass
+        profiles = {}
+        for ac in AssetClass:
+            broker = BrokerFactory.get_broker(ac)
+            if hasattr(broker, 'get_execution_profile'):
+                profiles[ac.value] = broker.get_execution_profile()
+        return jsonify(profiles)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/')
 def index():

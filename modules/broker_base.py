@@ -263,10 +263,16 @@ class AbstractBroker(ABC):
 
 class PaperBroker(AbstractBroker):
     """
-    Simulated broker for paper trading and testing.
+    Institutional Execution Simulator - Enhanced PaperBroker.
 
-    Implements instant fills at decision_price ± slippage with configurable
-    execution profile. Tracks virtual positions and cash balance.
+    Implements realistic execution simulation with:
+    - Asset class & regime-based slippage
+    - Market-specific fees
+    - Order rejection logic
+    - Variable latency simulation
+    - Realistic partial fills with price impact
+    - Per-symbol liquidity limits
+    - Execution statistics tracking
     """
 
     def __init__(
@@ -276,16 +282,25 @@ class PaperBroker(AbstractBroker):
         slippage_bps: float = 5.0,
         fill_rate: float = 0.99,
         partial_fill_prob: float = 0.05,
+        market_regime: str = "normal",
+        enable_smart_rejections: bool = True,
+        enable_latency_spikes: bool = True,
+        rejection_rate: float = 0.01,
     ):
         """
-        Initialize paper broker.
+        Initialize paper broker with institutional execution features.
 
         Args:
-            asset_class: Asset class to simulate
-            initial_balance: Starting cash balance
-            slippage_bps: Slippage in basis points (default 5 bps)
+            asset_class: Asset class to simulate (STOCK_BR, STOCK_US, CRYPTO)
+            initial_balance: Starting cash balance (default $100,000)
+            slippage_bps: Base slippage in basis points (default 5 bps)
             fill_rate: Probability of fill (default 0.99 = 99%)
             partial_fill_prob: Probability of partial fill (default 0.05 = 5%)
+            market_regime: Market regime ('normal', 'volatile', 'low_liquidity')
+                          multiplies slippage by regime factor
+            enable_smart_rejections: Enable rejection logic based on liquidity (default True)
+            enable_latency_spikes: Enable random latency spikes (default True)
+            rejection_rate: Base rejection rate (0.01 = 1%) before smart logic (default 0.01)
         """
         super().__init__(asset_class)
         self.initial_balance = initial_balance
@@ -293,25 +308,205 @@ class PaperBroker(AbstractBroker):
         self.slippage_bps = slippage_bps / 10000.0  # Convert to decimal
         self.fill_rate = fill_rate
         self.partial_fill_prob = partial_fill_prob
+        self.market_regime = market_regime
+        self.enable_smart_rejections = enable_smart_rejections
+        self.enable_latency_spikes = enable_latency_spikes
+        self.rejection_rate = rejection_rate
 
         self._positions: Dict[str, float] = {}
         self._orders: Dict[str, OrderRecord] = {}
         self._connected = True
 
+        # Execution statistics
+        self._stats = {
+            "total_orders": 0,
+            "filled_orders": 0,
+            "partial_fill_orders": 0,
+            "rejected_orders": 0,
+            "rejected_by_liquidity": 0,
+            "rejected_by_price_anomaly": 0,
+            "total_fees": 0.0,
+            "total_slippage": 0.0,
+            "latency_spikes": 0,
+        }
+
+        # Per-symbol liquidity tracking
+        self._symbol_liquidity_limits: Dict[str, float] = {}
+        self._symbol_notional_today: Dict[str, float] = {}
+
         logger.info(
-            f"PaperBroker initialized for {asset_class.value} "
-            f"with ${initial_balance} balance, {slippage_bps}bps slippage"
+            f"PaperBroker (Institutional Execution Simulator) initialized for {asset_class.value} "
+            f"with ${initial_balance} balance, {slippage_bps}bps slippage, "
+            f"regime={market_regime}, rejections={enable_smart_rejections}"
         )
+
+    def _get_slippage_profile(self) -> Dict[str, Any]:
+        """Get slippage profile for asset class, hour, and regime."""
+        import random
+        from datetime import datetime
+
+        now = datetime.utcnow()
+        hour = now.hour
+
+        # Base slippage ranges by asset class
+        profiles = {
+            AssetClass.STOCK_BR: {
+                "normal": {"min": 3, "max": 8, "auction_min": 15, "auction_max": 30},
+                "volatile": {"min": 8, "max": 15, "auction_min": 30, "auction_max": 50},
+                "low_liquidity": {"min": 15, "max": 25, "auction_min": 50, "auction_max": 100},
+            },
+            AssetClass.STOCK_US: {
+                "normal": {"min": 2, "max": 5, "prepost_min": 10, "prepost_max": 20},
+                "volatile": {"min": 5, "max": 12, "prepost_min": 20, "prepost_max": 40},
+                "low_liquidity": {"min": 12, "max": 25, "prepost_min": 40, "prepost_max": 80},
+            },
+            AssetClass.CRYPTO: {
+                "normal": {"min": 5, "max": 15, "low_liq_min": 15, "low_liq_max": 50},
+                "volatile": {"min": 15, "max": 40, "low_liq_min": 40, "low_liq_max": 100},
+                "low_liquidity": {"min": 40, "max": 100, "low_liq_min": 100, "low_liq_max": 200},
+            },
+        }
+
+        profile = profiles.get(self.asset_class, profiles[AssetClass.STOCK_BR])
+        regime_profile = profile.get(self.market_regime, profile["normal"])
+
+        # Determine if it's low liquidity hours or auction
+        is_br_auction = hour in [16, 17, 18]  # B3 auction hours
+        is_us_prepost = hour in [0, 1, 2, 3, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]  # Pre/post
+        is_crypto_low = hour in [2, 3, 4, 5, 6]  # Low liquidity UTC hours
+
+        if self.asset_class == AssetClass.STOCK_BR and is_br_auction:
+            return {
+                "min_bps": regime_profile.get("auction_min", 15),
+                "max_bps": regime_profile.get("auction_max", 30),
+            }
+        elif self.asset_class == AssetClass.STOCK_US and is_us_prepost:
+            return {
+                "min_bps": regime_profile.get("prepost_min", 10),
+                "max_bps": regime_profile.get("prepost_max", 20),
+            }
+        elif self.asset_class == AssetClass.CRYPTO and is_crypto_low:
+            return {
+                "min_bps": regime_profile.get("low_liq_min", 15),
+                "max_bps": regime_profile.get("low_liq_max", 50),
+            }
+        else:
+            # Normal hours
+            return {
+                "min_bps": regime_profile.get("min", 3),
+                "max_bps": regime_profile.get("max", 8),
+            }
+
+    def _calculate_fee(self, symbol: str, quantity: float, price: float) -> float:
+        """Calculate market-specific fees."""
+        notional = quantity * price
+
+        if self.asset_class == AssetClass.STOCK_BR:
+            # B3: emoluments 0.0325% + B3 fee 0.005% + broker 0.03% = ~0.0675%
+            return notional * 0.000675
+
+        elif self.asset_class == AssetClass.STOCK_US:
+            # $0.005 per share, minimum $1.00
+            return max(1.0, quantity * 0.005)
+
+        elif self.asset_class == AssetClass.CRYPTO:
+            # 0.1% taker fee (assuming market orders are taker)
+            return notional * 0.001
+
+        return notional * 0.001  # Default fallback
+
+    def _get_liquidity_limit(self, symbol: str) -> float:
+        """Get per-symbol max order size limit."""
+        if symbol in self._symbol_liquidity_limits:
+            return self._symbol_liquidity_limits[symbol]
+
+        # Default limits by asset class
+        default_limits = {
+            AssetClass.STOCK_BR: 500000.0,    # $500K per order
+            AssetClass.STOCK_US: 1000000.0,   # $1M per order
+            AssetClass.CRYPTO: 200000.0,      # $200K per order
+        }
+        return default_limits.get(self.asset_class, 500000.0)
+
+    def _get_reference_price(self, symbol: str, decision_price: float) -> float:
+        """Get reference price for anomaly detection (simulated)."""
+        # In a real system, this would fetch from market data
+        # For now, use decision_price as reference
+        return decision_price
+
+    def _should_reject_order(self, order: OrderRecord, slippage_bps: float) -> Tuple[bool, str]:
+        """Smart rejection logic based on liquidity and price anomalies."""
+        if not self.enable_smart_rejections:
+            return False, ""
+
+        import random
+
+        # Base rejection by configured rate
+        if random.random() < self.rejection_rate:
+            return True, "random_rejection"
+
+        # Reject if notional exceeds liquidity limit
+        notional = order.quantity * order.decision_price
+        limit = self._get_liquidity_limit(order.symbol)
+        if notional > limit:
+            self._stats["rejected_by_liquidity"] += 1
+            return True, "exceeds_liquidity_limit"
+
+        # Reject if price anomaly detected (>5% from reference)
+        ref_price = self._get_reference_price(order.symbol, order.decision_price)
+        price_diff_pct = abs(order.decision_price - ref_price) / ref_price * 100
+        if price_diff_pct > 5.0:
+            self._stats["rejected_by_price_anomaly"] += 1
+            return True, "price_anomaly_detected"
+
+        return False, ""
+
+    def _get_variable_latency(self) -> float:
+        """Calculate realistic variable latency in seconds."""
+        import random
+
+        base_latencies = {
+            AssetClass.STOCK_BR: (0.05, 0.2),      # 50-200ms normal
+            AssetClass.STOCK_US: (0.01, 0.05),     # 10-50ms
+            AssetClass.CRYPTO: (0.02, 0.1),        # 20-100ms
+        }
+
+        base_range = base_latencies.get(self.asset_class, (0.05, 0.2))
+        latency = random.uniform(base_range[0], base_range[1])
+
+        # Random latency spike (1-5s at 2% probability)
+        if self.enable_latency_spikes and random.random() < 0.02:
+            latency += random.uniform(1.0, 5.0)
+            self._stats["latency_spikes"] += 1
+
+        return latency
+
+    def _get_partial_fill_rate(self, notional: float) -> float:
+        """Determine partial fill rate based on order size."""
+        # Large orders (>$50K notional) get 30% partial fill rate
+        # Small orders get 5% partial fill rate
+        if notional > 50000.0:
+            return 0.30
+        else:
+            return 0.05
 
     def submit_order(self, order: OrderRecord) -> OrderRecord:
         """
-        Submit and immediately execute order (simulated).
+        Submit and execute order with institutional execution simulation.
+
+        Implements:
+        - Asset class/regime-based slippage
+        - Market-specific fees
+        - Smart rejection logic
+        - Variable latency
+        - Realistic partial fills with price impact
+        - Liquidity limits
 
         Args:
             order: OrderRecord to submit
 
         Returns:
-            Updated OrderRecord with FILLED status and execution details
+            Updated OrderRecord with execution details
         """
         with self._lock:
             if not self._connected:
@@ -319,58 +514,94 @@ class PaperBroker(AbstractBroker):
                 logger.error(f"PaperBroker not connected, rejecting order {order.order_id}")
                 return order
 
+            import random
+
+            self._stats["total_orders"] += 1
             send_time = time.time()
             order.sent_price = order.decision_price
 
-            # Simulate fill decision
-            import random
+            # Step 1: Basic fill rate check
             if random.random() > self.fill_rate:
                 order.status = OrderStatus.REJECTED
-                logger.warning(f"Order {order.order_id} rejected by PaperBroker (simulated)")
+                self._stats["rejected_orders"] += 1
+                logger.warning(f"Order {order.order_id} rejected (fill_rate)")
                 return order
 
-            # Calculate slippage
-            slippage_amount = order.decision_price * self.slippage_bps
+            # Step 2: Get regime-aware slippage profile
+            slippage_profile = self._get_slippage_profile()
+            slippage_bps = random.uniform(
+                slippage_profile["min_bps"],
+                slippage_profile["max_bps"]
+            ) / 10000.0  # Convert to decimal
+
+            # Step 3: Smart rejection logic
+            should_reject, reason = self._should_reject_order(order, slippage_bps * 10000)
+            if should_reject:
+                order.status = OrderStatus.REJECTED
+                self._stats["rejected_orders"] += 1
+                logger.warning(f"Order {order.order_id} rejected ({reason})")
+                return order
+
+            # Step 4: Calculate slippage with regime multiplier
+            regime_multipliers = {"normal": 1.0, "volatile": 1.5, "low_liquidity": 2.0}
+            regime_mult = regime_multipliers.get(self.market_regime, 1.0)
+            slippage_amount = order.decision_price * slippage_bps * regime_mult
+
             if order.side == OrderSide.BUY:
                 executed_price = order.decision_price + slippage_amount
             else:
                 executed_price = order.decision_price - slippage_amount
 
-            # Create fill(s)
+            # Step 5: Get variable latency
+            base_latency = self._get_variable_latency()
+
+            # Step 6: Calculate fees
+            fee_per_unit = self._calculate_fee(order.symbol, order.quantity, executed_price)
+
+            # Step 7: Determine partial fill rate and create fills
             fills: List[FillRecord] = []
+            notional = order.quantity * executed_price
+            partial_fill_rate = self._get_partial_fill_rate(notional)
+
             qty_remaining = order.quantity
 
-            if random.random() < self.partial_fill_prob and qty_remaining > 1:
-                # Partial fill
+            if random.random() < partial_fill_rate and qty_remaining > 1:
+                # Partial fill with price impact
                 partial_qty = max(1, int(qty_remaining * random.uniform(0.3, 0.7)))
-                fill_ts = send_time + random.uniform(0.01, 0.1)
+                # First partial gets slightly better price (volatility)
+                partial_price_1 = executed_price + (random.uniform(-0.001, 0.001) * executed_price)
+
+                fill_ts = send_time + base_latency + random.uniform(0.01, 0.1)
                 fills.append(FillRecord(
                     qty=partial_qty,
-                    price=executed_price,
+                    price=partial_price_1,
                     ts=fill_ts,
-                    fee=partial_qty * executed_price * 0.001  # 0.1% fee
+                    fee=self._calculate_fee(order.symbol, partial_qty, partial_price_1)
                 ))
                 qty_remaining -= partial_qty
 
-                # Second fill
-                fill_ts = send_time + random.uniform(0.1, 0.5)
+                # Second partial at different price
+                partial_price_2 = executed_price + (random.uniform(-0.002, 0.002) * executed_price)
+                fill_ts = send_time + base_latency + random.uniform(0.1, 0.5)
                 fills.append(FillRecord(
                     qty=qty_remaining,
-                    price=executed_price,
+                    price=partial_price_2,
                     ts=fill_ts,
-                    fee=qty_remaining * executed_price * 0.001
+                    fee=self._calculate_fee(order.symbol, qty_remaining, partial_price_2)
                 ))
                 order.status = OrderStatus.PARTIAL_FILL
+                self._stats["partial_fill_orders"] += 1
             else:
                 # Full fill
-                fill_ts = send_time + random.uniform(0.01, 0.2)
+                fill_ts = send_time + base_latency + random.uniform(0.01, 0.2)
                 fills.append(FillRecord(
                     qty=qty_remaining,
                     price=executed_price,
                     ts=fill_ts,
-                    fee=qty_remaining * executed_price * 0.001
+                    fee=fee_per_unit
                 ))
                 order.status = OrderStatus.FILLED
+                self._stats["filled_orders"] += 1
 
             order.fills = fills
             order.executed_price = executed_price
@@ -380,16 +611,26 @@ class PaperBroker(AbstractBroker):
             order.fees_actual = sum(f.fee for f in fills)
             order.updated_at = time.time()
 
+            # Update stats
+            self._stats["total_fees"] += order.fees_actual
+            self._stats["total_slippage"] += abs(order.slippage)
+
             # Update positions and balance
             symbol = order.symbol
             qty_change = order.quantity if order.side == OrderSide.BUY else -order.quantity
             self._positions[symbol] = self._positions.get(symbol, 0.0) + qty_change
             self.balance -= order.average_price * order.quantity + order.fees_actual
 
+            # Track daily notional by symbol
+            self._symbol_notional_today[symbol] = \
+                self._symbol_notional_today.get(symbol, 0.0) + notional
+
             self._orders[order.order_id] = order
+
             logger.info(
                 f"PaperBroker executed order {order.order_id} "
-                f"{order.side.value} {order.quantity} {symbol} @ {executed_price:.4f}"
+                f"{order.side.value} {order.quantity} {symbol} @ {executed_price:.6f} "
+                f"(slippage: {order.slippage:.6f}, fee: {order.fees_actual:.2f}, latency: {order.latency_ms:.1f}ms)"
             )
 
             return order
@@ -476,6 +717,103 @@ class PaperBroker(AbstractBroker):
     def is_connected(self) -> bool:
         """Always connected in paper trading."""
         return self._connected
+
+    def set_liquidity_limit(self, symbol: str, limit: float) -> None:
+        """
+        Set custom liquidity limit for a symbol.
+
+        Args:
+            symbol: Trading symbol
+            limit: Max notional value per order
+        """
+        with self._lock:
+            self._symbol_liquidity_limits[symbol] = limit
+            logger.info(f"Liquidity limit set for {symbol}: ${limit:.2f}")
+
+    def set_market_regime(self, regime: str) -> None:
+        """
+        Set market regime for slippage multiplier.
+
+        Args:
+            regime: 'normal', 'volatile', or 'low_liquidity'
+        """
+        if regime not in ("normal", "volatile", "low_liquidity"):
+            logger.warning(f"Invalid regime {regime}, keeping current {self.market_regime}")
+            return
+
+        with self._lock:
+            self.market_regime = regime
+            logger.info(f"Market regime set to {regime}")
+
+    def get_execution_profile(self) -> Dict[str, Any]:
+        """
+        Get current execution characteristics and statistics.
+
+        Returns:
+            Dict with execution profile, configuration, and statistics
+        """
+        with self._lock:
+            slippage_prof = self._get_slippage_profile()
+
+            return {
+                "asset_class": self.asset_class.value,
+                "market_regime": self.market_regime,
+                "connected": self._connected,
+                "configuration": {
+                    "initial_balance": self.initial_balance,
+                    "current_balance": self.balance,
+                    "slippage_bps_base": self.slippage_bps * 10000,
+                    "fill_rate": self.fill_rate,
+                    "partial_fill_prob": self.partial_fill_prob,
+                    "enable_smart_rejections": self.enable_smart_rejections,
+                    "enable_latency_spikes": self.enable_latency_spikes,
+                    "rejection_rate": self.rejection_rate,
+                },
+                "current_slippage_profile": {
+                    "min_bps": slippage_prof["min_bps"],
+                    "max_bps": slippage_prof["max_bps"],
+                },
+                "statistics": {
+                    "total_orders": self._stats["total_orders"],
+                    "filled_orders": self._stats["filled_orders"],
+                    "partial_fill_orders": self._stats["partial_fill_orders"],
+                    "rejected_orders": self._stats["rejected_orders"],
+                    "rejected_by_liquidity": self._stats["rejected_by_liquidity"],
+                    "rejected_by_price_anomaly": self._stats["rejected_by_price_anomaly"],
+                    "total_fees": self._stats["total_fees"],
+                    "total_slippage": self._stats["total_slippage"],
+                    "latency_spikes": self._stats["latency_spikes"],
+                    "fill_rate_achieved": (
+                        (self._stats["filled_orders"] + self._stats["partial_fill_orders"]) /
+                        self._stats["total_orders"]
+                        if self._stats["total_orders"] > 0 else 0.0
+                    ),
+                    "partial_fill_rate_achieved": (
+                        self._stats["partial_fill_orders"] / self._stats["total_orders"]
+                        if self._stats["total_orders"] > 0 else 0.0
+                    ),
+                },
+                "positions": dict(self._positions),
+                "symbol_liquidity_limits": dict(self._symbol_liquidity_limits),
+                "symbol_notional_today": dict(self._symbol_notional_today),
+            }
+
+    def reset_statistics(self) -> None:
+        """Reset execution statistics."""
+        with self._lock:
+            self._stats = {
+                "total_orders": 0,
+                "filled_orders": 0,
+                "partial_fill_orders": 0,
+                "rejected_orders": 0,
+                "rejected_by_liquidity": 0,
+                "rejected_by_price_anomaly": 0,
+                "total_fees": 0.0,
+                "total_slippage": 0.0,
+                "latency_spikes": 0,
+            }
+            self._symbol_notional_today.clear()
+            logger.info("Execution statistics reset")
 
 
 # ============================================================================

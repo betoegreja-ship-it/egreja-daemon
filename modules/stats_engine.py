@@ -904,3 +904,230 @@ class PerformanceStats:
                 ],
                 'evaluated_at': datetime.now().isoformat(),
             }
+
+    def get_strategy_scorecard(self) -> Dict[str, Any]:
+        """
+        Generate per-strategy scorecard with traffic light ratings.
+
+        Returns:
+            Dict with per-strategy performance scores (GREEN/YELLOW/RED)
+        """
+        with self._lock:
+            strategies = self.by_strategy()
+            scorecard = {}
+
+            for strategy_name, stats in strategies.items():
+                if stats['total_trades'] == 0:
+                    continue
+
+                # Compute edge stability for this strategy
+                strategy_trades = [t for t in self._trades if t['strategy'] == strategy_name]
+                if len(strategy_trades) >= 50:
+                    # Compute rolling Sharpe for edge stability
+                    pnls = [t['pnl'] for t in strategy_trades]
+                    rolling_sharpes = []
+                    for i in range(len(pnls) - 49):
+                        window_pnls = pnls[i:i + 50]
+                        sharpe = self._compute_sharpe_ratio(window_pnls)
+                        rolling_sharpes.append(sharpe)
+
+                    if rolling_sharpes and len(rolling_sharpes) > 1:
+                        try:
+                            mean_sharpe = statistics.mean(rolling_sharpes)
+                            std_sharpe = statistics.stdev(rolling_sharpes)
+                            cv = std_sharpe / abs(mean_sharpe) if mean_sharpe != 0 else 0
+                            edge_stability = max(0, 100 * (1 - cv))
+                        except (statistics.StatisticsError, ZeroDivisionError):
+                            edge_stability = 0.0
+                    else:
+                        edge_stability = 0.0
+                else:
+                    edge_stability = 0.0
+
+                # Calculate average holding hours
+                avg_holding_hours = stats['avg_holding_time_hours']
+
+                # Score individual dimensions
+                stability_score = self._score_stability(edge_stability)
+                drawdown_score = self._score_drawdown(stats['max_drawdown_pct'])
+                efficiency_score = self._score_efficiency(stats['profit_factor'])
+                regime_sensitivity_score = self._score_regime_sensitivity(stats['win_rate'], strategy_name)
+                reliability_score = 'GREEN'  # Default to GREEN for data reliability
+
+                # Overall grade: GREEN if all GREEN or max 1 YELLOW; YELLOW if 2+ YELLOW; RED if any RED
+                scores = {
+                    'stability': stability_score,
+                    'drawdown': drawdown_score,
+                    'efficiency': efficiency_score,
+                    'regime_sensitivity': regime_sensitivity_score,
+                    'data_reliability': reliability_score,
+                }
+
+                overall_grade = self._compute_overall_grade(scores)
+
+                scorecard[strategy_name] = {
+                    'grade': overall_grade,
+                    'total_trades': stats['total_trades'],
+                    'sharpe_ratio': stats['sharpe_ratio'],
+                    'profit_factor': stats['profit_factor'],
+                    'max_drawdown_pct': round(stats['max_drawdown_pct'] * 100, 2),
+                    'win_rate': round(stats['win_rate'] * 100, 2),
+                    'edge_stability': round(edge_stability, 1),
+                    'avg_holding_hours': avg_holding_hours,
+                    'scores': scores,
+                }
+
+            return scorecard
+
+    def _score_stability(self, edge_stability: float) -> str:
+        """Score edge stability (0-100 scale)."""
+        if edge_stability > 60:
+            return 'GREEN'
+        elif edge_stability > 40:
+            return 'YELLOW'
+        else:
+            return 'RED'
+
+    def _score_drawdown(self, max_dd_pct: float) -> str:
+        """Score max drawdown percentage."""
+        if max_dd_pct < 0.10:
+            return 'GREEN'
+        elif max_dd_pct < 0.15:
+            return 'YELLOW'
+        else:
+            return 'RED'
+
+    def _score_efficiency(self, profit_factor: float) -> str:
+        """Score profit factor."""
+        if profit_factor > 1.5:
+            return 'GREEN'
+        elif profit_factor > 1.2:
+            return 'YELLOW'
+        else:
+            return 'RED'
+
+    def _score_regime_sensitivity(self, overall_win_rate: float, strategy: str) -> str:
+        """Score win rate consistency across regimes."""
+        regimes = set(t['regime'] for t in self._trades if t['strategy'] == strategy)
+
+        if len(regimes) < 2:
+            return 'YELLOW'
+
+        regime_win_rates = []
+        for regime in regimes:
+            regime_trades = [t for t in self._trades
+                           if t['strategy'] == strategy and t['regime'] == regime]
+            if regime_trades:
+                wins = sum(1 for t in regime_trades if t['pnl'] > 0)
+                wr = wins / len(regime_trades)
+                regime_win_rates.append(wr)
+
+        if not regime_win_rates:
+            return 'YELLOW'
+
+        win_rate_range = max(regime_win_rates) - min(regime_win_rates)
+        win_rate_variation_pct = win_rate_range * 100
+
+        if win_rate_variation_pct < 15:
+            return 'GREEN'
+        elif win_rate_variation_pct < 25:
+            return 'YELLOW'
+        else:
+            return 'RED'
+
+    def _compute_overall_grade(self, scores: Dict[str, str]) -> str:
+        """Compute overall grade from sub-scores."""
+        red_count = sum(1 for v in scores.values() if v == 'RED')
+        yellow_count = sum(1 for v in scores.values() if v == 'YELLOW')
+
+        if red_count > 0:
+            return 'RED'
+        elif yellow_count >= 2:
+            return 'YELLOW'
+        else:
+            return 'GREEN'
+
+    def get_enhanced_promotion_criteria(self) -> Dict[str, Any]:
+        """
+        Evaluate enhanced promotion criteria with per-strategy and regime checks.
+
+        Returns:
+            Dict with global, per-strategy, and regime-based promotion criteria
+        """
+        with self._lock:
+            # Get global criteria first
+            global_criteria_result = self.get_promotion_criteria()
+            global_criteria = global_criteria_result['criteria']
+            global_eligible = global_criteria_result['eligible_for_promotion']
+
+            # Per-strategy criteria
+            per_strategy_criteria = {}
+            all_strategies_met = True
+
+            for strategy_name in set(t['strategy'] for t in self._trades):
+                strategy_stats = self.compute_all(strategy=strategy_name)
+
+                # Determine min_trades requirement
+                min_trades = 50 if strategy_name == 'stocks' else 30
+
+                strategy_met = (
+                    strategy_stats['total_trades'] >= min_trades and
+                    strategy_stats['sharpe_ratio'] >= 0.3 and
+                    strategy_stats['profit_factor'] >= 1.2 and
+                    strategy_stats['max_drawdown_pct'] < 0.20
+                )
+
+                per_strategy_criteria[strategy_name] = {
+                    'min_trades': min_trades,
+                    'actual': strategy_stats['total_trades'],
+                    'met': strategy_stats['total_trades'] >= min_trades,
+                    'min_sharpe': 0.3,
+                    'actual_sharpe': round(strategy_stats['sharpe_ratio'], 4),
+                    'sharpe_met': strategy_stats['sharpe_ratio'] >= 0.3,
+                    'min_profit_factor': 1.2,
+                    'actual_profit_factor': round(strategy_stats['profit_factor'], 4),
+                    'pf_met': strategy_stats['profit_factor'] >= 1.2,
+                    'max_drawdown_pct': 0.20,
+                    'actual_max_dd': round(strategy_stats['max_drawdown_pct'] * 100, 2),
+                    'dd_met': strategy_stats['max_drawdown_pct'] < 0.20,
+                    'strategy_eligible': strategy_met,
+                }
+
+                if not strategy_met:
+                    all_strategies_met = False
+
+            # Regime criteria
+            regimes_data = self.by_regime()
+            regime_criteria = {
+                'min_regimes_tested': 2,
+                'actual_regimes': len(regimes_data),
+                'met': len(regimes_data) >= 2,
+                'per_regime_min_trades': 20,
+                'regimes': {}
+            }
+
+            all_regimes_met = True
+            for regime_name, regime_stats in regimes_data.items():
+                regime_met = regime_stats['total_trades'] >= 20
+                regime_criteria['regimes'][regime_name] = {
+                    'trades': regime_stats['total_trades'],
+                    'met': regime_met,
+                }
+                if not regime_met:
+                    all_regimes_met = False
+
+            # Overall promotion eligibility: all criteria must pass
+            eligible_for_promotion = (
+                global_eligible and
+                all_strategies_met and
+                regime_criteria['met'] and
+                all_regimes_met
+            )
+
+            return {
+                'eligible_for_promotion': eligible_for_promotion,
+                'global_criteria': global_criteria,
+                'per_strategy_criteria': per_strategy_criteria,
+                'regime_criteria': regime_criteria,
+                'evaluated_at': datetime.now().isoformat(),
+            }

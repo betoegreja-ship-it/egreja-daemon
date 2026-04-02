@@ -107,7 +107,7 @@ class ExternalKillSwitch:
                     logger.info("kill_switch_state: using column `key`")
                 else:
                     self._key_col = '`key`'
-                    logger.warning("kill_switch_state: no key column found, will use `key`")
+                    logger.warning(f"kill_switch_state: no key column found in {cols}, will use `key`")
             except Exception:
                 # Table doesn't exist yet — will be created below
                 self._key_col = '`key`'

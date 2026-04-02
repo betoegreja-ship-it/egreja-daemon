@@ -71,6 +71,10 @@ class ExternalKillSwitch:
         self._breach_time: Optional[datetime] = None
         self._min_resume_delay_minutes = int(os.getenv('KILL_SWITCH_MIN_RESUME_DELAY', '30'))
 
+        # [v10.24.5] Column name for the key column — detected at init_table time
+        # Production table may have 'key' (original) or 'scope_key' (after migration)
+        self._key_col = '`key`'  # default to backticked key (safe for MySQL reserved word)
+
         logger.info(
             f"ExternalKillSwitch initialized with CHECK_INTERVAL_S={self.CHECK_INTERVAL_S}s, "
             f"RESUME_MODE={self._mode.value}, MIN_RESUME_DELAY={self._min_resume_delay_minutes}m"
@@ -90,31 +94,35 @@ class ExternalKillSwitch:
             db = get_db_func()
             cursor = db.cursor()
 
-            # [v10.24.5] Robust migration: handle both 'key' and 'scope_key' columns
+            # [v10.24.5] Detect which column name the table uses
             try:
-                cursor.execute("SELECT scope_key FROM kill_switch_state LIMIT 1")
+                cursor.execute("SELECT `key` FROM kill_switch_state LIMIT 1")
                 cursor.fetchall()
-                logger.debug("kill_switch_state: scope_key column exists")
+                self._key_col = '`key`'
+                logger.info("kill_switch_state: using column `key`")
             except Exception:
                 try:
-                    cursor.execute("ALTER TABLE kill_switch_state CHANGE COLUMN `key` scope_key VARCHAR(32) NOT NULL")
-                    logger.info("Migrated kill_switch_state: renamed 'key' -> 'scope_key'")
-                    db.commit()
+                    cursor.execute("SELECT scope_key FROM kill_switch_state LIMIT 1")
+                    cursor.fetchall()
+                    self._key_col = 'scope_key'
+                    logger.info("kill_switch_state: using column scope_key")
                 except Exception:
-                    pass  # table doesn't exist yet, will be created below
+                    # Table doesn't exist — will be created below with `key`
+                    self._key_col = '`key`'
+                    logger.info("kill_switch_state: table not found, will create with `key`")
 
-            # Main state table
+            # Main state table (uses `key` for new installs)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS kill_switch_state (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    scope_key VARCHAR(32) NOT NULL UNIQUE,
+                    `key` VARCHAR(32) NOT NULL UNIQUE,
                     active BOOLEAN NOT NULL DEFAULT FALSE,
                     activated_by VARCHAR(255),
                     activated_at TIMESTAMP,
                     reason TEXT,
                     auto_resume_at TIMESTAMP NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_key (scope_key),
+                    INDEX idx_key (`key`),
                     INDEX idx_active (active),
                     INDEX idx_auto_resume (auto_resume_at)
                 )
@@ -137,8 +145,8 @@ class ExternalKillSwitch:
 
             # Initialize all scopes if not present
             for scope in KillSwitchScope:
-                cursor.execute("""
-                    INSERT IGNORE INTO kill_switch_state (scope_key, active, activated_by)
+                cursor.execute(f"""
+                    INSERT IGNORE INTO kill_switch_state ({self._key_col}, active, activated_by)
                     VALUES (%s, FALSE, NULL)
                 """, (scope.value,))
 
@@ -190,18 +198,18 @@ class ExternalKillSwitch:
                 auto_resume_at = now + timedelta(minutes=auto_resume_minutes)
 
             # Update state
-            cursor.execute("""
+            cursor.execute(f"""
                 UPDATE kill_switch_state
                 SET active = TRUE,
                     activated_by = %s,
                     activated_at = %s,
                     reason = %s,
                     auto_resume_at = %s
-                WHERE scope_key = %s
+                WHERE {self._key_col} = %s
             """, (activated_by, now, reason, auto_resume_at, scope))
 
             # Log action
-            cursor.execute("""
+            cursor.execute(f"""
                 INSERT INTO kill_switch_log (scope, action, by, reason)
                 VALUES (%s, %s, %s, %s)
             """, (scope, KillSwitchAction.ACTIVATE.value, activated_by, reason))
@@ -255,18 +263,18 @@ class ExternalKillSwitch:
             cursor = db.cursor()
 
             # Update state
-            cursor.execute("""
+            cursor.execute(f"""
                 UPDATE kill_switch_state
                 SET active = FALSE,
                     activated_by = NULL,
                     activated_at = NULL,
                     reason = NULL,
                     auto_resume_at = NULL
-                WHERE scope_key = %s
+                WHERE {self._key_col} = %s
             """, (scope,))
 
             # Log action
-            cursor.execute("""
+            cursor.execute(f"""
                 INSERT INTO kill_switch_log (scope, action, by)
                 VALUES (%s, %s, %s)
             """, (scope, KillSwitchAction.DEACTIVATE.value, deactivated_by))
@@ -331,10 +339,10 @@ class ExternalKillSwitch:
             db = get_db_func()
             cursor = db.cursor()
 
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT active, reason, auto_resume_at
                 FROM kill_switch_state
-                WHERE scope_key = %s
+                WHERE {self._key_col} = %s
             """, (scope,))
 
             row = cursor.fetchone()
@@ -352,17 +360,17 @@ class ExternalKillSwitch:
                     f"Auto-resuming kill switch for {scope} "
                     f"(auto_resume_at={auto_resume_at})"
                 )
-                cursor.execute("""
+                cursor.execute(f"""
                     UPDATE kill_switch_state
                     SET active = FALSE,
                         activated_by = NULL,
                         activated_at = NULL,
                         reason = NULL,
                         auto_resume_at = NULL
-                    WHERE scope_key = %s
+                    WHERE {self._key_col} = %s
                 """, (scope,))
 
-                cursor.execute("""
+                cursor.execute(f"""
                     INSERT INTO kill_switch_log (scope, action, by)
                     VALUES (%s, %s, %s)
                 """, (scope, KillSwitchAction.AUTO_DEACTIVATE.value, 'SYSTEM'))
@@ -406,10 +414,10 @@ class ExternalKillSwitch:
             db = get_db_func()
             cursor = db.cursor()
 
-            cursor.execute("""
-                SELECT scope_key, active, reason, activated_by, activated_at, auto_resume_at
+            cursor.execute(f"""
+                SELECT {self._key_col}, active, reason, activated_by, activated_at, auto_resume_at
                 FROM kill_switch_state
-                ORDER BY scope_key
+                ORDER BY {self._key_col}
             """)
 
             for row in cursor.fetchall():
@@ -454,7 +462,7 @@ class ExternalKillSwitch:
             db = get_db_func()
             cursor = db.cursor()
 
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT id, scope, action, by, reason, ts
                 FROM kill_switch_log
                 ORDER BY ts DESC

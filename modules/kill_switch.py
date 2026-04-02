@@ -94,14 +94,14 @@ class ExternalKillSwitch:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS kill_switch_state (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    key VARCHAR(32) NOT NULL UNIQUE,
+                    `key` VARCHAR(32) NOT NULL UNIQUE,
                     active BOOLEAN NOT NULL DEFAULT FALSE,
                     activated_by VARCHAR(255),
                     activated_at TIMESTAMP,
                     reason TEXT,
                     auto_resume_at TIMESTAMP NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_key (key),
+                    INDEX idx_key (`key`),
                     INDEX idx_active (active),
                     INDEX idx_auto_resume (auto_resume_at)
                 )
@@ -125,7 +125,7 @@ class ExternalKillSwitch:
             # Initialize all scopes if not present
             for scope in KillSwitchScope:
                 cursor.execute("""
-                    INSERT IGNORE INTO kill_switch_state (key, active, activated_by)
+                    INSERT IGNORE INTO kill_switch_state (`key`, active, activated_by)
                     VALUES (%s, FALSE, NULL)
                 """, (scope.value,))
 
@@ -184,7 +184,7 @@ class ExternalKillSwitch:
                     activated_at = %s,
                     reason = %s,
                     auto_resume_at = %s
-                WHERE key = %s
+                WHERE `key` = %s
             """, (activated_by, now, reason, auto_resume_at, scope))
 
             # Log action
@@ -249,7 +249,7 @@ class ExternalKillSwitch:
                     activated_at = NULL,
                     reason = NULL,
                     auto_resume_at = NULL
-                WHERE key = %s
+                WHERE `key` = %s
             """, (scope,))
 
             # Log action
@@ -321,7 +321,7 @@ class ExternalKillSwitch:
             cursor.execute("""
                 SELECT active, reason, auto_resume_at
                 FROM kill_switch_state
-                WHERE key = %s
+                WHERE `key` = %s
             """, (scope,))
 
             row = cursor.fetchone()
@@ -346,7 +346,7 @@ class ExternalKillSwitch:
                         activated_at = NULL,
                         reason = NULL,
                         auto_resume_at = NULL
-                    WHERE key = %s
+                    WHERE `key` = %s
                 """, (scope,))
 
                 cursor.execute("""
@@ -394,9 +394,9 @@ class ExternalKillSwitch:
             cursor = db.cursor()
 
             cursor.execute("""
-                SELECT key, active, reason, activated_by, activated_at, auto_resume_at
+                SELECT `key`, active, reason, activated_by, activated_at, auto_resume_at
                 FROM kill_switch_state
-                ORDER BY key
+                ORDER BY `key`
             """)
 
             for row in cursor.fetchall():

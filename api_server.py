@@ -113,7 +113,7 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
-VERSION = 'v10.24.3'
+VERSION = 'v10.24.4'
 _boot_time = time.time()
 
 # ── [v10.23] Module instances ──────────────────────────────────────────
@@ -143,11 +143,11 @@ MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 350_000))  
 MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 600_000))  # [v10.14] máximo global
 # [v10.14] Posição máxima por símbolo — BTC e ETH são as âncoras de capital
 CRYPTO_MAX_POSITION_BY_SYM = {
-    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  600_000)),  # 40% — melhor histórico WR 55%
+    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  500_000)),  # [v10.24.4] 33% — melhor histórico WR 55%
     'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  300_000)),  # 20% — referência de mercado
-    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',  300_000)),  # 20% — segundo melhor P&L
+    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',  200_000)),  # [v10.24.4] 13% — segundo melhor P&L
     'NEARUSDT': float(os.environ.get('MAX_POS_NEAR', 200_000)),  # 13% — terceiro WR 55%
-    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',  100_000)),  #  7% — estável
+    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',  200_000)),  # [v10.24.4] 13% — exchange coin estável
 }
 
 FMP_API_KEY      = os.environ.get('FMP_API_KEY', '')        # mantido como fallback terciário
@@ -192,7 +192,7 @@ ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 3))  # [v10.15] 3 símbolos (era 5) — mais seletivo
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.24.4] 5 símbolos — usar todo o capital nas 5 moedas
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
 # Settings ajustaveis em runtime (via /settings POST)
@@ -293,7 +293,8 @@ TRAILING_DROP_STOCKS      = float(os.environ.get('TRAILING_DROP_STOCKS', 0.4))  
 TRAILING_PEAK_CRYPTO      = float(os.environ.get('TRAILING_PEAK_CRYPTO', 1.5))     # era 2.0% — ativa trailing mais cedo
 TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 0.7))     # era 1.0% — retração menor
 # ── [v10.17] Directional exposure limit ───────────────────────────────────
-MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))       # max 70% das posições na mesma direção
+MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))       # max 70% das posições na mesma direção (stocks)
+MAX_DIRECTIONAL_PCT_CRYPTO = float(os.environ.get('MAX_DIRECTIONAL_PCT_CRYPTO', 100))  # [v10.24.4] crypto: 100% — mercado correlacionado, diversificação é entre moedas
 # ── [v10.17] Dynamic timeout ─────────────────────────────────────────────
 DYNAMIC_TIMEOUT_ENABLED   = os.environ.get('DYNAMIC_TIMEOUT_ENABLED', 'true').lower() != 'false'
 DYNAMIC_TIMEOUT_MULT      = float(os.environ.get('DYNAMIC_TIMEOUT_MULT', 1.3))    # timeout = avg_dur * 1.3
@@ -2416,8 +2417,9 @@ def check_directional_exposure(direction: str, strategy: str = 'stocks') -> tupl
     same_dir = longs if direction == 'LONG' else shorts
     pct = (same_dir / total) * 100 if total > 0 else 0
     stats = {'total': total, 'long': longs, 'short': shorts, 'same_dir_pct': round(pct, 1)}
-    if pct >= MAX_DIRECTIONAL_PCT:
-        return True, f'DIRECTIONAL_LIMIT ({direction}={same_dir}/{total}={pct:.0f}%>{MAX_DIRECTIONAL_PCT:.0f}%)', stats
+    _dir_limit = MAX_DIRECTIONAL_PCT_CRYPTO if strategy == 'crypto' else MAX_DIRECTIONAL_PCT  # [v10.24.4]
+    if pct >= _dir_limit:
+        return True, f'DIRECTIONAL_LIMIT ({direction}={same_dir}/{total}={pct:.0f}%>{_dir_limit:.0f}%)', stats
     return False, 'OK', stats
 
 

@@ -95,21 +95,23 @@ class ExternalKillSwitch:
             cursor = db.cursor()
 
             # [v10.24.5] Detect which column name the table uses
+            # Use SHOW COLUMNS to avoid cursor error state from failed SELECT
             try:
-                cursor.execute("SELECT `key` FROM kill_switch_state LIMIT 1")
-                cursor.fetchall()
-                self._key_col = '`key`'
-                logger.info("kill_switch_state: using column `key`")
-            except Exception:
-                try:
-                    cursor.execute("SELECT scope_key FROM kill_switch_state LIMIT 1")
-                    cursor.fetchall()
+                cursor.execute("SHOW COLUMNS FROM kill_switch_state")
+                cols = [row[0] for row in cursor.fetchall()]
+                if 'scope_key' in cols:
                     self._key_col = 'scope_key'
                     logger.info("kill_switch_state: using column scope_key")
-                except Exception:
-                    # Table doesn't exist — will be created below with `key`
+                elif 'key' in cols:
                     self._key_col = '`key`'
-                    logger.info("kill_switch_state: table not found, will create with `key`")
+                    logger.info("kill_switch_state: using column `key`")
+                else:
+                    self._key_col = '`key`'
+                    logger.warning("kill_switch_state: no key column found, will use `key`")
+            except Exception:
+                # Table doesn't exist yet — will be created below
+                self._key_col = '`key`'
+                logger.info("kill_switch_state: table not found, will create with `key`")
 
             # Main state table (uses `key` for new installs)
             cursor.execute("""

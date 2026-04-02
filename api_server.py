@@ -140,7 +140,7 @@ if GUNICORN_WORKERS > 1:
 INITIAL_CAPITAL_STOCKS = float(os.environ.get('INITIAL_CAPITAL_STOCKS', 9_000_000))
 INITIAL_CAPITAL_CRYPTO = float(os.environ.get('INITIAL_CAPITAL_CRYPTO', 1_000_000))
 MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 350_000))  # [v10.14] proporcional ao capital atual
-MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 600_000))  # [v10.14] máximo global
+MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 500_000))  # [v10.25] máximo global
 # [v10.14] Posição máxima por símbolo — BTC e ETH são as âncoras de capital
 CRYPTO_MAX_POSITION_BY_SYM = {
     'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  500_000)),  # [v10.24.4] 33% — melhor histórico WR 55%

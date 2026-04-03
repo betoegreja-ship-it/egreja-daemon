@@ -12,7 +12,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
+import os
 import random
+
+import requests as _requests_lib
 
 logger = logging.getLogger('egreja.derivatives')
 
@@ -718,6 +721,532 @@ class CedroMarketDataProvider(MarketDataProviderBase):
                 return False
             except Exception as e:
                 self.logger.warning(f"Cedro health check failed: {e}")
+                self._is_healthy = False
+                return False
+
+
+# ============================================================================
+# OpLab Market Data Provider (Options, Greeks, IV, Book, Rates)
+# ============================================================================
+
+class OpLabMarketDataProvider(MarketDataProviderBase):
+    """
+    OpLab Market Data Provider — REST API.
+
+    Primary provider for B3 derivatives: options chain, Greeks, IV, order book,
+    interest rates, Black-Scholes, and historical data.
+
+    API Docs: https://apidocs.oplab.com.br
+    Auth: Access-Token header on every request.
+
+    Env vars:
+    - OPLAB_ACCESS_TOKEN: API access token (required)
+    - OPLAB_API_URL: Base URL (default: https://api.oplab.com.br/v3)
+
+    Complementary data from other providers already in the system:
+    - ADR prices (NYSE) → Polygon.io via _fetch_polygon_stock()
+    - Dividends → BRAPI via brapi.dev
+    """
+
+    # B3 option series: calls A-L (Jan-Dec), puts M-X (Jan-Dec)
+    CALL_MONTHS = 'ABCDEFGHIJKL'
+    PUT_MONTHS  = 'MNOPQRSTUVWX'
+
+    # B3 → NYSE ADR mapping (mirrors B3_TO_ADR in api_server.py)
+    B3_TO_ADR = {
+        'PETR4': 'PBR', 'PETR3': 'PBR-A',
+        'VALE3': 'VALE',
+        'ITUB4': 'ITUB', 'ITUB3': 'ITUB',
+        'BBDC4': 'BBD',  'BBDC3': 'BBD',
+        'ABEV3': 'ABEV',
+        'EMBR3': 'ERJ',
+    }
+
+    def __init__(self):
+        super().__init__("oplab")
+        self._token = os.environ.get('OPLAB_ACCESS_TOKEN', '').strip()
+        self._api_url = os.environ.get(
+            'OPLAB_API_URL', 'https://api.oplab.com.br/v3'
+        ).rstrip('/')
+
+        self._session = _requests_lib.Session()
+        self._session.headers.update({
+            'Accept': 'application/json',
+            'Access-Token': self._token,
+        })
+
+        self._cache: Dict[str, Any] = {}
+        self._cache_ttl = 5  # seconds
+
+        # BRAPI for dividends
+        self._brapi_token = os.environ.get('BRAPI_TOKEN', '').strip()
+
+        # Polygon for ADR
+        self._polygon_key = os.environ.get('POLYGON_API_KEY', '').strip()
+
+        if self._token:
+            self._is_healthy = True
+            self.logger.info("OpLab: provider initialized (Access-Token set)")
+        else:
+            self._is_healthy = False
+            self.logger.warning("OpLab: OPLAB_ACCESS_TOKEN not set — provider disabled")
+
+    # ─── HTTP Helpers ─────────────────────────────────────────────
+
+    def _get(self, path: str, params: dict = None, timeout: int = 10) -> Optional[Any]:
+        """GET request to OpLab API."""
+        if not self._token:
+            return None
+        try:
+            url = f"{self._api_url}{path}"
+            r = self._session.get(url, params=params, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code == 401:
+                self.logger.error("OpLab: 401 Unauthorized — check OPLAB_ACCESS_TOKEN")
+                self._is_healthy = False
+            elif r.status_code == 429:
+                self.logger.warning("OpLab: rate limited (429) — backing off")
+                time.sleep(1)
+            else:
+                self.logger.warning(f"OpLab GET {path} → HTTP {r.status_code}")
+            return None
+        except Exception as e:
+            self.logger.warning(f"OpLab GET {path} error: {e}")
+            return None
+
+    def _cached_get(self, cache_key: str, path: str, params: dict = None) -> Optional[Any]:
+        """GET with in-memory TTL cache."""
+        now = time.time()
+        cached = self._cache.get(cache_key)
+        if cached and (now - cached['ts']) < self._cache_ttl:
+            return cached['data']
+        data = self._get(path, params=params)
+        if data is not None:
+            self._cache[cache_key] = {'data': data, 'ts': now}
+        return data
+
+    # ─── Spot Quote ───────────────────────────────────────────────
+
+    def get_spot(self, symbol: str) -> Optional[SpotQuote]:
+        """Fetch spot price from OpLab /market/stocks/{symbol}."""
+        with self._lock:
+            data = self._cached_get(f'spot:{symbol}', f'/market/stocks/{symbol}')
+            if not data:
+                return None
+            try:
+                return SpotQuote(
+                    symbol=symbol.upper(),
+                    bid=float(data.get('bid', data.get('close', 0)) or 0),
+                    ask=float(data.get('ask', data.get('close', 0)) or 0),
+                    last=float(data.get('close', data.get('last', 0)) or 0),
+                    volume=int(data.get('volume', data.get('financial_volume', 0)) or 0),
+                    timestamp=datetime.utcnow(),
+                )
+            except (ValueError, TypeError) as e:
+                self.logger.warning(f"OpLab spot parse error for {symbol}: {e}")
+                return None
+
+    # ─── Options Chain ────────────────────────────────────────────
+
+    def get_options_chain(self, underlying: str) -> List[OptionQuote]:
+        """
+        Fetch options chain from OpLab /market/options/{underlying}.
+
+        Returns all strikes/expirations with Greeks, IV, volume, OI.
+        """
+        with self._lock:
+            data = self._cached_get(
+                f'chain:{underlying}',
+                f'/market/options/{underlying}'
+            )
+            if not data:
+                return []
+
+            results = []
+            items = data if isinstance(data, list) else data.get('options', data.get('data', []))
+
+            for item in items:
+                try:
+                    symbol = str(item.get('symbol', item.get('ticker', '')))
+                    if not symbol:
+                        continue
+
+                    # Determine option type
+                    opt_type_raw = str(item.get('category', item.get('type', ''))).upper()
+                    if opt_type_raw in ('CALL', 'C'):
+                        opt_type = 'C'
+                    elif opt_type_raw in ('PUT', 'P'):
+                        opt_type = 'P'
+                    else:
+                        # Infer from B3 series letter
+                        root_len = 4
+                        if len(symbol) > root_len:
+                            letter = symbol[root_len].upper()
+                            opt_type = 'C' if letter in self.CALL_MONTHS else 'P'
+                        else:
+                            opt_type = 'C'
+
+                    results.append(OptionQuote(
+                        symbol=symbol,
+                        underlying=underlying.upper(),
+                        strike=float(item.get('strike', 0) or 0),
+                        expiry=str(item.get('due_date', item.get('maturity_date', item.get('expiry', '')))),
+                        option_type=opt_type,
+                        bid=float(item.get('bid', 0) or 0),
+                        ask=float(item.get('ask', 0) or 0),
+                        last=float(item.get('close', item.get('last', 0)) or 0),
+                        volume=int(item.get('volume', item.get('financial_volume', 0)) or 0),
+                        oi=int(item.get('open_interest', item.get('oi', 0)) or 0),
+                        iv=float(item.get('implied_volatility', item.get('iv', 0)) or 0),
+                        delta=float(item.get('delta', 0) or 0),
+                        gamma=float(item.get('gamma', 0) or 0),
+                        theta=float(item.get('theta', 0) or 0),
+                        vega=float(item.get('vega', 0) or 0),
+                        timestamp=datetime.utcnow(),
+                    ))
+                except (ValueError, TypeError, KeyError) as e:
+                    self.logger.debug(f"OpLab option parse error: {e}")
+                    continue
+
+            self.logger.info(f"OpLab: fetched {len(results)} options for {underlying}")
+            return results
+
+    # ─── Futures ──────────────────────────────────────────────────
+
+    def get_futures(self, underlying: str) -> List[FutureQuote]:
+        """
+        Fetch futures from OpLab via /market/instruments.
+
+        B3 futures: WIN, IND, DOL, WDO + underlying-specific.
+        OpLab treats futures as instruments — query by symbol prefix.
+        """
+        with self._lock:
+            # Map underlying to B3 futures tickers
+            futures_map = {
+                'BOVA11': ['WIN', 'IND'],
+                'IBOV':   ['WIN', 'IND'],
+                'PETR4':  ['PETR4'],
+                'VALE3':  ['VALE3'],
+                'USD':    ['DOL', 'WDO'],
+                'BRL':    ['DOL', 'WDO'],
+            }
+            prefixes = futures_map.get(underlying.upper(), [underlying[:4]])
+            results = []
+
+            for prefix in prefixes:
+                # Try fetching the instrument series
+                data = self._cached_get(
+                    f'fut:{prefix}',
+                    f'/market/instruments/series/{prefix}'
+                )
+
+                if not data:
+                    # Fallback: search instruments
+                    data = self._cached_get(
+                        f'fut_search:{prefix}',
+                        '/market/instruments/search',
+                        params={'q': prefix, 'type': 'FUTURE'}
+                    )
+
+                if not data:
+                    continue
+
+                items = data if isinstance(data, list) else data.get('data', [])
+                spot_quote = self.get_spot(underlying)
+                spot_price = spot_quote.mid if spot_quote else 0
+
+                for item in items:
+                    try:
+                        sym = str(item.get('symbol', ''))
+                        last_price = float(item.get('close', item.get('last', 0)) or 0)
+
+                        results.append(FutureQuote(
+                            symbol=sym,
+                            underlying=underlying.upper(),
+                            expiry=str(item.get('due_date', item.get('maturity_date', ''))),
+                            bid=float(item.get('bid', 0) or 0),
+                            ask=float(item.get('ask', 0) or 0),
+                            last=last_price,
+                            volume=int(item.get('volume', 0) or 0),
+                            oi=int(item.get('open_interest', 0) or 0),
+                            basis=last_price - spot_price if spot_price else 0,
+                            timestamp=datetime.utcnow(),
+                        ))
+                    except (ValueError, TypeError) as e:
+                        self.logger.debug(f"OpLab futures parse error for {prefix}: {e}")
+                        continue
+
+            return results
+
+    # ─── Rates ────────────────────────────────────────────────────
+
+    def get_rates(self) -> Optional[RateCurve]:
+        """Fetch interest rate curve from OpLab /market/interest_rates."""
+        with self._lock:
+            data = self._cached_get('rates:all', '/market/interest_rates')
+            if not data:
+                # Return sensible defaults for B3
+                return RateCurve(
+                    date=datetime.utcnow().strftime('%Y-%m-%d'),
+                    cdi=14.90, selic=14.75,
+                    di1_terms={}, timestamp=datetime.utcnow(),
+                )
+
+            cdi_rate = 14.90
+            selic_rate = 14.75
+            di1_terms = {}
+
+            items = data if isinstance(data, list) else data.get('data', [data])
+            for item in items:
+                try:
+                    name = str(item.get('name', item.get('id', ''))).upper()
+                    rate_val = float(item.get('value', item.get('rate', 0)) or 0)
+
+                    if 'CDI' in name:
+                        cdi_rate = rate_val
+                    elif 'SELIC' in name:
+                        selic_rate = rate_val
+                    elif 'DI1' in name or 'DI' in name:
+                        # DI futures term structure
+                        days = int(item.get('business_days', item.get('days', 0)) or 0)
+                        if days > 0:
+                            di1_terms[days] = rate_val
+                except (ValueError, TypeError, KeyError):
+                    continue
+
+            return RateCurve(
+                date=datetime.utcnow().strftime('%Y-%m-%d'),
+                cdi=cdi_rate,
+                selic=selic_rate,
+                di1_terms=di1_terms,
+                timestamp=datetime.utcnow(),
+            )
+
+    # ─── Dividends (via BRAPI) ────────────────────────────────────
+
+    def get_dividends(self, symbol: str) -> List[DividendEvent]:
+        """
+        Fetch dividends via BRAPI (brapi.dev) — already subscribed.
+
+        OpLab does not provide dividend data, so we use the existing BRAPI
+        integration for this.
+        """
+        with self._lock:
+            if not self._brapi_token:
+                self.logger.debug("OpLab.get_dividends: BRAPI_TOKEN not set")
+                return []
+
+            try:
+                url = f"https://brapi.dev/api/quote/{symbol}"
+                r = _requests_lib.get(url, params={
+                    'token': self._brapi_token,
+                    'dividends': 'true',
+                    'range': '6mo',
+                }, timeout=10)
+
+                if r.status_code != 200:
+                    return []
+
+                data = r.json()
+                results_list = data.get('results', [])
+                if not results_list:
+                    return []
+
+                dividends = results_list[0].get('dividendsData', {}).get('cashDividends', [])
+                result = []
+                for div in dividends:
+                    try:
+                        result.append(DividendEvent(
+                            symbol=symbol.upper(),
+                            ex_date=str(div.get('exDividendDate', '')),
+                            amount=float(div.get('rate', div.get('value', 0)) or 0),
+                            div_type='cash' if div.get('label', '').upper() != 'JCP' else 'jcp',
+                        ))
+                    except (ValueError, TypeError, KeyError):
+                        continue
+
+                return result
+            except Exception as e:
+                self.logger.warning(f"OpLab.get_dividends (BRAPI) error: {e}")
+                return []
+
+    # ─── Order Book ───────────────────────────────────────────────
+
+    def get_depth(self, symbol: str, max_levels: int = 5) -> Optional[Dict[str, Any]]:
+        """Fetch order book from OpLab /market/options/details/{symbol} or /market/stocks/{symbol}."""
+        with self._lock:
+            # Try options detail endpoint (has book data)
+            data = self._cached_get(f'book:{symbol}', f'/market/options/details/{symbol}')
+
+            if not data:
+                # Fallback: stock endpoint
+                data = self._cached_get(f'stock_book:{symbol}', f'/market/stocks/{symbol}')
+
+            if not data:
+                return None
+
+            bids = []
+            asks = []
+            try:
+                # OpLab may return book as nested arrays or objects
+                book_data = data.get('book', data.get('depth', data))
+
+                bid_list = book_data.get('bids', book_data.get('buy', [])) or []
+                ask_list = book_data.get('asks', book_data.get('sell', [])) or []
+
+                for entry in bid_list[:max_levels]:
+                    if isinstance(entry, dict):
+                        bids.append({
+                            'price': float(entry.get('price', 0)),
+                            'qty': int(entry.get('quantity', entry.get('qty', entry.get('amount', 0)))),
+                        })
+                    elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                        bids.append({'price': float(entry[0]), 'qty': int(entry[1])})
+
+                for entry in ask_list[:max_levels]:
+                    if isinstance(entry, dict):
+                        asks.append({
+                            'price': float(entry.get('price', 0)),
+                            'qty': int(entry.get('quantity', entry.get('qty', entry.get('amount', 0)))),
+                        })
+                    elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                        asks.append({'price': float(entry[0]), 'qty': int(entry[1])})
+            except (ValueError, TypeError, AttributeError):
+                pass
+
+            if not bids and not asks:
+                # Minimal book from bid/ask in quote
+                bid_price = float(data.get('bid', 0) or 0)
+                ask_price = float(data.get('ask', 0) or 0)
+                if bid_price > 0:
+                    bids = [{'price': bid_price, 'qty': int(data.get('bid_volume', 100))}]
+                if ask_price > 0:
+                    asks = [{'price': ask_price, 'qty': int(data.get('ask_volume', 100))}]
+
+            return {'bids': bids, 'asks': asks, 'symbol': symbol, 'levels': max_levels}
+
+    # ─── Greeks ───────────────────────────────────────────────────
+
+    def get_greeks(self, option_symbol: str) -> Optional[Dict[str, float]]:
+        """Fetch Greeks from OpLab /market/options/details/{symbol}."""
+        with self._lock:
+            data = self._cached_get(
+                f'greeks:{option_symbol}',
+                f'/market/options/details/{option_symbol}'
+            )
+            if not data:
+                return None
+            try:
+                return {
+                    'delta': float(data.get('delta', 0) or 0),
+                    'gamma': float(data.get('gamma', 0) or 0),
+                    'theta': float(data.get('theta', 0) or 0),
+                    'vega':  float(data.get('vega', 0) or 0),
+                    'iv':    float(data.get('implied_volatility', data.get('iv', 0)) or 0),
+                    'rho':   float(data.get('rho', 0) or 0),
+                }
+            except (ValueError, TypeError):
+                return None
+
+    # ─── ADR Prices (via Polygon) ─────────────────────────────────
+
+    def get_adr_prices(self, symbols: List[str]) -> Dict[str, float]:
+        """
+        Fetch ADR prices using Polygon.io — already integrated in the system.
+
+        Maps B3 tickers to NYSE ADRs and queries Polygon snapshot endpoint.
+        """
+        with self._lock:
+            if not self._polygon_key:
+                self.logger.debug("OpLab.get_adr_prices: POLYGON_API_KEY not set")
+                return {}
+
+            result = {}
+            for sym in symbols:
+                adr_ticker = self.B3_TO_ADR.get(sym.upper(), sym)
+                try:
+                    url = f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{adr_ticker}"
+                    r = _requests_lib.get(url, params={'apiKey': self._polygon_key}, timeout=8)
+                    if r.status_code == 200:
+                        data = r.json()
+                        ticker_data = data.get('ticker', {})
+                        day_data = ticker_data.get('day', {})
+                        price = float(day_data.get('c', day_data.get('vw', 0)) or 0)
+                        if price > 0:
+                            result[sym] = price
+                except Exception as e:
+                    self.logger.debug(f"OpLab.get_adr_prices Polygon error for {adr_ticker}: {e}")
+                    continue
+
+            return result
+
+    # ─── Price History ────────────────────────────────────────────
+
+    def get_price_history(self, symbol: str, lookback_days: int = 60) -> Optional[list]:
+        """
+        Fetch historical daily candles from OpLab /market/historical/{symbol}/1d.
+
+        Returns list of dicts with date, open, high, low, close, volume.
+        """
+        with self._lock:
+            data = self._cached_get(
+                f'hist:{symbol}:{lookback_days}',
+                f'/market/historical/{symbol}/1d',
+                params={'limit': lookback_days}
+            )
+            if not data:
+                return None
+
+            items = data if isinstance(data, list) else data.get('data', data.get('candles', []))
+            results = []
+            for item in items:
+                try:
+                    results.append({
+                        'date': str(item.get('date', item.get('time', ''))),
+                        'open': float(item.get('open', 0) or 0),
+                        'high': float(item.get('high', 0) or 0),
+                        'low': float(item.get('low', 0) or 0),
+                        'close': float(item.get('close', 0) or 0),
+                        'volume': int(item.get('volume', 0) or 0),
+                    })
+                except (ValueError, TypeError):
+                    continue
+
+            return results if results else None
+
+    # ─── Health Check ─────────────────────────────────────────────
+
+    def health_check(self) -> bool:
+        """Validate OpLab connectivity by fetching market status."""
+        with self._lock:
+            if not self._token:
+                self._is_healthy = False
+                return False
+            try:
+                r = self._session.get(
+                    f"{self._api_url}/market/status",
+                    timeout=5
+                )
+                if r.status_code == 200:
+                    self._is_healthy = True
+                    self._last_health_check = datetime.utcnow()
+                    return True
+
+                # Fallback: try fetching PETR4 options
+                r2 = self._session.get(
+                    f"{self._api_url}/market/stocks/PETR4",
+                    timeout=5
+                )
+                if r2.status_code == 200:
+                    self._is_healthy = True
+                    self._last_health_check = datetime.utcnow()
+                    return True
+
+                self._is_healthy = False
+                return False
+            except Exception as e:
+                self.logger.warning(f"OpLab health check failed: {e}")
                 self._is_healthy = False
                 return False
 

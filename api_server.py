@@ -80,7 +80,7 @@ try:
     # [v10.25] Derivatives module imports
     from modules.derivatives.config import get_config as get_deriv_config, DerivativesConfig, ActiveStatus
     from modules.derivatives.schema import create_derivatives_tables
-    from modules.derivatives.providers import ProviderManager, SimulatedMarketDataProvider, CedroMarketDataProvider
+    from modules.derivatives.providers import ProviderManager, SimulatedMarketDataProvider, CedroMarketDataProvider, OpLabMarketDataProvider
     from modules.derivatives.services import (OptionsChainCache, FuturesChainCache, DividendEventService,
         RatesCurveService, GreeksCalculator, CalibrationService, StrategyScorecard, StructuredOrderExecutor,
         NAVCalculatorService, ImpliedVolEngine)
@@ -141,29 +141,42 @@ log = logging.getLogger('egreja')
 
 app = Flask(__name__)
 
-# ═══ [v10.26] DERIVATIVES MODULE INITIALIZATION ═══
+# ═══ [v10.27] DERIVATIVES MODULE INITIALIZATION ═══
+# Provider chain: OpLab (primary) → Cedro (backup) → Simulated (fallback)
 _deriv_config = get_deriv_config()
 _deriv_provider_mgr = ProviderManager()
 
-# Register Cedro as primary provider (if credentials are set)
+# 1. OpLab — primary provider for derivatives (options, Greeks, IV, book, rates)
+#    ADR prices via Polygon, dividends via BRAPI (both already configured)
+try:
+    _oplab_provider = OpLabMarketDataProvider()
+    _deriv_provider_mgr.register_provider('oplab', _oplab_provider, is_primary=True)
+    if _oplab_provider._token:
+        log.info('[v10.27] Derivatives: OpLabMarketDataProvider ACTIVE (primary — options/Greeks/IV/book)')
+    else:
+        log.info('[v10.27] Derivatives: OpLab registered but OPLAB_ACCESS_TOKEN not set')
+except Exception as e:
+    log.warning(f'[v10.27] OpLab provider init: {e}')
+
+# 2. Cedro — backup provider (activate by setting CEDRO_LOGIN + CEDRO_PASSWORD)
 try:
     _cedro_provider = CedroMarketDataProvider()
-    _deriv_provider_mgr.register_provider('cedro', _cedro_provider, is_primary=True)
+    _deriv_provider_mgr.register_provider('cedro', _cedro_provider, is_primary=False)
     if _cedro_provider._authenticated:
-        log.info('[v10.26] Derivatives: CedroMarketDataProvider ACTIVE (real market data)')
+        log.info('[v10.27] Derivatives: CedroMarketDataProvider registered (backup — active)')
     else:
-        log.info('[v10.26] Derivatives: Cedro registered but not authenticated (set CEDRO_LOGIN + CEDRO_PASSWORD)')
+        log.info('[v10.27] Derivatives: Cedro registered (backup — dormant, no credentials)')
 except Exception as e:
-    log.warning(f'[v10.26] Cedro provider init: {e}')
+    log.warning(f'[v10.27] Cedro provider init: {e}')
 
-# Always register Simulated as fallback
+# 3. Simulated — always available as last-resort fallback
 try:
     _sim_provider = SimulatedMarketDataProvider()
     _deriv_provider_mgr.register_provider('simulated', _sim_provider, is_primary=False)
     _deriv_provider_mgr._active = _sim_provider  # direct fallback attr
-    log.info('[v10.26] Derivatives: SimulatedMarketDataProvider registered (fallback/paper)')
+    log.info('[v10.27] Derivatives: SimulatedMarketDataProvider registered (fallback/paper)')
 except Exception as e:
-    log.warning(f'[v10.26] Simulated provider init: {e}')
+    log.warning(f'[v10.27] Simulated provider init: {e}')
 
 _deriv_services = {}
 try:

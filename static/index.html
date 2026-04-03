@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Egreja Investment AI — Dashboard</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--gold:#C9A84C;--gold-dim:#7A5C1A;--profit:#22C55E;--loss:#EF4444;--accent:#60A5FA;--purple:#A78BFA;--cyan:#22D3EE;--orange:#FB923C;--pink:#EC4899;--red:#F43F5E;--s1:#060A10;--s2:#0B1018;--s3:#111820;--border:#1A2332;--muted:#374151;--text:#E2E8F0;--dim:#64748B;--mono:'JetBrains Mono',monospace;--sans:'Inter',system-ui,sans-serif}
+body{font-family:var(--sans);background:var(--s1);color:var(--text);min-height:100vh}
+a{color:var(--accent);text-decoration:none}
+
+/* ─── Navbar ───────────────────────────────────────────────────── */
+.navbar{position:sticky;top:0;z-index:50;background:rgba(6,10,16,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;height:64px}
+.navbar-left{display:flex;align-items:center;gap:16px;flex:0 0 auto}
+.navbar-icon{width:40px;height:40px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:rgba(201,168,76,.12);border:1px solid var(--gold-dim);font-size:18px}
+.navbar-title{display:flex;flex-direction:column;gap:2px}
+.navbar-title h1{font-size:16px;font-weight:700;letter-spacing:-.02em}
+.navbar-title p{font-size:11px;color:var(--dim)}
+
+.navbar-center{display:flex;align-items:center;gap:8px;flex:1;justify-content:center}
+.nav-tab{padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none;background:transparent;color:var(--dim);transition:all .15s;white-space:nowrap}
+.nav-tab:hover{color:var(--text)}
+.nav-tab.active{background:var(--s3);color:var(--gold);border:1px solid var(--border)}
+
+.navbar-right{display:flex;align-items:center;gap:12px;flex:0 0 auto}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text);transition:all .15s}
+.btn:hover{background:var(--s3)}
+.btn-active{background:#2563EB;border-color:#2563EB;color:#fff}
+.btn-active:hover{background:#1D4ED8}
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:99px;font-size:10px;font-weight:700}
+.badge-healthy{background:rgba(34,197,94,.1);color:var(--profit);border:1px solid rgba(34,197,94,.2)}
+.badge-degraded{background:rgba(239,68,68,.1);color:var(--loss);border:1px solid rgba(239,68,68,.2)}
+
+/* ─── Container ────────────────────────────────────────────────── */
+.container{max-width:1600px;margin:0 auto;padding:24px}
+.section{margin-bottom:24px}
+.grid-1{display:grid;grid-template-columns:1fr;gap:16px}
+.grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+@media(max-width:1024px){.grid-4{grid-template-columns:repeat(2,1fr)}.grid-3{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:640px){.grid-4,.grid-3,.grid-2{grid-template-columns:1fr}}
+
+/* ─── Cards ────────────────────────────────────────────────────── */
+.card{background:var(--s2);border:1px solid var(--border);border-radius:8px;overflow:hidden;position:relative}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(96,165,250,.2),transparent)}
+.card-header{padding:16px 16px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.card-title{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.card-body{padding:16px}
+
+.stat-card{padding:16px;display:flex;flex-direction:column;gap:8px;border-top:2px solid}
+.stat-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.stat-value{font-size:28px;font-weight:700;font-family:var(--mono)}
+.stat-sub{font-size:11px;color:var(--dim)}
+
+/* ─── Lists & Tables ────────────────────────────────────────────── */
+.thread-list{display:flex;flex-direction:column;gap:12px}
+.thread-item{padding:12px;background:var(--s3);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:space-between}
+.thread-name{font-size:12px;font-weight:600;font-family:var(--mono)}
+.thread-status{display:flex;align-items:center;gap:8px;font-size:11px}
+.status-dot{width:8px;height:8px;border-radius:50%}
+.status-dot.alive{background:var(--profit);box-shadow:0 0 4px var(--profit)}
+.status-dot.frozen{background:var(--loss)}
+
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 12px;color:var(--dim);font-weight:600;font-size:11px;border-bottom:1px solid var(--border)}
+td{padding:8px 12px;border-bottom:1px solid rgba(26,35,50,.4)}
+tr:hover{background:rgba(17,24,32,.5)}
+.text-right{text-align:right}
+.text-mono{font-family:var(--mono)}
+.text-dim{color:var(--dim)}
+.text-accent{color:var(--accent)}
+.text-profit{color:var(--profit)}
+.text-loss{color:var(--loss)}
+
+/* ─── Utilities ────────────────────────────────────────────────── */
+.empty-state{text-align:center;padding:48px 24px;color:var(--dim)}
+.empty-state svg{margin:0 auto 12px;opacity:.3}
+.loading{opacity:.6}
+.spin{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.footer{text-align:center;padding:24px;color:var(--dim);font-size:11px;border-top:1px solid var(--border);margin-top:48px}
+.footer a{color:var(--accent);text-decoration:none}
+.footer a:hover{text-decoration:underline}
+
+/* ─── Hidden sections ──────────────────────────────────────────── */
+.section-hidden{display:none}
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<!-- ─── Navbar ─────────────────────────────────────────────────── -->
+<div class="navbar">
+  <div class="navbar-left">
+    <div class="navbar-icon">💰</div>
+    <div class="navbar-title">
+      <h1>Egreja Investment AI</h1>
+      <p id="navbar-status">Carregando...</p>
+    </div>
+  </div>
+
+  <div class="navbar-center">
+    <button class="nav-tab active" onclick="switchTab('dashboard')">Dashboard</button>
+    <button class="nav-tab" onclick="switchTab('derivativos')">Derivativos</button>
+    <button class="nav-tab" onclick="switchTab('sinais')">Sinais</button>
+    <button class="nav-tab" onclick="switchTab('operacoes')">Operações</button>
+  </div>
+
+  <div class="navbar-right">
+    <span id="health-badge" class="badge badge-healthy" style="padding:4px 10px">
+      <span style="width:6px;height:6px;border-radius:50%;background:var(--profit)"></span>
+      ONLINE
+    </span>
+    <button class="btn" onclick="refresh()" id="refresh-btn">🔄 Atualizar</button>
+    <button class="btn btn-active" onclick="toggleAuto()" id="auto-btn">⚡ Auto ON</button>
+  </div>
+</div>
+
+<!-- ─── Container ──────────────────────────────────────────────── -->
+<div class="container">
+
+  <!-- Dashboard Tab ────────────────────────────────────────────── -->
+  <div id="dashboard-tab" class="section">
+    <!-- System Health KPIs -->
+    <div class="grid-4 section" id="kpi-grid"></div>
+
+    <!-- System Status Grid -->
+    <div class="grid-2 section">
+      <!-- System Health Card -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🏥 System Health</div>
+        </div>
+        <div class="card-body">
+          <div id="system-health-content" class="loading">
+            <div style="text-align:center;padding:20px">
+              <div class="spin" style="font-size:24px;margin-bottom:8px">⚙️</div>
+              <p style="font-size:12px">Carregando...</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Thread Status Card -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🧵 Thread Health</div>
+        </div>
+        <div class="card-body">
+          <div id="thread-status-content" class="thread-list">
+            <div style="text-align:center;padding:20px;color:var(--dim)">
+              <p style="font-size:12px">Carregando threads...</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Price Cache & DB Status -->
+    <div class="grid-3 section" id="cache-grid"></div>
+
+    <!-- Market Info -->
+    <div class="card section">
+      <div class="card-header">
+        <div class="card-title">📈 Market Regime & Trades</div>
+      </div>
+      <div class="card-body">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+          <div>
+            <div class="stat-label">Market Regime</div>
+            <div class="stat-value" id="market-regime" style="font-size:20px">—</div>
+          </div>
+          <div>
+            <div class="stat-label">Open Trades</div>
+            <div class="stat-value" id="open-trades" style="font-size:20px">—</div>
+          </div>
+          <div>
+            <div class="stat-label">Kill Switch</div>
+            <div class="stat-value" id="kill-switch" style="font-size:14px">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Links -->
+    <div class="card section">
+      <div class="card-header">
+        <div class="card-title">🔗 Quick Links</div>
+      </div>
+      <div class="card-body">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+          <button class="btn" style="width:100%;justify-content:center" onclick="switchTab('derivativos')">📊 Derivativos B3</button>
+          <button class="btn" style="width:100%;justify-content:center" onclick="switchTab('sinais')">⚡ Sinais de Mercado</button>
+          <button class="btn" style="width:100%;justify-content:center" onclick="switchTab('operacoes')">💼 Gestão de Operações</button>
+          <button class="btn" style="width:100%;justify-content:center" onclick="alert('Em desenvolvimento')">📋 Relatórios</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Derivativos Tab ───────────────────────────────────────────── -->
+  <div id="derivativos-tab" class="section-hidden">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">📊 Derivativos B3</div>
+      </div>
+      <div class="card-body" style="text-align:center;padding:48px 24px">
+        <p style="font-size:14px;margin-bottom:16px">Redirecionando para página de derivativos...</p>
+        <p style="font-size:12px;color:var(--dim)">Clique <a href="/derivatives">aqui</a> se a redireção não funcionar</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sinais Tab ───────────────────────────────────────────────── -->
+  <div id="sinais-tab" class="section-hidden">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">⚡ Sinais de Mercado</div>
+      </div>
+      <div class="card-body">
+        <div class="empty-state">
+          <div style="font-size:48px;margin-bottom:12px">📡</div>
+          <p style="font-size:14px;font-weight:600">Em construção</p>
+          <p style="font-size:12px;color:var(--dim);margin-top:8px">Sinais de mercado e análise técnica em breve</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Operações Tab ─────────────────────────────────────────────── -->
+  <div id="operacoes-tab" class="section-hidden">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">💼 Gestão de Operações</div>
+      </div>
+      <div class="card-body">
+        <div class="empty-state">
+          <div style="font-size:48px;margin-bottom:12px">📋</div>
+          <p style="font-size:14px;font-weight:600">Em construção</p>
+          <p style="font-size:12px;color:var(--dim);margin-top:8px">Painel de operações e gestão de posições em breve</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer ────────────────────────────────────────────────────── -->
+  <div class="footer">
+    <div>v10.26 · Paper Mode · Railway Deploy</div>
+    <div style="margin-top:8px;font-size:10px">Last refresh: <span id="last-refresh" class="text-mono">—</span></div>
+  </div>
+
+</div>
+
+<script>
+const API = '/health';
+const STATS_API = '/stats';
+
+let state = {
+  health: null,
+  stats: null,
+  scorecard: null,
+  autoRefresh: true,
+  loading: false,
+  activeTab: 'dashboard'
+};
+
+let autoInterval = null;
+
+// ─── Tab Management ───────────────────────────────────────────
+function switchTab(tab) {
+  if(tab === 'derivativos') {
+    window.location.href = '/derivatives';
+    return;
+  }
+
+  state.activeTab = tab;
+
+  // Hide all tabs
+  document.getElementById('dashboard-tab').classList.add('section-hidden');
+  document.getElementById('derivativos-tab').classList.add('section-hidden');
+  document.getElementById('sinais-tab').classList.add('section-hidden');
+  document.getElementById('operacoes-tab').classList.add('section-hidden');
+
+  // Show active tab
+  document.getElementById(`${tab}-tab`).classList.remove('section-hidden');
+
+  // Update nav buttons
+  document.querySelectorAll('.nav-tab').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  event.target?.classList.add('active');
+}
+
+// ─── Data Fetching ────────────────────────────────────────────
+async function fetchAll() {
+  state.loading = true;
+  renderRefreshBtn();
+
+  try {
+    const response = await fetch(API);
+    if(response.ok) {
+      state.health = await response.json();
+    }
+
+    try {
+      const statsResp = await fetch(`${STATS_API}/report`);
+      if(statsResp.ok) state.stats = await statsResp.json();
+    } catch(e) { console.log('Stats unavailable'); }
+
+    try {
+      const scoreResp = await fetch(`${STATS_API}/scorecard`);
+      if(scoreResp.ok) state.scorecard = await scoreResp.json();
+    } catch(e) { console.log('Scorecard unavailable'); }
+
+    document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('pt-BR');
+  } catch(e) {
+    console.error('Fetch error:', e);
+  }
+
+  state.loading = false;
+  render();
+}
+
+function toggleAuto() {
+  state.autoRefresh = !state.autoRefresh;
+  const btn = document.getElementById('auto-btn');
+
+  if(state.autoRefresh) {
+    btn.className = 'btn btn-active';
+    btn.textContent = '⚡ Auto ON';
+    autoInterval = setInterval(fetchAll, 30000);
+  } else {
+    btn.className = 'btn';
+    btn.textContent = '⚡ Auto OFF';
+    clearInterval(autoInterval);
+  }
+}
+
+function refresh() {
+  fetchAll();
+}
+
+function renderRefreshBtn() {
+  const btn = document.getElementById('refresh-btn');
+  btn.innerHTML = state.loading ? '<span class="spin">🔄</span> ...' : '🔄 Atualizar';
+}
+
+// ─── Rendering ────────────────────────────────────────────────
+function render() {
+  renderNavbarStatus();
+  renderHealthBadge();
+  renderKPIs();
+  renderSystemHealth();
+  renderThreadStatus();
+  renderCacheGrid();
+  renderMarketInfo();
+}
+
+function renderNavbarStatus() {
+  const el = document.getElementById('navbar-status');
+  if(!state.health) {
+    el.textContent = 'Conectando...';
+    return;
+  }
+
+  const status = state.health.status === 'ok' ? 'Online' : 'Erro';
+  const regime = state.health.market_regime || 'UNKNOWN';
+  el.textContent = `${status} · ${regime}`;
+}
+
+function renderHealthBadge() {
+  const el = document.getElementById('health-badge');
+  if(!state.health) return;
+
+  const ok = state.health.status === 'ok';
+  const color = ok ? 'var(--profit)' : 'var(--loss)';
+  const text = ok ? '✓ ONLINE' : '✗ OFFLINE';
+
+  el.innerHTML = `
+    <span style="width:6px;height:6px;border-radius:50%;background:${color};${ok?'box-shadow:0 0 4px '+color:''}"></span>
+    ${text}
+  `;
+  el.className = `badge ${ok ? 'badge-healthy' : 'badge-degraded'}`;
+}
+
+function renderKPIs() {
+  const el = document.getElementById('kpi-grid');
+  if(!state.health) {
+    el.innerHTML = '<div class="empty-state">Carregando dados...</div>';
+    return;
+  }
+
+  const h = state.health;
+  const threadCount = Object.keys(h.threads || {}).length;
+  const healthyThreads = Object.values(h.threads || {}).filter(t => t.alive && !t.frozen).length;
+  const cachedPrices = (h.stock_prices_cached || 0) + (h.crypto_prices_cached || 0);
+
+  el.innerHTML = `
+    ${createStatCard('Open Trades', h.open_trades || 0, 'Posições ativas', 'var(--accent)')}
+    ${createStatCard('Healthy Threads', `${healthyThreads}/${threadCount}`, 'Rodando normalmente', healthyThreads === threadCount ? 'var(--profit)' : 'var(--orange)')}
+    ${createStatCard('Cached Prices', cachedPrices, 'Stock + Crypto', 'var(--gold)')}
+    ${createStatCard('Kill Switch', h.kill_switch ? '🔴 ACTIVE' : '✓ OFF', 'Trading status', h.kill_switch ? 'var(--loss)' : 'var(--profit)')}
+  `;
+}
+
+function createStatCard(label, value, sub, color) {
+  return `<div class="card stat-card" style="border-top-color:${color}">
+    <div class="stat-label">${label}</div>
+    <div class="stat-value">${value}</div>
+    <div class="stat-sub">${sub}</div>
+  </div>`;
+}
+
+function renderSystemHealth() {
+  const el = document.getElementById('system-health-content');
+  if(!state.health) return;
+
+  const h = state.health;
+  const db = h.db === 'connected' ? '✓ Connected' : '✗ Disconnected';
+  const dbColor = h.db === 'connected' ? 'var(--profit)' : 'var(--loss)';
+  const arbi = h.arbi_kill_switch ? '🔴 ACTIVE' : '✓ OFF';
+  const arbiColor = h.arbi_kill_switch ? 'var(--loss)' : 'var(--profit)';
+
+  el.innerHTML = `
+    <div style="display:grid;gap:12px">
+      <div style="padding:10px;background:var(--s3);border-radius:6px;border-left:3px solid ${dbColor}">
+        <div class="stat-label">Database</div>
+        <div style="font-size:14px;font-weight:600;margin-top:4px;color:${dbColor}">${db}</div>
+      </div>
+      <div style="padding:10px;background:var(--s3);border-radius:6px;border-left:3px solid ${arbiColor}">
+        <div class="stat-label">Arbi Kill Switch</div>
+        <div style="font-size:14px;font-weight:600;margin-top:4px;color:${arbiColor}">${arbi}</div>
+      </div>
+      <div style="padding:10px;background:var(--s3);border-radius:6px;border-left:3px solid var(--accent)">
+        <div class="stat-label">API Status</div>
+        <div style="font-size:14px;font-weight:600;margin-top:4px;color:var(--accent)">✓ OK</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderThreadStatus() {
+  const el = document.getElementById('thread-status-content');
+  if(!state.health || !state.health.threads) return;
+
+  const threads = state.health.threads;
+  let html = '';
+
+  for(const [name, thread] of Object.entries(threads)) {
+    const alive = thread.alive && !thread.frozen;
+    const dotClass = alive ? 'status-dot alive' : 'status-dot frozen';
+    const statusText = thread.frozen ? '❄️ FROZEN' : (alive ? '✓ ALIVE' : '✗ DEAD');
+    const hbAge = thread.hb_age_s ? `${thread.hb_age_s.toFixed(1)}s` : '—';
+
+    html += `
+      <div class="thread-item">
+        <span class="thread-name">${name}</span>
+        <div style="display:flex;align-items:center;gap:12px;font-size:11px;color:var(--dim)">
+          <span class="text-mono">HB: ${hbAge}</span>
+          <span class="text-mono">T/O: ${thread.timeout_s}s</span>
+          <span class="text-mono">R: ${thread.restarts || 0}</span>
+          <div class="thread-status">
+            <span class="${dotClass}"></span>
+            <span>${statusText}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  el.innerHTML = html || '<div style="text-align:center;color:var(--dim);padding:20px">No threads available</div>';
+}
+
+function renderCacheGrid() {
+  const el = document.getElementById('cache-grid');
+  if(!state.health) return;
+
+  const h = state.health;
+  const stockCache = h.stock_prices_cached || 0;
+  const cryptoCache = h.crypto_prices_cached || 0;
+  const dbOk = h.db === 'connected';
+
+  el.innerHTML = `
+    ${createStatCard('Stock Prices Cached', stockCache, 'B3 / US Markets', 'var(--accent)')}
+    ${createStatCard('Crypto Prices Cached', cryptoCache, 'Bitcoin, Ethereum', 'var(--purple)')}
+    ${createStatCard('DB Status', dbOk ? '✓ Connected' : '✗ Error', 'PostgreSQL', dbOk ? 'var(--profit)' : 'var(--loss)')}
+  `;
+}
+
+function renderMarketInfo() {
+  const el = document.getElementById('market-regime');
+  const elTrades = document.getElementById('open-trades');
+  const elKill = document.getElementById('kill-switch');
+
+  if(!state.health) return;
+
+  const h = state.health;
+
+  el.textContent = h.market_regime || 'UNKNOWN';
+  el.style.color = h.market_regime === 'NORMAL' ? 'var(--profit)' : (h.market_regime === 'VOLATILE' ? 'var(--orange)' : 'var(--dim)');
+
+  elTrades.textContent = h.open_trades || 0;
+  elTrades.style.color = (h.open_trades || 0) > 0 ? 'var(--accent)' : 'var(--dim)';
+
+  const killText = h.kill_switch ? '🔴 ACTIVE' : '✓ OFF';
+  const killColor = h.kill_switch ? 'var(--loss)' : 'var(--profit)';
+  elKill.textContent = killText;
+  elKill.style.color = killColor;
+}
+
+// ─── Init ──────────────────────────────────────────────────────
+fetchAll();
+autoInterval = setInterval(fetchAll, 30000);
+</script>
+
+</body>
+</html>

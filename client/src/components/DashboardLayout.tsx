@@ -21,15 +21,24 @@ import {
 } from "@/components/ui/sidebar";
 import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { LayoutDashboard, LogOut, PanelLeft, Users } from "lucide-react";
+import {
+  LayoutDashboard, LogOut, PanelLeft, TrendingUp, Bot,
+  Activity, Layers, Zap, BarChart3, LineChart,
+} from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import { Button } from "./ui/button";
 
 const menuItems = [
-  { icon: LayoutDashboard, label: "Page 1", path: "/" },
-  { icon: Users, label: "Page 2", path: "/some-path" },
+  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
+  { icon: TrendingUp, label: "Trading", path: "/trading" },
+  { icon: Bot, label: "Sofia AI", path: "/sofia" },
+  { icon: BarChart3, label: "Sofia DB", path: "/sofia-db" },
+  { icon: Activity, label: "Autônomo", path: "/autonomous" },
+  { icon: Layers, label: "Derivativos", path: "/derivatives" },
+  { icon: LineChart, label: "ML Performance", path: "/ml-performance" },
+  { icon: Zap, label: "Premium", path: "/premium" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -171,7 +180,7 @@ function DashboardLayoutContent({
               {!isCollapsed ? (
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="font-semibold tracking-tight truncate">
-                    Navigation
+                    Egreja AI
                   </span>
                 </div>
               ) : null}

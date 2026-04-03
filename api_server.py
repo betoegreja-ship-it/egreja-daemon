@@ -745,7 +745,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path == '/derivatives':
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path in ('/derivatives', '/api/info'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -7409,10 +7409,17 @@ def broker_execution_profile_v1023():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# ═══ [v10.26] WEB DASHBOARD (standalone HTML) ═══
 @app.route('/')
 def index():
+    """Serve main web dashboard. API info moved to /api/info."""
+    return send_from_directory('static', 'index.html')
+
+@app.route('/api/info')
+def api_info():
+    """API service info (previously served at /)."""
     return jsonify({
-        'service':'Egreja Investment AI','version':'10.7.0','status':'online',
+        'service':'Egreja Investment AI','version':'10.26.0','status':'online',
         'kill_switch':RISK_KILL_SWITCH,'arbi_kill_switch':ARBI_KILL_SWITCH,
         'market_regime':market_regime.get('mode','UNKNOWN'),
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'lse':is_lse_open(),'hkex':is_hkex_open(),'crypto':True},

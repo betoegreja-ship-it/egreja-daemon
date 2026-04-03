@@ -80,7 +80,7 @@ try:
     # [v10.25] Derivatives module imports
     from modules.derivatives.config import get_config as get_deriv_config, DerivativesConfig, ActiveStatus
     from modules.derivatives.schema import create_derivatives_tables
-    from modules.derivatives.providers import ProviderManager, SimulatedMarketDataProvider
+    from modules.derivatives.providers import ProviderManager, SimulatedMarketDataProvider, CedroMarketDataProvider
     from modules.derivatives.services import (OptionsChainCache, FuturesChainCache, DividendEventService,
         RatesCurveService, GreeksCalculator, CalibrationService, StrategyScorecard, StructuredOrderExecutor,
         NAVCalculatorService, ImpliedVolEngine)
@@ -141,16 +141,29 @@ log = logging.getLogger('egreja')
 
 app = Flask(__name__)
 
-# ═══ [v10.25] DERIVATIVES MODULE INITIALIZATION ═══
+# ═══ [v10.26] DERIVATIVES MODULE INITIALIZATION ═══
 _deriv_config = get_deriv_config()
 _deriv_provider_mgr = ProviderManager()
+
+# Register Cedro as primary provider (if credentials are set)
+try:
+    _cedro_provider = CedroMarketDataProvider()
+    _deriv_provider_mgr.register_provider('cedro', _cedro_provider, is_primary=True)
+    if _cedro_provider._authenticated:
+        log.info('[v10.26] Derivatives: CedroMarketDataProvider ACTIVE (real market data)')
+    else:
+        log.info('[v10.26] Derivatives: Cedro registered but not authenticated (set CEDRO_LOGIN + CEDRO_PASSWORD)')
+except Exception as e:
+    log.warning(f'[v10.26] Cedro provider init: {e}')
+
+# Always register Simulated as fallback
 try:
     _sim_provider = SimulatedMarketDataProvider()
-    _deriv_provider_mgr._providers = {'simulated': _sim_provider}
-    _deriv_provider_mgr._active = _sim_provider
-    log.info('[v10.25] Derivatives: SimulatedMarketDataProvider active (paper mode)')
+    _deriv_provider_mgr.register_provider('simulated', _sim_provider, is_primary=False)
+    _deriv_provider_mgr._active = _sim_provider  # direct fallback attr
+    log.info('[v10.26] Derivatives: SimulatedMarketDataProvider registered (fallback/paper)')
 except Exception as e:
-    log.warning(f'[v10.25] Derivatives provider init: {e}')
+    log.warning(f'[v10.26] Simulated provider init: {e}')
 
 _deriv_services = {}
 try:

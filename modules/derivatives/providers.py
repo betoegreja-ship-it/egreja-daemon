@@ -231,109 +231,495 @@ class ADRProvider(ABC):
 
 class CedroMarketDataProvider(MarketDataProviderBase):
     """
-    Cedro market data provider (stub).
-    
+    Cedro Technologies Market Data Provider (WebFeeder REST API).
+
+    Base URL: http://webfeeder.cedrofinances.com.br
+    Auth: POST /SignIn?login=XXX&password=XXX (session cookies)
+    Quote: GET /services/quotes/quote/{symbol}  (JSON)
+
     Configured via environment variables:
-    - CEDRO_API_KEY: API authentication key
-    - CEDRO_API_URL: Base URL for REST endpoints
-    - CEDRO_WS_URL: WebSocket URL for real-time data
+    - CEDRO_LOGIN:   WebFeeder username
+    - CEDRO_PASSWORD: WebFeeder password
+    - CEDRO_API_URL: Base URL (default: http://webfeeder.cedrofinances.com.br)
+
+    Free 7-day trial: https://www.marketdatacloud.com.br
+    Contact: comercial@cedrotech.com | WhatsApp +55 34 3239-0003
     """
-    
+
+    # B3 option series: calls A-L (Jan-Dec), puts M-X (Jan-Dec)
+    CALL_MONTHS = 'ABCDEFGHIJKL'
+    PUT_MONTHS  = 'MNOPQRSTUVWX'
+
     def __init__(self):
+        import os
+        import requests as _req
         super().__init__("cedro")
-        self.api_key = None  # Would be set from env
-        self.api_url = None  # Would be set from env
-        self.ws_url = None  # Would be set from env
-        self._ws_client = None  # WebSocket connection
-        self.logger.info("CedroMarketDataProvider initialized (not yet configured)")
-    
+        self._requests = _req
+        self._session = _req.Session()
+        self._session.headers.update({'Accept': 'application/json'})
+
+        self.login    = os.environ.get('CEDRO_LOGIN', '').strip()
+        self.password = os.environ.get('CEDRO_PASSWORD', '').strip()
+        self.api_url  = os.environ.get('CEDRO_API_URL',
+                                       'http://webfeeder.cedrofinances.com.br').rstrip('/')
+
+        self._authenticated = False
+        self._auth_ts = None
+        self._cache: Dict[str, Any] = {}
+        self._cache_ttl = 5  # seconds
+
+        if self.login and self.password:
+            self._authenticate()
+        else:
+            self.logger.warning("Cedro: CEDRO_LOGIN / CEDRO_PASSWORD not set — provider disabled")
+
+    # ─── Authentication ───────────────────────────────────────────
+
+    def _authenticate(self) -> bool:
+        """Authenticate with Cedro WebFeeder (session cookies)."""
+        try:
+            url = f"{self.api_url}/SignIn"
+            r = self._session.post(url, params={
+                'login': self.login,
+                'password': self.password,
+            }, timeout=10)
+
+            if r.status_code == 200 and 'error' not in r.text.lower():
+                self._authenticated = True
+                self._is_healthy = True
+                self._auth_ts = datetime.utcnow()
+                self.logger.info(f"Cedro: authenticated as '{self.login}'")
+                return True
+            else:
+                self._authenticated = False
+                self._is_healthy = False
+                self.logger.error(f"Cedro: auth failed — HTTP {r.status_code}: {r.text[:200]}")
+                return False
+        except Exception as e:
+            self._authenticated = False
+            self._is_healthy = False
+            self.logger.error(f"Cedro: auth exception — {e}")
+            return False
+
+    def _ensure_auth(self) -> bool:
+        """Re-authenticate if session expired (every 30 min)."""
+        if not self.login or not self.password:
+            return False
+        if not self._authenticated or not self._auth_ts:
+            return self._authenticate()
+        if (datetime.utcnow() - self._auth_ts).total_seconds() > 1800:
+            return self._authenticate()
+        return True
+
+    # ─── HTTP Helpers ─────────────────────────────────────────────
+
+    def _get(self, path: str, timeout: int = 8) -> Optional[Any]:
+        """GET request with session cookies. Returns parsed JSON or None."""
+        if not self._ensure_auth():
+            return None
+        try:
+            url = f"{self.api_url}{path}"
+            r = self._session.get(url, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+            self.logger.warning(f"Cedro GET {path} → HTTP {r.status_code}")
+            return None
+        except Exception as e:
+            self.logger.warning(f"Cedro GET {path} error: {e}")
+            return None
+
+    def _cached_get(self, cache_key: str, path: str) -> Optional[Any]:
+        """GET with in-memory TTL cache."""
+        now = time.time()
+        cached = self._cache.get(cache_key)
+        if cached and (now - cached['ts']) < self._cache_ttl:
+            return cached['data']
+        data = self._get(path)
+        if data is not None:
+            self._cache[cache_key] = {'data': data, 'ts': now}
+        return data
+
+    # ─── Spot Quote ───────────────────────────────────────────────
+
     def get_spot(self, symbol: str) -> Optional[SpotQuote]:
-        """Fetch spot price from Cedro."""
+        """Fetch spot price from Cedro WebFeeder."""
         with self._lock:
-            if not self._is_healthy:
-                self.logger.debug(f"Cedro not healthy, cannot fetch spot for {symbol}")
+            data = self._cached_get(f'spot:{symbol}',
+                                    f'/services/quotes/quote/{symbol}')
+            if not data:
                 return None
-            
-            self.logger.debug(f"Cedro: Would fetch spot for {symbol} via REST")
-            # In real implementation: return self._call_rest_api(f"/spot/{symbol}")
-            return None
-    
+            try:
+                return SpotQuote(
+                    symbol=symbol.upper(),
+                    bid=float(data.get('buyPrice', data.get('bidPrice', 0)) or 0),
+                    ask=float(data.get('sellPrice', data.get('askPrice', 0)) or 0),
+                    last=float(data.get('lastTradePrice', data.get('last', 0)) or 0),
+                    volume=int(data.get('tradeVolume', data.get('volume', 0)) or 0),
+                    timestamp=datetime.utcnow(),
+                )
+            except (ValueError, TypeError) as e:
+                self.logger.warning(f"Cedro spot parse error for {symbol}: {e}")
+                return None
+
+    # ─── Options Chain ────────────────────────────────────────────
+
+    def _guess_option_symbols(self, underlying: str) -> List[str]:
+        """
+        Generate candidate B3 option ticker symbols for an underlying.
+
+        B3 naming: {ROOT}{MONTH_LETTER}{STRIKE_CODE}
+        e.g. PETR4 calls Jan → PETRA..., puts Jan → PETRM...
+        For simplicity, we query Cedro for the known series letters.
+        """
+        root = underlying[:4]
+        symbols = []
+        now = datetime.utcnow()
+
+        # Check current month + next 3 months
+        for month_offset in range(4):
+            m = (now.month - 1 + month_offset) % 12
+            call_letter = self.CALL_MONTHS[m]
+            put_letter  = self.PUT_MONTHS[m]
+            # Cedro can resolve these by querying the parent asset
+            symbols.append(f"{root}{call_letter}")
+            symbols.append(f"{root}{put_letter}")
+
+        return symbols
+
     def get_options_chain(self, underlying: str) -> List[OptionQuote]:
-        """Fetch options chain from Cedro."""
+        """
+        Fetch options chain from Cedro.
+
+        Strategy: query /services/quotes/quote/{option_symbol} for each
+        candidate option series, then aggregate into OptionQuote list.
+
+        Note: Cedro's WebFeeder returns option data within the same
+        quote endpoint — the option ticker is treated like any asset.
+        """
         with self._lock:
-            if not self._is_healthy:
-                self.logger.debug(f"Cedro not healthy, cannot fetch chain for {underlying}")
-                return []
-            
-            self.logger.debug(f"Cedro: Would fetch options chain for {underlying} via REST")
-            # In real implementation: return self._call_rest_api(f"/options/{underlying}")
-            return []
-    
-    def get_futures(self, underlying: str) -> List[FutureQuote]:
-        """Fetch futures from Cedro."""
-        with self._lock:
-            if not self._is_healthy:
-                self.logger.debug(f"Cedro not healthy, cannot fetch futures for {underlying}")
-                return []
-            
-            self.logger.debug(f"Cedro: Would fetch futures for {underlying} via REST")
-            return []
-    
-    def get_rates(self) -> Optional[RateCurve]:
-        """Fetch rate curve from Cedro."""
-        with self._lock:
-            if not self._is_healthy:
-                self.logger.debug("Cedro not healthy, cannot fetch rates")
+            # Try the dedicated option chain endpoint first
+            chain_data = self._cached_get(
+                f'chain:{underlying}',
+                f'/services/quotes/options/{underlying}'
+            )
+
+            if chain_data and isinstance(chain_data, list):
+                return self._parse_options_list(underlying, chain_data)
+
+            # Fallback: query individual option series
+            results = []
+            for series_prefix in self._guess_option_symbols(underlying):
+                data = self._get(f'/services/quotes/quote/{series_prefix}')
+                if data and isinstance(data, dict):
+                    opt = self._parse_single_option(underlying, data)
+                    if opt:
+                        results.append(opt)
+                elif data and isinstance(data, list):
+                    for item in data:
+                        opt = self._parse_single_option(underlying, item)
+                        if opt:
+                            results.append(opt)
+
+            return results
+
+    def _parse_options_list(self, underlying: str, data_list: list) -> List[OptionQuote]:
+        """Parse a list of option quotes from Cedro."""
+        results = []
+        for item in data_list:
+            opt = self._parse_single_option(underlying, item)
+            if opt:
+                results.append(opt)
+        return results
+
+    def _parse_single_option(self, underlying: str, data: dict) -> Optional[OptionQuote]:
+        """Parse a single option quote from Cedro JSON response."""
+        try:
+            symbol = str(data.get('symbol', data.get('ticker', '')))
+            if not symbol:
                 return None
-            
-            self.logger.debug("Cedro: Would fetch rates via REST")
+
+            # Determine option type from B3 series letter
+            root_len = 4  # PETR, VALE, etc.
+            if len(symbol) > root_len:
+                series_letter = symbol[root_len].upper()
+                if series_letter in self.CALL_MONTHS:
+                    opt_type = 'C'
+                elif series_letter in self.PUT_MONTHS:
+                    opt_type = 'P'
+                else:
+                    opt_type = data.get('optionType', 'C')
+            else:
+                opt_type = data.get('optionType', 'C')
+
+            strike = float(data.get('strikePrice', data.get('strike', 0)) or 0)
+            expiry = str(data.get('expirationDate', data.get('expiry', '')))
+
+            return OptionQuote(
+                symbol=symbol,
+                underlying=underlying.upper(),
+                strike=strike,
+                expiry=expiry,
+                option_type=opt_type,
+                bid=float(data.get('buyPrice', data.get('bidPrice', 0)) or 0),
+                ask=float(data.get('sellPrice', data.get('askPrice', 0)) or 0),
+                last=float(data.get('lastTradePrice', data.get('last', 0)) or 0),
+                volume=int(data.get('tradeVolume', data.get('volume', 0)) or 0),
+                oi=int(data.get('openInterest', data.get('oi', 0)) or 0),
+                iv=float(data.get('impliedVolatility', data.get('iv', 0)) or 0),
+                delta=float(data.get('delta', 0) or 0),
+                gamma=float(data.get('gamma', 0) or 0),
+                theta=float(data.get('theta', 0) or 0),
+                vega=float(data.get('vega', 0) or 0),
+                timestamp=datetime.utcnow(),
+            )
+        except (ValueError, TypeError, KeyError) as e:
+            self.logger.debug(f"Cedro option parse error: {e}")
             return None
-    
+
+    # ─── Futures ──────────────────────────────────────────────────
+
+    def get_futures(self, underlying: str) -> List[FutureQuote]:
+        """Fetch futures from Cedro. B3 futures: WINFUT, INDFUT, DOLFUT, etc."""
+        with self._lock:
+            # Map underlying to B3 futures root
+            futures_map = {
+                'BOVA11': ['WINFUT', 'INDFUT'],
+                'IBOV':   ['WINFUT', 'INDFUT'],
+                'PETR4':  ['PETR4F'],  # synthetic
+                'VALE3':  ['VALE3F'],
+                'USD':    ['DOLFUT', 'WDOFUT'],
+                'BRL':    ['DOLFUT', 'WDOFUT'],
+            }
+
+            tickers = futures_map.get(underlying.upper(), [f'{underlying[:4]}FUT'])
+            results = []
+
+            for ticker in tickers:
+                data = self._cached_get(f'fut:{ticker}',
+                                        f'/services/quotes/quote/{ticker}')
+                if not data:
+                    continue
+                try:
+                    spot_data = self._cached_get(f'spot:{underlying}',
+                                                 f'/services/quotes/quote/{underlying}')
+                    spot_price = float(spot_data.get('lastTradePrice', 0) or 0) if spot_data else 0
+                    last_price = float(data.get('lastTradePrice', data.get('last', 0)) or 0)
+
+                    results.append(FutureQuote(
+                        symbol=ticker,
+                        underlying=underlying.upper(),
+                        expiry=str(data.get('expirationDate', data.get('maturityDate', ''))),
+                        bid=float(data.get('buyPrice', data.get('bidPrice', 0)) or 0),
+                        ask=float(data.get('sellPrice', data.get('askPrice', 0)) or 0),
+                        last=last_price,
+                        volume=int(data.get('tradeVolume', data.get('volume', 0)) or 0),
+                        oi=int(data.get('openInterest', 0) or 0),
+                        basis=last_price - spot_price,
+                        timestamp=datetime.utcnow(),
+                    ))
+                except (ValueError, TypeError) as e:
+                    self.logger.warning(f"Cedro futures parse error for {ticker}: {e}")
+
+            return results
+
+    # ─── Rates ────────────────────────────────────────────────────
+
+    def get_rates(self) -> Optional[RateCurve]:
+        """Fetch rate curve — CDI and SELIC from Cedro."""
+        with self._lock:
+            # Try CDI indicator
+            cdi_data = self._cached_get('rate:cdi', '/services/quotes/quote/CDI')
+            selic_data = self._cached_get('rate:selic', '/services/quotes/quote/SELIC')
+
+            cdi_rate = 14.90  # fallback
+            selic_rate = 14.75
+
+            if cdi_data:
+                try:
+                    cdi_rate = float(cdi_data.get('lastTradePrice',
+                                    cdi_data.get('last', cdi_rate)) or cdi_rate)
+                except (ValueError, TypeError):
+                    pass
+
+            if selic_data:
+                try:
+                    selic_rate = float(selic_data.get('lastTradePrice',
+                                      selic_data.get('last', selic_rate)) or selic_rate)
+                except (ValueError, TypeError):
+                    pass
+
+            # DI1 futures curve (main tenors)
+            di1_terms = {}
+            for months in [1, 3, 6, 12, 24]:
+                # DI1 futures use F, G, H, J, K, M, N, Q, U, V, X, Z month codes
+                # This is simplified — real implementation maps to actual DI1 tickers
+                pass
+
+            return RateCurve(
+                date=datetime.utcnow().strftime('%Y-%m-%d'),
+                cdi=cdi_rate,
+                selic=selic_rate,
+                di1_terms=di1_terms,
+                timestamp=datetime.utcnow(),
+            )
+
+    # ─── Dividends ────────────────────────────────────────────────
+
     def get_dividends(self, symbol: str) -> List[DividendEvent]:
         """Fetch dividend events from Cedro."""
         with self._lock:
-            if not self._is_healthy:
-                self.logger.debug(f"Cedro not healthy, cannot fetch dividends for {symbol}")
+            data = self._cached_get(f'div:{symbol}',
+                                    f'/services/quotes/dividends/{symbol}')
+            if not data:
                 return []
-            
-            self.logger.debug(f"Cedro: Would fetch dividends for {symbol} via REST")
-            return []
-    
+
+            results = []
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                try:
+                    results.append(DividendEvent(
+                        symbol=symbol.upper(),
+                        ex_date=str(item.get('exDate', item.get('ex_date', ''))),
+                        amount=float(item.get('amount', item.get('value', 0)) or 0),
+                        div_type=str(item.get('type', 'cash')),
+                    ))
+                except (ValueError, TypeError, KeyError):
+                    continue
+            return results
+
+    # ─── Order Book ───────────────────────────────────────────────
+
     def get_depth(self, symbol: str, max_levels: int = 5) -> Optional[Dict[str, Any]]:
         """Fetch order book depth from Cedro."""
         with self._lock:
-            if not self._is_healthy:
+            data = self._cached_get(f'book:{symbol}',
+                                    f'/services/quotes/book/{symbol}')
+            if not data:
                 return None
-            
-            self.logger.debug(f"Cedro: Would fetch depth for {symbol} via WebSocket")
-            return None
-    
+
+            bids = []
+            asks = []
+            try:
+                for entry in (data.get('bids', data.get('buyOffers', [])) or [])[:max_levels]:
+                    bids.append({
+                        'price': float(entry.get('price', 0)),
+                        'qty': int(entry.get('quantity', entry.get('qty', 0))),
+                    })
+                for entry in (data.get('asks', data.get('sellOffers', [])) or [])[:max_levels]:
+                    asks.append({
+                        'price': float(entry.get('price', 0)),
+                        'qty': int(entry.get('quantity', entry.get('qty', 0))),
+                    })
+            except (ValueError, TypeError):
+                pass
+
+            return {'bids': bids, 'asks': asks, 'symbol': symbol, 'levels': max_levels}
+
+    # ─── Greeks ───────────────────────────────────────────────────
+
     def get_greeks(self, option_symbol: str) -> Optional[Dict[str, float]]:
-        """Fetch option Greeks from Cedro."""
+        """Fetch option Greeks from Cedro (if available in quote data)."""
         with self._lock:
-            if not self._is_healthy:
+            data = self._cached_get(f'greeks:{option_symbol}',
+                                    f'/services/quotes/quote/{option_symbol}')
+            if not data:
                 return None
-            
-            self.logger.debug(f"Cedro: Would fetch greeks for {option_symbol} via REST")
-            return None
-    
+
+            try:
+                return {
+                    'delta': float(data.get('delta', 0) or 0),
+                    'gamma': float(data.get('gamma', 0) or 0),
+                    'theta': float(data.get('theta', 0) or 0),
+                    'vega':  float(data.get('vega', 0) or 0),
+                    'iv':    float(data.get('impliedVolatility', data.get('iv', 0)) or 0),
+                }
+            except (ValueError, TypeError):
+                return None
+
+    # ─── ADR Prices ───────────────────────────────────────────────
+
     def get_adr_prices(self, symbols: List[str]) -> Dict[str, float]:
-        """Fetch ADR prices from Cedro."""
+        """Fetch ADR prices. These are NYSE-listed so may need different feed."""
         with self._lock:
-            if not self._is_healthy:
-                return {}
-            
-            self.logger.debug(f"Cedro: Would fetch ADR prices for {symbols}")
-            return {}
-    
+            result = {}
+            adr_map = {
+                'PBR': 'PBR',    # Petrobras ADR
+                'VALE': 'VALE',  # Vale ADR
+                'ITUB': 'ITUB',  # Itaú ADR
+                'BBD': 'BBD',    # Bradesco ADR
+                'ABEV': 'ABEV',  # Ambev ADR
+            }
+            for sym in symbols:
+                adr_ticker = adr_map.get(sym.upper(), sym)
+                data = self._cached_get(f'adr:{adr_ticker}',
+                                        f'/services/quotes/quote/{adr_ticker}')
+                if data:
+                    try:
+                        result[sym] = float(data.get('lastTradePrice',
+                                           data.get('last', 0)) or 0)
+                    except (ValueError, TypeError):
+                        pass
+            return result
+
+    # ─── Price History ────────────────────────────────────────────
+
+    def get_price_history(self, symbol: str, lookback_days: int = 60) -> Optional[list]:
+        """Fetch daily candle history from Cedro."""
+        with self._lock:
+            data = self._cached_get(
+                f'hist:{symbol}:{lookback_days}',
+                f'/services/candle/daily/{symbol}/{lookback_days}'
+            )
+            if not data:
+                return None
+
+            items = data if isinstance(data, list) else data.get('candles', [])
+            results = []
+            for item in items:
+                try:
+                    results.append({
+                        'date': str(item.get('date', item.get('tradeDate', ''))),
+                        'open': float(item.get('open', item.get('openPrice', 0)) or 0),
+                        'high': float(item.get('high', item.get('highPrice', 0)) or 0),
+                        'low': float(item.get('low', item.get('lowPrice', 0)) or 0),
+                        'close': float(item.get('close', item.get('closePrice', 0)) or 0),
+                        'volume': int(item.get('volume', item.get('tradeVolume', 0)) or 0),
+                    })
+                except (ValueError, TypeError):
+                    continue
+            return results if results else None
+
+    # ─── Health Check ─────────────────────────────────────────────
+
     def health_check(self) -> bool:
-        """Check Cedro connectivity."""
+        """Check Cedro connectivity by querying a known liquid asset."""
         with self._lock:
-            # In real implementation, attempt to reach Cedro
-            self._is_healthy = False
-            self.logger.warning("Cedro not configured or unreachable")
-            self._last_health_check = datetime.utcnow()
-            return False
+            if not self.login or not self.password:
+                self._is_healthy = False
+                return False
+
+            try:
+                if not self._ensure_auth():
+                    return False
+
+                # Quick check: fetch PETR4 (most liquid B3 stock)
+                r = self._session.get(
+                    f"{self.api_url}/services/quotes/quote/PETR4",
+                    timeout=5
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data and (data.get('lastTradePrice') or data.get('last')):
+                        self._is_healthy = True
+                        self._last_health_check = datetime.utcnow()
+                        return True
+
+                self._is_healthy = False
+                return False
+            except Exception as e:
+                self.logger.warning(f"Cedro health check failed: {e}")
+                self._is_healthy = False
+                return False
 
 
 # ============================================================================

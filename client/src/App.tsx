@@ -13,11 +13,13 @@ import SofiaAIDashboard from './pages/SofiaAIDashboard';
 import SofiaDashboardDB from './pages/SofiaDashboardDB';
 import RealDashboard from './pages/RealDashboard';
 import MLPerformance from './pages/MLPerformance';
+import DerivativesDashboard from './pages/DerivativesDashboard';
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
+      <Route path="/derivatives" component={DerivativesDashboard} />
       <Route path="/ml-performance" component={MLPerformance} />
       <Route path="/sofia-db" component={SofiaDashboardDB} />
       <Route path="/sofia" component={SofiaAIDashboard} />

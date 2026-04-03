@@ -158,12 +158,14 @@ try:
     _deriv_services['futures_cache'] = FuturesChainCache() if FuturesChainCache else None
     _deriv_services['dividend_svc'] = DividendEventService() if DividendEventService else None
     _deriv_services['rates_svc'] = RatesCurveService() if RatesCurveService else None
-    _deriv_services['greeks_calc'] = GreeksCalculator() if GreeksCalculator else None
+    _rates_svc = _deriv_services.get('rates_svc')
+    _deriv_services['greeks_calc'] = GreeksCalculator(_rates_svc) if GreeksCalculator and _rates_svc else None
     _deriv_services['calibration_svc'] = CalibrationService() if CalibrationService else None
     _deriv_services['scorecard_svc'] = StrategyScorecard() if StrategyScorecard else None
     _deriv_services['order_executor'] = StructuredOrderExecutor() if StructuredOrderExecutor else None
     _deriv_services['nav_calc'] = NAVCalculatorService() if NAVCalculatorService else None
-    _deriv_services['iv_engine'] = ImpliedVolEngine() if ImpliedVolEngine else None
+    _greeks = _deriv_services.get('greeks_calc')
+    _deriv_services['iv_engine'] = ImpliedVolEngine(_greeks) if ImpliedVolEngine and _greeks else None
     _deriv_services['liquidity_engine'] = LiquidityScoreEngine() if LiquidityScoreEngine else None
     _deriv_services['promotion_engine'] = PromotionEngine() if PromotionEngine else None
     _deriv_services['status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None

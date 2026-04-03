@@ -175,9 +175,10 @@ except Exception as e:
 # [v10.25] Register derivatives strategies blueprint
 try:
     _strategies_bp = create_strategies_blueprint(
-        get_db_fn=lambda: get_db() if 'get_db' in dir() else None,
+        db_fn=lambda: get_db() if 'get_db' in dir() else None,
         log=log if 'log' in dir() else logging.getLogger('egreja'),
-        auth_mgr=None,  # will be set after auth_manager init
+        provider_mgr=_deriv_provider_mgr if '_deriv_provider_mgr' in dir() else None,
+        services_dict=_deriv_services if '_deriv_services' in dir() else {},
     )
     app.register_blueprint(_strategies_bp, url_prefix='/strategies')
     log.info('[v10.25] Derivatives strategies blueprint registered at /strategies/*')
@@ -6966,7 +6967,7 @@ def start_background_threads():
     _deriv_loop_args = dict(
         beat_fn=beat, get_db_fn=get_db, log=log,
         provider_mgr=_deriv_provider_mgr if '_deriv_provider_mgr' in dir() else None,
-        services=_deriv_services if '_deriv_services' in dir() else {},
+        services_dict=_deriv_services if '_deriv_services' in dir() else {},
         risk_check_fn=lambda strat, sym, notional: (True, 'OK'),  # paper mode: always approve
         audit_fn=lambda evt, data: log.debug(f'[DERIV-AUDIT] {evt}: {data}'),
     )

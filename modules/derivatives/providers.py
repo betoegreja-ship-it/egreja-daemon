@@ -829,18 +829,32 @@ class OpLabMarketDataProvider(MarketDataProviderBase):
     # ─── Spot Quote ───────────────────────────────────────────────
 
     def get_spot(self, symbol: str) -> Optional[SpotQuote]:
-        """Fetch spot price from OpLab /market/stocks/{symbol}."""
+        """Fetch spot price from OpLab /market/stocks/{symbol}.
+
+        Real response fields: open, high, low, close, volume, financial_volume,
+        bid, ask, bid_volume, ask_volume, variation, time, previous_close,
+        has_options, iv_current, beta_ibov, sector, etc.
+        """
         with self._lock:
             data = self._cached_get(f'spot:{symbol}', f'/market/stocks/{symbol}')
             if not data:
                 return None
             try:
+                bid = float(data.get('bid', 0) or 0)
+                ask = float(data.get('ask', 0) or 0)
+                close = float(data.get('close', 0) or 0)
+                # If bid/ask are 0 (market closed), use close as fallback
+                if bid == 0:
+                    bid = close
+                if ask == 0:
+                    ask = close
+
                 return SpotQuote(
                     symbol=symbol.upper(),
-                    bid=float(data.get('bid', data.get('close', 0)) or 0),
-                    ask=float(data.get('ask', data.get('close', 0)) or 0),
-                    last=float(data.get('close', data.get('last', 0)) or 0),
-                    volume=int(data.get('volume', data.get('financial_volume', 0)) or 0),
+                    bid=bid,
+                    ask=ask,
+                    last=close,
+                    volume=int(data.get('volume', 0) or 0),
                     timestamp=datetime.utcnow(),
                 )
             except (ValueError, TypeError) as e:
@@ -849,11 +863,40 @@ class OpLabMarketDataProvider(MarketDataProviderBase):
 
     # ─── Options Chain ────────────────────────────────────────────
 
+    def _compute_greeks_bs(self, spot: float, strike: float,
+                           due_date: str, rate: float,
+                           opt_type: str, price: float) -> Dict[str, float]:
+        """Call OpLab Black-Scholes endpoint to get Greeks and IV for one option."""
+        try:
+            params = {
+                'spot': spot, 'strike': strike, 'due_date': due_date,
+                'rate': rate, 'type': opt_type, 'price': price,
+            }
+            data = self._get('/market/options/bs', params=params, timeout=5)
+            if data and data.get('delta'):
+                return {
+                    'delta': float(data.get('delta', 0) or 0),
+                    'gamma': float(data.get('gamma', 0) or 0),
+                    'theta': float(data.get('theta', 0) or 0),
+                    'vega':  float(data.get('vega', 0) or 0),
+                    'rho':   float(data.get('rho', 0) or 0),
+                    'iv':    float(data.get('volatility', 0) or 0),
+                }
+        except Exception:
+            pass
+        return {}
+
     def get_options_chain(self, underlying: str) -> List[OptionQuote]:
         """
         Fetch options chain from OpLab /market/options/{underlying}.
 
-        Returns all strikes/expirations with Greeks, IV, volume, OI.
+        Real response fields per option: symbol, name, open, high, low, close,
+        volume, financial_volume, bid, ask, bid_volume, ask_volume, category
+        (CALL/PUT), due_date, maturity_type, strike, contract_size, spot_price,
+        days_to_maturity, market_maker, variation, strike_eod.
+
+        Note: Greeks are NOT returned inline. They are calculated by our local
+        GreeksCalculator or via the /market/options/bs endpoint.
         """
         with self._lock:
             data = self._cached_get(
@@ -868,18 +911,17 @@ class OpLabMarketDataProvider(MarketDataProviderBase):
 
             for item in items:
                 try:
-                    symbol = str(item.get('symbol', item.get('ticker', '')))
+                    symbol = str(item.get('symbol', ''))
                     if not symbol:
                         continue
 
-                    # Determine option type
-                    opt_type_raw = str(item.get('category', item.get('type', ''))).upper()
-                    if opt_type_raw in ('CALL', 'C'):
+                    # category is "CALL" or "PUT" in OpLab
+                    cat = str(item.get('category', item.get('type', ''))).upper()
+                    if cat in ('CALL', 'C'):
                         opt_type = 'C'
-                    elif opt_type_raw in ('PUT', 'P'):
+                    elif cat in ('PUT', 'P'):
                         opt_type = 'P'
                     else:
-                        # Infer from B3 series letter
                         root_len = 4
                         if len(symbol) > root_len:
                             letter = symbol[root_len].upper()
@@ -887,22 +929,28 @@ class OpLabMarketDataProvider(MarketDataProviderBase):
                         else:
                             opt_type = 'C'
 
+                    bid = float(item.get('bid', 0) or 0)
+                    ask = float(item.get('ask', 0) or 0)
+                    close = float(item.get('close', 0) or 0)
+                    mid = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else close
+
                     results.append(OptionQuote(
                         symbol=symbol,
                         underlying=underlying.upper(),
                         strike=float(item.get('strike', 0) or 0),
-                        expiry=str(item.get('due_date', item.get('maturity_date', item.get('expiry', '')))),
+                        expiry=str(item.get('due_date', '')),
                         option_type=opt_type,
-                        bid=float(item.get('bid', 0) or 0),
-                        ask=float(item.get('ask', 0) or 0),
-                        last=float(item.get('close', item.get('last', 0)) or 0),
-                        volume=int(item.get('volume', item.get('financial_volume', 0)) or 0),
-                        oi=int(item.get('open_interest', item.get('oi', 0)) or 0),
-                        iv=float(item.get('implied_volatility', item.get('iv', 0)) or 0),
-                        delta=float(item.get('delta', 0) or 0),
-                        gamma=float(item.get('gamma', 0) or 0),
-                        theta=float(item.get('theta', 0) or 0),
-                        vega=float(item.get('vega', 0) or 0),
+                        bid=bid,
+                        ask=ask,
+                        last=close,
+                        volume=int(item.get('volume', 0) or 0),
+                        oi=int(item.get('open_interest', 0) or 0),
+                        # Greeks not in chain response — set 0, local calc fills them
+                        iv=0.0,
+                        delta=0.0,
+                        gamma=0.0,
+                        theta=0.0,
+                        vega=0.0,
                         timestamp=datetime.utcnow(),
                     ))
                 except (ValueError, TypeError, KeyError) as e:
@@ -982,38 +1030,31 @@ class OpLabMarketDataProvider(MarketDataProviderBase):
     # ─── Rates ────────────────────────────────────────────────────
 
     def get_rates(self) -> Optional[RateCurve]:
-        """Fetch interest rate curve from OpLab /market/interest_rates."""
+        """Fetch interest rate curve from OpLab /market/interest_rates.
+
+        Real response: list of 2 items:
+        [{"name": "Taxa DI", "value": 14.65}, {"name": "Taxa Selic", "value": 14.65}]
+        """
         with self._lock:
             data = self._cached_get('rates:all', '/market/interest_rates')
-            if not data:
-                # Return sensible defaults for B3
-                return RateCurve(
-                    date=datetime.utcnow().strftime('%Y-%m-%d'),
-                    cdi=14.90, selic=14.75,
-                    di1_terms={}, timestamp=datetime.utcnow(),
-                )
 
-            cdi_rate = 14.90
+            cdi_rate = 14.90  # sensible defaults
             selic_rate = 14.75
             di1_terms = {}
 
-            items = data if isinstance(data, list) else data.get('data', [data])
-            for item in items:
-                try:
-                    name = str(item.get('name', item.get('id', ''))).upper()
-                    rate_val = float(item.get('value', item.get('rate', 0)) or 0)
-
-                    if 'CDI' in name:
-                        cdi_rate = rate_val
-                    elif 'SELIC' in name:
-                        selic_rate = rate_val
-                    elif 'DI1' in name or 'DI' in name:
-                        # DI futures term structure
-                        days = int(item.get('business_days', item.get('days', 0)) or 0)
-                        if days > 0:
-                            di1_terms[days] = rate_val
-                except (ValueError, TypeError, KeyError):
-                    continue
+            if data and isinstance(data, list):
+                for item in data:
+                    try:
+                        name = str(item.get('name', '')).upper()
+                        rate_val = float(item.get('value', 0) or 0)
+                        if rate_val <= 0:
+                            continue
+                        if 'DI' in name and 'SELIC' not in name:
+                            cdi_rate = rate_val
+                        elif 'SELIC' in name:
+                            selic_rate = rate_val
+                    except (ValueError, TypeError):
+                        continue
 
             return RateCurve(
                 date=datetime.utcnow().strftime('%Y-%m-%d'),
@@ -1187,23 +1228,43 @@ class OpLabMarketDataProvider(MarketDataProviderBase):
         """
         Fetch historical daily candles from OpLab /market/historical/{symbol}/1d.
 
+        Requires from/to date params. Real response:
+        {"symbol":"PETR4","resolution":"1d","data":[
+            {"time":1772420400000,"open":41.3,"low":40.52,"high":41.53,
+             "close":41.13,"volume":83817000,"fvolume":3434243282}, ...
+        ]}
+
         Returns list of dicts with date, open, high, low, close, volume.
         """
         with self._lock:
+            from_date = (datetime.utcnow() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+            to_date = datetime.utcnow().strftime('%Y-%m-%d')
+
             data = self._cached_get(
                 f'hist:{symbol}:{lookback_days}',
                 f'/market/historical/{symbol}/1d',
-                params={'limit': lookback_days}
+                params={'from': from_date, 'to': to_date}
             )
             if not data:
                 return None
 
-            items = data if isinstance(data, list) else data.get('data', data.get('candles', []))
+            # Response is {"symbol":...,"data":[...]} or direct list
+            items = data.get('data', []) if isinstance(data, dict) else data
+            if not isinstance(items, list):
+                return None
+
             results = []
             for item in items:
                 try:
+                    # time is epoch milliseconds
+                    ts = item.get('time', 0)
+                    if isinstance(ts, (int, float)) and ts > 1_000_000_000_000:
+                        date_str = datetime.utcfromtimestamp(ts / 1000).strftime('%Y-%m-%d')
+                    else:
+                        date_str = str(ts)
+
                     results.append({
-                        'date': str(item.get('date', item.get('time', ''))),
+                        'date': date_str,
                         'open': float(item.get('open', 0) or 0),
                         'high': float(item.get('high', 0) or 0),
                         'low': float(item.get('low', 0) or 0),

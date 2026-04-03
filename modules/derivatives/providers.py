@@ -537,6 +537,22 @@ class SimulatedMarketDataProvider(MarketDataProviderBase):
                     result[symbol] = self._base_spots[symbol] * 0.20  # Rough conversion
             return result
     
+    def get_price_history(self, symbol: str, lookback_days: int = 60) -> Optional[List[float]]:
+        """Generate simulated price history for vol calculations."""
+        import math
+        base = self._base_spots.get(symbol)
+        if not base:
+            return None
+        prices = []
+        price = base * 0.95  # Start slightly below current
+        daily_vol = 0.02  # ~32% annualized
+        for i in range(lookback_days):
+            drift = 0.0002  # Small upward drift
+            shock = (hash(f"{symbol}_{i}") % 1000 - 500) / 500.0 * daily_vol
+            price *= (1 + drift + shock)
+            prices.append(round(price, 2))
+        return prices
+
     def health_check(self) -> bool:
         """Simulated provider is always healthy."""
         with self._lock:
@@ -649,6 +665,59 @@ class ProviderManager:
         """Get the current fallback chain."""
         with self._lock:
             return list(self._fallback_chain)
+
+    # ─── Delegation methods for strategy scan loops ───
+
+    def _resolve(self) -> Optional[MarketDataProviderBase]:
+        """Resolve the active provider (fallback chain first, then _active attr)."""
+        p = self.get_active_provider()
+        if p:
+            return p
+        # Fallback: direct _active attribute (set during init)
+        return getattr(self, '_active', None)
+
+    def get_spot(self, symbol: str) -> Optional[SpotQuote]:
+        p = self._resolve()
+        return p.get_spot(symbol) if p else None
+
+    def get_option_chain(self, underlying: str, option_type: str = None) -> Optional[dict]:
+        """Get option chain, keyed by strike. Wraps provider's get_options_chain."""
+        p = self._resolve()
+        if not p:
+            return None
+        chain = p.get_options_chain(underlying)
+        if not chain:
+            return None
+        # Filter by type if requested and return as dict keyed by strike
+        result = {}
+        for quote in chain:
+            if option_type and hasattr(quote, 'option_type') and quote.option_type != option_type:
+                continue
+            result[quote.strike] = quote
+        return result if result else None
+
+    def get_future(self, underlying: str, tenor_offset: int = 0) -> Optional[FutureQuote]:
+        """Get future quote for given underlying. tenor_offset=0 is nearest."""
+        p = self._resolve()
+        if not p:
+            return None
+        futures = p.get_futures(underlying)
+        if not futures:
+            return None
+        # Sort by expiry and pick by offset
+        sorted_f = sorted(futures, key=lambda f: f.expiry)
+        if tenor_offset < len(sorted_f):
+            return sorted_f[tenor_offset]
+        return None
+
+    def get_price_history(self, symbol: str, lookback_days: int = 60) -> Optional[list]:
+        """Get historical prices. Uses provider if available, otherwise returns None."""
+        p = self._resolve()
+        if not p:
+            return None
+        if hasattr(p, 'get_price_history'):
+            return p.get_price_history(symbol, lookback_days)
+        return None
 
 
 # Global singleton instance helper

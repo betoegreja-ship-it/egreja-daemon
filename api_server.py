@@ -59,7 +59,7 @@ import decimal   # [v10.7] movido do interior de funções para o nível de mód
 import os, sys, time, queue, json, uuid, threading, itertools, requests, logging, hashlib, math
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import mysql.connector
 
@@ -7134,6 +7134,12 @@ def fix_corrupted_arbi_trade():
     finally:
         try: conn.close()
         except: pass
+
+# ═══ [v10.26] DERIVATIVES DASHBOARD (standalone HTML) ═══
+@app.route('/derivatives')
+def derivatives_dashboard():
+    """Serve the standalone derivatives trading dashboard."""
+    return send_from_directory('static', 'derivatives.html')
 
 @app.route('/health')
 def health():

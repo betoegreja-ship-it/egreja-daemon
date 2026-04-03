@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Egreja — Derivativos B3</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--gold:#C9A84C;--gold-dim:#7A5C1A;--profit:#22C55E;--loss:#EF4444;--accent:#60A5FA;--purple:#A78BFA;--cyan:#22D3EE;--orange:#FB923C;--pink:#EC4899;--red:#F43F5E;--s1:#060A10;--s2:#0B1018;--s3:#111820;--border:#1A2332;--muted:#374151;--text:#E2E8F0;--dim:#64748B;--mono:'JetBrains Mono',monospace;--sans:'Inter',system-ui,sans-serif}
+body{font-family:var(--sans);background:var(--s1);color:var(--text);min-height:100vh}
+a{color:var(--accent);text-decoration:none}
+.header{position:sticky;top:0;z-index:50;background:rgba(6,10,16,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:18px;font-weight:700;letter-spacing:-.02em}
+.header p{font-size:11px;color:var(--dim);margin-top:2px}
+.header-right{display:flex;align-items:center;gap:12px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text);transition:all .15s}
+.btn:hover{background:var(--s3)}
+.btn-active{background:#2563EB;border-color:#2563EB;color:#fff}
+.btn-active:hover{background:#1D4ED8}
+.container{max-width:1600px;margin:0 auto;padding:24px}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+@media(max-width:1024px){.grid-4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:640px){.grid-4,.grid-2{grid-template-columns:1fr}}
+.card{background:var(--s2);border:1px solid var(--border);border-radius:8px;overflow:hidden;position:relative}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(96,165,250,.2),transparent)}
+.card-header{padding:16px 16px 0;display:flex;align-items:center;justify-content:space-between}
+.card-title{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.card-body{padding:16px}
+.stat-card{padding:16px;display:flex;flex-direction:column;gap:8px}
+.stat-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.stat-value{font-size:24px;font-weight:700;font-family:var(--mono)}
+.stat-sub{font-size:11px;color:var(--dim)}
+.tabs{display:flex;gap:2px;background:var(--s3);border-radius:8px;padding:4px;overflow-x:auto;margin-bottom:24px;border:1px solid var(--border)}
+.tab{padding:8px 14px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;border:none;background:transparent;color:var(--dim);transition:all .15s}
+.tab:hover{color:var(--text)}
+.tab.active{background:var(--s2);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.tab .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px}
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:99px;font-size:10px;font-weight:700}
+.badge-healthy{background:rgba(34,197,94,.1);color:var(--profit);border:1px solid rgba(34,197,94,.2)}
+.badge-degraded{background:rgba(239,68,68,.1);color:var(--loss);border:1px solid rgba(239,68,68,.2)}
+.badge-status{padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700;font-family:var(--mono);letter-spacing:.05em}
+.pipeline{display:flex;align-items:center;gap:4px}
+.pip{width:8px;height:8px;border-radius:50%;transition:all .3s}
+.pip-line{width:16px;height:1px;background:var(--muted)}
+.pip-line.active{background:var(--accent)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 12px;color:var(--dim);font-weight:600;font-size:11px;border-bottom:1px solid var(--border)}
+td{padding:8px 12px;border-bottom:1px solid rgba(26,35,50,.4)}
+tr:hover{background:rgba(17,24,32,.5)}
+.text-right{text-align:right}
+.text-mono{font-family:var(--mono)}
+.text-profit{color:var(--profit)}
+.text-loss{color:var(--loss)}
+.text-dim{color:var(--dim)}
+.text-accent{color:var(--accent)}
+.empty-state{text-align:center;padding:48px 24px;color:var(--dim)}
+.empty-state svg{margin:0 auto 12px;opacity:.3}
+.strat-header{display:flex;align-items:center;gap:16px;padding:16px;border-radius:8px;background:var(--s2);border:1px solid var(--border);margin-bottom:24px}
+.strat-icon{width:48px;height:48px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:20px}
+.strat-header h2{font-size:18px;font-weight:700}
+.strat-header p{font-size:12px;color:var(--dim)}
+.section{margin-bottom:24px}
+.bar-chart{display:flex;align-items:flex-end;gap:8px;height:200px;padding:16px 0}
+.bar-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
+.bar{border-radius:4px 4px 0 0;width:100%;min-width:24px;transition:height .5s ease}
+.bar-label{font-size:10px;font-family:var(--mono);color:var(--dim)}
+.bar-value{font-size:10px;font-family:var(--mono);font-weight:700}
+.legend{display:flex;gap:16px;justify-content:center;margin-top:12px}
+.legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim)}
+.legend-dot{width:8px;height:8px;border-radius:50%}
+.back-link{font-size:12px;color:var(--dim);display:flex;align-items:center;gap:4px}
+.back-link:hover{color:var(--text)}
+.spin{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:rgba(201,168,76,.12);border:1px solid var(--gold-dim)">
+        <span style="font-size:16px">📊</span>
+      </div>
+      <div>
+        <h1>Derivativos B3</h1>
+        <p>8 Estratégias · Paper Mode · <span id="health-badge">Carregando...</span></p>
+      </div>
+    </div>
+  </div>
+  <div class="header-right">
+    <a href="/" class="back-link">← Dashboard Principal</a>
+    <span class="text-mono" style="font-size:11px;color:var(--dim)" id="last-refresh">—</span>
+    <button class="btn" onclick="refresh()" id="refresh-btn">🔄 Atualizar</button>
+    <button class="btn btn-active" onclick="toggleAuto()" id="auto-btn">⚡ Auto ON</button>
+  </div>
+</div>
+
+<div class="container">
+  <!-- KPI Cards -->
+  <div class="grid-4 section" id="kpi-grid"></div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="tabs-bar"></div>
+
+  <!-- Tab Content -->
+  <div id="tab-content"></div>
+</div>
+
+<script>
+const API = '/strategies';
+const STRATEGIES = {
+  PCP:          { label:'Put-Call Parity',    color:'var(--accent)', icon:'🎯', desc:'Arbitragem de paridade put-call (B3: Calls AM, Puts EU)' },
+  FST:          { label:'Futuro Sintético',   color:'var(--purple)', icon:'🔗', desc:'Futuro Sintético Triangular com calibração Caso 0' },
+  ROLL_ARB:     { label:'Roll Arbitrage',     color:'var(--cyan)',   icon:'🔄', desc:'Spread entre futuros de vencimentos consecutivos' },
+  ETF_BASKET:   { label:'ETF vs Basket',      color:'var(--gold)',   icon:'📦', desc:'BOVA11 NAV vs preço (premium/discount)' },
+  SKEW_ARB:     { label:'Skew Arbitrage',     color:'var(--orange)', icon:'📈', desc:'Risk reversal IV skew z-score' },
+  INTERLISTED:  { label:'ADR Inter-Listed',   color:'var(--pink)',   icon:'🌎', desc:'PETR4/PBR e VALE3/VALE com hedge FX' },
+  DIVIDEND_ARB: { label:'Dividend Arbitrage', color:'var(--profit)', icon:'💰', desc:'Captura de dividendos com hedge de put' },
+  VOL_ARB:      { label:'Vol Arbitrage',      color:'var(--red)',    icon:'⚡', desc:'IV vs Realized Vol com delta-hedge' },
+};
+const STATUS_LABELS = {0:'OBSERVE',1:'SHADOW',2:'PAPER_SMALL',3:'PAPER_FULL'};
+const STATUS_COLORS = {0:'var(--dim)',1:'var(--orange)',2:'var(--accent)',3:'var(--profit)'};
+
+let state = { health:null, opps:[], statuses:[], liquidity:{}, scorecards:[], activeTab:'overview', autoRefresh:true, loading:false };
+let autoInterval = null;
+
+// ─── Data Fetching ──────────────────────────────────────────────
+async function fetchAll() {
+  state.loading = true;
+  renderRefreshBtn();
+  try {
+    const [h,o,s,l,sc] = await Promise.allSettled([
+      fetch(`${API}/health`).then(r=>r.json()),
+      fetch(`${API}/opportunities?limit=200`).then(r=>r.json()),
+      fetch(`${API}/status`).then(r=>r.json()),
+      fetch(`${API}/liquidity-score`).then(r=>r.json()),
+      fetch(`${API}/scorecard`).then(r=>r.json()),
+    ]);
+    if(h.status==='fulfilled') state.health=h.value;
+    if(o.status==='fulfilled'){
+      const by = o.value?.by_strategy||{};
+      state.opps = Object.values(by).flat();
+    }
+    if(s.status==='fulfilled') state.statuses=s.value?.statuses||[];
+    if(l.status==='fulfilled') state.liquidity=l.value?.liquidity_scores||{};
+    if(sc.status==='fulfilled') state.scorecards=sc.value?.scorecards||[];
+    document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('pt-BR');
+  } catch(e) { console.error('Fetch error:',e); }
+  state.loading = false;
+  render();
+}
+
+function toggleAuto() {
+  state.autoRefresh = !state.autoRefresh;
+  const btn = document.getElementById('auto-btn');
+  if(state.autoRefresh) {
+    btn.className='btn btn-active'; btn.textContent='⚡ Auto ON';
+    autoInterval=setInterval(fetchAll,30000);
+  } else {
+    btn.className='btn'; btn.textContent='⚡ Auto OFF';
+    clearInterval(autoInterval);
+  }
+}
+
+function refresh() { fetchAll(); }
+
+function renderRefreshBtn() {
+  const btn=document.getElementById('refresh-btn');
+  btn.innerHTML = state.loading ? '<span class="spin">🔄</span> ...' : '🔄 Atualizar';
+}
+
+// ─── Rendering ──────────────────────────────────────────────────
+function render() {
+  renderHealthBadge();
+  renderKPIs();
+  renderTabs();
+  renderTabContent();
+}
+
+function renderHealthBadge() {
+  const el=document.getElementById('health-badge');
+  if(!state.health) { el.textContent='Carregando...'; return; }
+  const h=state.health.overall_health;
+  el.innerHTML = h==='HEALTHY'
+    ? '<span class="badge badge-healthy">✓ HEALTHY</span>'
+    : '<span class="badge badge-degraded">⚠ DEGRADED</span>';
+}
+
+function renderKPIs() {
+  const el=document.getElementById('kpi-grid');
+  const healthyCount = state.health ? Object.values(state.health.strategies).filter(s=>s.healthy).length : 0;
+  const totalOpps = state.opps.length;
+  const liqVals = Object.values(state.liquidity);
+  const avgLiq = liqVals.length > 0 ? (liqVals.reduce((a,b)=>a+b,0)/liqVals.length).toFixed(1) : '—';
+  const assets = Object.keys(state.liquidity).length || 8;
+
+  el.innerHTML = `
+    ${statCard('Estratégias Ativas',`${healthyCount}/8`,healthyCount===8?'Todas saudáveis':'Verificar scan loops',healthyCount===8?'var(--profit)':'var(--orange)')}
+    ${statCard('Oportunidades',totalOpps,'Última hora','var(--accent)')}
+    ${statCard('Liquidez Média',avgLiq,'Score 0-100','var(--purple)')}
+    ${statCard('Ativos Monitorados',assets,'Universo Tier A','var(--gold)')}
+  `;
+}
+
+function statCard(label,value,sub,color) {
+  return `<div class="card stat-card" style="border-top:2px solid ${color}20">
+    <div class="stat-label">${label}</div>
+    <div class="stat-value" style="color:var(--text)">${value}</div>
+    <div class="stat-sub">${sub}</div>
+  </div>`;
+}
+
+function renderTabs() {
+  const el=document.getElementById('tabs-bar');
+  let html = `<button class="tab ${state.activeTab==='overview'?'active':''}" onclick="switchTab('overview')">Visão Geral</button>`;
+  for(const [k,v] of Object.entries(STRATEGIES)) {
+    html += `<button class="tab ${state.activeTab===k?'active':''}" onclick="switchTab('${k}')">
+      <span class="dot" style="background:${v.color}"></span>${v.label.split(' ')[0]}
+    </button>`;
+  }
+  el.innerHTML = html;
+}
+
+function switchTab(tab) { state.activeTab=tab; renderTabs(); renderTabContent(); }
+
+function renderTabContent() {
+  const el=document.getElementById('tab-content');
+  if(state.activeTab==='overview') { el.innerHTML=renderOverview(); return; }
+  el.innerHTML = renderStrategyTab(state.activeTab);
+}
+
+// ─── Overview Tab ───────────────────────────────────────────────
+function renderOverview() {
+  return renderStrategyGrid() + renderLiquidityChart() + renderPromotionTable() + renderScorecardTable() + renderOpportunitiesTable(state.opps, 'Todas as Estratégias');
+}
+
+function renderStrategyGrid() {
+  let cards = '';
+  for(const [k,v] of Object.entries(STRATEGIES)) {
+    const opps = state.opps.filter(o=>o.strategy_type===k);
+    const hKey = Object.keys(state.health?.strategies||{}).find(x=>x.includes(k.toLowerCase().replace(/_/g,'')));
+    const healthy = hKey ? state.health.strategies[hKey]?.healthy : false;
+    cards += `<div class="card" style="cursor:pointer" onclick="switchTab('${k}')">
+      <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="strat-icon" style="width:28px;height:28px;background:${v.color}15;font-size:14px;border-radius:6px;display:flex;align-items:center;justify-content:center">${v.icon}</span>
+            <span style="font-size:13px;font-weight:600">${v.label}</span>
+          </div>
+          <span class="badge ${healthy?'badge-healthy':'badge-degraded'}" style="font-size:9px;padding:2px 8px">
+            ${healthy?'✓':'⚠'}
+          </span>
+        </div>
+        <div style="font-size:11px;color:var(--dim)">${v.desc}</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--border);padding-top:8px;margin-top:2px">
+          <span style="font-size:11px;color:var(--dim)">Oportunidades</span>
+          <span class="text-mono" style="font-size:14px;font-weight:700;color:${opps.length>0?'var(--profit)':'var(--dim)'}">${opps.length}</span>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `<div class="grid-4 section">${cards}</div>`;
+}
+
+function renderLiquidityChart() {
+  const entries = Object.entries(state.liquidity);
+  if(entries.length===0) return '';
+  const maxScore = Math.max(...entries.map(([,v])=>v), 100);
+  let bars = '';
+  for(const [sym,score] of entries) {
+    const h = Math.max(4, (score/maxScore)*160);
+    const color = score>=80?'var(--profit)':score>=50?'var(--orange)':'var(--loss)';
+    bars += `<div class="bar-col">
+      <div class="bar-value" style="color:${color}">${score.toFixed(0)}</div>
+      <div class="bar" style="height:${h}px;background:${color}"></div>
+      <div class="bar-label">${sym}</div>
+    </div>`;
+  }
+  return `<div class="card section"><div class="card-header"><div class="card-title">📊 Scores de Liquidez</div></div>
+    <div class="card-body">
+      <div class="bar-chart">${bars}</div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--profit)"></div>≥80 (Paper Full)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div>≥50 (Shadow)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--loss)"></div>&lt;50 (Observe)</div>
+      </div>
+    </div></div>`;
+}
+
+function renderPromotionTable() {
+  if(state.statuses.length===0) return '';
+  let rows = '';
+  for(const s of state.statuses) {
+    const lbl = STRATEGIES[s.strategy_type]?.label || s.strategy_type;
+    rows += `<tr>
+      <td class="text-mono" style="font-weight:700">${s.symbol}</td>
+      <td>${lbl}</td>
+      <td><span class="badge-status" style="background:${STATUS_COLORS[s.active_status]}15;color:${STATUS_COLORS[s.active_status]};border:1px solid ${STATUS_COLORS[s.active_status]}30">${STATUS_LABELS[s.active_status]}</span></td>
+      <td>${renderPipeline(s.active_status)}</td>
+      <td class="text-right text-dim">${s.updated_at ? new Date(s.updated_at).toLocaleString('pt-BR') : '—'}</td>
+    </tr>`;
+  }
+  return `<div class="card section"><div class="card-header"><div class="card-title">🚀 Pipeline de Promoção</div></div>
+    <div class="card-body"><table><thead><tr>
+      <th>Ativo</th><th>Estratégia</th><th>Status</th><th>Pipeline</th><th class="text-right">Atualizado</th>
+    </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+function renderPipeline(status) {
+  const stages = [0,1,2,3];
+  let html = '<div class="pipeline">';
+  for(const i of stages) {
+    const active = i <= status;
+    const color = active ? STATUS_COLORS[i] : 'var(--muted)';
+    const glow = i===status ? `box-shadow:0 0 6px ${STATUS_COLORS[i]}` : '';
+    html += `<div class="pip" style="background:${color};${glow}"></div>`;
+    if(i<3) html += `<div class="pip-line ${i<status?'active':''}"></div>`;
+  }
+  html += `<span class="text-mono" style="font-size:10px;color:${STATUS_COLORS[status]};margin-left:6px">${STATUS_LABELS[status]}</span></div>`;
+  return html;
+}
+
+function renderScorecardTable() {
+  if(state.scorecards.length===0) return '';
+  let rows = '';
+  for(const sc of state.scorecards) {
+    const pnlColor = sc.pnl_total>=0?'text-profit':'text-loss';
+    rows += `<tr>
+      <td>${STRATEGIES[sc.strategy_type]?.label||sc.strategy_type}</td>
+      <td class="text-mono">${sc.symbol}</td>
+      <td class="text-right">${sc.opportunities_seen||0}</td>
+      <td class="text-right">${sc.opportunities_approved||0}</td>
+      <td class="text-right">${sc.trades_executed||0}</td>
+      <td class="text-right text-mono ${pnlColor}" style="font-weight:700">R$ ${(sc.pnl_total||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</td>
+      <td class="text-right">${(sc.sharpe||0).toFixed(2)}</td>
+      <td class="text-right">${((sc.fill_ratio||0)*100).toFixed(1)}%</td>
+    </tr>`;
+  }
+  return `<div class="card section"><div class="card-header"><div class="card-title">🏆 Scorecards</div></div>
+    <div class="card-body"><table><thead><tr>
+      <th>Estratégia</th><th>Ativo</th><th class="text-right">Vistas</th><th class="text-right">Aprovadas</th>
+      <th class="text-right">Executadas</th><th class="text-right">P&L</th><th class="text-right">Sharpe</th><th class="text-right">Fill %</th>
+    </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+function renderOpportunitiesTable(opps, title) {
+  if(opps.length===0) {
+    return `<div class="card section"><div class="card-header"><div class="card-title">⚡ ${title}</div>
+      <span style="font-size:11px;color:var(--dim)">${opps.length} encontradas</span></div>
+      <div class="card-body"><div class="empty-state">
+        <div style="font-size:32px;opacity:.3;margin-bottom:8px">⏳</div>
+        <p style="font-size:13px">Nenhuma oportunidade detectada ainda</p>
+        <p style="font-size:11px;margin-top:4px;color:var(--muted)">FST precisa de 5 dias de calibração · Scan loops rodando a cada 45-60s</p>
+      </div></div></div>`;
+  }
+  let rows = '';
+  for(const opp of opps.slice(0,50)) {
+    const meta = STRATEGIES[opp.strategy_type];
+    const edgeColor = (opp.expected_edge_bps||0)>0 ? 'text-profit' : 'text-dim';
+    rows += `<tr>
+      <td class="text-mono text-dim">${opp.timestamp ? new Date(opp.timestamp).toLocaleTimeString('pt-BR') : '—'}</td>
+      <td><span style="display:inline-flex;align-items:center;gap:4px"><span class="dot" style="background:${meta?.color||'var(--accent)'}"></span>${meta?.label||opp.strategy_type}</span></td>
+      <td class="text-mono" style="font-weight:700">${opp.symbol}</td>
+      <td class="text-dim">${opp.opportunity_type||'—'}</td>
+      <td class="text-right text-mono">${opp.strike ? 'R$ '+opp.strike.toFixed(2) : '—'}</td>
+      <td class="text-right text-mono ${edgeColor}" style="font-weight:700">${opp.expected_edge_bps?.toFixed(2)||'—'}</td>
+      <td class="text-right">${opp.liquidity_score?.toFixed(1)||'—'}</td>
+    </tr>`;
+  }
+  return `<div class="card section"><div class="card-header"><div class="card-title">⚡ ${title}</div>
+    <span style="font-size:11px;color:var(--dim)">${opps.length} encontradas</span></div>
+    <div class="card-body" style="overflow-x:auto"><table><thead><tr>
+      <th>Hora</th><th>Estratégia</th><th>Ativo</th><th>Tipo</th>
+      <th class="text-right">Strike</th><th class="text-right">Edge (bps)</th><th class="text-right">Liquidez</th>
+    </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+// ─── Strategy Tab ───────────────────────────────────────────────
+function renderStrategyTab(key) {
+  const meta = STRATEGIES[key];
+  if(!meta) return '<p>Estratégia não encontrada</p>';
+  const opps = state.opps.filter(o=>o.strategy_type===key);
+  const statuses = state.statuses.filter(s=>s.strategy_type===key);
+  const hKey = Object.keys(state.health?.strategies||{}).find(x=>x.includes(key.toLowerCase().replace(/_/g,'')));
+  const sh = hKey ? state.health.strategies[hKey] : null;
+
+  let html = `<div class="strat-header">
+    <span class="strat-icon" style="background:${meta.color}15;border:1px solid ${meta.color}30;font-size:24px">${meta.icon}</span>
+    <div style="flex:1"><h2>${meta.label}</h2><p>${meta.desc}</p></div>
+    <div style="text-align:right">
+      <span class="badge ${sh?.healthy?'badge-healthy':'badge-degraded'}">${sh?.healthy?'✓ HEALTHY':'⚠ DEGRADED'}</span>
+      <div style="margin-top:6px;font-size:11px;color:var(--dim)">Heartbeat: <span class="text-mono">${sh?.last_heartbeat ? new Date(sh.last_heartbeat).toLocaleTimeString('pt-BR') : 'Aguardando...'}</span></div>
+    </div>
+  </div>`;
+
+  html += `<div class="grid-4 section">
+    ${statCard('Oportunidades',opps.length,'Detectadas',meta.color)}
+    ${statCard('Ativos Ativos',statuses.length,statuses.map(s=>s.symbol).join(', ')||'Nenhum','var(--accent)')}
+    ${statCard('Último Beat',sh?.last_heartbeat?new Date(sh.last_heartbeat).toLocaleTimeString('pt-BR'):'—','Heartbeat','var(--dim)')}
+    ${statCard('Opp. 1h',sh?.opportunities_1h??0,'Nesta hora','var(--profit)')}
+  </div>`;
+
+  if(statuses.length>0) {
+    let statusCards = '';
+    for(const s of statuses) {
+      statusCards += `<div class="card" style="padding:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <span class="text-mono" style="font-weight:700;font-size:14px">${s.symbol}</span>
+          <span class="badge-status" style="background:${STATUS_COLORS[s.active_status]}15;color:${STATUS_COLORS[s.active_status]};border:1px solid ${STATUS_COLORS[s.active_status]}30">${STATUS_LABELS[s.active_status]}</span>
+        </div>
+        ${renderPipeline(s.active_status)}
+      </div>`;
+    }
+    html += `<div class="card section"><div class="card-header"><div class="card-title">Status por Ativo</div></div>
+      <div class="card-body"><div class="grid-4">${statusCards}</div></div></div>`;
+  }
+
+  html += renderOpportunitiesTable(opps, meta.label);
+
+  const sc = state.scorecards.filter(s=>s.strategy_type===key);
+  if(sc.length>0) {
+    let scCards = '';
+    for(const s of sc) {
+      const c = s.pnl_total>=0?'var(--profit)':'var(--loss)';
+      scCards += `<div class="card" style="padding:12px">
+        <div style="font-size:11px;font-weight:600;color:var(--dim);margin-bottom:4px">${s.symbol}</div>
+        <div class="text-mono" style="font-size:18px;font-weight:700;color:${c}">R$ ${(s.pnl_total||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;font-size:11px;color:var(--dim)">
+          <div>Sharpe: <span style="color:var(--text)">${(s.sharpe||0).toFixed(2)}</span></div>
+          <div>Fill: <span style="color:var(--text)">${((s.fill_ratio||0)*100).toFixed(1)}%</span></div>
+          <div>Trades: <span style="color:var(--text)">${s.trades_executed||0}</span></div>
+          <div>Aprovadas: <span style="color:var(--text)">${s.opportunities_approved||0}</span></div>
+        </div>
+      </div>`;
+    }
+    html += `<div class="card section"><div class="card-header"><div class="card-title">🏆 Scorecard</div></div>
+      <div class="card-body"><div class="grid-4">${scCards}</div></div></div>`;
+  }
+
+  return html;
+}
+
+// ─── Init ───────────────────────────────────────────────────────
+fetchAll();
+autoInterval = setInterval(fetchAll, 30000);
+</script>
+</body>
+</html>

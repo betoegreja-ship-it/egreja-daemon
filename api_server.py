@@ -5380,7 +5380,7 @@ if _PURE_MODULES_LOADED:
     def _build_routes_ctx():
         """Build context dict for API routes Blueprint."""
         return {k: v for k, v in globals().items()}
-    _mod_init_routes(_build_routes_ctx())
+    _mod_init_routes(_build_routes_ctx)
     app.register_blueprint(_mod_api_bp)
     log.info('[v10.28] API routes: 78 routes registered via Blueprint')
 else:

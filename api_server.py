@@ -232,6 +232,11 @@ log = logging.getLogger('egreja')
 
 app = Flask(__name__)
 
+# [v10.28] Safety net — minimal health check that works even if Blueprint fails
+@app.route('/ping')
+def _ping():
+    return jsonify({'pong': True, 'modules_loaded': _PURE_MODULES_LOADED})
+
 # ═══ [v10.27] DERIVATIVES MODULE INITIALIZATION ═══
 # Provider chain: OpLab (primary) → Cedro (backup) → Simulated (fallback)
 _deriv_config = get_deriv_config()
@@ -5377,12 +5382,16 @@ def init_watchlist_table():
 # 78 routes extracted — see modules/api_routes.py for all route handlers
 # ═══════════════════════════════════════════════════════════════
 if _PURE_MODULES_LOADED:
-    def _build_routes_ctx():
-        """Build context dict for API routes Blueprint."""
-        return {k: v for k, v in globals().items()}
-    _mod_init_routes(_build_routes_ctx)
-    app.register_blueprint(_mod_api_bp)
-    log.info('[v10.28] API routes: 78 routes registered via Blueprint')
+    try:
+        def _build_routes_ctx():
+            """Build context dict for API routes Blueprint."""
+            return {k: v for k, v in globals().items()}
+        _mod_init_routes(_build_routes_ctx)
+        app.register_blueprint(_mod_api_bp)
+        log.info('[v10.28] API routes: 78 routes registered via Blueprint')
+    except Exception as _routes_err:
+        log.error(f'[v10.28] Failed to register API routes Blueprint: {_routes_err}')
+        import traceback; traceback.print_exc()
 else:
     log.warning('[v10.28] API routes Blueprint not available — some routes will be missing!')
 # ENTRY POINT

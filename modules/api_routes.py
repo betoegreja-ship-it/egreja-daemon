@@ -104,12 +104,17 @@ def init_routes(ctx_provider_fn):
     """
     global _ctx_provider
     _ctx_provider = ctx_provider_fn
-    # Inject all shared references into module namespace
+    # Inject shared references into module namespace (skip dunders to avoid corruption)
     # This allows route code to use bare names (stock_prices, get_db, etc.)
-    ctx = ctx_provider_fn()
-    g = globals()
-    for key, val in ctx.items():
-        g[key] = val
+    try:
+        ctx = ctx_provider_fn()
+        g = globals()
+        for key, val in ctx.items():
+            if not key.startswith('__'):
+                g[key] = val
+    except Exception as e:
+        import logging
+        logging.getLogger('egreja').error(f'[api_routes] init_routes injection failed: {e}')
 
 def _get_ctx():
     """Get the current context dict with all global state.

@@ -1,521 +1,1550 @@
 <!DOCTYPE html>
-<html lang="pt-BR" class="dark">
+<html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Egreja Investment AI — Dashboard</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{--gold:#C9A84C;--gold-dim:#7A5C1A;--profit:#22C55E;--loss:#EF4444;--accent:#60A5FA;--purple:#A78BFA;--cyan:#22D3EE;--orange:#FB923C;--pink:#EC4899;--red:#F43F5E;--s1:#060A10;--s2:#0B1018;--s3:#111820;--border:#1A2332;--muted:#374151;--text:#E2E8F0;--dim:#64748B;--mono:'JetBrains Mono',monospace;--sans:'Inter',system-ui,sans-serif}
-body{font-family:var(--sans);background:var(--s1);color:var(--text);min-height:100vh}
-a{color:var(--accent);text-decoration:none}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Egreja Investment AI Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-/* ─── Navbar ───────────────────────────────────────────────────── */
-.navbar{position:sticky;top:0;z-index:50;background:rgba(6,10,16,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;height:64px}
-.navbar-left{display:flex;align-items:center;gap:16px;flex:0 0 auto}
-.navbar-icon{width:40px;height:40px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:rgba(201,168,76,.12);border:1px solid var(--gold-dim);font-size:18px}
-.navbar-title{display:flex;flex-direction:column;gap:2px}
-.navbar-title h1{font-size:16px;font-weight:700;letter-spacing:-.02em}
-.navbar-title p{font-size:11px;color:var(--dim)}
+        :root {
+            --bg-primary: #060A10;
+            --bg-secondary: #0B1018;
+            --bg-tertiary: #111820;
+            --gold: #C9A84C;
+            --green-profit: #22C55E;
+            --red-loss: #EF4444;
+            --blue-accent: #60A5FA;
+            --purple: #A78BFA;
+            --border: #1A2332;
+            --muted: #374151;
+            --text: #E2E8F0;
+            --dim: #64748B;
+            --yellow-calib: #EAB308;
+            --orange: #FB923C;
+            --light-green: #4ADE80;
+            --dark-red: #DC2626;
+        }
 
-.navbar-center{display:flex;align-items:center;gap:8px;flex:1;justify-content:center}
-.nav-tab{padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none;background:transparent;color:var(--dim);transition:all .15s;white-space:nowrap}
-.nav-tab:hover{color:var(--text)}
-.nav-tab.active{background:var(--s3);color:var(--gold);border:1px solid var(--border)}
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
 
-.navbar-right{display:flex;align-items:center;gap:12px;flex:0 0 auto}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text);transition:all .15s}
-.btn:hover{background:var(--s3)}
-.btn-active{background:#2563EB;border-color:#2563EB;color:#fff}
-.btn-active:hover{background:#1D4ED8}
-.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:99px;font-size:10px;font-weight:700}
-.badge-healthy{background:rgba(34,197,94,.1);color:var(--profit);border:1px solid rgba(34,197,94,.2)}
-.badge-degraded{background:rgba(239,68,68,.1);color:var(--loss);border:1px solid rgba(239,68,68,.2)}
+        /* Header & Navigation */
+        header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 1.5rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
 
-/* ─── Container ────────────────────────────────────────────────── */
-.container{max-width:1600px;margin:0 auto;padding:24px}
-.section{margin-bottom:24px}
-.grid-1{display:grid;grid-template-columns:1fr;gap:16px}
-.grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
-.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
-@media(max-width:1024px){.grid-4{grid-template-columns:repeat(2,1fr)}.grid-3{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:640px){.grid-4,.grid-3,.grid-2{grid-template-columns:1fr}}
+        .header-container {
+            max-width: 1600px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
 
-/* ─── Cards ────────────────────────────────────────────────────── */
-.card{background:var(--s2);border:1px solid var(--border);border-radius:8px;overflow:hidden;position:relative}
-.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(96,165,250,.2),transparent)}
-.card-header{padding:16px 16px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
-.card-title{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
-.card-body{padding:16px}
+        .logo {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--gold);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
 
-.stat-card{padding:16px;display:flex;flex-direction:column;gap:8px;border-top:2px solid}
-.stat-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
-.stat-value{font-size:28px;font-weight:700;font-family:var(--mono)}
-.stat-sub{font-size:11px;color:var(--dim)}
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--gold), var(--blue-accent));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
 
-/* ─── Lists & Tables ────────────────────────────────────────────── */
-.thread-list{display:flex;flex-direction:column;gap:12px}
-.thread-item{padding:12px;background:var(--s3);border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:space-between}
-.thread-name{font-size:12px;font-weight:600;font-family:var(--mono)}
-.thread-status{display:flex;align-items:center;gap:8px;font-size:11px}
-.status-dot{width:8px;height:8px;border-radius:50%}
-.status-dot.alive{background:var(--profit);box-shadow:0 0 4px var(--profit)}
-.status-dot.frozen{background:var(--loss)}
+        nav {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
 
-table{width:100%;border-collapse:collapse;font-size:12px}
-th{text-align:left;padding:8px 12px;color:var(--dim);font-weight:600;font-size:11px;border-bottom:1px solid var(--border)}
-td{padding:8px 12px;border-bottom:1px solid rgba(26,35,50,.4)}
-tr:hover{background:rgba(17,24,32,.5)}
-.text-right{text-align:right}
-.text-mono{font-family:var(--mono)}
-.text-dim{color:var(--dim)}
-.text-accent{color:var(--accent)}
-.text-profit{color:var(--profit)}
-.text-loss{color:var(--loss)}
+        nav button {
+            background: transparent;
+            border: none;
+            color: var(--dim);
+            font-size: 0.95rem;
+            font-weight: 500;
+            padding: 0.75rem 1.25rem;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.3s ease;
+            font-family: inherit;
+            text-transform: capitalize;
+        }
 
-/* ─── Utilities ────────────────────────────────────────────────── */
-.empty-state{text-align:center;padding:48px 24px;color:var(--dim)}
-.empty-state svg{margin:0 auto 12px;opacity:.3}
-.loading{opacity:.6}
-.spin{animation:spin 1s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
+        nav button:hover {
+            background: rgba(201, 168, 76, 0.1);
+            color: var(--gold);
+        }
 
-.footer{text-align:center;padding:24px;color:var(--dim);font-size:11px;border-top:1px solid var(--border);margin-top:48px}
-.footer a{color:var(--accent);text-decoration:none}
-.footer a:hover{text-decoration:underline}
+        nav button.active {
+            background: rgba(96, 165, 250, 0.15);
+            color: var(--blue-accent);
+            border-bottom: 2px solid var(--blue-accent);
+        }
 
-/* ─── Hidden sections ──────────────────────────────────────────── */
-.section-hidden{display:none}
-</style>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+        /* Main Content */
+        main {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        /* Status Banner */
+        .status-banner {
+            padding: 1.25rem;
+            border-radius: 10px;
+            margin-bottom: 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .status-banner.healthy {
+            background: rgba(34, 197, 94, 0.15);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            color: var(--green-profit);
+        }
+
+        .status-banner.calibrating {
+            background: rgba(234, 179, 8, 0.15);
+            border: 1px solid rgba(234, 179, 8, 0.3);
+            color: var(--yellow-calib);
+        }
+
+        .status-banner.observing {
+            background: rgba(96, 165, 250, 0.15);
+            border: 1px solid rgba(96, 165, 250, 0.3);
+            color: var(--blue-accent);
+        }
+
+        .status-banner.degraded {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: var(--red-loss);
+        }
+
+        .status-banner .status-text {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        /* Cards Grid */
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .kpi-card {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .kpi-card:hover {
+            border-color: var(--gold);
+            box-shadow: 0 0 20px rgba(201, 168, 76, 0.1);
+        }
+
+        .kpi-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--blue-accent);
+            margin-bottom: 0.5rem;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .kpi-label {
+            font-size: 0.85rem;
+            color: var(--dim);
+            font-weight: 500;
+        }
+
+        .kpi-subtitle {
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-top: 0.5rem;
+        }
+
+        /* Strategy Cards */
+        .strategy-cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .strategy-card {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .strategy-card:hover {
+            border-color: var(--gold);
+            box-shadow: 0 0 20px rgba(201, 168, 76, 0.1);
+        }
+
+        .strategy-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 1rem;
+            gap: 1rem;
+        }
+
+        .strategy-name {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .strategy-badge {
+            display: inline-block;
+            padding: 0.35rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .badge-running {
+            background: rgba(96, 165, 250, 0.2);
+            color: var(--blue-accent);
+        }
+
+        .badge-calibrating {
+            background: rgba(234, 179, 8, 0.2);
+            color: var(--yellow-calib);
+        }
+
+        .badge-observe {
+            background: rgba(100, 116, 139, 0.2);
+            color: var(--dim);
+        }
+
+        .badge-shadow {
+            background: rgba(167, 139, 250, 0.2);
+            color: var(--purple);
+        }
+
+        .badge-paper-small {
+            background: rgba(74, 222, 128, 0.2);
+            color: var(--light-green);
+        }
+
+        .badge-paper-full {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--green-profit);
+        }
+
+        .badge-low-liquidity {
+            background: rgba(251, 146, 60, 0.2);
+            color: var(--orange);
+        }
+
+        .badge-blocked {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--red-loss);
+        }
+
+        .badge-error {
+            background: rgba(220, 38, 38, 0.2);
+            color: var(--dark-red);
+        }
+
+        .strategy-description {
+            font-size: 0.85rem;
+            color: var(--dim);
+            margin-bottom: 1rem;
+        }
+
+        .strategy-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .metric {
+            font-size: 0.8rem;
+        }
+
+        .metric-label {
+            color: var(--dim);
+        }
+
+        .metric-value {
+            color: var(--text);
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .strategy-quality {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.8rem;
+        }
+
+        .quality-item {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .quality-label {
+            color: var(--dim);
+        }
+
+        .quality-value {
+            color: var(--text);
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .strategy-paper {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+            font-size: 0.8rem;
+        }
+
+        .paper-item {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .paper-label {
+            color: var(--dim);
+        }
+
+        .paper-value {
+            color: var(--text);
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Tables */
+        .table-container {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 2rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        thead {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            padding: 1rem;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: var(--dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+
+        tbody tr:hover {
+            background: rgba(96, 165, 250, 0.05);
+        }
+
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .status-badge-table {
+            display: inline-block;
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .status-detected {
+            background: rgba(96, 165, 250, 0.2);
+            color: var(--blue-accent);
+        }
+
+        .status-plausible {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--green-profit);
+        }
+
+        .status-rejected-liquidity {
+            background: rgba(251, 146, 60, 0.2);
+            color: var(--orange);
+        }
+
+        .status-rejected-data {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--red-loss);
+        }
+
+        .status-rejected-risk {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--red-loss);
+        }
+
+        .status-calibration {
+            background: rgba(234, 179, 8, 0.2);
+            color: var(--yellow-calib);
+        }
+
+        .status-executed {
+            background: rgba(167, 139, 250, 0.2);
+            color: var(--purple);
+        }
+
+        /* Progress Bar */
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 0.75rem 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--blue-accent), var(--gold));
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        /* Calibration Section */
+        .calibration-item {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .calibration-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .calibration-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .calibration-progress {
+            font-size: 0.85rem;
+            color: var(--dim);
+        }
+
+        .calibration-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-top: 1rem;
+        }
+
+        .calibration-detail {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .detail-label {
+            font-size: 0.8rem;
+            color: var(--dim);
+            text-transform: uppercase;
+            margin-bottom: 0.5rem;
+        }
+
+        .detail-value {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Health Details */
+        .health-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .health-section {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.5rem;
+        }
+
+        .health-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .health-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+
+        .health-item:last-child {
+            border-bottom: none;
+        }
+
+        .health-label {
+            color: var(--dim);
+        }
+
+        .health-value {
+            color: var(--text);
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .health-status {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-left: 0.5rem;
+        }
+
+        .status-ok {
+            background: var(--green-profit);
+        }
+
+        .status-warning {
+            background: var(--yellow-calib);
+        }
+
+        .status-critical {
+            background: var(--red-loss);
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--dim);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border);
+            margin-top: 2rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .cards-grid {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            }
+
+            .strategy-cards-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .header-container {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            nav {
+                width: 100%;
+                justify-content: flex-start;
+                overflow-x: auto;
+            }
+
+            main {
+                padding: 1rem;
+            }
+
+            .health-grid {
+                grid-template-columns: 1fr;
+            }
+
+            table {
+                font-size: 0.8rem;
+            }
+
+            th, td {
+                padding: 0.75rem;
+            }
+        }
+
+        /* Loading State */
+        .loading {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid var(--border);
+            border-top-color: var(--blue-accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Error State */
+        .error-state {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: var(--red-loss);
+            padding: 1.5rem;
+            border-radius: 10px;
+            text-align: center;
+            margin: 2rem 0;
+        }
+
+        .refresh-info {
+            font-size: 0.8rem;
+            color: var(--dim);
+            text-align: right;
+            margin-top: 1rem;
+        }
+    </style>
 </head>
 <body>
-
-<!-- ─── Navbar ─────────────────────────────────────────────────── -->
-<div class="navbar">
-  <div class="navbar-left">
-    <div class="navbar-icon">💰</div>
-    <div class="navbar-title">
-      <h1>Egreja Investment AI</h1>
-      <p id="navbar-status">Carregando...</p>
-    </div>
-  </div>
-
-  <div class="navbar-center">
-    <button class="nav-tab active" onclick="switchTab('dashboard')">Dashboard</button>
-    <button class="nav-tab" onclick="switchTab('derivativos')">Derivativos</button>
-    <button class="nav-tab" onclick="switchTab('sinais')">Sinais</button>
-    <button class="nav-tab" onclick="switchTab('operacoes')">Operações</button>
-  </div>
-
-  <div class="navbar-right">
-    <span id="health-badge" class="badge badge-healthy" style="padding:4px 10px">
-      <span style="width:6px;height:6px;border-radius:50%;background:var(--profit)"></span>
-      ONLINE
-    </span>
-    <button class="btn" onclick="refresh()" id="refresh-btn">🔄 Atualizar</button>
-    <button class="btn btn-active" onclick="toggleAuto()" id="auto-btn">⚡ Auto ON</button>
-  </div>
-</div>
-
-<!-- ─── Container ──────────────────────────────────────────────── -->
-<div class="container">
-
-  <!-- Dashboard Tab ────────────────────────────────────────────── -->
-  <div id="dashboard-tab" class="section">
-    <!-- System Health KPIs -->
-    <div class="grid-4 section" id="kpi-grid"></div>
-
-    <!-- System Status Grid -->
-    <div class="grid-2 section">
-      <!-- System Health Card -->
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🏥 System Health</div>
-        </div>
-        <div class="card-body">
-          <div id="system-health-content" class="loading">
-            <div style="text-align:center;padding:20px">
-              <div class="spin" style="font-size:24px;margin-bottom:8px">⚙️</div>
-              <p style="font-size:12px">Carregando...</p>
+    <header>
+        <div class="header-container">
+            <div class="logo">
+                <div class="logo-icon">E</div>
+                Egreja Investment AI
             </div>
-          </div>
+            <nav id="navigation">
+                <button data-tab="dashboard" class="nav-btn active">Dashboard</button>
+                <button data-tab="derivativos" class="nav-btn">Derivativos</button>
+                <button data-tab="liquidez" class="nav-btn">Liquidez</button>
+                <button data-tab="calibracao" class="nav-btn">Calibração</button>
+                <button data-tab="saude" class="nav-btn">Saúde</button>
+            </nav>
         </div>
-      </div>
+    </header>
 
-      <!-- Thread Status Card -->
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🧵 Thread Health</div>
-        </div>
-        <div class="card-body">
-          <div id="thread-status-content" class="thread-list">
-            <div style="text-align:center;padding:20px;color:var(--dim)">
-              <p style="font-size:12px">Carregando threads...</p>
+    <main>
+        <!-- Dashboard Tab -->
+        <div id="dashboard" class="tab-content active">
+            <div class="status-banner healthy" id="dashboardStatus">
+                <div class="status-text">
+                    <span class="status-indicator"></span>
+                    <span>System Status: HEALTHY</span>
+                </div>
+                <div class="refresh-info" id="lastUpdate"></div>
             </div>
-          </div>
+
+            <div class="cards-grid">
+                <div class="kpi-card">
+                    <div class="kpi-value" id="dashSystemThreads">—</div>
+                    <div class="kpi-label">System Threads</div>
+                    <div class="kpi-subtitle">Running & operational</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="dashDatabaseStatus">OK</div>
+                    <div class="kpi-label">Database</div>
+                    <div class="kpi-subtitle">Connection status</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="dashPricesCached">—</div>
+                    <div class="kpi-label">Prices Cached</div>
+                    <div class="kpi-subtitle">Market data</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="dashKillSwitch">ARMED</div>
+                    <div class="kpi-label">Kill Switch</div>
+                    <div class="kpi-subtitle">Safety mechanism</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="dashMarketRegime">—</div>
+                    <div class="kpi-label">Market Regime</div>
+                    <div class="kpi-subtitle">Current mode</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="dashHeartbeats">—</div>
+                    <div class="kpi-label">Heartbeats</div>
+                    <div class="kpi-subtitle">Loop activity</div>
+                </div>
+            </div>
+
+            <h2 style="color: var(--text); margin: 2rem 0 1.5rem; font-size: 1.3rem; font-weight: 600;">System Details</h2>
+            <div class="table-container">
+                <table id="dashboardDetailsTable">
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Value</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dashboardDetailsBody">
+                        <tr>
+                            <td colspan="3" style="text-align: center; color: var(--dim);">Loading...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
-      </div>
-    </div>
 
-    <!-- Price Cache & DB Status -->
-    <div class="grid-3 section" id="cache-grid"></div>
+        <!-- Derivativos Tab -->
+        <div id="derivativos" class="tab-content">
+            <div class="status-banner healthy" id="derivativosStatus">
+                <div class="status-text">
+                    <span class="status-indicator"></span>
+                    <span id="derivativosStatusText">System Status: HEALTHY</span>
+                </div>
+                <div class="refresh-info" id="derivativosLastUpdate"></div>
+            </div>
 
-    <!-- Market Info -->
-    <div class="card section">
-      <div class="card-header">
-        <div class="card-title">📈 Market Regime & Trades</div>
-      </div>
-      <div class="card-body">
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
-          <div>
-            <div class="stat-label">Market Regime</div>
-            <div class="stat-value" id="market-regime" style="font-size:20px">—</div>
-          </div>
-          <div>
-            <div class="stat-label">Open Trades</div>
-            <div class="stat-value" id="open-trades" style="font-size:20px">—</div>
-          </div>
-          <div>
-            <div class="stat-label">Kill Switch</div>
-            <div class="stat-value" id="kill-switch" style="font-size:14px">—</div>
-          </div>
+            <h2 style="color: var(--text); margin: 1.5rem 0; font-size: 1.3rem; font-weight: 600;">Executive KPIs</h2>
+            <div class="cards-grid">
+                <div class="kpi-card">
+                    <div class="kpi-value" id="kpiScanLoops">—</div>
+                    <div class="kpi-label">Scan Loops Online</div>
+                    <div class="kpi-subtitle">threads vivas e escaneando</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="kpiCalibrating">—</div>
+                    <div class="kpi-label">Em Calibração</div>
+                    <div class="kpi-subtitle">FST Caso 0</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="kpiObserving">—</div>
+                    <div class="kpi-label">Em Observação</div>
+                    <div class="kpi-subtitle">OBSERVE/SHADOW state</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="kpiPaperActive">—</div>
+                    <div class="kpi-label">Paper Ativo</div>
+                    <div class="kpi-subtitle">PAPER_SMALL + PAPER_FULL</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="kpiOpportunitiesTotal">—</div>
+                    <div class="kpi-label">Oportunidades Vistas Hoje</div>
+                    <div class="kpi-subtitle">detected opportunities</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="kpiOpportunitiesPlausible">—</div>
+                    <div class="kpi-label">Oportunidades Plausíveis</div>
+                    <div class="kpi-subtitle">status = PLAUSIBLE</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="kpiTradesAudited">—</div>
+                    <div class="kpi-label">Trades Auditados</div>
+                    <div class="kpi-subtitle">paper trades executed</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-value" id="kpiHealthScore">—</div>
+                    <div class="kpi-label">Health Score</div>
+                    <div class="kpi-subtitle">0–100 index</div>
+                </div>
+            </div>
+
+            <h2 style="color: var(--text); margin: 2rem 0 1.5rem; font-size: 1.3rem; font-weight: 600;">Strategy Status</h2>
+            <div class="strategy-cards-grid" id="strategyCardsContainer">
+                <div style="grid-column: 1/-1; text-align: center; color: var(--dim); padding: 3rem 1rem;">
+                    <div class="loading" style="display: inline-block; margin-right: 1rem;"></div>
+                    Loading strategies...
+                </div>
+            </div>
+
+            <h2 style="color: var(--text); margin: 2rem 0 1.5rem; font-size: 1.3rem; font-weight: 600;">Opportunities</h2>
+            <div class="table-container">
+                <table id="opportunitiesTable">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Estratégia</th>
+                            <th>Ativo</th>
+                            <th>Estrutura</th>
+                            <th>Status</th>
+                            <th>Edge Esperado</th>
+                            <th>Edge Plausível</th>
+                            <th>Liquidity Score</th>
+                            <th>Motivo Bloqueio</th>
+                        </tr>
+                    </thead>
+                    <tbody id="opportunitiesBody">
+                        <tr>
+                            <td colspan="9" style="text-align: center; color: var(--dim);">Loading...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
-      </div>
-    </div>
 
-    <!-- Quick Links -->
-    <div class="card section">
-      <div class="card-header">
-        <div class="card-title">🔗 Quick Links</div>
-      </div>
-      <div class="card-body">
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
-          <button class="btn" style="width:100%;justify-content:center" onclick="switchTab('derivativos')">📊 Derivativos B3</button>
-          <button class="btn" style="width:100%;justify-content:center" onclick="switchTab('sinais')">⚡ Sinais de Mercado</button>
-          <button class="btn" style="width:100%;justify-content:center" onclick="switchTab('operacoes')">💼 Gestão de Operações</button>
-          <button class="btn" style="width:100%;justify-content:center" onclick="alert('Em desenvolvimento')">📋 Relatórios</button>
+        <!-- Liquidez Tab -->
+        <div id="liquidez" class="tab-content">
+            <h2 style="color: var(--text); margin: 1.5rem 0; font-size: 1.3rem; font-weight: 600;">Liquidity Monitoring</h2>
+            <div class="table-container">
+                <table id="liquidezTable">
+                    <thead>
+                        <tr>
+                            <th>Ativo</th>
+                            <th>Estratégia</th>
+                            <th>Liquidity Score</th>
+                            <th>Spread Médio</th>
+                            <th>Depth</th>
+                            <th>Volume</th>
+                            <th>OI</th>
+                            <th>Fill Ratio</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="liquidezBody">
+                        <tr>
+                            <td colspan="9" style="text-align: center; color: var(--dim);">Loading...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- Derivativos Tab ───────────────────────────────────────────── -->
-  <div id="derivativos-tab" class="section-hidden">
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">📊 Derivativos B3</div>
-      </div>
-      <div class="card-body" style="text-align:center;padding:48px 24px">
-        <p style="font-size:14px;margin-bottom:16px">Redirecionando para página de derivativos...</p>
-        <p style="font-size:12px;color:var(--dim)">Clique <a href="/derivatives">aqui</a> se a redireção não funcionar</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- Sinais Tab ───────────────────────────────────────────────── -->
-  <div id="sinais-tab" class="section-hidden">
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">⚡ Sinais de Mercado</div>
-      </div>
-      <div class="card-body">
-        <div class="empty-state">
-          <div style="font-size:48px;margin-bottom:12px">📡</div>
-          <p style="font-size:14px;font-weight:600">Em construção</p>
-          <p style="font-size:12px;color:var(--dim);margin-top:8px">Sinais de mercado e análise técnica em breve</p>
+        <!-- Calibração Tab -->
+        <div id="calibracao" class="tab-content">
+            <h2 style="color: var(--text); margin: 1.5rem 0; font-size: 1.3rem; font-weight: 600;">Calibration Progress</h2>
+            <div id="calibrationContainer">
+                <div style="text-align: center; color: var(--dim); padding: 3rem 1rem;">
+                    <div class="loading" style="display: inline-block; margin-right: 1rem;"></div>
+                    Loading calibration data...
+                </div>
+            </div>
         </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- Operações Tab ─────────────────────────────────────────────── -->
-  <div id="operacoes-tab" class="section-hidden">
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title">💼 Gestão de Operações</div>
-      </div>
-      <div class="card-body">
-        <div class="empty-state">
-          <div style="font-size:48px;margin-bottom:12px">📋</div>
-          <p style="font-size:14px;font-weight:600">Em construção</p>
-          <p style="font-size:12px;color:var(--dim);margin-top:8px">Painel de operações e gestão de posições em breve</p>
+        <!-- Saúde Tab -->
+        <div id="saude" class="tab-content">
+            <h2 style="color: var(--text); margin: 1.5rem 0; font-size: 1.3rem; font-weight: 600;">Module Health</h2>
+            <div class="health-grid" id="healthContainer">
+                <div style="text-align: center; color: var(--dim); padding: 3rem 1rem; grid-column: 1/-1;">
+                    <div class="loading" style="display: inline-block; margin-right: 1rem;"></div>
+                    Loading health data...
+                </div>
+            </div>
         </div>
-      </div>
-    </div>
-  </div>
+    </main>
 
-  <!-- Footer ────────────────────────────────────────────────────── -->
-  <div class="footer">
-    <div>v10.26 · Paper Mode · Railway Deploy</div>
-    <div style="margin-top:8px;font-size:10px">Last refresh: <span id="last-refresh" class="text-mono">—</span></div>
-  </div>
+    <footer>
+        <div>v10.27 · Paper Mode · OpLab + BRAPI + Polygon</div>
+        <div class="refresh-info" id="footerTimestamp" style="margin-top: 0.5rem; text-align: center;"></div>
+    </footer>
 
-</div>
+    <script>
+        // Configuration
+        const API_BASE = '/api';
+        const REFRESH_INTERVAL = 30000; // 30 seconds
+        const STRATEGY_MAPPING = {
+            'pcp_scan_loop': { name: 'PCP', description: 'Put-Call Parity Arbitrage' },
+            'fst_scan_loop': { name: 'FST', description: 'Futuro Sintético Triangular' },
+            'roll_arb_scan_loop': { name: 'Roll', description: 'Roll Arbitrage' },
+            'etf_basket_scan_loop': { name: 'ETF Basket', description: 'ETF Basket Arbitrage' },
+            'skew_arb_scan_loop': { name: 'Skew', description: 'Skew Arbitrage' },
+            'interlisted_scan_loop': { name: 'InterListed', description: 'InterListed ADR Arbitrage' },
+            'dividend_arb_scan_loop': { name: 'Dividend', description: 'Dividend Arbitrage' },
+            'vol_arb_scan_loop': { name: 'Vol Arb', description: 'Volatility Arbitrage' }
+        };
 
-<script>
-const API = '/health';
-const STATS_API = '/stats';
+        // State
+        let currentTab = 'dashboard';
+        let systemHealth = null;
+        let strategiesHealth = null;
+        let strategiesStatus = null;
+        let opportunities = null;
+        let calibration = null;
+        let liquidity = null;
 
-let state = {
-  health: null,
-  stats: null,
-  scorecard: null,
-  autoRefresh: true,
-  loading: false,
-  activeTab: 'dashboard'
-};
+        // Format numbers
+        function formatNumber(num, decimals = 2) {
+            if (num === null || num === undefined) return '—';
+            if (typeof num !== 'number') return String(num);
+            return num.toFixed(decimals);
+        }
 
-let autoInterval = null;
+        function formatPercent(num, decimals = 1) {
+            if (num === null || num === undefined) return '—';
+            return (num * 100).toFixed(decimals) + '%';
+        }
 
-// ─── Tab Management ───────────────────────────────────────────
-function switchTab(tab) {
-  if(tab === 'derivativos') {
-    window.location.href = '/derivatives';
-    return;
-  }
+        function formatTime(dateStr) {
+            if (!dateStr) return '—';
+            try {
+                const date = new Date(dateStr);
+                const now = new Date();
+                const diffMs = now - date;
+                const diffSecs = Math.floor(diffMs / 1000);
 
-  state.activeTab = tab;
+                if (diffSecs < 60) return diffSecs + 's ago';
+                const diffMins = Math.floor(diffSecs / 60);
+                if (diffMins < 60) return diffMins + 'm ago';
+                const diffHours = Math.floor(diffMins / 60);
+                if (diffHours < 24) return diffHours + 'h ago';
+                return date.toLocaleDateString();
+            } catch (e) {
+                return '—';
+            }
+        }
 
-  // Hide all tabs
-  document.getElementById('dashboard-tab').classList.add('section-hidden');
-  document.getElementById('derivativos-tab').classList.add('section-hidden');
-  document.getElementById('sinais-tab').classList.add('section-hidden');
-  document.getElementById('operacoes-tab').classList.add('section-hidden');
+        // API Calls
+        async function fetchHealth() {
+            try {
+                const res = await fetch(`${API_BASE}/health`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                systemHealth = await res.json();
+                return systemHealth;
+            } catch (e) {
+                console.error('Error fetching health:', e);
+                return null;
+            }
+        }
 
-  // Show active tab
-  document.getElementById(`${tab}-tab`).classList.remove('section-hidden');
+        async function fetchStrategiesHealth() {
+            try {
+                const res = await fetch(`${API_BASE}/strategies/health`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                strategiesHealth = await res.json();
+                return strategiesHealth;
+            } catch (e) {
+                console.error('Error fetching strategies health:', e);
+                return null;
+            }
+        }
 
-  // Update nav buttons
-  document.querySelectorAll('.nav-tab').forEach(btn => {
-    btn.classList.remove('active');
-  });
-  event.target?.classList.add('active');
-}
+        async function fetchStrategiesStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/strategies/status`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                strategiesStatus = await res.json();
+                return strategiesStatus;
+            } catch (e) {
+                console.error('Error fetching strategies status:', e);
+                return null;
+            }
+        }
 
-// ─── Data Fetching ────────────────────────────────────────────
-async function fetchAll() {
-  state.loading = true;
-  renderRefreshBtn();
+        async function fetchOpportunities() {
+            try {
+                const res = await fetch(`${API_BASE}/strategies/opportunities`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                opportunities = await res.json();
+                return opportunities;
+            } catch (e) {
+                console.error('Error fetching opportunities:', e);
+                return null;
+            }
+        }
 
-  try {
-    const response = await fetch(API);
-    if(response.ok) {
-      state.health = await response.json();
-    }
+        async function fetchCalibration() {
+            try {
+                const res = await fetch(`${API_BASE}/strategies/calibration`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                calibration = await res.json();
+                return calibration;
+            } catch (e) {
+                console.error('Error fetching calibration:', e);
+                return null;
+            }
+        }
 
-    try {
-      const statsResp = await fetch(`${STATS_API}/report`);
-      if(statsResp.ok) state.stats = await statsResp.json();
-    } catch(e) { console.log('Stats unavailable'); }
+        async function fetchLiquidity() {
+            try {
+                const res = await fetch(`${API_BASE}/strategies/liquidity`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                liquidity = await res.json();
+                return liquidity;
+            } catch (e) {
+                console.error('Error fetching liquidity:', e);
+                return null;
+            }
+        }
 
-    try {
-      const scoreResp = await fetch(`${STATS_API}/scorecard`);
-      if(scoreResp.ok) state.scorecard = await scoreResp.json();
-    } catch(e) { console.log('Scorecard unavailable'); }
+        // Render Functions
+        function renderDashboard() {
+            if (!systemHealth) return;
 
-    document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('pt-BR');
-  } catch(e) {
-    console.error('Fetch error:', e);
-  }
+            const h = systemHealth;
+            const banner = document.getElementById('dashboardStatus');
+            const statusText = banner.querySelector('.status-text span:last-child');
 
-  state.loading = false;
-  render();
-}
+            // Determine status
+            let status = 'HEALTHY';
+            let statusClass = 'healthy';
 
-function toggleAuto() {
-  state.autoRefresh = !state.autoRefresh;
-  const btn = document.getElementById('auto-btn');
+            if (h.kill_switch_active) {
+                status = 'KILL SWITCH ACTIVE';
+                statusClass = 'degraded';
+            } else if (h.db_connected === false) {
+                status = 'DATABASE ERROR';
+                statusClass = 'degraded';
+            } else if (h.provider_latency_ms > 1000) {
+                status = 'DEGRADED - High Latency';
+                statusClass = 'degraded';
+            }
 
-  if(state.autoRefresh) {
-    btn.className = 'btn btn-active';
-    btn.textContent = '⚡ Auto ON';
-    autoInterval = setInterval(fetchAll, 30000);
-  } else {
-    btn.className = 'btn';
-    btn.textContent = '⚡ Auto OFF';
-    clearInterval(autoInterval);
-  }
-}
+            statusText.textContent = `System Status: ${status}`;
+            banner.className = `status-banner ${statusClass}`;
 
-function refresh() {
-  fetchAll();
-}
+            // Update KPIs
+            document.getElementById('dashSystemThreads').textContent = `${h.system_threads_online || 0}/${h.system_threads_total || 0}`;
+            document.getElementById('dashDatabaseStatus').textContent = h.db_connected ? 'OK' : 'ERROR';
+            document.getElementById('dashPricesCached').textContent = h.prices_cached_count || '0';
+            document.getElementById('dashKillSwitch').textContent = h.kill_switch_active ? 'ACTIVE' : 'ARMED';
+            document.getElementById('dashMarketRegime').textContent = h.market_regime || '—';
+            document.getElementById('dashHeartbeats').textContent = (h.thread_heartbeats || []).length;
 
-function renderRefreshBtn() {
-  const btn = document.getElementById('refresh-btn');
-  btn.innerHTML = state.loading ? '<span class="spin">🔄</span> ...' : '🔄 Atualizar';
-}
+            // Details table
+            const tbody = document.getElementById('dashboardDetailsBody');
+            tbody.innerHTML = `
+                <tr>
+                    <td>Provider Latency</td>
+                    <td>${formatNumber(h.provider_latency_ms)}ms</td>
+                    <td><span class="health-status ${h.provider_latency_ms < 500 ? 'status-ok' : h.provider_latency_ms < 1000 ? 'status-warning' : 'status-critical'}"></span></td>
+                </tr>
+                <tr>
+                    <td>Breaker Count</td>
+                    <td>${h.breaker_count || 0}</td>
+                    <td><span class="health-status ${h.breaker_count === 0 ? 'status-ok' : 'status-warning'}"></span></td>
+                </tr>
+                <tr>
+                    <td>Last Update</td>
+                    <td>${formatTime(h.last_update)}</td>
+                    <td><span class="health-status status-ok"></span></td>
+                </tr>
+                <tr>
+                    <td>Queue Size (Orders)</td>
+                    <td>${h.queue_size_orders || 0}</td>
+                    <td><span class="health-status status-ok"></span></td>
+                </tr>
+                <tr>
+                    <td>Queue Size (Risks)</td>
+                    <td>${h.queue_size_risks || 0}</td>
+                    <td><span class="health-status status-ok"></span></td>
+                </tr>
+            `;
 
-// ─── Rendering ────────────────────────────────────────────────
-function render() {
-  renderNavbarStatus();
-  renderHealthBadge();
-  renderKPIs();
-  renderSystemHealth();
-  renderThreadStatus();
-  renderCacheGrid();
-  renderMarketInfo();
-}
+            updateTimestamp('dashboardStatus');
+        }
 
-function renderNavbarStatus() {
-  const el = document.getElementById('navbar-status');
-  if(!state.health) {
-    el.textContent = 'Conectando...';
-    return;
-  }
+        function getStatusBadgeClass(status) {
+            const mapping = {
+                'RUNNING': 'badge-running',
+                'CALIBRATING': 'badge-calibrating',
+                'OBSERVE': 'badge-observe',
+                'SHADOW_EXEC': 'badge-shadow',
+                'PAPER_SMALL': 'badge-paper-small',
+                'PAPER_FULL': 'badge-paper-full',
+                'LOW_LIQUIDITY': 'badge-low-liquidity',
+                'BLOCKED_BY_DATA': 'badge-blocked',
+                'ERROR': 'badge-error'
+            };
+            return mapping[status] || 'badge-running';
+        }
 
-  const status = state.health.status === 'ok' ? 'Online' : 'Erro';
-  const regime = state.health.market_regime || 'UNKNOWN';
-  el.textContent = `${status} · ${regime}`;
-}
+        function renderDerivatives() {
+            if (!systemHealth || !strategiesHealth || !strategiesStatus || !opportunities) {
+                return;
+            }
 
-function renderHealthBadge() {
-  const el = document.getElementById('health-badge');
-  if(!state.health) return;
+            // Update status banner
+            const banner = document.getElementById('derivativosStatus');
+            const statusText = banner.querySelector('.status-text span:last-child');
+            let status = 'HEALTHY';
+            let statusClass = 'healthy';
 
-  const ok = state.health.status === 'ok';
-  const color = ok ? 'var(--profit)' : 'var(--loss)';
-  const text = ok ? '✓ ONLINE' : '✗ OFFLINE';
+            // Check for active calibration
+            const calibratingCount = (strategiesStatus || []).filter(s => s.promotion_state === 'CALIBRATING' || s.promotion_state === 'CALIBRATION_ONLY').length;
+            const observingCount = (strategiesStatus || []).filter(s => ['OBSERVE', 'SHADOW_EXEC'].includes(s.promotion_state)).length;
+            const aliveLoops = (systemHealth.thread_heartbeats || []).length;
 
-  el.innerHTML = `
-    <span style="width:6px;height:6px;border-radius:50%;background:${color};${ok?'box-shadow:0 0 4px '+color:''}"></span>
-    ${text}
-  `;
-  el.className = `badge ${ok ? 'badge-healthy' : 'badge-degraded'}`;
-}
+            if (calibratingCount > 0 && aliveLoops > 0) {
+                status = 'CALIBRATING';
+                statusClass = 'calibrating';
+            } else if (observingCount > 0 && aliveLoops > 0) {
+                status = 'OBSERVING MARKET';
+                statusClass = 'observing';
+            } else if (aliveLoops === 0) {
+                status = 'DEGRADED - No Loops';
+                statusClass = 'degraded';
+            }
 
-function renderKPIs() {
-  const el = document.getElementById('kpi-grid');
-  if(!state.health) {
-    el.innerHTML = '<div class="empty-state">Carregando dados...</div>';
-    return;
-  }
+            statusText.textContent = `Status: ${status}`;
+            banner.className = `status-banner ${statusClass}`;
 
-  const h = state.health;
-  const threadCount = Object.keys(h.threads || {}).length;
-  const healthyThreads = Object.values(h.threads || {}).filter(t => t.alive && !t.frozen).length;
-  const cachedPrices = (h.stock_prices_cached || 0) + (h.crypto_prices_cached || 0);
+            // KPIs
+            const aliveCount = aliveLoops;
+            const paperCount = (strategiesStatus || []).filter(s => ['PAPER_SMALL', 'PAPER_FULL'].includes(s.promotion_state)).length;
+            const oppCount = (opportunities || []).length;
+            const plausibleCount = (opportunities || []).filter(o => o.status === 'PLAUSIBLE').length;
 
-  el.innerHTML = `
-    ${createStatCard('Open Trades', h.open_trades || 0, 'Posições ativas', 'var(--accent)')}
-    ${createStatCard('Healthy Threads', `${healthyThreads}/${threadCount}`, 'Rodando normalmente', healthyThreads === threadCount ? 'var(--profit)' : 'var(--orange)')}
-    ${createStatCard('Cached Prices', cachedPrices, 'Stock + Crypto', 'var(--gold)')}
-    ${createStatCard('Kill Switch', h.kill_switch ? '🔴 ACTIVE' : '✓ OFF', 'Trading status', h.kill_switch ? 'var(--loss)' : 'var(--profit)')}
-  `;
-}
+            document.getElementById('kpiScanLoops').textContent = `${aliveCount}/${Object.keys(STRATEGY_MAPPING).length}`;
+            document.getElementById('kpiCalibrating').textContent = calibratingCount;
+            document.getElementById('kpiObserving').textContent = observingCount;
+            document.getElementById('kpiPaperActive').textContent = paperCount;
+            document.getElementById('kpiOpportunitiesTotal').textContent = oppCount;
+            document.getElementById('kpiOpportunitiesPlausible').textContent = plausibleCount;
+            document.getElementById('kpiTradesAudited').textContent = (opportunities || []).filter(o => o.status === 'PAPER_EXECUTED').length;
 
-function createStatCard(label, value, sub, color) {
-  return `<div class="card stat-card" style="border-top-color:${color}">
-    <div class="stat-label">${label}</div>
-    <div class="stat-value">${value}</div>
-    <div class="stat-sub">${sub}</div>
-  </div>`;
-}
+            // Health Score (0-100)
+            let healthScore = 100;
+            if (aliveCount < Object.keys(STRATEGY_MAPPING).length) healthScore -= 20;
+            if (systemHealth.provider_latency_ms > 1000) healthScore -= 10;
+            if (calibratingCount === 0 && paperCount === 0) healthScore -= 15;
+            healthScore = Math.max(0, healthScore);
+            document.getElementById('kpiHealthScore').textContent = Math.floor(healthScore);
 
-function renderSystemHealth() {
-  const el = document.getElementById('system-health-content');
-  if(!state.health) return;
+            // Strategy Cards
+            renderStrategyCards();
+            renderOpportunitiesTable();
+            updateTimestamp('derivativosStatus');
+        }
 
-  const h = state.health;
-  const db = h.db === 'connected' ? '✓ Connected' : '✗ Disconnected';
-  const dbColor = h.db === 'connected' ? 'var(--profit)' : 'var(--loss)';
-  const arbi = h.arbi_kill_switch ? '🔴 ACTIVE' : '✓ OFF';
-  const arbiColor = h.arbi_kill_switch ? 'var(--loss)' : 'var(--profit)';
+        function renderStrategyCards() {
+            const container = document.getElementById('strategyCardsContainer');
+            container.innerHTML = '';
 
-  el.innerHTML = `
-    <div style="display:grid;gap:12px">
-      <div style="padding:10px;background:var(--s3);border-radius:6px;border-left:3px solid ${dbColor}">
-        <div class="stat-label">Database</div>
-        <div style="font-size:14px;font-weight:600;margin-top:4px;color:${dbColor}">${db}</div>
-      </div>
-      <div style="padding:10px;background:var(--s3);border-radius:6px;border-left:3px solid ${arbiColor}">
-        <div class="stat-label">Arbi Kill Switch</div>
-        <div style="font-size:14px;font-weight:600;margin-top:4px;color:${arbiColor}">${arbi}</div>
-      </div>
-      <div style="padding:10px;background:var(--s3);border-radius:6px;border-left:3px solid var(--accent)">
-        <div class="stat-label">API Status</div>
-        <div style="font-size:14px;font-weight:600;margin-top:4px;color:var(--accent)">✓ OK</div>
-      </div>
-    </div>
-  `;
-}
+            Object.entries(STRATEGY_MAPPING).forEach(([threadName, strategyInfo]) => {
+                const status = (strategiesStatus || []).find(s => s.strategy === threadName);
+                const health = (strategiesHealth || []).find(h => h.strategy === threadName);
 
-function renderThreadStatus() {
-  const el = document.getElementById('thread-status-content');
-  if(!state.health || !state.health.threads) return;
+                const card = document.createElement('div');
+                card.className = 'strategy-card';
 
-  const threads = state.health.threads;
-  let html = '';
+                const state = status?.promotion_state || 'UNKNOWN';
+                const badgeClass = getStatusBadgeClass(state);
 
-  for(const [name, thread] of Object.entries(threads)) {
-    const alive = thread.alive && !thread.frozen;
-    const dotClass = alive ? 'status-dot alive' : 'status-dot frozen';
-    const statusText = thread.frozen ? '❄️ FROZEN' : (alive ? '✓ ALIVE' : '✗ DEAD');
-    const hbAge = thread.hb_age_s ? `${thread.hb_age_s.toFixed(1)}s` : '—';
+                const opp = (opportunities || []).filter(o => o.estratégia === threadName);
+                const plausible = opp.filter(o => o.status === 'PLAUSIBLE').length;
+                const fillRatio = opp.length > 0 ? ((plausible / opp.length) * 100).toFixed(0) : '0';
 
-    html += `
-      <div class="thread-item">
-        <span class="thread-name">${name}</span>
-        <div style="display:flex;align-items:center;gap:12px;font-size:11px;color:var(--dim)">
-          <span class="text-mono">HB: ${hbAge}</span>
-          <span class="text-mono">T/O: ${thread.timeout_s}s</span>
-          <span class="text-mono">R: ${thread.restarts || 0}</span>
-          <div class="thread-status">
-            <span class="${dotClass}"></span>
-            <span>${statusText}</span>
-          </div>
-        </div>
-      </div>
-    `;
-  }
+                const lastHeartbeat = health?.last_heartbeat ? formatTime(health.last_heartbeat) : '—';
 
-  el.innerHTML = html || '<div style="text-align:center;color:var(--dim);padding:20px">No threads available</div>';
-}
+                card.innerHTML = `
+                    <div class="strategy-header">
+                        <div>
+                            <div class="strategy-name">${strategyInfo.name}</div>
+                            <div class="strategy-description">${strategyInfo.description}</div>
+                        </div>
+                        <span class="strategy-badge ${badgeClass}">${state}</span>
+                    </div>
+                    <div class="strategy-metrics">
+                        <div class="metric">
+                            <div class="metric-label">Oportunidades</div>
+                            <div class="metric-value">${opp.length}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Plausíveis</div>
+                            <div class="metric-value">${plausible}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Fill Ratio</div>
+                            <div class="metric-value">${fillRatio}%</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Liq Score</div>
+                            <div class="metric-value">${formatNumber(health?.liquidity_score || 0, 1)}</div>
+                        </div>
+                    </div>
+                    <div class="strategy-quality">
+                        <div class="quality-item">
+                            <span class="quality-label">Stale Data</span>
+                            <span class="quality-value">${health?.stale_data_count || 0}</span>
+                        </div>
+                        <div class="quality-item">
+                            <span class="quality-label">Breaker Events</span>
+                            <span class="quality-value">${health?.breaker_events || 0}</span>
+                        </div>
+                        <div class="quality-item">
+                            <span class="quality-label">Last Scan</span>
+                            <span class="quality-value">${formatTime(health?.last_scan_time)}</span>
+                        </div>
+                        <div class="quality-item">
+                            <span class="quality-label">Last Heartbeat</span>
+                            <span class="quality-value">${lastHeartbeat}</span>
+                        </div>
+                    </div>
+                    <div class="strategy-paper">
+                        <div class="paper-item">
+                            <span class="paper-label">Paper Trades</span>
+                            <span class="paper-value">${(opportunities || []).filter(o => o.status === 'PAPER_EXECUTED' && o.estratégia === threadName).length}</span>
+                        </div>
+                        <div class="paper-item">
+                            <span class="paper-label">Expected Edge</span>
+                            <span class="paper-value">${formatPercent(opp[0]?.edge_esperado || 0, 2)}</span>
+                        </div>
+                        <div class="paper-item">
+                            <span class="paper-label">Realized Edge</span>
+                            <span class="paper-value">${formatPercent(opp[0]?.edge_plausível || 0, 2)}</span>
+                        </div>
+                        <div class="paper-item">
+                            <span class="paper-label">Avg Slippage</span>
+                            <span class="paper-value">${formatPercent(health?.avg_slippage || 0, 2)}</span>
+                        </div>
+                    </div>
+                `;
 
-function renderCacheGrid() {
-  const el = document.getElementById('cache-grid');
-  if(!state.health) return;
+                container.appendChild(card);
+            });
+        }
 
-  const h = state.health;
-  const stockCache = h.stock_prices_cached || 0;
-  const cryptoCache = h.crypto_prices_cached || 0;
-  const dbOk = h.db === 'connected';
+        function renderOpportunitiesTable() {
+            const tbody = document.getElementById('opportunitiesBody');
+            if (!opportunities || opportunities.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--dim);">No opportunities found</td></tr>';
+                return;
+            }
 
-  el.innerHTML = `
-    ${createStatCard('Stock Prices Cached', stockCache, 'B3 / US Markets', 'var(--accent)')}
-    ${createStatCard('Crypto Prices Cached', cryptoCache, 'Bitcoin, Ethereum', 'var(--purple)')}
-    ${createStatCard('DB Status', dbOk ? '✓ Connected' : '✗ Error', 'PostgreSQL', dbOk ? 'var(--profit)' : 'var(--loss)')}
-  `;
-}
+            tbody.innerHTML = opportunities.slice(0, 50).map(opp => {
+                const statusClass = {
+                    'DETECTED': 'status-detected',
+                    'PLAUSIBLE': 'status-plausible',
+                    'REJECTED_LIQUIDITY': 'status-rejected-liquidity',
+                    'REJECTED_DATA': 'status-rejected-data',
+                    'REJECTED_RISK': 'status-rejected-risk',
+                    'CALIBRATION_ONLY': 'status-calibration',
+                    'PAPER_EXECUTED': 'status-executed'
+                }[opp.status] || 'status-detected';
 
-function renderMarketInfo() {
-  const el = document.getElementById('market-regime');
-  const elTrades = document.getElementById('open-trades');
-  const elKill = document.getElementById('kill-switch');
+                return `
+                    <tr>
+                        <td>${formatTime(opp.timestamp)}</td>
+                        <td>${STRATEGY_MAPPING[opp.estratégia]?.name || opp.estratégia}</td>
+                        <td>${opp.ativo || '—'}</td>
+                        <td>${opp.estrutura || '—'}</td>
+                        <td><span class="status-badge-table ${statusClass}">${opp.status}</span></td>
+                        <td>${formatPercent(opp.edge_esperado, 2)}</td>
+                        <td>${formatPercent(opp.edge_plausível, 2)}</td>
+                        <td>${formatNumber(opp.liquidity_score, 1)}</td>
+                        <td>${opp.motivo_bloqueio || '—'}</td>
+                    </tr>
+                `;
+            }).join('');
 
-  if(!state.health) return;
+            updateTimestamp('derivativosStatus');
+        }
 
-  const h = state.health;
+        function renderLiquidez() {
+            if (!liquidity) return;
 
-  el.textContent = h.market_regime || 'UNKNOWN';
-  el.style.color = h.market_regime === 'NORMAL' ? 'var(--profit)' : (h.market_regime === 'VOLATILE' ? 'var(--orange)' : 'var(--dim)');
+            const tbody = document.getElementById('liquidezBody');
+            if (!liquidity.items || liquidity.items.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--dim);">No liquidity data available</td></tr>';
+                return;
+            }
 
-  elTrades.textContent = h.open_trades || 0;
-  elTrades.style.color = (h.open_trades || 0) > 0 ? 'var(--accent)' : 'var(--dim)';
+            tbody.innerHTML = liquidity.items.slice(0, 50).map(item => `
+                <tr>
+                    <td>${item.ativo || '—'}</td>
+                    <td>${STRATEGY_MAPPING[item.estratégia]?.name || item.estratégia}</td>
+                    <td>${formatNumber(item.liquidity_score, 1)}</td>
+                    <td>${formatPercent(item.spread_medio, 2)}</td>
+                    <td>${formatNumber(item.depth, 0)}</td>
+                    <td>${formatNumber(item.volume, 0)}</td>
+                    <td>${formatNumber(item.open_interest, 0)}</td>
+                    <td>${formatPercent(item.fill_ratio, 1)}</td>
+                    <td>${item.status || '—'}</td>
+                </tr>
+            `).join('');
+        }
 
-  const killText = h.kill_switch ? '🔴 ACTIVE' : '✓ OFF';
-  const killColor = h.kill_switch ? 'var(--loss)' : 'var(--profit)';
-  elKill.textContent = killText;
-  elKill.style.color = killColor;
-}
+        function renderCalibration() {
+            if (!calibration) return;
 
-// ─── Init ──────────────────────────────────────────────────────
-fetchAll();
-autoInterval = setInterval(fetchAll, 30000);
-</script>
+            const container = document.getElementById('calibrationContainer');
+            if (!calibration.items || calibration.items.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: var(--dim); padding: 2rem;">No calibration data available</div>';
+                return;
+            }
 
+            container.innerHTML = calibration.items.map(item => {
+                const progress = item.samples_collected && item.samples_required
+                    ? (item.samples_collected / item.samples_required) * 100
+                    : 0;
+
+                return `
+                    <div class="calibration-item">
+                        <div class="calibration-header">
+                            <div class="calibration-title">${STRATEGY_MAPPING[item.strategy]?.name || item.strategy}</div>
+                            <div class="calibration-progress">${Math.floor(progress)}% Complete</div>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${progress}%"></div>
+                        </div>
+                        <div class="calibration-details">
+                            <div class="calibration-detail">
+                                <div class="detail-label">Samples Collected</div>
+                                <div class="detail-value">${item.samples_collected || 0}</div>
+                            </div>
+                            <div class="calibration-detail">
+                                <div class="detail-label">Samples Required</div>
+                                <div class="detail-value">${item.samples_required || 0}</div>
+                            </div>
+                            <div class="calibration-detail">
+                                <div class="detail-label">Mean Spreads</div>
+                                <div class="detail-value">${formatPercent(item.mean_spreads, 2)}</div>
+                            </div>
+                            <div class="calibration-detail">
+                                <div class="detail-label">Std Dev</div>
+                                <div class="detail-value">${formatPercent(item.std_dev, 2)}</div>
+                            </div>
+                            <div class="calibration-detail">
+                                <div class="detail-label">Threshold</div>
+                                <div class="detail-value">${formatPercent(item.threshold, 2)}</div>
+                            </div>
+                            <div class="calibration-detail">
+                                <div class="detail-label">Start Date</div>
+                                <div class="detail-value">${item.start_date ? new Date(item.start_date).toLocaleDateString('pt-BR') : '—'}</div>
+                            </div>
+                            <div class="calibration-detail">
+                                <div class="detail-label">Est. Paper Date</div>
+                                <div class="detail-value">${item.estimated_paper_date ? new Date(item.estimated_paper_date).toLocaleDateString('pt-BR') : '—'}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderSaude() {
+            if (!systemHealth) return;
+
+            const container = document.getElementById('healthContainer');
+
+            const threads = systemHealth.thread_heartbeats || [];
+            const aliveThreads = threads.filter(t => {
+                const lastHB = new Date(t.last_heartbeat);
+                const now = new Date();
+                return (now - lastHB) < 60000; // 60 seconds
+            });
+
+            container.innerHTML = `
+                <div class="health-section">
+                    <div class="health-title">
+                        <span>Scan Loops Status</span>
+                        <span class="health-status ${aliveThreads.length === threads.length ? 'status-ok' : aliveThreads.length > threads.length / 2 ? 'status-warning' : 'status-critical'}"></span>
+                    </div>
+                    ${threads.map(t => {
+                        const lastHB = new Date(t.last_heartbeat);
+                        const now = new Date();
+                        const diffSecs = Math.floor((now - lastHB) / 1000);
+                        const isAlive = diffSecs < 60;
+
+                        return `
+                            <div class="health-item">
+                                <span class="health-label">${t.thread_name}</span>
+                                <span class="health-value">${isAlive ? 'ALIVE' : 'DEAD'} (${formatTime(t.last_heartbeat)})</span>
+                                <span class="health-status ${isAlive ? 'status-ok' : 'status-critical'}"></span>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+
+                <div class="health-section">
+                    <div class="health-title">
+                        <span>System Resources</span>
+                    </div>
+                    <div class="health-item">
+                        <span class="health-label">Provider Latency</span>
+                        <span class="health-value">${formatNumber(systemHealth.provider_latency_ms, 0)}ms</span>
+                        <span class="health-status ${systemHealth.provider_latency_ms < 500 ? 'status-ok' : systemHealth.provider_latency_ms < 1000 ? 'status-warning' : 'status-critical'}"></span>
+                    </div>
+                    <div class="health-item">
+                        <span class="health-label">Breaker Count</span>
+                        <span class="health-value">${systemHealth.breaker_count || 0}</span>
+                        <span class="health-status ${(systemHealth.breaker_count || 0) === 0 ? 'status-ok' : 'status-warning'}"></span>
+                    </div>
+                    <div class="health-item">
+                        <span class="health-label">Queue Size (Orders)</span>
+                        <span class="health-value">${systemHealth.queue_size_orders || 0}</span>
+                        <span class="health-status status-ok"></span>
+                    </div>
+                    <div class="health-item">
+                        <span class="health-label">Queue Size (Risks)</span>
+                        <span class="health-value">${systemHealth.queue_size_risks || 0}</span>
+                        <span class="health-status status-ok"></span>
+                    </div>
+                    <div class="health-item">
+                        <span class="health-label">Prices Cached</span>
+                        <span class="health-value">${systemHealth.prices_cached_count || 0}</span>
+                        <span class="health-status status-ok"></span>
+                    </div>
+                </div>
+
+                <div class="health-section">
+                    <div class="health-title">
+                        <span>Database & Connection</span>
+                    </div>
+                    <div class="health-item">
+                        <span class="health-label">DB Connected</span>
+                        <span class="health-value">${systemHealth.db_connected ? 'YES' : 'NO'}</span>
+                        <span class="health-status ${systemHealth.db_connected ? 'status-ok' : 'status-critical'}"></span>
+                    </div>
+                    <div class="health-item">
+                        <span class="health-label">Kill Switch</span>
+                        <span class="health-value">${systemHealth.kill_switch_active ? 'ACTIVE' : 'ARMED'}</span>
+                        <span class="health-status ${systemHealth.kill_switch_active ? 'status-critical' : 'status-ok'}"></span>
+                    </div>
+                    <div class="health-item">
+                        <span class="health-label">Market Regime</span>
+                        <span class="health-value">${systemHealth.market_regime || '—'}</span>
+                        <span class="health-status status-ok"></span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function updateTimestamp(elementId) {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('pt-BR');
+            const elem = document.getElementById(elementId === 'derivativosStatus' ? 'derivativosLastUpdate' : 'lastUpdate');
+            if (elem) elem.textContent = `Last updated: ${timeStr}`;
+            const footer = document.getElementById('footerTimestamp');
+            if (footer) footer.textContent = `Last updated: ${timeStr}`;
+        }
+
+        // Navigation
+        function switchTab(tabName) {
+            currentTab = tabName;
+
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(el => {
+                el.classList.remove('active');
+            });
+
+            // Show selected tab
+            const selectedTab = document.getElementById(tabName);
+            if (selectedTab) {
+                selectedTab.classList.add('active');
+            }
+
+            // Update nav buttons
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+        }
+
+        document.querySelectorAll('.nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                switchTab(btn.dataset.tab);
+            });
+        });
+
+        // Data Refresh
+        async function refreshAllData() {
+            await Promise.all([
+                fetchHealth(),
+                fetchStrategiesHealth(),
+                fetchStrategiesStatus(),
+                fetchOpportunities(),
+                fetchCalibration(),
+                fetchLiquidity()
+            ]);
+
+            if (currentTab === 'dashboard') renderDashboard();
+            else if (currentTab === 'derivativos') renderDerivatives();
+            else if (currentTab === 'liquidez') renderLiquidez();
+            else if (currentTab === 'calibracao') renderCalibration();
+            else if (currentTab === 'saude') renderSaude();
+        }
+
+        // Initial load
+        async function init() {
+            await refreshAllData();
+            setInterval(refreshAllData, REFRESH_INTERVAL);
+        }
+
+        // Start
+        init();
+    </script>
 </body>
 </html>

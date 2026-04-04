@@ -1,5 +1,8 @@
 {
+  "framework": null,
+  "buildCommand": "",
   "outputDirectory": "static",
+  "installCommand": "",
   "rewrites": [
     { "source": "/strategies/:path*", "destination": "https://diligent-spirit-production.up.railway.app/strategies/:path*" },
     { "source": "/api/:path*", "destination": "https://diligent-spirit-production.up.railway.app/api/:path*" },

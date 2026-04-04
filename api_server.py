@@ -166,8 +166,40 @@ try:
     from modules.learning_engine import (
         calc_learning_confidence, get_risk_multiplier
     )
+    from modules.database import (
+        db_config, get_db, test_db, _get_pool
+    )
+    from modules.signal_tracking import (
+        record_signal_event, update_signal_attribution, update_signal_outcome,
+        record_shadow_decision, _db_save_signal_event, _db_update_signal_attribution,
+        _db_update_signal_outcome, _db_upsert_pattern_stats, _db_upsert_factor_stats,
+        _db_save_shadow_decision, _db_log_learning_audit
+    )
+    from modules.ledger import (
+        ledger_record, run_reconciliation, persist_calibration, load_calibration,
+        _reconcile_strategy, _reconcile_strategy_arbi, _replay_ledger_events,
+        _load_ledger_from_db, _record_baseline_if_needed, _reconcile_via_ledger
+    )
+    from modules.stock_fetcher import (
+        _ema as _mod_ema, _rsi as _mod_rsi, _calc_atr as _mod_calc_atr,
+        _get_cached_candles as _mod_get_cached_candles,
+        _set_cached_candles as _mod_set_cached_candles,
+        _fetch_polygon_stock as _mod_fetch_polygon_stock,
+        _fetch_brapi_stock as _mod_fetch_brapi_stock,
+        _fetch_brapi_batch as _mod_fetch_brapi_batch,
+        _fetch_single_stock as _mod_fetch_single_stock,
+    )
+    from modules.crypto_fetcher import (
+        _fetch_binance_ticker as _mod_fetch_binance_ticker,
+        _fetch_binance_klines as _mod_fetch_binance_klines,
+        _crypto_composite_score as _mod_crypto_composite_score,
+        _update_market_regime as _mod_update_market_regime,
+        calc_period_pnl as _mod_calc_period_pnl,
+        is_momentum_positive as _mod_is_momentum_positive,
+        fetch_fx_rates as _mod_fetch_fx_rates,
+    )
     # Note: log is not yet initialized, so use print. It will be logged after logging.basicConfig
-    print('[v10.28] Pure business logic modules loaded: trading_config, market_calendar, feature_engine, fees, learning_engine', flush=True)
+    print('[v10.28] Pure business logic modules loaded: trading_config, market_calendar, feature_engine, fees, learning_engine, database, signal_tracking, ledger, stock_fetcher, crypto_fetcher', flush=True)
     _PURE_MODULES_LOADED = True
 except Exception as _pm_err:
     import traceback as _pm_tb
@@ -4288,21 +4320,26 @@ STOCK_SYMBOLS_US = [
 ]
 ALL_STOCK_SYMBOLS = STOCK_SYMBOLS_B3 + STOCK_SYMBOLS_US
 
-def _ema(closes, period):
-    if len(closes) < period: return closes[-1] if closes else 0
-    k=2.0/(period+1); ema=closes[0]
-    for c in closes[1:]: ema=c*k+ema*(1-k)
-    return ema
+# [v10.28] Phase 3: _ema and _rsi are pure math — use module versions when available
+if _PURE_MODULES_LOADED:
+    _ema = _mod_ema
+    _rsi = _mod_rsi
+else:
+    def _ema(closes, period):
+        if len(closes) < period: return closes[-1] if closes else 0
+        k=2.0/(period+1); ema=closes[0]
+        for c in closes[1:]: ema=c*k+ema*(1-k)
+        return ema
 
-def _rsi(closes, period=14):
-    if len(closes) < period+1: return 50.0
-    gains=[]; losses=[]
-    for i in range(1,period+1):
-        d=closes[-period+i]-closes[-period+i-1]
-        gains.append(d if d>0 else 0); losses.append(abs(d) if d<0 else 0)
-    ag=sum(gains)/period; al=sum(losses)/period
-    if al==0: return 100.0
-    return round(100-100/(1+ag/al),1)
+    def _rsi(closes, period=14):
+        if len(closes) < period+1: return 50.0
+        gains=[]; losses=[]
+        for i in range(1,period+1):
+            d=closes[-period+i]-closes[-period+i-1]
+            gains.append(d if d>0 else 0); losses.append(abs(d) if d<0 else 0)
+        ag=sum(gains)/period; al=sum(losses)/period
+        if al==0: return 100.0
+        return round(100-100/(1+ag/al),1)
 
 # [v10.5-5] Cache de candles/indicadores para não refetchar histórico a cada loop.
 # Preço snapshot: sempre fresco. Candles/EMA/RSI/ATR/Volume: cache de CANDLES_CACHE_MIN minutos.

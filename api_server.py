@@ -5852,15 +5852,23 @@ def auto_trade_crypto():
                     with learning_lock: processed_signal_ids[ms_key_c] = {'sig_id': _csig_id, 'reason': 'learning_dead_zone'}
                     continue
 
-                # [v10.11] Posição crypto maior — 10 posições × $120K = $1.2M de $1.5M investido
+                # [v10.28] Crypto sizing — capital distribuído entre MAX_POSITIONS_CRYPTO slots
                 _sym_max = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)
                 # [v10.14] Posição baseada no portfolio TOTAL de crypto
                 _crypto_port_total = max(
                     crypto_capital + sum(t.get('position_value',0) for t in crypto_open),
                     INITIAL_CAPITAL_CRYPTO)
                 _regime_csize_m, _regime_csl_tmp, _regime_cinfo = get_regime_multiplier()  # [v10.17]
-                _crypto_pos_target = _crypto_port_total / MAX_POSITIONS_CRYPTO * (0.7 + score_factor * 0.3)
-                desired_pos = min(max(_crypto_pos_target * risk_mult_c * _regime_csize_m, 50_000), _sym_max)  # [v10.17] regime sizing
+                # [v10.28] Crypto regime floor: crypto é naturalmente volátil, regime
+                # HIGH_VOL não deve penalizar tanto — floor 0.75x (era 0.6x sem floor)
+                _regime_csize_m = max(_regime_csize_m, 0.75)
+                # [v10.28] Score factor mais agressivo para crypto: 0.80 base (era 0.70)
+                _crypto_pos_target = _crypto_port_total / MAX_POSITIONS_CRYPTO * (0.80 + score_factor * 0.20)
+                # [v10.28] Risk mult floor para crypto: mínimo 0.6 (era 0.3 global)
+                _risk_mult_crypto = max(risk_mult_c, 0.6)
+                # [v10.28] Mínimo por posição: 15% do slot (era 50K fixo)
+                _min_crypto_pos = max(100_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.15)
+                desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m, _min_crypto_pos), _sym_max)
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:

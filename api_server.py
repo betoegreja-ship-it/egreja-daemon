@@ -303,6 +303,18 @@ try:
     log.info('[v10.25] Derivatives strategies blueprint registered at /strategies/*')
 except Exception as e:
     log.warning(f'[v10.25] Strategies blueprint registration: {e}')
+
+# ── [v2.1] Long Horizon AI Blueprint ─────────────────────────────────
+try:
+    from modules.long_horizon.endpoints import create_long_horizon_blueprint
+    _lh_bp = create_long_horizon_blueprint(
+        db_fn=lambda: get_db() if 'get_db' in dir() else None,
+    )
+    app.register_blueprint(_lh_bp, url_prefix='/long-horizon')
+    log.info('[v2.1] Long Horizon AI blueprint registered at /long-horizon/*')
+except Exception as e:
+    log.warning(f'[v2.1] Long Horizon AI blueprint registration: {e}')
+
 CORS(app)
 
 # ═══════════════════════════════════════════════════════════════

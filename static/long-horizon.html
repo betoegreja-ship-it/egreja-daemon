@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Egreja — Long Horizon AI</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--gold:#C9A84C;--gold-dim:#7A5C1A;--profit:#22C55E;--loss:#EF4444;--accent:#60A5FA;--purple:#A78BFA;--cyan:#22D3EE;--orange:#FB923C;--pink:#EC4899;--red:#F43F5E;--s1:#060A10;--s2:#0B1018;--s3:#111820;--border:#1A2332;--muted:#374151;--text:#E2E8F0;--dim:#64748B;--mono:'JetBrains Mono',monospace;--sans:'Inter',system-ui,sans-serif}
+body{font-family:var(--sans);background:var(--s1);color:var(--text);min-height:100vh}
+a{color:var(--accent);text-decoration:none}
+
+/* Header */
+.header{position:sticky;top:0;z-index:50;background:rgba(6,10,16,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:18px;font-weight:700;letter-spacing:-.02em}
+.header p{font-size:11px;color:var(--dim);margin-top:2px}
+.header-right{display:flex;align-items:center;gap:12px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text);transition:all .15s}
+.btn:hover{background:var(--s3)}
+.btn-active{background:#2563EB;border-color:#2563EB;color:#fff}
+.btn-active:hover{background:#1D4ED8}
+.container{max-width:1600px;margin:0 auto;padding:24px}
+
+/* Grids */
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+@media(max-width:1024px){.grid-4,.grid-3{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:640px){.grid-4,.grid-3,.grid-2{grid-template-columns:1fr}}
+
+/* Cards */
+.card{background:var(--s2);border:1px solid var(--border);border-radius:8px;overflow:hidden;position:relative}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(96,165,250,.2),transparent)}
+.card-header{padding:16px 16px 0;display:flex;align-items:center;justify-content:space-between}
+.card-title{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.card-body{padding:16px}
+.stat-card{padding:16px;display:flex;flex-direction:column;gap:8px}
+.stat-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.stat-value{font-size:24px;font-weight:700;font-family:var(--mono)}
+.stat-sub{font-size:11px;color:var(--dim)}
+
+/* Tabs */
+.tabs{display:flex;gap:2px;background:var(--s3);border-radius:8px;padding:4px;overflow-x:auto;margin-bottom:24px;border:1px solid var(--border)}
+.tab{padding:8px 14px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;border:none;background:transparent;color:var(--dim);transition:all .15s}
+.tab:hover{color:var(--text)}
+.tab.active{background:var(--s2);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+
+/* Badges */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:99px;font-size:10px;font-weight:700}
+.badge-healthy{background:rgba(34,197,94,.1);color:var(--profit);border:1px solid rgba(34,197,94,.2)}
+.badge-degraded{background:rgba(239,68,68,.1);color:var(--loss);border:1px solid rgba(239,68,68,.2)}
+.badge-warning{background:rgba(251,146,60,.1);color:var(--orange);border:1px solid rgba(251,146,60,.2)}
+.badge-info{background:rgba(96,165,250,.1);color:var(--accent);border:1px solid rgba(96,165,250,.2)}
+.badge-neutral{background:rgba(100,116,139,.1);color:var(--dim);border:1px solid rgba(100,116,139,.2)}
+.badge-conviction-buy{background:rgba(201,168,76,.15);color:var(--gold);border:1px solid rgba(201,168,76,.3)}
+.badge-buy{background:rgba(34,197,94,.15);color:var(--profit);border:1px solid rgba(34,197,94,.3)}
+.badge-neutral-conv{background:rgba(96,165,250,.15);color:var(--accent);border:1px solid rgba(96,165,250,.3)}
+.badge-caution{background:rgba(251,146,60,.15);color:var(--orange);border:1px solid rgba(251,146,60,.3)}
+.badge-avoid{background:rgba(239,68,68,.15);color:var(--loss);border:1px solid rgba(239,68,68,.3)}
+
+/* Table */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 12px;color:var(--dim);font-weight:600;font-size:11px;border-bottom:1px solid var(--border)}
+td{padding:8px 12px;border-bottom:1px solid rgba(26,35,50,.4)}
+tr:hover{background:rgba(17,24,32,.5)}
+.text-right{text-align:right}
+.text-mono{font-family:var(--mono)}
+.text-profit{color:var(--profit)}
+.text-loss{color:var(--loss)}
+.text-dim{color:var(--dim)}
+.text-accent{color:var(--accent)}
+
+/* Health banner */
+.health-banner{padding:12px 16px;border-radius:8px;display:flex;align-items:center;gap:12px;margin-bottom:24px;font-size:13px;font-weight:600;border:1px solid}
+.banner-healthy{background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.2);color:var(--profit)}
+.banner-degraded{background:rgba(239,68,68,.06);border-color:rgba(239,68,68,.2);color:var(--loss)}
+.banner-warning{background:rgba(251,146,60,.06);border-color:rgba(251,146,60,.2);color:var(--orange)}
+
+/* Empty state */
+.empty-state{text-align:center;padding:48px 24px;color:var(--dim)}
+
+/* Score bar */
+.score-bar{display:flex;align-items:center;gap:8px;flex:1}
+.score-bar-container{flex:1;height:6px;background:var(--s3);border-radius:3px;overflow:hidden}
+.score-bar-fill{height:100%;border-radius:3px;transition:width .3s}
+.score-bar-value{font-family:var(--mono);font-size:11px;font-weight:600;min-width:32px;text-align:right}
+
+/* Section */
+.section{margin-bottom:24px}
+
+/* Progress bar */
+.progress-bar{height:4px;background:var(--s3);border-radius:2px;overflow:hidden}
+.progress-fill{height:100%;border-radius:2px}
+
+/* Mini cards */
+.mini-card{background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px;cursor:pointer;transition:all .2s}
+.mini-card:hover{border-color:var(--accent);background:var(--s3)}
+
+/* Thesis card */
+.thesis-card{background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px;margin-bottom:16px}
+
+/* Loading */
+.spin{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.info-row{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;border-bottom:1px solid rgba(26,35,50,.4)}
+.info-label{color:var(--dim);min-width:140px;font-weight:600}
+.info-value{color:var(--text);font-family:var(--mono)}
+
+.flex-between{display:flex;align-items:center;justify-content:space-between}
+.flex-col{display:flex;flex-direction:column;gap:8px}
+.gap-sm{gap:4px}
+.gap-md{gap:8px}
+.gap-lg{gap:16px}
+
+/* Fonts link */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+</style>
+</head>
+<body>
+
+<div class="header" style="flex-wrap:wrap;gap:12px">
+  <div style="display:flex;align-items:center;gap:16px">
+    <a href="/" style="display:inline-flex;align-items:center;gap:8px;padding:8px 18px;background:linear-gradient(135deg,#C9A84C,#7A5C1A);color:#fff;border-radius:8px;font-size:13px;font-weight:700;text-decoration:none;letter-spacing:.02em;box-shadow:0 2px 8px rgba(201,168,76,.3);transition:all .2s" title="Voltar ao Dashboard Principal">
+      <span style="font-size:18px">←</span> Dashboard Principal
+    </a>
+    <img src="/logo.png" alt="Egreja IA" style="height:34px;width:auto">
+    <div>
+      <h1>Long Horizon AI</h1>
+      <p id="header-subtitle">Motor de Investimento de Longo Prazo · 8 Ativos · R$ 7M</p>
+    </div>
+  </div>
+  <div class="header-right">
+    <span id="market-clock" class="text-mono" style="font-size:11px;color:var(--dim)"></span>
+    <span class="text-mono" style="font-size:11px;color:var(--dim)" id="last-refresh">—</span>
+    <button class="btn" onclick="refresh()" id="refresh-btn">🔄 Atualizar</button>
+    <button class="btn btn-active" onclick="toggleAuto()" id="auto-btn">⚡ Auto ON</button>
+  </div>
+</div>
+
+<div class="container">
+  <!-- Health Banner -->
+  <div id="health-banner"></div>
+
+  <!-- KPI Grid -->
+  <div class="grid-4 section" id="kpi-grid"></div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="tabs-bar"></div>
+
+  <!-- Tab Content -->
+  <div id="tab-content"></div>
+</div>
+
+<script>
+const RW = 'https://diligent-spirit-production.up.railway.app';
+const API = RW + '/long-horizon';
+
+let state = {
+  systemState: null,
+  ranking: [],
+  portfolios: [],
+  capital: null,
+  pnl: null,
+  winRate: null,
+  backtest: null,
+  alerts: [],
+  health: null,
+  theses: {},
+  activeTab: 'overview',
+  autoRefresh: true,
+  loading: false
+};
+
+let autoInterval = null;
+let thesesLoaded = false;
+
+// ─── Data Fetching ──────────────────────────────────────────────
+async function fetchAll() {
+  state.loading = true;
+  renderRefreshBtn();
+  try {
+    const results = await Promise.allSettled([
+      fetch(`${API}/system-state`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/ranking`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/portfolios`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/capital`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/pnl`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/win-rate`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/backtest`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/alerts`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/health`).then(r => r.json()).catch(() => null),
+    ]);
+
+    state.systemState = results[0].status === 'fulfilled' ? results[0].value : null;
+    state.ranking = results[1].status === 'fulfilled' ? (results[1].value?.ranking || []) : [];
+    state.portfolios = results[2].status === 'fulfilled' ? (results[2].value?.portfolios || []) : [];
+    state.capital = results[3].status === 'fulfilled' ? results[3].value : null;
+    state.pnl = results[4].status === 'fulfilled' ? results[4].value : null;
+    state.winRate = results[5].status === 'fulfilled' ? results[5].value : null;
+    state.backtest = results[6].status === 'fulfilled' ? results[6].value : null;
+    state.alerts = results[7].status === 'fulfilled' ? (results[7].value?.alerts || []) : [];
+    state.health = results[8].status === 'fulfilled' ? results[8].value : null;
+
+    state.loading = false;
+    updateClock();
+    render();
+  } catch (e) {
+    console.error('Fetch error:', e);
+    state.loading = false;
+    render();
+  }
+}
+
+async function fetchTheses() {
+  if (thesesLoaded) return;
+  try {
+    const tickers = state.ranking.map(r => r.ticker).slice(0, 8);
+    for (const ticker of tickers) {
+      const result = await fetch(`${API}/thesis/${ticker}`).then(r => r.json()).catch(() => null);
+      if (result) {
+        state.theses[ticker] = result;
+      }
+    }
+    thesesLoaded = true;
+    if (state.activeTab === 'teses') render();
+  } catch (e) {
+    console.error('Thesis fetch error:', e);
+  }
+}
+
+// ─── Formatting ────────────────────────────────────────────────
+function formatBRL(n) {
+  if (!n && n !== 0) return '—';
+  const s = Math.abs(n).toFixed(2).replace('.', ',');
+  const parts = s.split(',');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return (n < 0 ? '-' : '') + 'R$ ' + parts.join(',');
+}
+
+function formatPct(n) {
+  if (!n && n !== 0) return '—';
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+function formatNum(n) {
+  if (!n && n !== 0) return '—';
+  return Math.abs(n).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+function scoreColor(score) {
+  if (score >= 85) return 'var(--gold)';
+  if (score >= 70) return 'var(--profit)';
+  if (score >= 55) return 'var(--accent)';
+  if (score >= 40) return 'var(--orange)';
+  return 'var(--loss)';
+}
+
+function convictionBadge(conviction) {
+  const map = {
+    'Conviction Buy': { cls: 'badge-conviction-buy', label: '⭐ Conviction Buy' },
+    'Buy': { cls: 'badge-buy', label: '🟢 Buy' },
+    'Neutral': { cls: 'badge-neutral-conv', label: '🔵 Neutral' },
+    'Caution': { cls: 'badge-caution', label: '🟠 Caution' },
+    'Avoid': { cls: 'badge-avoid', label: '🔴 Avoid' }
+  };
+  const m = map[conviction] || map['Neutral'];
+  return `<span class="badge ${m.cls}">${m.label}</span>`;
+}
+
+function updateClock() {
+  const now = new Date();
+  const brt = new Date(now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+  const h = String(brt.getHours()).padStart(2, '0');
+  const m = String(brt.getMinutes()).padStart(2, '0');
+  const s = String(brt.getSeconds()).padStart(2, '0');
+  document.getElementById('market-clock').textContent = `${h}:${m}:${s}`;
+}
+
+function renderRefreshBtn() {
+  const btn = document.getElementById('refresh-btn');
+  if (state.loading) {
+    btn.style.opacity = '0.5';
+    btn.style.pointerEvents = 'none';
+  } else {
+    btn.style.opacity = '1';
+    btn.style.pointerEvents = 'auto';
+  }
+}
+
+// ─── Health Banner ────────────────────────────────────────────────
+function renderHealthBanner() {
+  if (!state.health) {
+    return `<div class="health-banner banner-warning">
+      ⏳ Aguardando dados de saúde...
+    </div>`;
+  }
+
+  const h = state.health;
+  const status = h.status || 'degraded';
+  const bannerClass = status === 'healthy' ? 'banner-healthy' : 'banner-warning';
+  const statusEmoji = status === 'healthy' ? '✅' : '⚠️';
+
+  return `<div class="health-banner ${bannerClass}">
+    ${statusEmoji} ${h.message || 'Sistema operacional'}
+  </div>`;
+}
+
+// ─── Tabs ────────────────────────────────────────────────────────
+function renderTabs() {
+  const tabs = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'ranking', label: 'Ranking' },
+    { id: 'teses', label: 'Teses' },
+    { id: 'carteiras', label: 'Carteiras' },
+    { id: 'pnl', label: 'P&L' },
+    { id: 'backtests', label: 'Backtests' },
+    { id: 'capital', label: 'Capital' },
+    { id: 'alertas', label: 'Alertas' },
+    { id: 'saude', label: 'Saúde' }
+  ];
+
+  let html = '';
+  for (const tab of tabs) {
+    const active = state.activeTab === tab.id ? 'active' : '';
+    html += `<button class="tab ${active}" onclick="switchTab('${tab.id}')">${tab.label}</button>`;
+  }
+  return html;
+}
+
+function switchTab(tabId) {
+  state.activeTab = tabId;
+  if (tabId === 'teses') {
+    fetchTheses().then(() => render());
+  } else {
+    render();
+  }
+}
+
+// ─── KPI Cards ────────────────────────────────────────────────────
+function renderKPIGrid() {
+  const capital = state.capital?.capital_inicial || 7000000;
+  const current = state.capital?.valor_atual || 7000000;
+  const pnlTotal = state.pnl?.total_pnl || 0;
+  const pnlPct = ((pnlTotal / capital) * 100) || 0;
+  const winRate = state.winRate?.win_rate || 0;
+  const bestScore = state.ranking?.[0]?.score || 0;
+  const assetCount = state.ranking?.length || 8;
+
+  const kpis = [
+    { label: 'Capital Inicial', value: formatBRL(capital) },
+    { label: 'Valor Atual', value: formatBRL(current) },
+    { label: 'P&L Total', value: formatPct(pnlPct), color: pnlPct >= 0 ? 'var(--profit)' : 'var(--loss)' },
+    { label: 'Win Rate', value: formatPct(winRate) },
+    { label: 'Melhor Score', value: bestScore.toFixed(0) },
+    { label: 'Ativos Monitorados', value: assetCount }
+  ];
+
+  let html = '';
+  for (const kpi of kpis) {
+    const color = kpi.color || 'var(--text)';
+    html += `<div class="card stat-card">
+      <div class="stat-label">${kpi.label}</div>
+      <div class="stat-value" style="color:${color}">${kpi.value}</div>
+    </div>`;
+  }
+  return html;
+}
+
+// ─── Overview Tab ────────────────────────────────────────────────
+function renderOverview() {
+  const top3 = state.ranking?.slice(0, 3) || [];
+
+  let top3Html = '';
+  for (const asset of top3) {
+    const barColor = scoreColor(asset.score);
+    const pct = (asset.score / 100) * 100;
+    top3Html += `<div class="mini-card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:600;font-size:13px">${asset.ticker}</div>
+          <div style="color:var(--dim);font-size:11px">${asset.name}</div>
+        </div>
+        <div style="font-size:20px;font-weight:700;color:${barColor};font-family:var(--mono)">${asset.score.toFixed(0)}</div>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" style="width:${pct}%;background:${barColor}"></div>
+      </div>
+    </div>`;
+  }
+
+  const portfolios = state.portfolios?.slice(0, 3) || [];
+  let portHtml = '';
+  for (const port of portfolios) {
+    const ret = port.return_pct || 0;
+    const bench = port.benchmark_pct || 0;
+    const diff = ret - bench;
+    portHtml += `<div class="mini-card">
+      <div style="font-weight:600;font-size:13px">${port.name}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px">
+        <div>
+          <div style="color:var(--dim)">Retorno</div>
+          <div style="color:${ret >= 0 ? 'var(--profit)' : 'var(--loss)'},font-family:var(--mono);font-weight:600">${formatPct(ret)}</div>
+        </div>
+        <div>
+          <div style="color:var(--dim)">vs Bench</div>
+          <div style="color:${diff >= 0 ? 'var(--profit)' : 'var(--loss)'},font-family:var(--mono);font-weight:600">${formatPct(diff)}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  return `
+    <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h2 style="font-size:14px;font-weight:600">Top 3 Ativos</h2>
+      </div>
+      <div class="grid-3">${top3Html}</div>
+    </div>
+
+    <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h2 style="font-size:14px;font-weight:600">Carteiras Modelo</h2>
+      </div>
+      <div class="grid-3">${portHtml}</div>
+    </div>
+
+    <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h2 style="font-size:14px;font-weight:600">Links Rápidos</h2>
+      </div>
+      <div class="grid-4">
+        <div class="mini-card" onclick="switchTab('ranking')" style="background:rgba(96,165,250,.05);border-color:rgba(96,165,250,.2)">
+          <div style="font-size:20px">📊</div>
+          <div style="font-weight:600">Ranking</div>
+          <div style="color:var(--dim);font-size:11px">Scores dos ativos</div>
+        </div>
+        <div class="mini-card" onclick="switchTab('teses')" style="background:rgba(201,168,76,.05);border-color:rgba(201,168,76,.2)">
+          <div style="font-size:20px">📝</div>
+          <div style="font-weight:600">Teses</div>
+          <div style="color:var(--dim);font-size:11px">Análise detalhada</div>
+        </div>
+        <div class="mini-card" onclick="switchTab('carteiras')" style="background:rgba(34,197,94,.05);border-color:rgba(34,197,94,.2)">
+          <div style="font-size:20px">💼</div>
+          <div style="font-weight:600">Carteiras</div>
+          <div style="color:var(--dim);font-size:11px">Alocação</div>
+        </div>
+        <div class="mini-card" onclick="switchTab('pnl')" style="background:rgba(239,68,68,.05);border-color:rgba(239,68,68,.2)">
+          <div style="font-size:20px">📈</div>
+          <div style="font-weight:600">P&L</div>
+          <div style="color:var(--dim);font-size:11px">Resultado</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ─── Ranking Tab ────────────────────────────────────────────────
+function renderRanking() {
+  if (!state.ranking || state.ranking.length === 0) {
+    return `<div class="section"><div class="card"><div class="card-body"><div class="empty-state">
+      <div style="font-size:32px;opacity:.3;margin-bottom:8px">📊</div>
+      <p>Aguardando dados...</p>
+    </div></div></div></div>`;
+  }
+
+  let rows = '';
+  for (let i = 0; i < state.ranking.length; i++) {
+    const r = state.ranking[i];
+    const barColor = scoreColor(r.score);
+    const barPct = (r.score / 100) * 100;
+    const convBadge = convictionBadge(r.conviction || 'Neutral');
+
+    rows += `<tr style="cursor:pointer" onclick="showAssetDetail('${r.ticker}')">
+      <td>${i + 1}</td>
+      <td style="font-family:var(--mono);font-weight:600">${r.ticker}</td>
+      <td>${r.name}</td>
+      <td>
+        <div class="score-bar">
+          <div class="score-bar-container">
+            <div class="score-bar-fill" style="width:${barPct}%;background:${barColor}"></div>
+          </div>
+          <div class="score-bar-value">${r.score.toFixed(0)}</div>
+        </div>
+      </td>
+      <td>${convBadge}</td>
+      <td class="text-right">${formatPct(r.quality_score || 0)}</td>
+      <td class="text-right">${formatPct(r.valuation_score || 0)}</td>
+      <td class="text-right">${formatPct(r.market_score || 0)}</td>
+      <td class="text-right">${formatPct(r.hedge_score || 0)}</td>
+      <td style="color:var(--dim);text-align:center">${r.action || '—'}</td>
+    </tr>`;
+  }
+
+  return `<div class="section card">
+    <div class="card-header">
+      <div class="card-title">📊 Ranking de Ativos</div>
+    </div>
+    <div class="card-body" style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Pos</th><th>Ticker</th><th>Nome</th><th>Score</th><th>Convicção</th>
+            <th class="text-right">Qualidade</th><th class="text-right">Valuation</th><th class="text-right">Mercado</th><th class="text-right">Hedge</th><th style="text-align:center">Ação</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+// ─── Teses Tab ────────────────────────────────────────────────
+function renderTeses() {
+  if (!thesesLoaded) {
+    return `<div class="section"><div class="card"><div class="card-body"><div class="empty-state">
+      <div style="font-size:32px;opacity:.3;margin-bottom:8px">⏳</div>
+      <p>Carregando teses...</p>
+    </div></div></div></div>`;
+  }
+
+  let html = '<div class="section">';
+  for (const r of state.ranking) {
+    const thesis = state.theses[r.ticker];
+    const barColor = scoreColor(r.score);
+    const barPct = (r.score / 100) * 100;
+
+    html += `<div class="thesis-card">
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:16px">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <div>
+              <div style="font-weight:700;font-size:14px;font-family:var(--mono)">${r.ticker}</div>
+              <div style="color:var(--dim);font-size:11px">${r.name}</div>
+            </div>
+          </div>
+          <div style="margin:8px 0">${convictionBadge(r.conviction || 'Neutral')}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:28px;font-weight:700;color:${barColor};font-family:var(--mono)">${r.score.toFixed(0)}</div>
+          <div class="progress-bar" style="width:120px">
+            <div class="progress-fill" style="width:${barPct}%;background:${barColor}"></div>
+          </div>
+        </div>
+      </div>
+
+      ${thesis ? `
+        <div style="border-top:1px solid var(--border);padding-top:12px;font-size:12px;line-height:1.6;color:var(--text)">
+          ${thesis.thesis || 'Thesis não disponível'}
+        </div>
+
+        ${thesis.key_risks ? `
+          <div style="border-top:1px solid var(--border);padding-top:12px">
+            <div style="color:var(--dim);font-size:11px;font-weight:600;margin-bottom:6px">⚠️ Principais Riscos</div>
+            <div style="font-size:12px;line-height:1.6;color:var(--text)">${thesis.key_risks}</div>
+          </div>
+        ` : ''}
+
+        ${thesis.recommended_horizon ? `
+          <div style="display:flex;gap:16px;border-top:1px solid var(--border);padding-top:12px;font-size:11px">
+            <div>
+              <div style="color:var(--dim)">Horizonte Recomendado</div>
+              <div style="color:var(--accent);font-weight:600">${thesis.recommended_horizon}</div>
+            </div>
+            ${thesis.hedge_suggestion ? `
+              <div>
+                <div style="color:var(--dim)">Proteção Sugerida</div>
+                <div style="color:var(--accent);font-weight:600">${thesis.hedge_suggestion}</div>
+              </div>
+            ` : ''}
+          </div>
+        ` : ''}
+      ` : `
+        <div style="color:var(--dim);font-size:12px">Thesis não disponível no momento</div>
+      `}
+    </div>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+// ─── Carteiras Tab ────────────────────────────────────────────────
+function renderCarteiras() {
+  if (!state.portfolios || state.portfolios.length === 0) {
+    return `<div class="section"><div class="card"><div class="card-body"><div class="empty-state">
+      <div style="font-size:32px;opacity:.3;margin-bottom:8px">💼</div>
+      <p>Aguardando dados de carteiras...</p>
+    </div></div></div></div>`;
+  }
+
+  let html = '';
+  for (const port of state.portfolios) {
+    const ret = port.return_pct || 0;
+    const bench = port.benchmark_pct || 0;
+    const diff = ret - bench;
+    const totalValue = port.total_value || 0;
+    const allocations = port.allocations || [];
+
+    let allocRows = '';
+    for (const alloc of allocations) {
+      const pnlPct = alloc.pnl_pct || 0;
+      const pnlColor = pnlPct >= 0 ? 'var(--profit)' : 'var(--loss)';
+      allocRows += `<tr>
+        <td style="font-family:var(--mono);font-weight:600">${alloc.ticker}</td>
+        <td class="text-right">${formatPct(alloc.weight || 0)}</td>
+        <td class="text-right">${formatBRL(alloc.entry_price || 0)}</td>
+        <td class="text-right">${formatBRL(alloc.current_price || 0)}</td>
+        <td class="text-right" style="color:${pnlColor}">${formatBRL(alloc.pnl || 0)}</td>
+        <td class="text-right" style="color:${pnlColor}">${formatPct(pnlPct)}</td>
+      </tr>`;
+    }
+
+    html += `<div class="section">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">${port.name}</div>
+          <div style="display:flex;gap:16px;font-size:12px">
+            <div>
+              <div style="color:var(--dim);font-size:10px">Retorno</div>
+              <div style="color:${ret >= 0 ? 'var(--profit)' : 'var(--loss)'},font-family:var(--mono);font-weight:600">${formatPct(ret)}</div>
+            </div>
+            <div>
+              <div style="color:var(--dim);font-size:10px">vs Benchmark</div>
+              <div style="color:${diff >= 0 ? 'var(--profit)' : 'var(--loss)'},font-family:var(--mono);font-weight:600">${formatPct(diff)}</div>
+            </div>
+            <div>
+              <div style="color:var(--dim);font-size:10px">Valor</div>
+              <div style="color:var(--text),font-family:var(--mono);font-weight:600">${formatBRL(totalValue)}</div>
+            </div>
+          </div>
+        </div>
+        <div class="card-body" style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Ativo</th><th class="text-right">Peso %</th><th class="text-right">Preço Entrada</th><th class="text-right">Preço Atual</th><th class="text-right">P&L R$</th><th class="text-right">P&L %</th>
+              </tr>
+            </thead>
+            <tbody>${allocRows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+  }
+  return html;
+}
+
+// ─── P&L Tab ────────────────────────────────────────────────
+function renderPnLTab() {
+  if (!state.pnl) {
+    return `<div class="section"><div class="card"><div class="card-body"><div class="empty-state">
+      <div style="font-size:32px;opacity:.3;margin-bottom:8px">📈</div>
+      <p>Aguardando dados de P&L...</p>
+    </div></div></div></div>`;
+  }
+
+  const pnlHoje = state.pnl.pnl_hoje || 0;
+  const pnlMes = state.pnl.pnl_mes || 0;
+  const pnlAno = state.pnl.pnl_ano || 0;
+  const pnlTotal = state.pnl.total_pnl || 0;
+
+  let summaryCards = `
+    <div class="grid-4 section">
+      <div class="card stat-card">
+        <div class="stat-label">P&L Hoje</div>
+        <div class="stat-value" style="color:${pnlHoje >= 0 ? 'var(--profit)' : 'var(--loss)'}">${formatBRL(pnlHoje)}</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">P&L Mês</div>
+        <div class="stat-value" style="color:${pnlMes >= 0 ? 'var(--profit)' : 'var(--loss)'}">${formatBRL(pnlMes)}</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">P&L Ano</div>
+        <div class="stat-value" style="color:${pnlAno >= 0 ? 'var(--profit)' : 'var(--loss)'}">${formatBRL(pnlAno)}</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">P&L Total</div>
+        <div class="stat-value" style="color:${pnlTotal >= 0 ? 'var(--profit)' : 'var(--loss)'}">${formatBRL(pnlTotal)}</div>
+      </div>
+    </div>
+  `;
+
+  let portPnL = '';
+  if (state.pnl.por_carteira) {
+    let rows = '';
+    for (const [name, pnl] of Object.entries(state.pnl.por_carteira)) {
+      const pnlColor = pnl >= 0 ? 'var(--profit)' : 'var(--loss)';
+      rows += `<tr>
+        <td style="font-weight:600">${name}</td>
+        <td class="text-right" style="color:${pnlColor}">${formatBRL(pnl)}</td>
+      </tr>`;
+    }
+    portPnL = `<div class="section card">
+      <div class="card-header">
+        <div class="card-title">P&L por Carteira</div>
+      </div>
+      <div class="card-body" style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Carteira</th><th class="text-right">P&L</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  return summaryCards + portPnL;
+}
+
+// ─── Backtests Tab ────────────────────────────────────────────────
+function renderBacktests() {
+  if (!state.backtest) {
+    return `<div class="section"><div class="card"><div class="card-body"><div class="empty-state">
+      <div style="font-size:32px;opacity:.3;margin-bottom:8px">📊</div>
+      <p>Aguardando dados de backtest...</p>
+    </div></div></div></div>`;
+  }
+
+  let html = '';
+  const bt = state.backtest;
+
+  for (const port of (bt.por_carteira || [])) {
+    let monthRows = '';
+    if (port.monthly_returns) {
+      for (const [month, ret] of Object.entries(port.monthly_returns)) {
+        const color = ret >= 0 ? 'var(--profit)' : 'var(--loss)';
+        monthRows += `<tr>
+          <td style="font-family:var(--mono);font-size:11px">${month}</td>
+          <td class="text-right" style="color:${color};font-family:var(--mono)">${formatPct(ret)}</td>
+        </tr>`;
+      }
+    }
+
+    html += `<div class="section card">
+      <div class="card-header">
+        <div class="card-title">${port.carteira}</div>
+      </div>
+      <div class="card-body">
+        <div class="info-row">
+          <div class="info-label">Retorno Total</div>
+          <div class="info-value" style="color:${port.total_return >= 0 ? 'var(--profit)' : 'var(--loss)'}">${formatPct(port.total_return || 0)}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">vs Ibovespa</div>
+          <div class="info-value" style="color:${(port.total_return || 0) - (port.ibovespa || 0) >= 0 ? 'var(--profit)' : 'var(--loss)'}">${formatPct((port.total_return || 0) - (port.ibovespa || 0))}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">vs CDI</div>
+          <div class="info-value" style="color:${(port.total_return || 0) - (port.cdi || 0) >= 0 ? 'var(--profit)' : 'var(--loss)'}">${formatPct((port.total_return || 0) - (port.cdi || 0))}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">Sharpe Ratio</div>
+          <div class="info-value">${(port.sharpe_ratio || 0).toFixed(2)}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">Max Drawdown</div>
+          <div class="info-value" style="color:var(--loss)">${formatPct(port.max_drawdown || 0)}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">Win Rate</div>
+          <div class="info-value">${formatPct(port.win_rate || 0)}</div>
+        </div>
+        ${monthRows ? `
+          <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+            <div style="font-size:11px;color:var(--dim);font-weight:600;margin-bottom:8px">Retornos Mensais</div>
+            <table style="font-size:11px">
+              <thead><tr><th>Mês</th><th class="text-right">Retorno</th></tr></thead>
+              <tbody>${monthRows}</tbody>
+            </table>
+          </div>
+        ` : ''}
+      </div>
+    </div>`;
+  }
+  return html;
+}
+
+// ─── Capital Tab ────────────────────────────────────────────────
+function renderCapital() {
+  if (!state.capital) {
+    return `<div class="section"><div class="card"><div class="card-body"><div class="empty-state">
+      <div style="font-size:32px;opacity:.3;margin-bottom:8px">💰</div>
+      <p>Aguardando dados de capital...</p>
+    </div></div></div></div>`;
+  }
+
+  const cap = state.capital;
+  const inicial = cap.capital_inicial || 0;
+  const atual = cap.valor_atual || 0;
+  const alocado = cap.capital_alocado || 0;
+  const reserva = cap.reserva || 0;
+  const maxDailyLoss = cap.max_daily_loss || 0;
+  const utilizacao = inicial > 0 ? (alocado / inicial) * 100 : 0;
+
+  let portAllocRows = '';
+  if (cap.por_carteira) {
+    for (const [name, amount] of Object.entries(cap.por_carteira)) {
+      const pct = inicial > 0 ? (amount / inicial) * 100 : 0;
+      portAllocRows += `<tr>
+        <td style="font-weight:600">${name}</td>
+        <td class="text-right">${formatBRL(amount)}</td>
+        <td class="text-right">${pct.toFixed(2)}%</td>
+      </tr>`;
+    }
+  }
+
+  return `
+    <div class="grid-4 section">
+      <div class="card stat-card">
+        <div class="stat-label">Capital Inicial</div>
+        <div class="stat-value">${formatBRL(inicial)}</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">Valor Atual</div>
+        <div class="stat-value">${formatBRL(atual)}</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">Alocado</div>
+        <div class="stat-value">${formatBRL(alocado)}</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">Reserva</div>
+        <div class="stat-value">${formatBRL(reserva)}</div>
+      </div>
+    </div>
+
+    <div class="section card">
+      <div class="card-header">
+        <div class="card-title">Utilização de Capital</div>
+      </div>
+      <div class="card-body">
+        <div style="font-size:32px;font-weight:700;font-family:var(--mono);margin-bottom:12px">${utilizacao.toFixed(1)}%</div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width:${Math.min(utilizacao, 100)}%;background:${utilizacao > 90 ? 'var(--loss)' : 'var(--accent)'}"></div>
+        </div>
+        <div style="margin-top:12px;font-size:11px;color:var(--dim)">
+          ${utilizacao > 90 ? '⚠️ Utilização elevada' : '✅ Utilização saudável'}
+        </div>
+      </div>
+    </div>
+
+    ${portAllocRows ? `
+      <div class="section card">
+        <div class="card-header">
+          <div class="card-title">Capital por Carteira</div>
+        </div>
+        <div class="card-body" style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Carteira</th><th class="text-right">Valor</th><th class="text-right">% do Total</th></tr></thead>
+            <tbody>${portAllocRows}</tbody>
+          </table>
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="section card">
+      <div class="card-header">
+        <div class="card-title">⚠️ Controle de Risco</div>
+      </div>
+      <div class="card-body">
+        <div class="info-row">
+          <div class="info-label">Max Perda Diária</div>
+          <div class="info-value" style="color:var(--loss)">${formatBRL(maxDailyLoss)}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ─── Alertas Tab ────────────────────────────────────────────────
+function renderAlertas() {
+  if (!state.alerts || state.alerts.length === 0) {
+    return `<div class="section"><div class="card"><div class="card-body"><div class="empty-state">
+      <div style="font-size:32px;opacity:.3;margin-bottom:8px">🔔</div>
+      <p>Nenhum alerta ativo</p>
+    </div></div></div></div>`;
+  }
+
+  let rows = '';
+  for (const alert of state.alerts) {
+    const severity = alert.severity || 'info';
+    let badgeClass = 'badge-info';
+    let icon = '🔵';
+    if (severity === 'critical') { badgeClass = 'badge-degraded'; icon = '🔴'; }
+    if (severity === 'warning') { badgeClass = 'badge-warning'; icon = '🟠'; }
+
+    rows += `<tr>
+      <td>
+        <span class="badge ${badgeClass}" style="text-transform:capitalize">${icon} ${severity}</span>
+      </td>
+      <td style="font-family:var(--mono);font-weight:600">${alert.asset || '—'}</td>
+      <td style="font-size:11px">${alert.type || '—'}</td>
+      <td>${alert.message || '—'}</td>
+      <td style="color:var(--dim);font-size:11px;white-space:nowrap">${alert.timestamp || '—'}</td>
+    </tr>`;
+  }
+
+  return `<div class="section card">
+    <div class="card-header">
+      <div class="card-title">🔔 Alertas Ativos</div>
+    </div>
+    <div class="card-body" style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Severidade</th><th>Ativo</th><th>Tipo</th><th>Mensagem</th><th>Data/Hora</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+// ─── Saúde Tab ────────────────────────────────────────────────
+function renderSaude() {
+  if (!state.health) {
+    return `<div class="section"><div class="card"><div class="card-body"><div class="empty-state">
+      <div style="font-size:32px;opacity:.3;margin-bottom:8px">⚙️</div>
+      <p>Aguardando dados de saúde...</p>
+    </div></div></div></div>`;
+  }
+
+  const h = state.health;
+  const statusEmoji = h.status === 'healthy' ? '✅' : '⚠️';
+
+  let providerRows = '';
+  if (h.providers) {
+    for (const [name, status] of Object.entries(h.providers)) {
+      const emoji = status === 'healthy' ? '✅' : '⚠️';
+      providerRows += `<tr>
+        <td>${name}</td>
+        <td>${emoji} ${status}</td>
+      </tr>`;
+    }
+  }
+
+  let metricsRows = '';
+  if (h.data_quality) {
+    for (const [metric, value] of Object.entries(h.data_quality)) {
+      metricsRows += `<tr>
+        <td>${metric}</td>
+        <td class="text-right">${typeof value === 'number' ? value.toFixed(2) : value}</td>
+      </tr>`;
+    }
+  }
+
+  return `
+    <div class="grid-2 section">
+      <div class="card stat-card">
+        <div class="stat-label">Status do Módulo</div>
+        <div style="font-size:16px;font-weight:600">${statusEmoji} ${h.status || 'unknown'}</div>
+        <div style="font-size:11px;color:var(--dim);margin-top:4px">${h.message || ''}</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">Última Atualização</div>
+        <div style="font-size:14px;font-family:var(--mono);font-weight:600">${h.last_update || '—'}</div>
+      </div>
+    </div>
+
+    ${providerRows ? `
+      <div class="section card">
+        <div class="card-header">
+          <div class="card-title">🔌 Saúde dos Provedores</div>
+        </div>
+        <div class="card-body" style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Provedor</th><th>Status</th></tr></thead>
+            <tbody>${providerRows}</tbody>
+          </table>
+        </div>
+      </div>
+    ` : ''}
+
+    ${metricsRows ? `
+      <div class="section card">
+        <div class="card-header">
+          <div class="card-title">📊 Qualidade de Dados</div>
+        </div>
+        <div class="card-body" style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Métrica</th><th class="text-right">Valor</th></tr></thead>
+            <tbody>${metricsRows}</tbody>
+          </table>
+        </div>
+      </div>
+    ` : ''}
+  `;
+}
+
+// ─── Rendering ────────────────────────────────────────────────
+function render() {
+  // Render health banner
+  document.getElementById('health-banner').innerHTML = renderHealthBanner();
+
+  // Render KPI grid
+  document.getElementById('kpi-grid').innerHTML = renderKPIGrid();
+
+  // Render tabs
+  document.getElementById('tabs-bar').innerHTML = renderTabs();
+
+  // Render tab content
+  let content = '';
+  switch (state.activeTab) {
+    case 'overview':
+      content = renderOverview();
+      break;
+    case 'ranking':
+      content = renderRanking();
+      break;
+    case 'teses':
+      content = renderTeses();
+      break;
+    case 'carteiras':
+      content = renderCarteiras();
+      break;
+    case 'pnl':
+      content = renderPnLTab();
+      break;
+    case 'backtests':
+      content = renderBacktests();
+      break;
+    case 'capital':
+      content = renderCapital();
+      break;
+    case 'alertas':
+      content = renderAlertas();
+      break;
+    case 'saude':
+      content = renderSaude();
+      break;
+    default:
+      content = renderOverview();
+  }
+  document.getElementById('tab-content').innerHTML = content;
+
+  // Update last refresh
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
+  document.getElementById('last-refresh').textContent = `${h}:${m}`;
+}
+
+// ─── Controls ────────────────────────────────────────────────
+function refresh() {
+  fetchAll();
+}
+
+function toggleAuto() {
+  state.autoRefresh = !state.autoRefresh;
+  const btn = document.getElementById('auto-btn');
+  if (state.autoRefresh) {
+    btn.classList.add('btn-active');
+    autoInterval = setInterval(fetchAll, 30000);
+  } else {
+    btn.classList.remove('btn-active');
+    if (autoInterval) clearInterval(autoInterval);
+  }
+}
+
+function showAssetDetail(ticker) {
+  console.log('Asset detail:', ticker);
+  switchTab('ranking');
+}
+
+// ─── Init ────────────────────────────────────────────────
+setInterval(updateClock, 1000);
+fetchAll();
+if (state.autoRefresh) {
+  autoInterval = setInterval(fetchAll, 30000);
+}
+</script>
+</body>
+</html>

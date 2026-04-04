@@ -126,7 +126,9 @@ tr:hover{background:rgba(17,24,32,.5)}
 <div class="header">
   <div>
     <div style="display:flex;align-items:center;gap:10px">
-      <img src="/static/logo.svg" alt="Egreja IA" style="height:36px;width:auto">
+      <a href="/" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit" title="Voltar ao Dashboard Principal">
+        <img src="/logo.png" alt="Egreja IA" style="height:36px;width:auto">
+      </a>
       <div>
         <h1>Derivativos B3</h1>
         <p id="header-subtitle">8 Estratégias · Inicializando...</p>
@@ -135,7 +137,7 @@ tr:hover{background:rgba(17,24,32,.5)}
   </div>
   <div class="header-right">
     <span id="market-clock" class="text-mono" style="font-size:11px;color:var(--dim)"></span>
-    <a href="/" class="back-link" title="Voltar ao Dashboard">← Dashboard</a>
+    <a href="/" class="btn" style="background:var(--s3);color:var(--gold);font-weight:600;text-decoration:none" title="Voltar ao Dashboard Principal">← Dashboard Principal</a>
     <span class="text-mono" style="font-size:11px;color:var(--dim)" id="last-refresh">—</span>
     <button class="btn" onclick="refresh()" id="refresh-btn">🔄 Atualizar</button>
     <button class="btn btn-active" onclick="toggleAuto()" id="auto-btn">⚡ Auto ON</button>

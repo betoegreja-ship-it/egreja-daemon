@@ -890,7 +890,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path in ('/derivatives', '/api/info'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path in ('/derivatives', '/api/info'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:

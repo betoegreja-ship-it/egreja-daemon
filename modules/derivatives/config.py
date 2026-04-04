@@ -35,8 +35,8 @@ class B3Fees:
 class PCPConfig:
     """Put-Call Parity strategy configuration."""
     enabled: bool = True
-    max_notional: float = 500_000.0
-    max_daily_loss: float = 10_000.0
+    max_notional: float = 600_000.0
+    max_daily_loss: float = 12_000.0
     max_positions: int = 50
     safety_factor: float = 1.75
     min_edge_bps: float = 5.0
@@ -59,8 +59,8 @@ class PCPConfig:
 class FSTConfig:
     """Futures Spread Trading strategy configuration."""
     enabled: bool = True
-    max_notional: float = 1_000_000.0
-    max_daily_loss: float = 20_000.0
+    max_notional: float = 1_200_000.0
+    max_daily_loss: float = 24_000.0
     max_positions: int = 30
     safety_factor: float = 2.0
     min_edge_bps: float = 30.0
@@ -140,8 +140,8 @@ class DerivativesConfig:
         default_factory=lambda: {
             "roll_arb": {
                 "enabled": True,
-                "max_notional": 300_000.0,
-                "max_daily_loss": 8_000.0,
+                "max_notional": 350_000.0,
+                "max_daily_loss": 9_000.0,
                 "max_positions": 25,
                 "safety_factor": 1.8,
                 "min_edge_bps": 8.0,
@@ -149,8 +149,8 @@ class DerivativesConfig:
             },
             "etf_basket": {
                 "enabled": True,
-                "max_notional": 750_000.0,
-                "max_daily_loss": 15_000.0,
+                "max_notional": 900_000.0,
+                "max_daily_loss": 18_000.0,
                 "max_positions": 40,
                 "safety_factor": 1.6,
                 "min_edge_bps": 4.0,
@@ -158,8 +158,8 @@ class DerivativesConfig:
             },
             "skew_arb": {
                 "enabled": True,
-                "max_notional": 200_000.0,
-                "max_daily_loss": 5_000.0,
+                "max_notional": 250_000.0,
+                "max_daily_loss": 6_000.0,
                 "max_positions": 15,
                 "safety_factor": 2.0,
                 "min_edge_bps": 15.0,
@@ -167,8 +167,8 @@ class DerivativesConfig:
             },
             "interlisted": {
                 "enabled": True,
-                "max_notional": 400_000.0,
-                "max_daily_loss": 10_000.0,
+                "max_notional": 475_000.0,
+                "max_daily_loss": 12_000.0,
                 "max_positions": 20,
                 "safety_factor": 1.5,
                 "min_edge_bps": 10.0,
@@ -176,8 +176,8 @@ class DerivativesConfig:
             },
             "dividend_arb": {
                 "enabled": True,
-                "max_notional": 350_000.0,
-                "max_daily_loss": 7_000.0,
+                "max_notional": 425_000.0,
+                "max_daily_loss": 9_000.0,
                 "max_positions": 30,
                 "safety_factor": 1.4,
                 "min_edge_bps": 20.0,
@@ -185,8 +185,8 @@ class DerivativesConfig:
             },
             "vol_arb": {
                 "enabled": True,
-                "max_notional": 600_000.0,
-                "max_daily_loss": 18_000.0,
+                "max_notional": 700_000.0,
+                "max_daily_loss": 14_000.0,
                 "max_positions": 35,
                 "safety_factor": 1.9,
                 "min_edge_bps": 12.0,

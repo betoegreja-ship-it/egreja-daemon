@@ -234,7 +234,12 @@ ops_metrics = OpsMetricsCollector()
 ENV = os.environ.get('ENV', 'dev').lower()
 
 # [C-3] Single-process enforcement
-GUNICORN_WORKERS = int(os.environ.get('WEB_CONCURRENCY', os.environ.get('GUNICORN_WORKERS', 1)))
+try:
+    _raw_workers = os.environ.get('WEB_CONCURRENCY', os.environ.get('GUNICORN_WORKERS', '1'))
+    GUNICORN_WORKERS = int(str(_raw_workers).strip().strip('"').strip("'").split()[0])
+except (ValueError, IndexError):
+    log.warning(f'[C-3] Could not parse GUNICORN_WORKERS from env ({_raw_workers!r}), defaulting to 1')
+    GUNICORN_WORKERS = 1
 if GUNICORN_WORKERS > 1:
     raise RuntimeError(
         f'[C-3] This system uses in-process state (global lists + threads). '

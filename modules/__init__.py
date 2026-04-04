@@ -18,6 +18,13 @@ Phase 3 (data fetchers):
   - stock_fetcher: Stock price fetching (Polygon, brapi, FMP, Yahoo)
   - crypto_fetcher: Crypto price fetching and analysis (Binance)
 
+Phase 4 (execution & arbitrage):
+  - execution: Trade monitoring, stock execution worker, crypto auto-trading
+  - arbitrage: Arbi scan/monitor/learning loops, spread calculation
+
+Phase 5 (API routes):
+  - api_routes: All 78 Flask route handlers as a Blueprint
+
 All modules are designed to be:
   - PURE: No global state access
   - PARAMETERIZED: All dependencies passed as parameters
@@ -25,4 +32,4 @@ All modules are designed to be:
   - THREAD-SAFE: Use locks for shared resources
 """
 
-__version__ = "1.0.0-phase3"
+__version__ = "1.0.0-phase5"

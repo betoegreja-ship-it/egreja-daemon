@@ -198,8 +198,27 @@ try:
         is_momentum_positive as _mod_is_momentum_positive,
         fetch_fx_rates as _mod_fetch_fx_rates,
     )
+    from modules.execution import (
+        monitor_trades as _mod_monitor_trades,
+        stock_execution_worker as _mod_stock_execution_worker,
+        auto_trade_crypto as _mod_auto_trade_crypto,
+        build_execution_ctx as _build_execution_ctx,
+    )
+    from modules.arbitrage import (
+        arbi_scan_loop as _mod_arbi_scan_loop,
+        arbi_monitor_loop as _mod_arbi_monitor_loop,
+        arbi_learning_loop as _mod_arbi_learning_loop,
+        calc_spread as _mod_calc_spread,
+        run_arbi_pattern_learning as _mod_run_arbi_pattern_learning,
+        build_arbitrage_ctx as _build_arbitrage_ctx,
+    )
+    from modules.api_routes import (
+        api_bp as _mod_api_bp,
+        init_routes as _mod_init_routes,
+        create_api_blueprint as _mod_create_api_blueprint,
+    )
     # Note: log is not yet initialized, so use print. It will be logged after logging.basicConfig
-    print('[v10.28] Pure business logic modules loaded: trading_config, market_calendar, feature_engine, fees, learning_engine, database, signal_tracking, ledger, stock_fetcher, crypto_fetcher', flush=True)
+    print('[v10.28] All modules loaded: Phase1(5) + Phase2(3) + Phase3(2) + Phase4(2) + Phase5(1) = 13 modules', flush=True)
     _PURE_MODULES_LOADED = True
 except Exception as _pm_err:
     import traceback as _pm_tb

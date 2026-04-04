@@ -9,6 +9,8 @@
 :root{--gold:#C9A84C;--gold-dim:#7A5C1A;--profit:#22C55E;--loss:#EF4444;--accent:#60A5FA;--purple:#A78BFA;--cyan:#22D3EE;--orange:#FB923C;--pink:#EC4899;--red:#F43F5E;--s1:#060A10;--s2:#0B1018;--s3:#111820;--border:#1A2332;--muted:#374151;--text:#E2E8F0;--dim:#64748B;--mono:'JetBrains Mono',monospace;--sans:'Inter',system-ui,sans-serif}
 body{font-family:var(--sans);background:var(--s1);color:var(--text);min-height:100vh}
 a{color:var(--accent);text-decoration:none}
+
+/* Header */
 .header{position:sticky;top:0;z-index:50;background:rgba(6,10,16,.94);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
 .header h1{font-size:18px;font-weight:700;letter-spacing:-.02em}
 .header p{font-size:11px;color:var(--dim);margin-top:2px}
@@ -18,10 +20,15 @@ a{color:var(--accent);text-decoration:none}
 .btn-active{background:#2563EB;border-color:#2563EB;color:#fff}
 .btn-active:hover{background:#1D4ED8}
 .container{max-width:1600px;margin:0 auto;padding:24px}
+
+/* Grids */
 .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
 .grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
-@media(max-width:1024px){.grid-4{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:640px){.grid-4,.grid-2{grid-template-columns:1fr}}
+@media(max-width:1024px){.grid-4,.grid-3{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:640px){.grid-4,.grid-3,.grid-2{grid-template-columns:1fr}}
+
+/* Cards */
 .card{background:var(--s2);border:1px solid var(--border);border-radius:8px;overflow:hidden;position:relative}
 .card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(96,165,250,.2),transparent)}
 .card-header{padding:16px 16px 0;display:flex;align-items:center;justify-content:space-between}
@@ -31,19 +38,30 @@ a{color:var(--accent);text-decoration:none}
 .stat-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
 .stat-value{font-size:24px;font-weight:700;font-family:var(--mono)}
 .stat-sub{font-size:11px;color:var(--dim)}
+
+/* Tabs */
 .tabs{display:flex;gap:2px;background:var(--s3);border-radius:8px;padding:4px;overflow-x:auto;margin-bottom:24px;border:1px solid var(--border)}
 .tab{padding:8px 14px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;border:none;background:transparent;color:var(--dim);transition:all .15s}
 .tab:hover{color:var(--text)}
 .tab.active{background:var(--s2);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .tab .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px}
+
+/* Badges */
 .badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:99px;font-size:10px;font-weight:700}
 .badge-healthy{background:rgba(34,197,94,.1);color:var(--profit);border:1px solid rgba(34,197,94,.2)}
 .badge-degraded{background:rgba(239,68,68,.1);color:var(--loss);border:1px solid rgba(239,68,68,.2)}
+.badge-warning{background:rgba(251,146,60,.1);color:var(--orange);border:1px solid rgba(251,146,60,.2)}
+.badge-info{background:rgba(96,165,250,.1);color:var(--accent);border:1px solid rgba(96,165,250,.2)}
+.badge-neutral{background:rgba(100,116,139,.1);color:var(--dim);border:1px solid rgba(100,116,139,.2)}
 .badge-status{padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700;font-family:var(--mono);letter-spacing:.05em}
+
+/* Pipeline */
 .pipeline{display:flex;align-items:center;gap:4px}
 .pip{width:8px;height:8px;border-radius:50%;transition:all .3s}
 .pip-line{width:16px;height:1px;background:var(--muted)}
 .pip-line.active{background:var(--accent)}
+
+/* Table */
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{text-align:left;padding:8px 12px;color:var(--dim);font-weight:600;font-size:11px;border-bottom:1px solid var(--border)}
 td{padding:8px 12px;border-bottom:1px solid rgba(26,35,50,.4)}
@@ -54,13 +72,28 @@ tr:hover{background:rgba(17,24,32,.5)}
 .text-loss{color:var(--loss)}
 .text-dim{color:var(--dim)}
 .text-accent{color:var(--accent)}
+
+/* Health banner */
+.health-banner{padding:12px 16px;border-radius:8px;display:flex;align-items:center;gap:12px;margin-bottom:24px;font-size:13px;font-weight:600;border:1px solid}
+.banner-healthy{background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.2);color:var(--profit)}
+.banner-degraded{background:rgba(239,68,68,.06);border-color:rgba(239,68,68,.2);color:var(--loss)}
+.banner-standby{background:rgba(100,116,139,.06);border-color:rgba(100,116,139,.2);color:var(--dim)}
+.banner-warning{background:rgba(251,146,60,.06);border-color:rgba(251,146,60,.2);color:var(--orange)}
+.banner-kill{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.3);color:var(--loss)}
+
+/* Smart status indicator */
+.smart-indicator{display:inline-flex;align-items:center;gap:6px;font-size:11px}
+.smart-dot{width:8px;height:8px;border-radius:50%}
+.smart-dot.pulse{animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* Empty / Info state */
 .empty-state{text-align:center;padding:48px 24px;color:var(--dim)}
-.empty-state svg{margin:0 auto 12px;opacity:.3}
-.strat-header{display:flex;align-items:center;gap:16px;padding:16px;border-radius:8px;background:var(--s2);border:1px solid var(--border);margin-bottom:24px}
-.strat-icon{width:48px;height:48px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:20px}
-.strat-header h2{font-size:18px;font-weight:700}
-.strat-header p{font-size:12px;color:var(--dim)}
-.section{margin-bottom:24px}
+.info-row{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;border-bottom:1px solid rgba(26,35,50,.4)}
+.info-label{color:var(--dim);min-width:140px;font-weight:600}
+.info-value{color:var(--text);font-family:var(--mono)}
+
+/* Bar chart */
 .bar-chart{display:flex;align-items:flex-end;gap:8px;height:200px;padding:16px 0}
 .bar-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
 .bar{border-radius:4px 4px 0 0;width:100%;min-width:24px;transition:height .5s ease}
@@ -69,10 +102,21 @@ tr:hover{background:rgba(17,24,32,.5)}
 .legend{display:flex;gap:16px;justify-content:center;margin-top:12px}
 .legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim)}
 .legend-dot{width:8px;height:8px;border-radius:50%}
+
+/* Misc */
+.strat-header{display:flex;align-items:center;gap:16px;padding:16px;border-radius:8px;background:var(--s2);border:1px solid var(--border);margin-bottom:24px}
+.strat-icon{width:48px;height:48px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:20px}
+.strat-header h2{font-size:18px;font-weight:700}
+.strat-header p{font-size:12px;color:var(--dim)}
+.section{margin-bottom:24px}
 .back-link{font-size:12px;color:var(--dim);display:flex;align-items:center;gap:4px}
 .back-link:hover{color:var(--text)}
 .spin{animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+.progress-bar{height:4px;background:var(--s3);border-radius:2px;overflow:hidden;margin-top:6px}
+.progress-fill{height:100%;border-radius:2px;transition:width .3s}
+.kill-card{background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:16px;display:flex;align-items:center;gap:12px}
+.kill-card.active{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.4)}
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -82,16 +126,15 @@ tr:hover{background:rgba(17,24,32,.5)}
 <div class="header">
   <div>
     <div style="display:flex;align-items:center;gap:10px">
-      <div style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:rgba(201,168,76,.12);border:1px solid var(--gold-dim)">
-        <span style="font-size:16px">📊</span>
-      </div>
+      <img src="/static/logo.svg" alt="Egreja IA" style="height:36px;width:auto">
       <div>
         <h1>Derivativos B3</h1>
-        <p>8 Estratégias · Paper Mode · <span id="health-badge">Carregando...</span></p>
+        <p id="header-subtitle">8 Estratégias · Inicializando...</p>
       </div>
     </div>
   </div>
   <div class="header-right">
+    <span id="market-clock" class="text-mono" style="font-size:11px;color:var(--dim)"></span>
     <a href="/" class="back-link" title="Voltar ao Dashboard">← Dashboard</a>
     <span class="text-mono" style="font-size:11px;color:var(--dim)" id="last-refresh">—</span>
     <button class="btn" onclick="refresh()" id="refresh-btn">🔄 Atualizar</button>
@@ -100,8 +143,14 @@ tr:hover{background:rgba(17,24,32,.5)}
 </div>
 
 <div class="container">
+  <!-- Health Banner -->
+  <div id="health-banner"></div>
+
   <!-- KPI Cards -->
   <div class="grid-4 section" id="kpi-grid"></div>
+
+  <!-- Kill Switch Card -->
+  <div id="kill-switch-card"></div>
 
   <!-- Tabs -->
   <div class="tabs" id="tabs-bar"></div>
@@ -122,10 +171,21 @@ const STRATEGIES = {
   DIVIDEND_ARB: { label:'Dividend Arbitrage', color:'var(--profit)', icon:'💰', desc:'Captura de dividendos com hedge de put' },
   VOL_ARB:      { label:'Vol Arbitrage',      color:'var(--red)',    icon:'⚡', desc:'IV vs Realized Vol com delta-hedge' },
 };
-const STATUS_LABELS = {0:'OBSERVE',1:'SHADOW',2:'PAPER_SMALL',3:'PAPER_FULL'};
-const STATUS_COLORS = {0:'var(--dim)',1:'var(--orange)',2:'var(--accent)',3:'var(--profit)'};
+const STATUS_LABELS = {0:'OBSERVE',1:'SHADOW',2:'PAPER_SMALL',3:'PAPER_FULL','OBSERVE':'OBSERVE','SHADOW_EXEC':'SHADOW','PAPER_SMALL':'PAPER_SMALL','PAPER_FULL':'PAPER_FULL'};
+const STATUS_COLORS = {0:'var(--dim)',1:'var(--orange)',2:'var(--accent)',3:'var(--profit)','OBSERVE':'var(--dim)','SHADOW_EXEC':'var(--orange)','PAPER_SMALL':'var(--accent)','PAPER_FULL':'var(--profit)'};
+const STATUS_NUM = {'OBSERVE':0,'SHADOW_EXEC':1,'PAPER_SMALL':2,'PAPER_FULL':3};
 
-let state = { health:null, opps:[], statuses:[], liquidity:{}, scorecards:[], activeTab:'overview', autoRefresh:true, loading:false };
+const SMART_ICONS = {
+  moon:'🌙', alert:'🔴', calibrating:'⏳', scanning:'🔍', active:'🟢', opportunity:'🟡', idle:'⏸️',
+  kill:'🛑', standby:'🌙', healthy:'✅', degraded:'⚠️', critical:'🔴'
+};
+
+let state = {
+  systemState: null, health: null, opps: [], statuses: [], liquidity: {}, scorecards: [],
+  calibration: [], learning: null, capital: null, positions: [],
+  pnlDaily: [], pnlMonthly: [], pnlAnnual: [], winRate: [], capitalDetail: null, tradesClosed: [],
+  activeTab: 'overview', autoRefresh: true, loading: false
+};
 let autoInterval = null;
 
 // ─── Data Fetching ──────────────────────────────────────────────
@@ -133,23 +193,57 @@ async function fetchAll() {
   state.loading = true;
   renderRefreshBtn();
   try {
-    const [h,o,s,l,sc] = await Promise.allSettled([
-      fetch(`${API}/health`).then(r=>r.json()),
+    const results = await Promise.allSettled([
+      fetch(`${API}/system-state`).then(r=>r.json()),
       fetch(`${API}/opportunities?limit=200`).then(r=>r.json()),
       fetch(`${API}/status`).then(r=>r.json()),
       fetch(`${API}/liquidity-score`).then(r=>r.json()),
       fetch(`${API}/scorecard`).then(r=>r.json()),
+      fetch(`${API}/calibration`).then(r=>r.json()),
+      fetch(`${API}/learning`).then(r=>r.json()),
+      fetch(`${API}/capital-summary`).then(r=>r.json()),
+      fetch(`${API}/positions`).then(r=>r.json()),
+      fetch(`${API}/pnl-daily`).then(r=>r.json()),
+      fetch(`${API}/pnl-monthly`).then(r=>r.json()),
+      fetch(`${API}/pnl-annual`).then(r=>r.json()),
+      fetch(`${API}/win-rate`).then(r=>r.json()),
+      fetch(`${API}/capital`).then(r=>r.json()),
+      fetch(`${API}/trades-closed?limit=50`).then(r=>r.json()),
     ]);
-    if(h.status==='fulfilled') state.health=h.value;
-    if(o.status==='fulfilled'){
-      const by = o.value?.by_strategy||{};
+
+    const [ss, o, s, l, sc, cal, learn, cap, pos, pnlD, pnlM, pnlA, wr, capDet, tc] = results;
+
+    if(ss.status==='fulfilled') {
+      state.systemState = ss.value;
+      state.health = {
+        overall_health: ss.value.overall?.healthy_strategies === 8 ? 'HEALTHY' : 'DEGRADED',
+        strategies: {},
+        capital: ss.value.capital || {},
+      };
+      for(const [k, v] of Object.entries(ss.value.strategies || {})) {
+        state.health.strategies[k] = { healthy: v.loop_healthy, last_heartbeat: v.last_heartbeat, opportunities_1h: v.opportunities_1h };
+      }
+    }
+    if(o.status==='fulfilled') {
+      const by = o.value?.by_strategy || {};
       state.opps = Object.values(by).flat();
     }
-    if(s.status==='fulfilled') state.statuses=s.value?.statuses||[];
-    if(l.status==='fulfilled') state.liquidity=l.value?.liquidity_scores||{};
-    if(sc.status==='fulfilled') state.scorecards=sc.value?.scorecards||[];
+    if(s.status==='fulfilled') state.statuses = s.value?.statuses || [];
+    if(l.status==='fulfilled') state.liquidity = l.value?.liquidity_scores || {};
+    if(sc.status==='fulfilled') state.scorecards = sc.value?.scorecards || [];
+    if(cal.status==='fulfilled') state.calibration = cal.value?.records || [];
+    if(learn.status==='fulfilled') state.learning = learn.value;
+    if(cap.status==='fulfilled') state.capital = cap.value;
+    if(pos.status==='fulfilled') state.positions = pos.value?.positions || [];
+    if(pnlD.status==='fulfilled') state.pnlDaily = pnlD.value?.data || [];
+    if(pnlM.status==='fulfilled') state.pnlMonthly = pnlM.value?.data || [];
+    if(pnlA.status==='fulfilled') state.pnlAnnual = pnlA.value?.data || [];
+    if(wr.status==='fulfilled') state.winRate = wr.value?.data || [];
+    if(capDet.status==='fulfilled') state.capitalDetail = capDet.value;
+    if(tc.status==='fulfilled') state.tradesClosed = tc.value?.trades || [];
+
     document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('pt-BR');
-  } catch(e) { console.error('Fetch error:',e); }
+  } catch(e) { console.error('Fetch error:', e); }
   state.loading = false;
   render();
 }
@@ -159,106 +253,383 @@ function toggleAuto() {
   const btn = document.getElementById('auto-btn');
   if(state.autoRefresh) {
     btn.className='btn btn-active'; btn.textContent='⚡ Auto ON';
-    autoInterval=setInterval(fetchAll,30000);
+    autoInterval = setInterval(fetchAll, 30000);
   } else {
     btn.className='btn'; btn.textContent='⚡ Auto OFF';
     clearInterval(autoInterval);
   }
 }
-
 function refresh() { fetchAll(); }
-
 function renderRefreshBtn() {
-  const btn=document.getElementById('refresh-btn');
+  const btn = document.getElementById('refresh-btn');
   btn.innerHTML = state.loading ? '<span class="spin">🔄</span> ...' : '🔄 Atualizar';
+}
+
+// ─── Smart Helpers ──────────────────────────────────────────────
+function smartStatus(stratKey) {
+  const ss = state.systemState?.strategies?.[stratKey];
+  if(!ss) return { text:'Carregando estado...', icon:'⏳', dotClass:'', dotColor:'var(--dim)' };
+  const iconMap = { moon:'var(--dim)', alert:'var(--loss)', calibrating:'var(--orange)', scanning:'var(--accent)', active:'var(--profit)', opportunity:'var(--orange)', idle:'var(--dim)' };
+  return {
+    text: ss.smart_status,
+    icon: SMART_ICONS[ss.smart_icon] || '⏸️',
+    dotColor: iconMap[ss.smart_icon] || 'var(--dim)',
+    pulse: ss.smart_icon === 'scanning' || ss.smart_icon === 'calibrating' || ss.smart_icon === 'active',
+  };
+}
+
+function fmtPnl(v) {
+  if(v === null || v === undefined) return '—';
+  const n = parseFloat(v);
+  const color = n >= 0 ? 'var(--profit)' : 'var(--loss)';
+  return `<span style="color:${color};font-weight:700">R$ ${n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>`;
+}
+
+function fmtPct(v, digits=1) {
+  if(v === null || v === undefined) return '—';
+  return (parseFloat(v)*100).toFixed(digits)+'%';
+}
+
+function fmtNum(v, digits=2) {
+  if(v === null || v === undefined) return '—';
+  return parseFloat(v).toFixed(digits);
+}
+
+function tierLabel(t) {
+  if(typeof t === 'number') return STATUS_LABELS[t] || 'OBSERVE';
+  return STATUS_LABELS[t] || t || 'OBSERVE';
+}
+function tierColor(t) {
+  if(typeof t === 'number') return STATUS_COLORS[t] || 'var(--dim)';
+  return STATUS_COLORS[t] || 'var(--dim)';
+}
+function tierNum(t) {
+  if(typeof t === 'number') return t;
+  return STATUS_NUM[t] || 0;
 }
 
 // ─── Rendering ──────────────────────────────────────────────────
 function render() {
-  renderHealthBadge();
+  renderHeaderSubtitle();
+  renderMarketClock();
+  renderHealthBanner();
   renderKPIs();
+  renderKillSwitch();
   renderTabs();
   renderTabContent();
 }
 
-function renderHealthBadge() {
-  const el=document.getElementById('health-badge');
-  if(!state.health) { el.textContent='Carregando...'; return; }
-  const h=state.health.overall_health;
-  el.innerHTML = h==='HEALTHY'
-    ? '<span class="badge badge-healthy">✓ HEALTHY</span>'
-    : '<span class="badge badge-degraded">⚠ DEGRADED</span>';
+function renderHeaderSubtitle() {
+  const el = document.getElementById('header-subtitle');
+  const ss = state.systemState;
+  if(!ss) { el.textContent = '8 Estratégias · Inicializando...'; return; }
+  const mode = ss.overall?.mode || 'PAPER';
+  const phase = ss.market?.phase || 'UNKNOWN';
+  const phaseLabels = { OPEN:'Mercado Aberto', CLOSED:'Mercado Fechado', WEEKEND:'Fim de Semana', PRE_MARKET:'Pré-Mercado', AFTER_MARKET:'After Market', CLOSING:'Fechando' };
+  const hc = ss.overall?.healthy_strategies || 0;
+  el.innerHTML = `8 Estratégias · ${mode} Mode · <span style="color:${phase==='OPEN'?'var(--profit)':'var(--dim)'}">● ${phaseLabels[phase]||phase}</span> · <span style="color:${hc===8?'var(--profit)':'var(--orange)'}">Scan: ${hc}/8</span>`;
+}
+
+function renderMarketClock() {
+  const el = document.getElementById('market-clock');
+  const ss = state.systemState;
+  if(!ss?.market) { el.textContent = ''; return; }
+  el.innerHTML = `🕐 BRT ${ss.market.brt_time}`;
+}
+
+function renderHealthBanner() {
+  const el = document.getElementById('health-banner');
+  const ss = state.systemState;
+  if(!ss) {
+    el.innerHTML = '<div class="health-banner banner-standby">⏳ Carregando estado do sistema...</div>';
+    return;
+  }
+  const ov = ss.overall;
+  const iconEl = SMART_ICONS[ov.smart_icon] || '⏸️';
+  let bannerClass = 'banner-standby';
+  if(ov.smart_icon === 'healthy') bannerClass = 'banner-healthy';
+  else if(ov.smart_icon === 'degraded') bannerClass = 'banner-warning';
+  else if(ov.smart_icon === 'critical') bannerClass = 'banner-degraded';
+  else if(ov.smart_icon === 'kill') bannerClass = 'banner-kill';
+
+  let details = '';
+  if(!ss.market.open) {
+    details = ` · Próxima abertura: ${ss.market.is_weekday ? '10:00 BRT' : 'Segunda 10:00 BRT'}`;
+  }
+  const dbBadge = ov.db_healthy
+    ? '<span class="badge badge-healthy" style="font-size:9px;padding:2px 6px">DB ✓</span>'
+    : '<span class="badge badge-degraded" style="font-size:9px;padding:2px 6px">DB ✗</span>';
+
+  el.innerHTML = `<div class="health-banner ${bannerClass}">
+    <span style="font-size:18px">${iconEl}</span>
+    <span style="flex:1">${ov.smart_status}${details}</span>
+    ${dbBadge}
+    <span class="badge badge-info" style="font-size:9px;padding:2px 6px">${ov.mode}</span>
+  </div>`;
 }
 
 function renderKPIs() {
-  const el=document.getElementById('kpi-grid');
-  const healthyCount = state.health ? Object.values(state.health.strategies).filter(s=>s.healthy).length : 0;
-  const totalOpps = state.opps.length;
-  const liqVals = Object.values(state.liquidity);
-  const avgLiq = liqVals.length > 0 ? (liqVals.reduce((a,b)=>a+b,0)/liqVals.length).toFixed(1) : '—';
-  const assets = Object.keys(state.liquidity).length || 8;
+  const el = document.getElementById('kpi-grid');
+  const ss = state.systemState;
+
+  // Healthy count
+  const hc = ss?.overall?.healthy_strategies || 0;
+  const hcColor = hc === 8 ? 'var(--profit)' : hc > 0 ? 'var(--orange)' : 'var(--loss)';
+  const hcSub = hc === 8 ? 'Todos os scan loops ativos' : hc > 0 ? 'Verificar loops degradados' : ss?.market?.open === false ? 'Mercado fechado' : 'Nenhum loop respondeu';
+
+  // Total P&L
+  let totalPnl = 0;
+  if(ss?.strategies) {
+    for(const v of Object.values(ss.strategies)) totalPnl += v.total_pnl || 0;
+  }
+  const pnlColor = totalPnl >= 0 ? 'var(--profit)' : 'var(--loss)';
+
+  // Capital
+  const capAvail = state.capital?.snapshot?.available;
+  const capTotal = state.capital?.snapshot?.total_capital;
+  const capPct = capTotal > 0 ? ((capAvail / capTotal) * 100).toFixed(0) : '—';
+  const capSub = capTotal ? `de R$ ${capTotal.toLocaleString('pt-BR')} total` : 'Capital não inicializado';
+
+  // Open positions
+  const openCount = state.positions.length;
+  const openSub = openCount > 0
+    ? state.positions.map(p=>p.symbol).filter((v,i,a)=>a.indexOf(v)===i).join(', ')
+    : (ss?.market?.open ? 'Sem posições abertas' : 'Mercado fechado');
 
   el.innerHTML = `
-    ${statCard('Estratégias Ativas',`${healthyCount}/8`,healthyCount===8?'Todas saudáveis':'Verificar scan loops',healthyCount===8?'var(--profit)':'var(--orange)')}
-    ${statCard('Oportunidades',totalOpps,'Última hora','var(--accent)')}
-    ${statCard('Liquidez Média',avgLiq,'Score 0-100','var(--purple)')}
-    ${statCard('Ativos Monitorados',assets,'Universo Tier A','var(--gold)')}
+    ${statCard('Estratégias Ativas', `${hc}/8`, hcSub, hcColor)}
+    ${statCard('P&L Total', `R$ ${totalPnl.toLocaleString('pt-BR',{minimumFractionDigits:2})}`, 'Acumulado todas as estratégias', pnlColor)}
+    ${statCard('Capital Disponível', capAvail != null ? `R$ ${capAvail.toLocaleString('pt-BR')}` : '—', capSub, 'var(--accent)')}
+    ${statCard('Posições Abertas', openCount, openSub, openCount > 0 ? 'var(--profit)' : 'var(--dim)')}
   `;
 }
 
-function statCard(label,value,sub,color) {
+function statCard(label, value, sub, color) {
   return `<div class="card stat-card" style="border-top:2px solid ${color}20">
     <div class="stat-label">${label}</div>
-    <div class="stat-value" style="color:var(--text)">${value}</div>
+    <div class="stat-value" style="color:${color}">${value}</div>
     <div class="stat-sub">${sub}</div>
   </div>`;
 }
 
+function renderKillSwitch() {
+  const el = document.getElementById('kill-switch-card');
+  const ss = state.systemState;
+  if(!ss) { el.innerHTML = ''; return; }
+  const ks = ss.overall?.kill_switch;
+  if(ks) {
+    el.innerHTML = `<div class="kill-card active section">
+      <span style="font-size:24px">🛑</span>
+      <div style="flex:1">
+        <div style="font-weight:700;font-size:14px;color:var(--loss)">Kill Switch ATIVADO</div>
+        <div style="font-size:12px;color:var(--dim);margin-top:2px">Toda execução autônoma está suspensa. Scan loops continuam monitorando, mas nenhuma ordem será enviada. Para reativar, altere kill_switch no config.</div>
+      </div>
+    </div>`;
+  } else {
+    el.innerHTML = `<div class="kill-card section">
+      <span style="font-size:18px;opacity:.4">🟢</span>
+      <div>
+        <span style="font-size:12px;color:var(--dim)">Kill Switch desativado — execução autônoma permitida (${ss.overall?.mode || 'PAPER'} mode)</span>
+      </div>
+    </div>`;
+  }
+}
+
 function renderTabs() {
-  const el=document.getElementById('tabs-bar');
-  let html = `<button class="tab ${state.activeTab==='overview'?'active':''}" onclick="switchTab('overview')">Visão Geral</button>`;
-  for(const [k,v] of Object.entries(STRATEGIES)) {
-    html += `<button class="tab ${state.activeTab===k?'active':''}" onclick="switchTab('${k}')">
-      <span class="dot" style="background:${v.color}"></span>${v.label.split(' ')[0]}
-    </button>`;
+  const el = document.getElementById('tabs-bar');
+  const allTabs = [
+    { key:'overview', label:'Visão Geral', icon:null },
+    ...Object.entries(STRATEGIES).map(([k,v])=>({ key:k, label:v.label.split(' ')[0], icon:null, color:v.color })),
+    { key:'pnl', label:'P&L', icon:null },
+    { key:'winrate', label:'Win Rate', icon:null },
+    { key:'capital_tab', label:'Capital', icon:null },
+    { key:'trades', label:'Trades', icon:null },
+    { key:'calibration', label:'Calibração', icon:null },
+    { key:'liquidity', label:'Liquidez', icon:null },
+    { key:'health', label:'Saúde', icon:null },
+  ];
+  let html = '';
+  for(const t of allTabs) {
+    const active = state.activeTab === t.key ? 'active' : '';
+    const dot = t.color ? `<span class="dot" style="background:${t.color}"></span>` : '';
+
+    // Smart dot for strategies
+    let indicator = '';
+    if(STRATEGIES[t.key] && state.systemState?.strategies?.[t.key]) {
+      const ss = state.systemState.strategies[t.key];
+      const iconMap = { moon:'var(--dim)', alert:'var(--loss)', calibrating:'var(--orange)', scanning:'var(--accent)', active:'var(--profit)', opportunity:'var(--orange)', idle:'var(--dim)' };
+      const c = iconMap[ss.smart_icon] || 'var(--dim)';
+      const p = ss.smart_icon === 'scanning' || ss.smart_icon === 'active' ? ' pulse' : '';
+      indicator = `<span class="smart-dot${p}" style="background:${c};width:5px;height:5px;border-radius:50%;margin-left:4px;display:inline-block"></span>`;
+    }
+
+    html += `<button class="tab ${active}" onclick="switchTab('${t.key}')">${dot}${t.label}${indicator}</button>`;
   }
   el.innerHTML = html;
 }
 
-function switchTab(tab) { state.activeTab=tab; renderTabs(); renderTabContent(); }
+function switchTab(tab) { state.activeTab = tab; renderTabs(); renderTabContent(); }
 
 function renderTabContent() {
-  const el=document.getElementById('tab-content');
-  if(state.activeTab==='overview') { el.innerHTML=renderOverview(); return; }
-  el.innerHTML = renderStrategyTab(state.activeTab);
+  const el = document.getElementById('tab-content');
+  switch(state.activeTab) {
+    case 'overview': el.innerHTML = renderOverview(); break;
+    case 'pnl': el.innerHTML = renderPnlTab(); break;
+    case 'winrate': el.innerHTML = renderWinRateTab(); break;
+    case 'capital_tab': el.innerHTML = renderCapitalTab(); break;
+    case 'trades': el.innerHTML = renderTradesTab(); break;
+    case 'calibration': el.innerHTML = renderCalibrationTab(); break;
+    case 'liquidity': el.innerHTML = renderLiquidityTab(); break;
+    case 'health': el.innerHTML = renderHealthTab(); break;
+    default: el.innerHTML = renderStrategyTab(state.activeTab); break;
+  }
 }
 
 // ─── Overview Tab ───────────────────────────────────────────────
 function renderOverview() {
-  return renderStrategyGrid() + renderLiquidityChart() + renderPromotionTable() + renderScorecardTable() + renderOpportunitiesTable(state.opps, 'Todas as Estratégias');
+  return renderPnlSummaryCards() + renderStrategyGrid() + renderWinRateSummary() + renderLiquidityChart() + renderPromotionTable() + renderScorecardTable() + renderOpportunitiesTable(state.opps, 'Todas as Estratégias');
+}
+
+function renderPnlSummaryCards() {
+  // Aggregate P&L from all sources
+  const annual = state.pnlAnnual;
+  const monthly = state.pnlMonthly;
+  const daily = state.pnlDaily;
+
+  // Total P&L from annual
+  let totalPnlAll = 0;
+  let totalTradesAll = 0;
+  let totalWinsAll = 0;
+  for(const r of annual) { totalPnlAll += parseFloat(r.total_pnl||0); totalTradesAll += parseInt(r.trade_count||0); totalWinsAll += parseInt(r.wins||0); }
+
+  // Today P&L from daily (first entry if sorted DESC)
+  let todayPnl = 0;
+  let todayTrades = 0;
+  if(daily.length > 0) { todayPnl = parseFloat(daily[0].total_pnl||0); todayTrades = parseInt(daily[0].trade_count||0); }
+
+  // This month from monthly
+  let monthPnl = 0;
+  let monthTrades = 0;
+  if(monthly.length > 0) { monthPnl = parseFloat(monthly[0].total_pnl||0); monthTrades = parseInt(monthly[0].trade_count||0); }
+
+  // Overall win rate
+  const overallWR = totalTradesAll > 0 ? (totalWinsAll / totalTradesAll * 100).toFixed(1) : '—';
+
+  // Capital info
+  const capDet = state.capitalDetail;
+  const initialCap = capDet?.initial_capital || 0;
+  const utilPct = capDet?.utilization_pct || 0;
+  const maxDailyLoss = capDet?.max_daily_loss_global || 0;
+  const mode = capDet?.mode || state.systemState?.overall?.mode || 'PAPER';
+
+  // Daily P&L from capital manager
+  const dailyCapPnl = state.capital?.snapshot?.daily_pnl || 0;
+  const dailyLossRemaining = state.capital?.snapshot?.daily_loss_remaining || 0;
+
+  return `<div class="card section" style="border-top:2px solid var(--gold)20">
+    <div class="card-header"><div class="card-title">💰 Resumo Financeiro</div><span class="badge badge-info" style="font-size:10px">${mode}</span></div>
+    <div class="card-body">
+      <div class="grid-4" style="margin-bottom:16px">
+        <div>
+          <div class="stat-label">Capital Inicial</div>
+          <div class="text-mono" style="font-size:20px;font-weight:700;color:var(--gold)">R$ ${initialCap.toLocaleString('pt-BR')}</div>
+          <div style="font-size:10px;color:var(--dim)">Utilização: ${utilPct}%</div>
+        </div>
+        <div>
+          <div class="stat-label">P&L Hoje</div>
+          <div class="text-mono" style="font-size:20px;font-weight:700;color:${todayPnl>=0?'var(--profit)':'var(--loss)'}">R$ ${todayPnl.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+          <div style="font-size:10px;color:var(--dim)">${todayTrades} trades hoje</div>
+        </div>
+        <div>
+          <div class="stat-label">P&L Mês</div>
+          <div class="text-mono" style="font-size:20px;font-weight:700;color:${monthPnl>=0?'var(--profit)':'var(--loss)'}">R$ ${monthPnl.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+          <div style="font-size:10px;color:var(--dim)">${monthTrades} trades no mês</div>
+        </div>
+        <div>
+          <div class="stat-label">P&L Total</div>
+          <div class="text-mono" style="font-size:20px;font-weight:700;color:${totalPnlAll>=0?'var(--profit)':'var(--loss)'}">R$ ${totalPnlAll.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+          <div style="font-size:10px;color:var(--dim)">${totalTradesAll} trades · WR ${overallWR}%</div>
+        </div>
+      </div>
+      <div class="grid-4">
+        <div>
+          <div class="stat-label">Loss Diário Restante</div>
+          <div class="text-mono" style="font-size:16px;font-weight:700;color:var(--orange)">R$ ${dailyLossRemaining.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+          <div style="font-size:10px;color:var(--dim)">Max: R$ ${maxDailyLoss.toLocaleString('pt-BR')}</div>
+        </div>
+        <div>
+          <div class="stat-label">P&L Diário (Motor)</div>
+          <div class="text-mono" style="font-size:16px;font-weight:700;color:${dailyCapPnl>=0?'var(--profit)':'var(--loss)'}">R$ ${dailyCapPnl.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+          <div style="font-size:10px;color:var(--dim)">Capital manager</div>
+        </div>
+        <div>
+          <div class="stat-label">Posições Abertas</div>
+          <div class="text-mono" style="font-size:16px;font-weight:700;color:var(--accent)">${state.positions.length}</div>
+          <div style="font-size:10px;color:var(--dim)">${state.capital?.snapshot?.positions_count||0} no capital mgr</div>
+        </div>
+        <div>
+          <div class="stat-label">Ativos Monitorados</div>
+          <div class="text-mono" style="font-size:16px;font-weight:700;color:var(--purple)">${Object.keys(state.liquidity).length || 8}</div>
+          <div style="font-size:10px;color:var(--dim)">Universo Tier A</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderWinRateSummary() {
+  if(state.winRate.length === 0) return '';
+  let rows = '';
+  for(const w of state.winRate.slice(0,10)) {
+    const wrColor = (w.win_rate||0) >= 0.6 ? 'var(--profit)' : (w.win_rate||0) >= 0.4 ? 'var(--orange)' : 'var(--loss)';
+    const pnlColor = (w.total_pnl||0) >= 0 ? 'text-profit' : 'text-loss';
+    rows += `<tr>
+      <td>${STRATEGIES[w.strategy_type]?.label || w.strategy_type}</td>
+      <td class="text-mono" style="font-weight:700">${w.symbol||'—'}</td>
+      <td class="text-right">${w.total_trades||0}</td>
+      <td class="text-right"><span class="text-mono" style="font-weight:700;color:${wrColor}">${((w.win_rate||0)*100).toFixed(1)}%</span></td>
+      <td class="text-right text-mono ${pnlColor}" style="font-weight:700">R$ ${parseFloat(w.total_pnl||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</td>
+      <td class="text-right text-mono">${parseFloat(w.reward_risk_ratio||0).toFixed(2)}</td>
+      <td class="text-right text-mono">${parseFloat(w.expectancy||0).toFixed(2)}</td>
+    </tr>`;
+  }
+  return `<div class="card section"><div class="card-header"><div class="card-title">📊 Win Rate por Estratégia/Ativo</div>
+    <span style="font-size:11px;color:var(--dim)">Últimos 90 dias</span></div>
+    <div class="card-body" style="overflow-x:auto"><table><thead><tr>
+      <th>Estratégia</th><th>Ativo</th><th class="text-right">Trades</th><th class="text-right">Win Rate</th>
+      <th class="text-right">P&L</th><th class="text-right">Reward/Risk</th><th class="text-right">Expectancy</th>
+    </tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 function renderStrategyGrid() {
   let cards = '';
   for(const [k,v] of Object.entries(STRATEGIES)) {
-    const opps = state.opps.filter(o=>o.strategy_type===k);
-    const hKey = Object.keys(state.health?.strategies||{}).find(x=>x.includes(k.toLowerCase().replace(/_/g,'')));
-    const healthy = hKey ? state.health.strategies[hKey]?.healthy : false;
+    const ss = state.systemState?.strategies?.[k];
+    const smart = smartStatus(k);
+    const opps = ss?.opportunities_1h || 0;
+    const openTr = ss?.open_trades || 0;
+    const pnl = ss?.total_pnl || 0;
+    const tier = tierLabel(ss?.best_tier);
+    const tierC = tierColor(ss?.best_tier);
+
     cards += `<div class="card" style="cursor:pointer" onclick="switchTab('${k}')">
       <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
         <div style="display:flex;align-items:center;justify-content:space-between">
           <div style="display:flex;align-items:center;gap:8px">
-            <span class="strat-icon" style="width:28px;height:28px;background:${v.color}15;font-size:14px;border-radius:6px;display:flex;align-items:center;justify-content:center">${v.icon}</span>
+            <span style="width:28px;height:28px;background:${v.color}15;font-size:14px;border-radius:6px;display:flex;align-items:center;justify-content:center">${v.icon}</span>
             <span style="font-size:13px;font-weight:600">${v.label}</span>
           </div>
-          <span class="badge ${healthy?'badge-healthy':'badge-degraded'}" style="font-size:9px;padding:2px 8px">
-            ${healthy?'✓':'⚠'}
-          </span>
+          <span class="badge-status" style="background:${tierC}15;color:${tierC};border:1px solid ${tierC}30;font-size:9px">${tier}</span>
         </div>
-        <div style="font-size:11px;color:var(--dim)">${v.desc}</div>
-        <div style="display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--border);padding-top:8px;margin-top:2px">
-          <span style="font-size:11px;color:var(--dim)">Oportunidades</span>
-          <span class="text-mono" style="font-size:14px;font-weight:700;color:${opps.length>0?'var(--profit)':'var(--dim)'}">${opps.length}</span>
+        <div class="smart-indicator">
+          <span class="smart-dot${smart.pulse?' pulse':''}" style="background:${smart.dotColor}"></span>
+          <span style="color:var(--dim)">${smart.text}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;border-top:1px solid var(--border);padding-top:8px;margin-top:2px;font-size:11px">
+          <div style="color:var(--dim)">Opp. 1h: <span class="text-mono" style="color:${opps>0?'var(--profit)':'var(--dim)'}">  ${opps}</span></div>
+          <div style="color:var(--dim)">Abertas: <span class="text-mono" style="color:${openTr>0?'var(--accent)':'var(--dim)'}">${openTr}</span></div>
+          <div style="color:var(--dim)">P&L: <span class="text-mono" style="color:${pnl>=0?'var(--profit)':'var(--loss)'}">${pnl.toFixed(2)}</span></div>
+          <div style="color:var(--dim)">Cal: <span class="text-mono">${ss?.calibration_records||0} pts</span></div>
         </div>
       </div>
     </div>`;
@@ -268,7 +639,12 @@ function renderStrategyGrid() {
 
 function renderLiquidityChart() {
   const entries = Object.entries(state.liquidity);
-  if(entries.length===0) return '';
+  if(entries.length === 0) {
+    const ss = state.systemState;
+    const reason = !ss?.market?.open ? 'Mercado fechado — liquidez será calculada na próxima sessão' : 'Aguardando dados de liquidez dos providers...';
+    return `<div class="card section"><div class="card-header"><div class="card-title">📊 Scores de Liquidez</div></div>
+      <div class="card-body"><div class="empty-state"><div style="font-size:32px;opacity:.3;margin-bottom:8px">📊</div><p style="font-size:13px">${reason}</p></div></div></div>`;
+  }
   const maxScore = Math.max(...entries.map(([,v])=>v), 100);
   let bars = '';
   for(const [sym,score] of entries) {
@@ -292,48 +668,59 @@ function renderLiquidityChart() {
 }
 
 function renderPromotionTable() {
-  if(state.statuses.length===0) return '';
+  if(state.statuses.length === 0) {
+    const reason = !state.systemState?.market?.open ? 'Sem dados de promoção — mercado fechado' : 'Nenhum ativo registrado no pipeline ainda';
+    return `<div class="card section"><div class="card-header"><div class="card-title">🚀 Pipeline de Promoção</div></div>
+      <div class="card-body"><div class="empty-state"><p style="font-size:13px">${reason}</p>
+      <p style="font-size:11px;margin-top:4px;color:var(--muted)">Ativos entram no pipeline após primeiro scan loop completo</p></div></div></div>`;
+  }
   let rows = '';
   for(const s of state.statuses) {
     const lbl = STRATEGIES[s.strategy_type]?.label || s.strategy_type;
+    const tn = tierNum(s.current_status || s.active_status);
     rows += `<tr>
       <td class="text-mono" style="font-weight:700">${s.symbol}</td>
       <td>${lbl}</td>
-      <td><span class="badge-status" style="background:${STATUS_COLORS[s.active_status]}15;color:${STATUS_COLORS[s.active_status]};border:1px solid ${STATUS_COLORS[s.active_status]}30">${STATUS_LABELS[s.active_status]}</span></td>
-      <td>${renderPipeline(s.active_status)}</td>
+      <td><span class="badge-status" style="background:${tierColor(tn)}15;color:${tierColor(tn)};border:1px solid ${tierColor(tn)}30">${tierLabel(tn)}</span></td>
+      <td>${renderPipeline(tn)}</td>
+      <td class="text-right">${s.days_in_status||0}d</td>
       <td class="text-right text-dim">${s.updated_at ? new Date(s.updated_at).toLocaleString('pt-BR') : '—'}</td>
     </tr>`;
   }
   return `<div class="card section"><div class="card-header"><div class="card-title">🚀 Pipeline de Promoção</div></div>
     <div class="card-body"><table><thead><tr>
-      <th>Ativo</th><th>Estratégia</th><th>Status</th><th>Pipeline</th><th class="text-right">Atualizado</th>
+      <th>Ativo</th><th>Estratégia</th><th>Status</th><th>Pipeline</th><th class="text-right">Dias</th><th class="text-right">Atualizado</th>
     </tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 function renderPipeline(status) {
   const stages = [0,1,2,3];
+  const labels = ['OBS','SHD','P.SM','P.FL'];
   let html = '<div class="pipeline">';
   for(const i of stages) {
     const active = i <= status;
-    const color = active ? STATUS_COLORS[i] : 'var(--muted)';
-    const glow = i===status ? `box-shadow:0 0 6px ${STATUS_COLORS[i]}` : '';
-    html += `<div class="pip" style="background:${color};${glow}"></div>`;
+    const color = active ? (STATUS_COLORS[i]||'var(--dim)') : 'var(--muted)';
+    const glow = i===status ? `box-shadow:0 0 6px ${STATUS_COLORS[i]||'var(--dim)'}` : '';
+    html += `<div class="pip" style="background:${color};${glow}" title="${labels[i]}"></div>`;
     if(i<3) html += `<div class="pip-line ${i<status?'active':''}"></div>`;
   }
-  html += `<span class="text-mono" style="font-size:10px;color:${STATUS_COLORS[status]};margin-left:6px">${STATUS_LABELS[status]}</span></div>`;
+  html += '</div>';
   return html;
 }
 
 function renderScorecardTable() {
-  if(state.scorecards.length===0) return '';
+  if(state.scorecards.length === 0) {
+    return `<div class="card section"><div class="card-header"><div class="card-title">🏆 Scorecards</div></div>
+      <div class="card-body"><div class="empty-state"><p style="font-size:13px">Scorecards serão gerados após primeiros trades completados</p>
+      <p style="font-size:11px;margin-top:4px;color:var(--muted)">O learning engine computa scorecards ao fechar trades</p></div></div></div>`;
+  }
   let rows = '';
   for(const sc of state.scorecards) {
-    const pnlColor = sc.pnl_total>=0?'text-profit':'text-loss';
+    const pnlColor = (sc.pnl_total||0) >= 0 ? 'text-profit' : 'text-loss';
     rows += `<tr>
       <td>${STRATEGIES[sc.strategy_type]?.label||sc.strategy_type}</td>
       <td class="text-mono">${sc.symbol}</td>
       <td class="text-right">${sc.opportunities_seen||0}</td>
-      <td class="text-right">${sc.opportunities_approved||0}</td>
       <td class="text-right">${sc.trades_executed||0}</td>
       <td class="text-right text-mono ${pnlColor}" style="font-weight:700">R$ ${(sc.pnl_total||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</td>
       <td class="text-right">${(sc.sharpe||0).toFixed(2)}</td>
@@ -342,40 +729,53 @@ function renderScorecardTable() {
   }
   return `<div class="card section"><div class="card-header"><div class="card-title">🏆 Scorecards</div></div>
     <div class="card-body"><table><thead><tr>
-      <th>Estratégia</th><th>Ativo</th><th class="text-right">Vistas</th><th class="text-right">Aprovadas</th>
-      <th class="text-right">Executadas</th><th class="text-right">P&L</th><th class="text-right">Sharpe</th><th class="text-right">Fill %</th>
+      <th>Estratégia</th><th>Ativo</th><th class="text-right">Vistas</th>
+      <th class="text-right">Trades</th><th class="text-right">P&L</th><th class="text-right">Sharpe</th><th class="text-right">Fill %</th>
     </tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 function renderOpportunitiesTable(opps, title) {
-  if(opps.length===0) {
-    return `<div class="card section"><div class="card-header"><div class="card-title">⚡ ${title}</div>
-      <span style="font-size:11px;color:var(--dim)">${opps.length} encontradas</span></div>
+  if(opps.length === 0) {
+    const ss = state.systemState;
+    let reason = 'Nenhuma oportunidade detectada';
+    let detail = 'Scan loops rodando a cada 45-60s';
+    if(!ss?.market?.open) {
+      reason = 'Mercado fechado — sem oportunidades';
+      detail = `Próxima sessão: ${ss?.market?.is_weekday ? 'amanhã 10:00 BRT' : 'segunda 10:00 BRT'}`;
+    } else {
+      const totalCal = Object.values(ss?.strategies||{}).reduce((a,v)=>a+(v.calibration_records||0),0);
+      if(totalCal < 10) {
+        reason = 'Sistema em calibração — coletando dados';
+        detail = `${totalCal} pontos de calibração coletados`;
+      }
+    }
+    return `<div class="card section"><div class="card-header"><div class="card-title">⚡ ${title}</div></div>
       <div class="card-body"><div class="empty-state">
         <div style="font-size:32px;opacity:.3;margin-bottom:8px">⏳</div>
-        <p style="font-size:13px">Nenhuma oportunidade detectada ainda</p>
-        <p style="font-size:11px;margin-top:4px;color:var(--muted)">FST precisa de 5 dias de calibração · Scan loops rodando a cada 45-60s</p>
+        <p style="font-size:13px">${reason}</p>
+        <p style="font-size:11px;margin-top:4px;color:var(--muted)">${detail}</p>
       </div></div></div>`;
   }
   let rows = '';
   for(const opp of opps.slice(0,50)) {
     const meta = STRATEGIES[opp.strategy_type];
-    const edgeColor = (opp.expected_edge_bps||0)>0 ? 'text-profit' : 'text-dim';
+    const edgeColor = (opp.expected_edge_bps||0) > 0 ? 'text-profit' : 'text-dim';
     rows += `<tr>
       <td class="text-mono text-dim">${opp.timestamp ? new Date(opp.timestamp).toLocaleTimeString('pt-BR') : '—'}</td>
       <td><span style="display:inline-flex;align-items:center;gap:4px"><span class="dot" style="background:${meta?.color||'var(--accent)'}"></span>${meta?.label||opp.strategy_type}</span></td>
       <td class="text-mono" style="font-weight:700">${opp.symbol}</td>
       <td class="text-dim">${opp.opportunity_type||'—'}</td>
-      <td class="text-right text-mono">${opp.strike ? 'R$ '+opp.strike.toFixed(2) : '—'}</td>
-      <td class="text-right text-mono ${edgeColor}" style="font-weight:700">${opp.expected_edge_bps?.toFixed(2)||'—'}</td>
-      <td class="text-right">${opp.liquidity_score?.toFixed(1)||'—'}</td>
+      <td class="text-right text-mono">${opp.strike ? 'R$ '+parseFloat(opp.strike).toFixed(2) : '—'}</td>
+      <td class="text-right text-mono ${edgeColor}" style="font-weight:700">${opp.expected_edge_bps!=null?parseFloat(opp.expected_edge_bps).toFixed(2):'—'}</td>
+      <td class="text-right">${opp.liquidity_score!=null?parseFloat(opp.liquidity_score).toFixed(1):'—'}</td>
+      <td class="text-right text-dim">${opp.decision||'—'}</td>
     </tr>`;
   }
   return `<div class="card section"><div class="card-header"><div class="card-title">⚡ ${title}</div>
     <span style="font-size:11px;color:var(--dim)">${opps.length} encontradas</span></div>
     <div class="card-body" style="overflow-x:auto"><table><thead><tr>
       <th>Hora</th><th>Estratégia</th><th>Ativo</th><th>Tipo</th>
-      <th class="text-right">Strike</th><th class="text-right">Edge (bps)</th><th class="text-right">Liquidez</th>
+      <th class="text-right">Strike</th><th class="text-right">Edge (bps)</th><th class="text-right">Liquidez</th><th class="text-right">Decisão</th>
     </tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
@@ -383,36 +783,78 @@ function renderOpportunitiesTable(opps, title) {
 function renderStrategyTab(key) {
   const meta = STRATEGIES[key];
   if(!meta) return '<p>Estratégia não encontrada</p>';
+  const ss = state.systemState?.strategies?.[key];
+  const smart = smartStatus(key);
   const opps = state.opps.filter(o=>o.strategy_type===key);
-  const statuses = state.statuses.filter(s=>s.strategy_type===key);
-  const hKey = Object.keys(state.health?.strategies||{}).find(x=>x.includes(key.toLowerCase().replace(/_/g,'')));
-  const sh = hKey ? state.health.strategies[hKey] : null;
+  const stratPositions = state.positions.filter(p=>p.strategy===key);
 
   let html = `<div class="strat-header">
     <span class="strat-icon" style="background:${meta.color}15;border:1px solid ${meta.color}30;font-size:24px">${meta.icon}</span>
     <div style="flex:1"><h2>${meta.label}</h2><p>${meta.desc}</p></div>
     <div style="text-align:right">
-      <span class="badge ${sh?.healthy?'badge-healthy':'badge-degraded'}">${sh?.healthy?'✓ HEALTHY':'⚠ DEGRADED'}</span>
-      <div style="margin-top:6px;font-size:11px;color:var(--dim)">Heartbeat: <span class="text-mono">${sh?.last_heartbeat ? new Date(sh.last_heartbeat).toLocaleTimeString('pt-BR') : 'Aguardando...'}</span></div>
+      <span class="badge-status" style="background:${tierColor(ss?.best_tier)}15;color:${tierColor(ss?.best_tier)};border:1px solid ${tierColor(ss?.best_tier)}30">${tierLabel(ss?.best_tier)}</span>
+      <div class="smart-indicator" style="margin-top:8px;justify-content:flex-end">
+        <span class="smart-dot${smart.pulse?' pulse':''}" style="background:${smart.dotColor}"></span>
+        <span style="color:var(--dim)">${smart.text}</span>
+      </div>
     </div>
   </div>`;
 
+  // KPI row for this strategy
   html += `<div class="grid-4 section">
-    ${statCard('Oportunidades',opps.length,'Detectadas',meta.color)}
-    ${statCard('Ativos Ativos',statuses.length,statuses.map(s=>s.symbol).join(', ')||'Nenhum','var(--accent)')}
-    ${statCard('Último Beat',sh?.last_heartbeat?new Date(sh.last_heartbeat).toLocaleTimeString('pt-BR'):'—','Heartbeat','var(--dim)')}
-    ${statCard('Opp. 1h',sh?.opportunities_1h??0,'Nesta hora','var(--profit)')}
+    ${statCard('Oportunidades 1h', ss?.opportunities_1h || 0, ss?.opportunities_1h > 0 ? 'Detectadas recentemente' : 'Nenhuma nesta hora', meta.color)}
+    ${statCard('Posições Abertas', ss?.open_trades || 0, stratPositions.length > 0 ? stratPositions.map(p=>p.symbol).join(', ') : 'Nenhuma', 'var(--accent)')}
+    ${statCard('P&L Total', 'R$ '+(ss?.total_pnl||0).toFixed(2), `${ss?.total_trades||0} trades realizados`, (ss?.total_pnl||0) >= 0 ? 'var(--profit)' : 'var(--loss)')}
+    ${statCard('Calibração', `${ss?.calibration_records||0} pts`, ss?.last_calibration ? 'Última: '+new Date(ss.last_calibration).toLocaleString('pt-BR') : 'Sem calibração ainda', 'var(--orange)')}
   </div>`;
 
-  if(statuses.length>0) {
+  // Learning stats for this strategy
+  const learnStats = state.learning?.strategies?.[key];
+  if(learnStats) {
+    html += `<div class="card section"><div class="card-header"><div class="card-title">🧠 Learning Engine</div></div>
+      <div class="card-body"><div class="grid-4">
+        <div><div class="stat-label">Confiança</div><div class="text-mono" style="font-size:16px;font-weight:700;color:var(--accent)">${fmtNum(learnStats.confidence_adjustment, 3)}</div></div>
+        <div><div class="stat-label">Win Rate</div><div class="text-mono" style="font-size:16px;font-weight:700;color:var(--profit)">${fmtPct(learnStats.win_rate)}</div></div>
+        <div><div class="stat-label">Sharpe</div><div class="text-mono" style="font-size:16px;font-weight:700">${fmtNum(learnStats.sharpe, 3)}</div></div>
+        <div><div class="stat-label">Edge Accuracy</div><div class="text-mono" style="font-size:16px;font-weight:700">${fmtPct(learnStats.edge_accuracy)}</div></div>
+      </div></div></div>`;
+  }
+
+  // Active positions
+  if(stratPositions.length > 0) {
+    let posRows = '';
+    for(const p of stratPositions) {
+      const pnlColor = (p.unrealized_pnl||0) >= 0 ? 'text-profit' : 'text-loss';
+      posRows += `<tr>
+        <td class="text-mono" style="font-weight:700">${p.symbol}</td>
+        <td class="text-dim">${p.structure_type||'—'}</td>
+        <td class="text-right text-mono">${p.notional ? 'R$ '+parseFloat(p.notional).toFixed(0) : '—'}</td>
+        <td class="text-right text-mono ${pnlColor}" style="font-weight:700">${p.unrealized_pnl!=null?'R$ '+parseFloat(p.unrealized_pnl).toFixed(2):'—'}</td>
+        <td class="text-right">${p.delta!=null?parseFloat(p.delta).toFixed(3):'—'}</td>
+        <td class="text-right">${p.theta!=null?parseFloat(p.theta).toFixed(3):'—'}</td>
+        <td class="text-right text-dim">${p.time_in_trade_hours!=null?parseFloat(p.time_in_trade_hours).toFixed(1)+'h':'—'}</td>
+      </tr>`;
+    }
+    html += `<div class="card section"><div class="card-header"><div class="card-title">📍 Posições Abertas</div></div>
+      <div class="card-body"><table><thead><tr>
+        <th>Ativo</th><th>Estrutura</th><th class="text-right">Notional</th><th class="text-right">P&L NR</th>
+        <th class="text-right">Delta</th><th class="text-right">Theta</th><th class="text-right">Tempo</th>
+      </tr></thead><tbody>${posRows}</tbody></table></div></div>`;
+  }
+
+  // Status per asset
+  const statuses = state.statuses.filter(s=>s.strategy_type===key);
+  if(statuses.length > 0) {
     let statusCards = '';
     for(const s of statuses) {
+      const tn = tierNum(s.current_status || s.active_status);
       statusCards += `<div class="card" style="padding:12px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <span class="text-mono" style="font-weight:700;font-size:14px">${s.symbol}</span>
-          <span class="badge-status" style="background:${STATUS_COLORS[s.active_status]}15;color:${STATUS_COLORS[s.active_status]};border:1px solid ${STATUS_COLORS[s.active_status]}30">${STATUS_LABELS[s.active_status]}</span>
+          <span class="badge-status" style="background:${tierColor(tn)}15;color:${tierColor(tn)};border:1px solid ${tierColor(tn)}30">${tierLabel(tn)}</span>
         </div>
-        ${renderPipeline(s.active_status)}
+        ${renderPipeline(tn)}
+        <div style="font-size:10px;color:var(--dim);margin-top:6px">${s.days_in_status||0} dias neste tier</div>
       </div>`;
     }
     html += `<div class="card section"><div class="card-header"><div class="card-title">Status por Ativo</div></div>
@@ -420,25 +862,515 @@ function renderStrategyTab(key) {
   }
 
   html += renderOpportunitiesTable(opps, meta.label);
+  return html;
+}
 
-  const sc = state.scorecards.filter(s=>s.strategy_type===key);
-  if(sc.length>0) {
-    let scCards = '';
-    for(const s of sc) {
-      const c = s.pnl_total>=0?'var(--profit)':'var(--loss)';
-      scCards += `<div class="card" style="padding:12px">
-        <div style="font-size:11px;font-weight:600;color:var(--dim);margin-bottom:4px">${s.symbol}</div>
-        <div class="text-mono" style="font-size:18px;font-weight:700;color:${c}">R$ ${(s.pnl_total||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;font-size:11px;color:var(--dim)">
-          <div>Sharpe: <span style="color:var(--text)">${(s.sharpe||0).toFixed(2)}</span></div>
-          <div>Fill: <span style="color:var(--text)">${((s.fill_ratio||0)*100).toFixed(1)}%</span></div>
-          <div>Trades: <span style="color:var(--text)">${s.trades_executed||0}</span></div>
-          <div>Aprovadas: <span style="color:var(--text)">${s.opportunities_approved||0}</span></div>
-        </div>
+// ─── P&L Tab ────────────────────────────────────────────────────
+function renderPnlTab() {
+  let html = `<div class="strat-header" style="border-left:3px solid var(--profit)">
+    <span style="font-size:24px">📈</span>
+    <div><h2>P&L — Profit & Loss</h2><p>Resultado diário, mensal e anual por estratégia — inclui P&L acumulado, best/worst trade</p></div>
+  </div>`;
+
+  // Annual P&L
+  html += `<div class="card section"><div class="card-header"><div class="card-title">📅 P&L Anual</div></div><div class="card-body">`;
+  if(state.pnlAnnual.length > 0) {
+    let rows = '';
+    for(const r of state.pnlAnnual) {
+      const pnlC = parseFloat(r.total_pnl||0) >= 0 ? 'text-profit' : 'text-loss';
+      rows += `<tr>
+        <td class="text-mono" style="font-weight:700">${r.year||'—'}</td>
+        <td>${STRATEGIES[r.strategy_type]?.label||r.strategy_type}</td>
+        <td class="text-right">${r.trade_count||0}</td>
+        <td class="text-right"><span style="color:var(--profit)">${r.wins||0}</span> / <span style="color:var(--loss)">${r.losses||0}</span></td>
+        <td class="text-right text-mono" style="font-weight:700;color:${parseFloat(r.win_rate||0)>=0.5?'var(--profit)':'var(--loss)'}">${((r.win_rate||0)*100).toFixed(1)}%</td>
+        <td class="text-right text-mono ${pnlC}" style="font-weight:700">R$ ${parseFloat(r.total_pnl||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</td>
+        <td class="text-right text-mono">R$ ${parseFloat(r.avg_pnl||0).toFixed(2)}</td>
+        <td class="text-right text-mono text-profit">R$ ${parseFloat(r.best_trade||0).toFixed(2)}</td>
+        <td class="text-right text-mono text-loss">R$ ${parseFloat(r.worst_trade||0).toFixed(2)}</td>
+      </tr>`;
+    }
+    html += `<table><thead><tr>
+      <th>Ano</th><th>Estratégia</th><th class="text-right">Trades</th><th class="text-right">W/L</th>
+      <th class="text-right">Win Rate</th><th class="text-right">P&L Total</th><th class="text-right">P&L Médio</th>
+      <th class="text-right">Melhor</th><th class="text-right">Pior</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  } else {
+    html += `<div class="empty-state"><p style="font-size:13px">Nenhum dado anual — trades serão registrados aqui após primeiro fechamento</p></div>`;
+  }
+  html += '</div></div>';
+
+  // Monthly P&L
+  html += `<div class="card section"><div class="card-header"><div class="card-title">📆 P&L Mensal</div></div><div class="card-body">`;
+  if(state.pnlMonthly.length > 0) {
+    let rows = '';
+    for(const r of state.pnlMonthly) {
+      const pnlC = parseFloat(r.total_pnl||0) >= 0 ? 'text-profit' : 'text-loss';
+      rows += `<tr>
+        <td class="text-mono" style="font-weight:700">${r.year_month||'—'}</td>
+        <td>${STRATEGIES[r.strategy_type]?.label||r.strategy_type}</td>
+        <td class="text-right">${r.trade_count||0}</td>
+        <td class="text-right" style="color:${parseFloat(r.win_rate||0)>=0.5?'var(--profit)':'var(--loss)'}">${((r.win_rate||0)*100).toFixed(1)}%</td>
+        <td class="text-right text-mono ${pnlC}" style="font-weight:700">R$ ${parseFloat(r.total_pnl||0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</td>
+        <td class="text-right text-mono">R$ ${parseFloat(r.avg_pnl||0).toFixed(2)}</td>
+        <td class="text-right text-mono">${parseFloat(r.profit_factor||0).toFixed(2)}</td>
+        <td class="text-right text-mono">${parseFloat(r.avg_slippage||0).toFixed(4)}</td>
+      </tr>`;
+    }
+    html += `<table><thead><tr>
+      <th>Mês</th><th>Estratégia</th><th class="text-right">Trades</th><th class="text-right">Win Rate</th>
+      <th class="text-right">P&L Total</th><th class="text-right">P&L Médio</th><th class="text-right">Profit Factor</th><th class="text-right">Avg Slippage</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  } else {
+    html += `<div class="empty-state"><p style="font-size:13px">Nenhum dado mensal disponível</p></div>`;
+  }
+  html += '</div></div>';
+
+  // Daily P&L
+  html += `<div class="card section"><div class="card-header"><div class="card-title">📋 P&L Diário</div>
+    <span style="font-size:11px;color:var(--dim)">${state.pnlDaily.length} dias</span></div><div class="card-body">`;
+  if(state.pnlDaily.length > 0) {
+    // P&L bar chart (last 20 days)
+    const last20 = state.pnlDaily.slice(0, 20).reverse();
+    const maxAbs = Math.max(...last20.map(d=>Math.abs(parseFloat(d.total_pnl||0))), 1);
+    let bars = '';
+    for(const d of last20) {
+      const pnl = parseFloat(d.total_pnl||0);
+      const h = Math.max(4, Math.abs(pnl)/maxAbs * 80);
+      const color = pnl >= 0 ? 'var(--profit)' : 'var(--loss)';
+      const dateStr = d.trade_date ? new Date(d.trade_date+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}) : '';
+      bars += `<div class="bar-col">
+        <div class="bar-value" style="color:${color};font-size:9px">${pnl.toFixed(0)}</div>
+        <div class="bar" style="height:${h}px;background:${color}"></div>
+        <div class="bar-label" style="font-size:9px">${dateStr}</div>
       </div>`;
     }
-    html += `<div class="card section"><div class="card-header"><div class="card-title">🏆 Scorecard</div></div>
-      <div class="card-body"><div class="grid-4">${scCards}</div></div></div>`;
+    html += `<div class="bar-chart" style="height:120px;margin-bottom:16px">${bars}</div>`;
+
+    let rows = '';
+    for(const r of state.pnlDaily.slice(0, 30)) {
+      const pnlC = parseFloat(r.total_pnl||0) >= 0 ? 'text-profit' : 'text-loss';
+      const cumC = parseFloat(r.cumulative_pnl||0) >= 0 ? 'text-profit' : 'text-loss';
+      rows += `<tr>
+        <td class="text-mono">${r.trade_date||'—'}</td>
+        <td>${STRATEGIES[r.strategy_type]?.label||r.strategy_type}</td>
+        <td class="text-right">${r.trade_count||0}</td>
+        <td class="text-right" style="color:${parseFloat(r.win_rate||0)>=0.5?'var(--profit)':'var(--loss)'}">${((r.win_rate||0)*100).toFixed(0)}%</td>
+        <td class="text-right text-mono ${pnlC}" style="font-weight:700">R$ ${parseFloat(r.total_pnl||0).toFixed(2)}</td>
+        <td class="text-right text-mono ${cumC}">R$ ${parseFloat(r.cumulative_pnl||0).toFixed(2)}</td>
+        <td class="text-right text-mono text-profit">${parseFloat(r.best_trade||0).toFixed(2)}</td>
+        <td class="text-right text-mono text-loss">${parseFloat(r.worst_trade||0).toFixed(2)}</td>
+      </tr>`;
+    }
+    html += `<table><thead><tr>
+      <th>Data</th><th>Estratégia</th><th class="text-right">Trades</th><th class="text-right">WR</th>
+      <th class="text-right">P&L</th><th class="text-right">Acumulado</th><th class="text-right">Melhor</th><th class="text-right">Pior</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  } else {
+    html += `<div class="empty-state"><p style="font-size:13px">Nenhum P&L diário registrado — aparecerá após primeiros trades fechados</p></div>`;
+  }
+  html += '</div></div>';
+
+  return html;
+}
+
+// ─── Win Rate Tab ───────────────────────────────────────────────
+function renderWinRateTab() {
+  let html = `<div class="strat-header" style="border-left:3px solid var(--purple)">
+    <span style="font-size:24px">🎯</span>
+    <div><h2>Win Rate</h2><p>Taxa de acerto por estratégia e ativo — reward/risk ratio, expectancy, detalhamento W/L</p></div>
+  </div>`;
+
+  if(state.winRate.length === 0) {
+    return html + `<div class="card section"><div class="card-body"><div class="empty-state">
+      <p style="font-size:13px">Sem dados de win rate — serão computados após primeiros trades fechados nos últimos 90 dias</p>
+    </div></div></div>`;
+  }
+
+  // Summary KPIs from aggregated win rate
+  let totalTrades = 0, totalWins = 0, totalPnl = 0, bestExpectancy = -Infinity, bestExpStrat = '';
+  for(const w of state.winRate) {
+    totalTrades += parseInt(w.total_trades||0);
+    totalWins += parseInt(w.wins||0);
+    totalPnl += parseFloat(w.total_pnl||0);
+    if(parseFloat(w.expectancy||0) > bestExpectancy) { bestExpectancy = parseFloat(w.expectancy||0); bestExpStrat = `${w.strategy_type}/${w.symbol}`; }
+  }
+  const globalWR = totalTrades > 0 ? (totalWins/totalTrades*100).toFixed(1) : '—';
+
+  html += `<div class="grid-4 section">
+    ${statCard('Win Rate Global', `${globalWR}%`, `${totalWins} wins de ${totalTrades} trades`, parseFloat(globalWR)>=50?'var(--profit)':'var(--loss)')}
+    ${statCard('P&L Total (90d)', 'R$ '+totalPnl.toFixed(2), `${totalTrades} trades no período`, totalPnl>=0?'var(--profit)':'var(--loss)')}
+    ${statCard('Melhor Expectancy', bestExpectancy>-Infinity?bestExpectancy.toFixed(2):'—', bestExpStrat, 'var(--accent)')}
+    ${statCard('Estratégias Avaliadas', state.winRate.length, 'Pares estratégia/ativo', 'var(--purple)')}
+  </div>`;
+
+  // Win rate per strategy cards
+  const byStrategy = {};
+  for(const w of state.winRate) {
+    const sk = w.strategy_type;
+    if(!byStrategy[sk]) byStrategy[sk] = { trades:0, wins:0, pnl:0, entries:[] };
+    byStrategy[sk].trades += parseInt(w.total_trades||0);
+    byStrategy[sk].wins += parseInt(w.wins||0);
+    byStrategy[sk].pnl += parseFloat(w.total_pnl||0);
+    byStrategy[sk].entries.push(w);
+  }
+
+  html += '<div class="grid-4 section">';
+  for(const [sk, data] of Object.entries(byStrategy)) {
+    const wr = data.trades > 0 ? (data.wins/data.trades*100).toFixed(1) : '0';
+    const wrColor = parseFloat(wr) >= 60 ? 'var(--profit)' : parseFloat(wr) >= 40 ? 'var(--orange)' : 'var(--loss)';
+    const meta = STRATEGIES[sk];
+    html += `<div class="card stat-card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span style="font-size:14px">${meta?.icon||'📊'}</span>
+        <span style="font-size:12px;font-weight:600">${meta?.label||sk}</span>
+      </div>
+      <div class="text-mono" style="font-size:28px;font-weight:700;color:${wrColor}">${wr}%</div>
+      <div style="font-size:11px;color:var(--dim)">${data.wins}W / ${data.trades-data.wins}L · ${data.trades} trades</div>
+      <div style="font-size:11px;color:${data.pnl>=0?'var(--profit)':'var(--loss)'};font-weight:700">P&L: R$ ${data.pnl.toFixed(2)}</div>
+    </div>`;
+  }
+  html += '</div>';
+
+  // Full table
+  let rows = '';
+  for(const w of state.winRate) {
+    const wrColor = (w.win_rate||0) >= 0.6 ? 'var(--profit)' : (w.win_rate||0) >= 0.4 ? 'var(--orange)' : 'var(--loss)';
+    const pnlC = parseFloat(w.total_pnl||0) >= 0 ? 'text-profit' : 'text-loss';
+    rows += `<tr>
+      <td>${STRATEGIES[w.strategy_type]?.label||w.strategy_type}</td>
+      <td class="text-mono" style="font-weight:700">${w.symbol||'—'}</td>
+      <td class="text-right">${w.total_trades||0}</td>
+      <td class="text-right"><span style="color:var(--profit)">${w.wins||0}</span> / <span style="color:var(--loss)">${w.losses||0}</span></td>
+      <td class="text-right text-mono" style="font-weight:700;color:${wrColor}">${((w.win_rate||0)*100).toFixed(1)}%</td>
+      <td class="text-right text-mono ${pnlC}" style="font-weight:700">R$ ${parseFloat(w.total_pnl||0).toFixed(2)}</td>
+      <td class="text-right text-mono">R$ ${parseFloat(w.avg_pnl||0).toFixed(2)}</td>
+      <td class="text-right text-mono">${parseFloat(w.avg_edge_expected||0).toFixed(2)} bps</td>
+      <td class="text-right text-mono">${parseFloat(w.reward_risk_ratio||0).toFixed(2)}</td>
+      <td class="text-right text-mono" style="font-weight:700;color:var(--accent)">${parseFloat(w.expectancy||0).toFixed(2)}</td>
+    </tr>`;
+  }
+  html += `<div class="card section"><div class="card-header"><div class="card-title">📋 Detalhamento Completo</div></div>
+    <div class="card-body" style="overflow-x:auto"><table><thead><tr>
+      <th>Estratégia</th><th>Ativo</th><th class="text-right">Trades</th><th class="text-right">W/L</th>
+      <th class="text-right">Win Rate</th><th class="text-right">P&L Total</th><th class="text-right">P&L Médio</th>
+      <th class="text-right">Edge Esp.</th><th class="text-right">Rew/Risk</th><th class="text-right">Expectancy</th>
+    </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+
+  return html;
+}
+
+// ─── Capital Tab ────────────────────────────────────────────────
+function renderCapitalTab() {
+  let html = `<div class="strat-header" style="border-left:3px solid var(--gold)">
+    <span style="font-size:24px">💰</span>
+    <div><h2>Capital & Alocação</h2><p>Capital inicial, alocação por estratégia, limites de risco, utilização e reserva</p></div>
+  </div>`;
+
+  const capDet = state.capitalDetail;
+  const capSnap = state.capital?.snapshot;
+
+  // Main capital KPIs
+  html += `<div class="grid-4 section">
+    ${statCard('Capital Inicial', capDet ? 'R$ '+capDet.initial_capital.toLocaleString('pt-BR') : '—', 'Configurado no sistema', 'var(--gold)')}
+    ${statCard('Alocado (Notional)', capDet ? 'R$ '+capDet.total_allocated_notional.toLocaleString('pt-BR') : '—', `Utilização: ${capDet?.utilization_pct||0}%`, 'var(--orange)')}
+    ${statCard('Reserva Disponível', capDet ? 'R$ '+capDet.available_reserve.toLocaleString('pt-BR') : '—', 'Capital não alocado', 'var(--profit)')}
+    ${statCard('Max Loss Diário', capDet ? 'R$ '+capDet.max_daily_loss_global.toLocaleString('pt-BR') : '—', 'Limite global de perda/dia', 'var(--loss)')}
+  </div>`;
+
+  // Capital manager real-time
+  if(capSnap) {
+    const usedPct = capSnap.total_capital > 0 ? (capSnap.allocated / capSnap.total_capital * 100).toFixed(1) : 0;
+    html += `<div class="card section"><div class="card-header"><div class="card-title">⚡ Capital Manager (Tempo Real)</div></div>
+      <div class="card-body"><div class="grid-4">
+        <div><div class="stat-label">Capital Total</div><div class="text-mono" style="font-size:18px;font-weight:700">R$ ${capSnap.total_capital.toLocaleString('pt-BR')}</div></div>
+        <div><div class="stat-label">Em Uso</div><div class="text-mono" style="font-size:18px;font-weight:700;color:var(--orange)">R$ ${capSnap.allocated.toLocaleString('pt-BR')} <span style="font-size:12px">(${usedPct}%)</span></div></div>
+        <div><div class="stat-label">Livre</div><div class="text-mono" style="font-size:18px;font-weight:700;color:var(--profit)">R$ ${capSnap.available.toLocaleString('pt-BR')}</div></div>
+        <div><div class="stat-label">P&L Hoje</div><div class="text-mono" style="font-size:18px;font-weight:700;color:${capSnap.daily_pnl>=0?'var(--profit)':'var(--loss)'}">R$ ${capSnap.daily_pnl.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div></div>
+      </div>
+      <div style="margin-top:12px"><div class="stat-label">Loss Diário Restante</div>
+        <div class="progress-bar" style="height:8px;margin-top:4px"><div class="progress-fill" style="width:${capSnap.daily_loss_remaining>0?Math.min(100,(capSnap.daily_loss_remaining/(capDet?.max_daily_loss_global||1)*100)).toFixed(0):0}%;background:var(--orange)"></div></div>
+        <div style="font-size:11px;color:var(--dim);margin-top:4px">R$ ${capSnap.daily_loss_remaining.toLocaleString('pt-BR',{minimumFractionDigits:2})} restante · ${capSnap.positions_count} posições abertas</div>
+      </div>
+    </div></div>`;
+  }
+
+  // Per-strategy allocation
+  if(capDet?.strategies) {
+    let rows = '';
+    for(const [sk, s] of Object.entries(capDet.strategies)) {
+      const meta = STRATEGIES[sk];
+      rows += `<tr>
+        <td style="display:flex;align-items:center;gap:6px"><span style="font-size:14px">${meta?.icon||'📊'}</span> ${meta?.label||sk}</td>
+        <td class="text-right text-mono" style="font-weight:700">R$ ${(s.max_notional||0).toLocaleString('pt-BR')}</td>
+        <td class="text-right text-mono text-loss">R$ ${(s.max_daily_loss||0).toLocaleString('pt-BR')}</td>
+        <td class="text-right text-mono">${s.max_positions||0}</td>
+        <td class="text-right"><span class="badge ${s.enabled?'badge-healthy':'badge-degraded'}" style="font-size:9px">${s.enabled?'ATIVO':'DESAB.'}</span></td>
+      </tr>`;
+    }
+    html += `<div class="card section"><div class="card-header"><div class="card-title">📊 Alocação por Estratégia</div></div>
+      <div class="card-body"><table><thead><tr>
+        <th>Estratégia</th><th class="text-right">Max Notional</th><th class="text-right">Max Loss/Dia</th>
+        <th class="text-right">Max Posições</th><th class="text-right">Status</th>
+      </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  }
+
+  return html;
+}
+
+// ─── Trades Tab ─────────────────────────────────────────────────
+function renderTradesTab() {
+  let html = `<div class="strat-header" style="border-left:3px solid var(--accent)">
+    <span style="font-size:24px">📝</span>
+    <div><h2>Trades Fechados</h2><p>Histórico de trades executados com P&L, slippage, latência e motivo de fechamento</p></div>
+  </div>`;
+
+  // Active positions first
+  if(state.positions.length > 0) {
+    let posRows = '';
+    for(const p of state.positions) {
+      const pnlColor = (p.unrealized_pnl||0) >= 0 ? 'text-profit' : 'text-loss';
+      posRows += `<tr>
+        <td class="text-mono" style="font-weight:700">${p.symbol}</td>
+        <td>${STRATEGIES[p.strategy]?.label||p.strategy}</td>
+        <td class="text-dim">${p.structure_type||'—'}</td>
+        <td class="text-right text-mono">R$ ${parseFloat(p.notional||0).toFixed(0)}</td>
+        <td class="text-right text-mono ${pnlColor}" style="font-weight:700">${p.unrealized_pnl!=null?'R$ '+parseFloat(p.unrealized_pnl).toFixed(2):'—'}</td>
+        <td class="text-right">${p.delta!=null?parseFloat(p.delta).toFixed(3):'—'}</td>
+        <td class="text-right text-dim">${p.opened_at ? new Date(p.opened_at).toLocaleString('pt-BR') : '—'}</td>
+      </tr>`;
+    }
+    html += `<div class="card section"><div class="card-header"><div class="card-title">📍 Posições Abertas</div>
+      <span class="badge badge-healthy" style="font-size:10px">${state.positions.length} ativas</span></div>
+      <div class="card-body" style="overflow-x:auto"><table><thead><tr>
+        <th>Ativo</th><th>Estratégia</th><th>Estrutura</th><th class="text-right">Notional</th>
+        <th class="text-right">P&L NR</th><th class="text-right">Delta</th><th class="text-right">Aberto Em</th>
+      </tr></thead><tbody>${posRows}</tbody></table></div></div>`;
+  }
+
+  // Closed trades
+  if(state.tradesClosed.length > 0) {
+    let rows = '';
+    for(const t of state.tradesClosed) {
+      const pnlC = parseFloat(t.pnl||0) >= 0 ? 'text-profit' : 'text-loss';
+      rows += `<tr>
+        <td class="text-mono text-dim" style="font-size:10px">${t.trade_id?.substring(0,8)||'—'}</td>
+        <td>${STRATEGIES[t.strategy_type]?.label||t.strategy_type}</td>
+        <td class="text-mono" style="font-weight:700">${t.symbol}</td>
+        <td class="text-dim">${t.structure_type||'—'}</td>
+        <td class="text-right text-mono">${parseFloat(t.expected_edge||0).toFixed(2)} bps</td>
+        <td class="text-right text-mono ${pnlC}" style="font-weight:700">R$ ${parseFloat(t.pnl||0).toFixed(2)}</td>
+        <td class="text-right text-mono">${parseFloat(t.slippage||0).toFixed(4)}</td>
+        <td class="text-right text-mono">${parseFloat(t.latency_ms||0).toFixed(0)}ms</td>
+        <td class="text-dim">${t.close_reason||'—'}</td>
+        <td class="text-right text-dim" style="font-size:10px">${t.closed_at ? new Date(t.closed_at).toLocaleString('pt-BR') : '—'}</td>
+      </tr>`;
+    }
+    html += `<div class="card section"><div class="card-header"><div class="card-title">📋 Trades Fechados</div>
+      <span style="font-size:11px;color:var(--dim)">${state.tradesClosed.length} registros</span></div>
+      <div class="card-body" style="overflow-x:auto"><table><thead><tr>
+        <th>ID</th><th>Estratégia</th><th>Ativo</th><th>Estrutura</th><th class="text-right">Edge</th>
+        <th class="text-right">P&L</th><th class="text-right">Slippage</th><th class="text-right">Latência</th>
+        <th>Motivo</th><th class="text-right">Fechado</th>
+      </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  } else {
+    html += `<div class="card section"><div class="card-body"><div class="empty-state">
+      <p style="font-size:13px">Nenhum trade fechado registrado</p>
+      <p style="font-size:11px;margin-top:4px;color:var(--muted)">Trades aparecerão aqui após execução e fechamento pelo monitoring engine</p>
+    </div></div></div>`;
+  }
+
+  return html;
+}
+
+// ─── Calibration Tab ────────────────────────────────────────────
+function renderCalibrationTab() {
+  let html = `<div class="strat-header" style="border-left:3px solid var(--orange)">
+    <span style="font-size:24px">⏳</span>
+    <div><h2>Calibração</h2><p>Dados estatísticos de calibração por estratégia — médias, desvios, percentis</p></div>
+  </div>`;
+
+  // Per-strategy calibration summary
+  html += '<div class="grid-4 section">';
+  for(const [k,v] of Object.entries(STRATEGIES)) {
+    const ss = state.systemState?.strategies?.[k];
+    const calCount = ss?.calibration_records || 0;
+    const lastCal = ss?.last_calibration;
+    const pct = Math.min(100, calCount * 5); // rough progress: 20 records = 100%
+    const color = pct >= 100 ? 'var(--profit)' : pct >= 50 ? 'var(--orange)' : 'var(--loss)';
+    html += `<div class="card stat-card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span style="font-size:14px">${v.icon}</span>
+        <span style="font-size:12px;font-weight:600">${v.label}</span>
+      </div>
+      <div class="text-mono" style="font-size:20px;font-weight:700;color:${color}">${calCount} <span style="font-size:12px;color:var(--dim)">registros</span></div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${color}"></div></div>
+      <div style="font-size:10px;color:var(--dim);margin-top:4px">${lastCal ? 'Última: '+new Date(lastCal).toLocaleString('pt-BR') : 'Sem calibração ainda'}</div>
+    </div>`;
+  }
+  html += '</div>';
+
+  // Calibration records table
+  if(state.calibration.length > 0) {
+    let rows = '';
+    for(const c of state.calibration.slice(0,50)) {
+      rows += `<tr>
+        <td>${STRATEGIES[c.strategy_type]?.label || c.strategy_type}</td>
+        <td class="text-mono">${c.symbol||'—'}</td>
+        <td class="text-dim">${c.metric_name||'—'}</td>
+        <td class="text-right text-mono">${c.mean_val!=null?parseFloat(c.mean_val).toFixed(4):'—'}</td>
+        <td class="text-right text-mono">${c.std_val!=null?parseFloat(c.std_val).toFixed(4):'—'}</td>
+        <td class="text-right text-mono">${c.sample_count||'—'}</td>
+        <td class="text-right text-dim">${c.updated_at ? new Date(c.updated_at).toLocaleString('pt-BR') : '—'}</td>
+      </tr>`;
+    }
+    html += `<div class="card section"><div class="card-header"><div class="card-title">📋 Registros de Calibração</div>
+      <span style="font-size:11px;color:var(--dim)">${state.calibration.length} registros</span></div>
+      <div class="card-body" style="overflow-x:auto"><table><thead><tr>
+        <th>Estratégia</th><th>Ativo</th><th>Métrica</th>
+        <th class="text-right">Média</th><th class="text-right">Std</th><th class="text-right">Amostras</th><th class="text-right">Atualizado</th>
+      </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  } else {
+    html += `<div class="card section"><div class="card-body"><div class="empty-state">
+      <p style="font-size:13px">Nenhum dado de calibração disponível</p>
+      <p style="font-size:11px;margin-top:4px;color:var(--muted)">Calibração será populada após primeiros ciclos de scan com mercado aberto</p>
+    </div></div></div>`;
+  }
+
+  return html;
+}
+
+// ─── Liquidity Tab ──────────────────────────────────────────────
+function renderLiquidityTab() {
+  let html = `<div class="strat-header" style="border-left:3px solid var(--cyan)">
+    <span style="font-size:24px">💧</span>
+    <div><h2>Liquidez</h2><p>Scores de liquidez por ativo e monitoramento de book — determinam tier de execução</p></div>
+  </div>`;
+
+  html += renderLiquidityChart();
+
+  // Detailed liquidity table from state.liquidity
+  const entries = Object.entries(state.liquidity);
+  if(entries.length > 0) {
+    let rows = '';
+    for(const [sym, score] of entries) {
+      const color = score >= 80 ? 'var(--profit)' : score >= 50 ? 'var(--orange)' : 'var(--loss)';
+      const tierSuggested = score >= 80 ? 'PAPER_FULL' : score >= 60 ? 'PAPER_SMALL' : score >= 40 ? 'SHADOW' : 'OBSERVE';
+      rows += `<tr>
+        <td class="text-mono" style="font-weight:700">${sym}</td>
+        <td class="text-right"><span class="text-mono" style="font-weight:700;color:${color}">${score.toFixed(1)}</span></td>
+        <td><span class="badge-status" style="background:${color}15;color:${color};border:1px solid ${color}30">${tierSuggested}</span></td>
+        <td class="text-right text-dim">${score >= 80 ? 'Elegível execução full' : score >= 50 ? 'Execução limitada' : 'Apenas observação'}</td>
+      </tr>`;
+    }
+    html += `<div class="card section"><div class="card-header"><div class="card-title">📊 Detalhamento por Ativo</div></div>
+      <div class="card-body"><table><thead><tr>
+        <th>Ativo</th><th class="text-right">Score</th><th>Tier Sugerido</th><th class="text-right">Nota</th>
+      </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  } else {
+    html += `<div class="card section"><div class="card-body"><div class="empty-state">
+      <p style="font-size:13px">${!state.systemState?.market?.open ? 'Mercado fechado — scores de liquidez indisponíveis' : 'Aguardando cálculo de scores de liquidez...'}</p>
+    </div></div></div>`;
+  }
+
+  return html;
+}
+
+// ─── Health Tab ─────────────────────────────────────────────────
+function renderHealthTab() {
+  const ss = state.systemState;
+  let html = `<div class="strat-header" style="border-left:3px solid ${ss?.overall?.healthy_strategies===8?'var(--profit)':'var(--orange)'}">
+    <span style="font-size:24px">🏥</span>
+    <div><h2>Saúde do Sistema</h2><p>Estado detalhado de scan loops, providers, banco de dados e infraestrutura</p></div>
+  </div>`;
+
+  if(!ss) {
+    return html + '<div class="card"><div class="card-body"><div class="empty-state"><p>Carregando estado do sistema...</p></div></div></div>';
+  }
+
+  // System overview
+  html += `<div class="grid-3 section">
+    <div class="card stat-card">
+      <div class="stat-label">Mercado</div>
+      <div class="stat-value" style="font-size:18px;color:${ss.market.open?'var(--profit)':'var(--dim)'}">${ss.market.phase}</div>
+      <div class="stat-sub">BRT ${ss.market.brt_time} · ${ss.market.brt_date}</div>
+    </div>
+    <div class="card stat-card">
+      <div class="stat-label">Banco de Dados</div>
+      <div class="stat-value" style="font-size:18px;color:${ss.overall.db_healthy?'var(--profit)':'var(--loss)'}">${ss.overall.db_healthy?'CONECTADO':'ERRO'}</div>
+      <div class="stat-sub">MySQL</div>
+    </div>
+    <div class="card stat-card">
+      <div class="stat-label">Modo</div>
+      <div class="stat-value" style="font-size:18px;color:var(--accent)">${ss.overall.mode}</div>
+      <div class="stat-sub">Kill Switch: ${ss.overall.kill_switch?'ATIVADO':'Desativado'}</div>
+    </div>
+  </div>`;
+
+  // Provider health
+  html += `<div class="card section"><div class="card-header"><div class="card-title">🔌 Providers</div></div><div class="card-body">`;
+  const providers = ss.providers || {};
+  if(Object.keys(providers).length > 0) {
+    for(const [pname, ph] of Object.entries(providers)) {
+      const ok = ph.status === 'healthy' || ph.status === 'ok';
+      html += `<div class="info-row">
+        <span class="info-label">${pname.toUpperCase()}</span>
+        <span class="badge ${ok?'badge-healthy':'badge-warning'}" style="font-size:10px">${ph.status||'unknown'}</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--dim)">${ph.last_check ? new Date(ph.last_check).toLocaleString('pt-BR') : '—'}</span>
+      </div>`;
+    }
+  } else {
+    html += '<div style="padding:12px;font-size:12px;color:var(--dim)">Informação de providers não disponível — providers reportam health durante operação</div>';
+  }
+  html += '</div></div>';
+
+  // Per-strategy health detail
+  html += `<div class="card section"><div class="card-header"><div class="card-title">🔄 Scan Loops</div></div>
+    <div class="card-body"><table><thead><tr>
+      <th>Estratégia</th><th>Status</th><th>Heartbeat</th><th class="text-right">Opp. 1h</th>
+      <th class="text-right">Calibração</th><th class="text-right">Trades</th><th>Estado</th>
+    </tr></thead><tbody>`;
+
+  for(const [k,v] of Object.entries(STRATEGIES)) {
+    const s = ss.strategies[k];
+    if(!s) continue;
+    const smart = smartStatus(k);
+    const hbAge = s.seconds_since_heartbeat != null ? (s.seconds_since_heartbeat < 60 ? `${Math.round(s.seconds_since_heartbeat)}s atrás` : `${Math.round(s.seconds_since_heartbeat/60)}min atrás`) : 'Sem heartbeat';
+    html += `<tr>
+      <td style="display:flex;align-items:center;gap:6px"><span style="font-size:14px">${v.icon}</span> ${v.label}</td>
+      <td><span class="badge ${s.loop_healthy?'badge-healthy':'badge-neutral'}" style="font-size:10px">${s.loop_healthy?'ATIVO':'INATIVO'}</span></td>
+      <td class="text-mono text-dim" style="font-size:11px">${hbAge}</td>
+      <td class="text-right text-mono">${s.opportunities_1h}</td>
+      <td class="text-right text-mono">${s.calibration_records}</td>
+      <td class="text-right text-mono">${s.total_trades}</td>
+      <td class="smart-indicator"><span class="smart-dot${smart.pulse?' pulse':''}" style="background:${smart.dotColor}"></span> ${smart.text}</td>
+    </tr>`;
+  }
+  html += '</tbody></table></div></div>';
+
+  // Learning summary
+  if(state.learning?.summary) {
+    const ls = state.learning.summary;
+    html += `<div class="card section"><div class="card-header"><div class="card-title">🧠 Learning Engine</div></div>
+      <div class="card-body"><div class="grid-4">`;
+    if(typeof ls === 'object') {
+      for(const [lk, lv] of Object.entries(ls)) {
+        html += `<div><div class="stat-label">${lk.replace(/_/g,' ')}</div><div class="text-mono" style="font-size:14px;font-weight:700">${typeof lv === 'number' ? lv.toFixed(4) : lv}</div></div>`;
+      }
+    }
+    html += '</div></div></div>';
+  }
+
+  // Capital detail
+  if(state.capital?.snapshot) {
+    const cap = state.capital.snapshot;
+    html += `<div class="card section"><div class="card-header"><div class="card-title">💰 Capital</div></div>
+      <div class="card-body"><div class="grid-4">
+        <div><div class="stat-label">Total</div><div class="text-mono" style="font-size:16px;font-weight:700">R$ ${(cap.total_capital||0).toLocaleString('pt-BR')}</div></div>
+        <div><div class="stat-label">Alocado</div><div class="text-mono" style="font-size:16px;font-weight:700;color:var(--orange)">R$ ${(cap.allocated||0).toLocaleString('pt-BR')}</div></div>
+        <div><div class="stat-label">Disponível</div><div class="text-mono" style="font-size:16px;font-weight:700;color:var(--profit)">R$ ${(cap.available||0).toLocaleString('pt-BR')}</div></div>
+        <div><div class="stat-label">P&L Diário</div><div class="text-mono" style="font-size:16px;font-weight:700;color:${(cap.daily_pnl||0)>=0?'var(--profit)':'var(--loss)'}">R$ ${(cap.daily_pnl||0).toLocaleString('pt-BR')}</div></div>
+      </div></div></div>`;
   }
 
   return html;

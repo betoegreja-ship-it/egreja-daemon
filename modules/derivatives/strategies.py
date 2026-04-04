@@ -25,6 +25,154 @@ def _get_config():
         return _FallbackCfg()
 
 
+def _try_autonomous_execution(
+    log, services_dict, strategy, symbol, structure_type,
+    edge_magnitude, notional_estimate, strike=0.0, expiry='',
+    legs=None, spot_price=0.0, liquidity_score=0.0, active_status_str='',
+):
+    """
+    Unified autonomous execution pipeline for all derivatives strategies.
+
+    Pipeline: sizing → capital check → execute → (monitoring/learning automatic)
+
+    Args:
+        log: Logger
+        services_dict: Dict with 'deriv_execution', 'deriv_sizer', 'deriv_learner',
+                       'active_status_registry', 'capital_manager'
+        strategy: Strategy name (e.g., 'pcp')
+        symbol: Underlying symbol
+        structure_type: Trade structure type
+        edge_magnitude: Expected edge in R$
+        notional_estimate: Estimated notional
+        strike: Strike price
+        expiry: Expiry string (YYYYMMDD)
+        legs: List of leg dicts [{leg_type, symbol, qty, side, intended_price}]
+        spot_price: Current spot
+        liquidity_score: Current liquidity score
+        active_status_str: Current tier string
+
+    Returns:
+        True if execution attempted, False otherwise
+    """
+    try:
+        execution_engine = services_dict.get('deriv_execution')
+        sizer = services_dict.get('deriv_sizer')
+        capital_mgr = services_dict.get('capital_manager')
+        learner = services_dict.get('deriv_learner')
+
+        if not execution_engine or not sizer or not capital_mgr:
+            # Modules not yet initialized — fall back to logging only
+            return False
+
+        # Get capital snapshot
+        cap_snap = capital_mgr.get_snapshot()
+
+        # Check if trading is allowed
+        allowed, reason = capital_mgr.is_trading_allowed(strategy)
+        if not allowed:
+            log.info(f"Trading blocked for {strategy}: {reason}")
+            return False
+
+        # Get confidence adjustment from learning engine
+        confidence = 0.65  # base confidence
+        if learner:
+            adj = learner.get_confidence_adjustment(strategy, symbol)
+            confidence *= adj
+
+        # Compute position size
+        edge_bps = (edge_magnitude / notional_estimate * 10_000) if notional_estimate > 0 else 0
+        sizing = sizer.compute_size(
+            strategy=strategy,
+            symbol=symbol,
+            edge_bps=edge_bps,
+            confidence=confidence,
+            liquidity_tier=active_status_str or 'PAPER_FULL',
+            capital_available=cap_snap.available,
+            daily_loss_remaining=cap_snap.daily_loss_remaining,
+            spot_price=spot_price,
+        )
+
+        if sizing.notional <= 0:
+            log.debug(f"Sizing rejected {strategy}/{symbol}: {sizing.reason}")
+            return False
+
+        # Build legs if not provided
+        if not legs:
+            legs = [{
+                'leg_type': 'STOCK',
+                'symbol': symbol,
+                'qty': sizing.contracts or 1,
+                'side': 'BUY',
+                'intended_price': spot_price,
+            }]
+
+        # Scale leg quantities by sizing
+        if sizing.contracts > 0:
+            for leg in legs:
+                if leg.get('qty', 0) == 0:
+                    leg['qty'] = sizing.contracts
+
+        # Execute
+        trade = execution_engine.execute_trade(
+            strategy=strategy,
+            symbol=symbol,
+            structure_type=structure_type,
+            legs=legs,
+            expected_edge=edge_magnitude,
+            notional=sizing.notional,
+            strike=strike,
+            expiry=expiry,
+            liquidity_score=liquidity_score,
+            active_status=active_status_str,
+        )
+
+        log.info(
+            f"Autonomous execution {strategy}/{symbol}: "
+            f"trade_id={trade.trade_id}, status={trade.status.value}, "
+            f"notional=R${sizing.notional:,.0f}"
+        )
+        return True
+
+    except Exception as e:
+        log.warning(f"Autonomous execution error {strategy}/{symbol}: {e}")
+        return False
+
+
+def _try_autonomous_exec_generic(
+    log, services_dict, strategy, symbol, structure_type,
+    edge_magnitude, notional_estimate, spot_price,
+    strike=0.0, expiry='', legs=None,
+):
+    """
+    Convenience wrapper for non-PCP strategies.
+    Checks tier from active_status_registry, then delegates to _try_autonomous_execution.
+    """
+    try:
+        active_status_reg = services_dict.get('active_status_registry')
+        tier_str = 'OBSERVE'
+        if active_status_reg:
+            tier_obj = active_status_reg.get_status(symbol, strategy.upper())
+            tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+
+        if tier_str not in ('PAPER_FULL', 'PAPER_SMALL'):
+            return False
+
+        return _try_autonomous_execution(
+            log, services_dict,
+            strategy=strategy, symbol=symbol,
+            structure_type=structure_type,
+            edge_magnitude=edge_magnitude,
+            notional_estimate=notional_estimate,
+            strike=strike, expiry=expiry,
+            legs=legs, spot_price=spot_price,
+            liquidity_score=0.0,
+            active_status_str=tier_str,
+        )
+    except Exception as e:
+        log.warning(f"Generic exec wrapper error {strategy}/{symbol}: {e}")
+        return False
+
+
 def _b3_fees():
     """Return default B3 fee schedule."""
     return {
@@ -173,18 +321,40 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                                 opportunity_type=edge_type
                             )
 
-                            # Execute if eligible
-                            active_status = services_dict.get('active_status_registry')
-                            if active_status and active_status.get_status(asset, 'PCP') >= 2:
-                                executor = services_dict.get('executor')
-                                if executor:
-                                    try:
-                                        executor.execute_pcp(
-                                            asset, strike, call_quote.expiry,
-                                            edge_type, edge_magnitude
-                                        )
-                                    except Exception as e:
-                                        log.warning(f"PCP execution failed: {e}")
+                            # Autonomous execution via new pipeline
+                            active_status_reg = services_dict.get('active_status_registry')
+                            tier_str = ''
+                            if active_status_reg:
+                                tier_obj = active_status_reg.get_status(asset, 'PCP')
+                                tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+
+                            if tier_str in ('PAPER_FULL', 'PAPER_SMALL'):
+                                # Build multi-leg order
+                                expiry_str = call_quote.expiry.strftime('%Y%m%d') if call_quote.expiry else ''
+                                if edge_type == 'CONVERSION':
+                                    legs = [
+                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{strike}', 'qty': 1, 'side': 'SELL', 'intended_price': call_quote.bid},
+                                        {'leg_type': 'PUT', 'symbol': f'{asset}_P{strike}', 'qty': 1, 'side': 'BUY', 'intended_price': put_quote.ask},
+                                        {'leg_type': 'STOCK', 'symbol': asset, 'qty': 100, 'side': 'BUY', 'intended_price': spot_ask},
+                                    ]
+                                else:  # REVERSAL
+                                    legs = [
+                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{strike}', 'qty': 1, 'side': 'BUY', 'intended_price': call_quote.ask},
+                                        {'leg_type': 'PUT', 'symbol': f'{asset}_P{strike}', 'qty': 1, 'side': 'SELL', 'intended_price': put_quote.bid},
+                                        {'leg_type': 'STOCK', 'symbol': asset, 'qty': 100, 'side': 'SELL', 'intended_price': spot_bid},
+                                    ]
+
+                                _try_autonomous_execution(
+                                    log, services_dict,
+                                    strategy='pcp', symbol=asset,
+                                    structure_type=edge_type,
+                                    edge_magnitude=edge_magnitude,
+                                    notional_estimate=spot_price * 100,
+                                    strike=strike, expiry=expiry_str,
+                                    legs=legs, spot_price=spot_price,
+                                    liquidity_score=0.0,
+                                    active_status_str=tier_str,
+                                )
 
                 except Exception as e:
                     log.warning(f"PCP scan error for {asset}: {e}")
@@ -298,6 +468,25 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                                 opportunity_type='SPREAD_DIVERGENCE'
                             )
 
+                            # Autonomous execution
+                            _try_autonomous_exec_generic(
+                                log, services_dict, 'fst', asset,
+                                'SPREAD_DIVERGENCE', abs(spread_a),
+                                spot_price * 100, spot_price,
+                                strike=int(spot_price),
+                                legs=[
+                                    {'leg_type': 'FUTURE', 'symbol': f'{asset}_FUT', 'qty': 1,
+                                     'side': 'SELL' if spread_a > 0 else 'BUY',
+                                     'intended_price': future_quote.mid},
+                                    {'leg_type': 'CALL', 'symbol': f'{asset}_C{int(spot_price)}', 'qty': 1,
+                                     'side': 'BUY' if spread_a > 0 else 'SELL',
+                                     'intended_price': call_quote.mid},
+                                    {'leg_type': 'PUT', 'symbol': f'{asset}_P{int(spot_price)}', 'qty': 1,
+                                     'side': 'SELL' if spread_a > 0 else 'BUY',
+                                     'intended_price': put_quote.mid},
+                                ],
+                            )
+
                     # Check liquidity fallback
                     if future_quote.volume and future_quote.volume < 100:
                         log.warning(f"FST {asset}: low future liquidity, considering BOVA11/WIN pivot")
@@ -365,6 +554,21 @@ def roll_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                             opportunity_type=direction
                         )
 
+                        # Autonomous execution
+                        _try_autonomous_exec_generic(
+                            log, services_dict, 'roll_arb', asset,
+                            direction, abs(roll_mispricing),
+                            future_1.mid * 5, future_1.mid,
+                            legs=[
+                                {'leg_type': 'FUTURE', 'symbol': f'{asset}_F1', 'qty': 1,
+                                 'side': 'SELL' if direction == 'EXPENSIVE' else 'BUY',
+                                 'intended_price': future_1.mid},
+                                {'leg_type': 'FUTURE', 'symbol': f'{asset}_F2', 'qty': 1,
+                                 'side': 'BUY' if direction == 'EXPENSIVE' else 'SELL',
+                                 'intended_price': future_2.mid},
+                            ],
+                        )
+
                 except Exception as e:
                     log.warning(f"Roll arb error for {asset}: {e}")
 
@@ -423,6 +627,18 @@ def etf_basket_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, r
                             _safe_insert_opportunity(
                                 get_db_fn, log, 'ETF_BASKET', etf_ticker, divergence,
                                 opportunity_type=direction
+                            )
+
+                            # Autonomous execution
+                            _try_autonomous_exec_generic(
+                                log, services_dict, 'etf_basket', etf_ticker,
+                                direction, abs(divergence) * etf_price,
+                                etf_price * 1000, etf_price,
+                                legs=[
+                                    {'leg_type': 'STOCK', 'symbol': etf_ticker, 'qty': 1000,
+                                     'side': 'SELL' if direction == 'PREMIUM' else 'BUY',
+                                     'intended_price': etf_price},
+                                ],
                             )
 
                 # Optional: BOVA11 vs EWZ with FX hedge
@@ -532,6 +748,29 @@ def skew_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                                     opportunity_type=direction
                                 )
 
+                                # Autonomous execution: risk reversal trade
+                                if direction == 'SKEW_HIGH_PUT':
+                                    skew_legs = [
+                                        {'leg_type': 'PUT', 'symbol': f'{asset}_P{otm_put_strike}', 'qty': 1,
+                                         'side': 'SELL', 'intended_price': put_quote.mid},
+                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{otm_call_strike}', 'qty': 1,
+                                         'side': 'BUY', 'intended_price': call_quote.mid},
+                                    ]
+                                else:
+                                    skew_legs = [
+                                        {'leg_type': 'PUT', 'symbol': f'{asset}_P{otm_put_strike}', 'qty': 1,
+                                         'side': 'BUY', 'intended_price': put_quote.mid},
+                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{otm_call_strike}', 'qty': 1,
+                                         'side': 'SELL', 'intended_price': call_quote.mid},
+                                    ]
+
+                                _try_autonomous_exec_generic(
+                                    log, services_dict, 'skew_arb', asset,
+                                    direction, abs(z_score) * spot_price * 0.01,
+                                    spot_price * 100, spot_price,
+                                    strike=otm_call_strike, legs=skew_legs,
+                                )
+
                 except Exception as e:
                     log.warning(f"Skew scan error for {asset}: {e}")
 
@@ -585,6 +824,21 @@ def interlisted_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, 
                             get_db_fn, log, 'INTERLISTED',
                             f"{b3_ticker}/{adr_ticker}", basis_pct,
                             opportunity_type=direction
+                        )
+
+                        # Autonomous execution
+                        _try_autonomous_exec_generic(
+                            log, services_dict, 'interlisted', b3_ticker,
+                            direction, abs(basis),
+                            b3_quote.mid * 100, b3_quote.mid,
+                            legs=[
+                                {'leg_type': 'STOCK', 'symbol': b3_ticker, 'qty': 100,
+                                 'side': 'SELL' if direction == 'B3_RICH' else 'BUY',
+                                 'intended_price': b3_quote.mid},
+                                {'leg_type': 'STOCK', 'symbol': adr_ticker, 'qty': 100,
+                                 'side': 'BUY' if direction == 'B3_RICH' else 'SELL',
+                                 'intended_price': adr_quote.mid},
+                            ],
                         )
 
                 except Exception as e:
@@ -664,6 +918,20 @@ def dividend_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict,
                             _safe_insert_opportunity(
                                 get_db_fn, log, 'DIVIDEND_ARB', asset, net_edge,
                                 opportunity_type='DIVIDEND_CAPTURE'
+                            )
+
+                            # Autonomous execution: buy stock + buy put hedge
+                            _try_autonomous_exec_generic(
+                                log, services_dict, 'dividend_arb', asset,
+                                'DIVIDEND_CAPTURE', net_edge,
+                                spot_price * 100, spot_price,
+                                strike=strike,
+                                legs=[
+                                    {'leg_type': 'STOCK', 'symbol': asset, 'qty': 100,
+                                     'side': 'BUY', 'intended_price': spot_price},
+                                    {'leg_type': 'PUT', 'symbol': f'{asset}_P{strike}', 'qty': 1,
+                                     'side': 'BUY', 'intended_price': put_cost},
+                                ],
                             )
 
                 except Exception as e:
@@ -760,6 +1028,21 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                                     opportunity_type='IV_HIGH_SELL'
                                 )
 
+                                # Autonomous execution: sell straddle
+                                _try_autonomous_exec_generic(
+                                    log, services_dict, 'vol_arb', asset,
+                                    'IV_HIGH_SELL', (iv - rv_60) * spot_price,
+                                    spot_price * 100, spot_price,
+                                    strike=int(spot_price),
+                                    legs=[
+                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{int(spot_price)}', 'qty': 1,
+                                         'side': 'SELL', 'intended_price': call_quote.mid},
+                                        {'leg_type': 'STOCK', 'symbol': asset,
+                                         'qty': int(abs(delta) * 100) or 50,
+                                         'side': 'BUY', 'intended_price': spot_price},
+                                    ],
+                                )
+
                             elif iv < rv_60 * 0.8:  # IV significantly below RV
                                 log.info(
                                     f"Vol Arb {asset}: BUY (IV low) IV={iv:.2%} RV60={rv_60:.2%} "
@@ -769,6 +1052,21 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                                 _safe_insert_opportunity(
                                     get_db_fn, log, 'VOL_ARB', asset, 1 - iv_rv_60,
                                     opportunity_type='IV_LOW_BUY'
+                                )
+
+                                # Autonomous execution: buy straddle
+                                _try_autonomous_exec_generic(
+                                    log, services_dict, 'vol_arb', asset,
+                                    'IV_LOW_BUY', (rv_60 - iv) * spot_price,
+                                    spot_price * 100, spot_price,
+                                    strike=int(spot_price),
+                                    legs=[
+                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{int(spot_price)}', 'qty': 1,
+                                         'side': 'BUY', 'intended_price': call_quote.mid},
+                                        {'leg_type': 'STOCK', 'symbol': asset,
+                                         'qty': int(abs(delta) * 100) or 50,
+                                         'side': 'SELL', 'intended_price': spot_price},
+                                    ],
                                 )
 
                 except Exception as e:

@@ -25,6 +25,13 @@ Phase 4 (execution & arbitrage):
 Phase 5 (API routes):
   - api_routes: All 78 Flask route handlers as a Blueprint
 
+Phase 6 (derivatives autonomous execution):
+  - derivatives/capital: Capital allocation, daily loss limits, reconciliation
+  - derivatives/position_sizing: Dynamic sizing (Kelly + liquidity + Greeks margin)
+  - derivatives/deriv_execution: Multi-leg order execution with legging risk
+  - derivatives/monitoring: Real-time P&L (Greeks-based), exit triggers
+  - derivatives/learning: Adaptive confidence calibration, slippage prediction
+
 All modules are designed to be:
   - PURE: No global state access
   - PARAMETERIZED: All dependencies passed as parameters
@@ -32,4 +39,4 @@ All modules are designed to be:
   - THREAD-SAFE: Use locks for shared resources
 """
 
-__version__ = "1.0.0-phase5"
+__version__ = "1.0.0-phase6"

@@ -6,1545 +6,736 @@
     <title>Egreja Investment AI Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
-            --bg-primary: #060A10;
-            --bg-secondary: #0B1018;
-            --bg-tertiary: #111820;
-            --gold: #C9A84C;
-            --green-profit: #22C55E;
-            --red-loss: #EF4444;
-            --blue-accent: #60A5FA;
-            --purple: #A78BFA;
-            --border: #1A2332;
-            --muted: #374151;
-            --text: #E2E8F0;
-            --dim: #64748B;
-            --yellow-calib: #EAB308;
-            --orange: #FB923C;
-            --light-green: #4ADE80;
-            --dark-red: #DC2626;
-        }
-
-        body {
-            font-family: 'Inter', sans-serif;
-            background: var(--bg-primary);
-            color: var(--text);
-            line-height: 1.6;
-            overflow-x: hidden;
-        }
-
-        /* Header & Navigation */
-        header {
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border);
-            padding: 1.5rem 2rem;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-        }
-
-        .header-container {
-            max-width: 1600px;
-            margin: 0 auto;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .logo {
-            font-size: 1.75rem;
-            font-weight: 700;
-            color: var(--gold);
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .logo-icon {
-            width: 32px;
-            height: 32px;
-            background: linear-gradient(135deg, var(--gold), var(--blue-accent));
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 1.25rem;
-        }
-
-        nav {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-
-        nav button {
-            background: transparent;
-            border: none;
-            color: var(--dim);
-            font-size: 0.95rem;
-            font-weight: 500;
-            padding: 0.75rem 1.25rem;
-            cursor: pointer;
-            border-radius: 6px;
-            transition: all 0.3s ease;
-            font-family: inherit;
-            text-transform: capitalize;
-        }
-
-        nav button:hover {
-            background: rgba(201, 168, 76, 0.1);
-            color: var(--gold);
-        }
-
-        nav button.active {
-            background: rgba(96, 165, 250, 0.15);
-            color: var(--blue-accent);
-            border-bottom: 2px solid var(--blue-accent);
-        }
-
-        /* Main Content */
-        main {
-            max-width: 1600px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-
-        .tab-content {
-            display: none;
-            animation: fadeIn 0.3s ease;
-        }
-
-        .tab-content.active {
-            display: block;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-
-        /* Status Banner */
-        .status-banner {
-            padding: 1.25rem;
-            border-radius: 10px;
-            margin-bottom: 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-weight: 600;
-            font-size: 1rem;
-        }
-
-        .status-banner.healthy {
-            background: rgba(34, 197, 94, 0.15);
-            border: 1px solid rgba(34, 197, 94, 0.3);
-            color: var(--green-profit);
-        }
-
-        .status-banner.calibrating {
-            background: rgba(234, 179, 8, 0.15);
-            border: 1px solid rgba(234, 179, 8, 0.3);
-            color: var(--yellow-calib);
-        }
-
-        .status-banner.observing {
-            background: rgba(96, 165, 250, 0.15);
-            border: 1px solid rgba(96, 165, 250, 0.3);
-            color: var(--blue-accent);
-        }
-
-        .status-banner.degraded {
-            background: rgba(239, 68, 68, 0.15);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            color: var(--red-loss);
-        }
-
-        .status-banner .status-text {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .status-indicator {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            display: inline-block;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-
-        /* Cards Grid */
-        .cards-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .kpi-card {
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 1.5rem;
-            transition: all 0.3s ease;
-        }
-
-        .kpi-card:hover {
-            border-color: var(--gold);
-            box-shadow: 0 0 20px rgba(201, 168, 76, 0.1);
-        }
-
-        .kpi-value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: var(--blue-accent);
-            margin-bottom: 0.5rem;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .kpi-label {
-            font-size: 0.85rem;
-            color: var(--dim);
-            font-weight: 500;
-        }
-
-        .kpi-subtitle {
-            font-size: 0.75rem;
-            color: var(--muted);
-            margin-top: 0.5rem;
-        }
-
-        /* Strategy Cards */
-        .strategy-cards-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .strategy-card {
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 1.5rem;
-            transition: all 0.3s ease;
-        }
-
-        .strategy-card:hover {
-            border-color: var(--gold);
-            box-shadow: 0 0 20px rgba(201, 168, 76, 0.1);
-        }
-
-        .strategy-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: start;
-            margin-bottom: 1rem;
-            gap: 1rem;
-        }
-
-        .strategy-name {
-            font-size: 1.1rem;
-            font-weight: 700;
-            color: var(--text);
-        }
-
-        .strategy-badge {
-            display: inline-block;
-            padding: 0.35rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.7rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            white-space: nowrap;
-        }
-
-        .badge-running {
-            background: rgba(96, 165, 250, 0.2);
-            color: var(--blue-accent);
-        }
-
-        .badge-calibrating {
-            background: rgba(234, 179, 8, 0.2);
-            color: var(--yellow-calib);
-        }
-
-        .badge-observe {
-            background: rgba(100, 116, 139, 0.2);
-            color: var(--dim);
-        }
-
-        .badge-shadow {
-            background: rgba(167, 139, 250, 0.2);
-            color: var(--purple);
-        }
-
-        .badge-paper-small {
-            background: rgba(74, 222, 128, 0.2);
-            color: var(--light-green);
-        }
-
-        .badge-paper-full {
-            background: rgba(34, 197, 94, 0.2);
-            color: var(--green-profit);
-        }
-
-        .badge-low-liquidity {
-            background: rgba(251, 146, 60, 0.2);
-            color: var(--orange);
-        }
-
-        .badge-blocked {
-            background: rgba(239, 68, 68, 0.2);
-            color: var(--red-loss);
-        }
-
-        .badge-error {
-            background: rgba(220, 38, 38, 0.2);
-            color: var(--dark-red);
-        }
-
-        .strategy-description {
-            font-size: 0.85rem;
-            color: var(--dim);
-            margin-bottom: 1rem;
-        }
-
-        .strategy-metrics {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 0.75rem;
-            margin-bottom: 1rem;
-            padding-bottom: 1rem;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .metric {
-            font-size: 0.8rem;
-        }
-
-        .metric-label {
-            color: var(--dim);
-        }
-
-        .metric-value {
-            color: var(--text);
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .strategy-quality {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 0.75rem;
-            margin-bottom: 1rem;
-            padding-bottom: 1rem;
-            border-bottom: 1px solid var(--border);
-            font-size: 0.8rem;
-        }
-
-        .quality-item {
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .quality-label {
-            color: var(--dim);
-        }
-
-        .quality-value {
-            color: var(--text);
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .strategy-paper {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 0.75rem;
-            font-size: 0.8rem;
-        }
-
-        .paper-item {
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .paper-label {
-            color: var(--dim);
-        }
-
-        .paper-value {
-            color: var(--text);
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        /* Tables */
-        .table-container {
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            overflow: hidden;
-            margin-bottom: 2rem;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        thead {
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border);
-        }
-
-        th {
-            padding: 1rem;
-            text-align: left;
-            font-weight: 600;
-            font-size: 0.85rem;
-            color: var(--dim);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        td {
-            padding: 1rem;
-            border-bottom: 1px solid var(--border);
-            font-size: 0.9rem;
-        }
-
-        tbody tr:hover {
-            background: rgba(96, 165, 250, 0.05);
-        }
-
-        tbody tr:last-child td {
-            border-bottom: none;
-        }
-
-        .status-badge-table {
-            display: inline-block;
-            padding: 0.3rem 0.6rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            white-space: nowrap;
-        }
-
-        .status-detected {
-            background: rgba(96, 165, 250, 0.2);
-            color: var(--blue-accent);
-        }
-
-        .status-plausible {
-            background: rgba(34, 197, 94, 0.2);
-            color: var(--green-profit);
-        }
-
-        .status-rejected-liquidity {
-            background: rgba(251, 146, 60, 0.2);
-            color: var(--orange);
-        }
-
-        .status-rejected-data {
-            background: rgba(239, 68, 68, 0.2);
-            color: var(--red-loss);
-        }
-
-        .status-rejected-risk {
-            background: rgba(239, 68, 68, 0.2);
-            color: var(--red-loss);
-        }
-
-        .status-calibration {
-            background: rgba(234, 179, 8, 0.2);
-            color: var(--yellow-calib);
-        }
-
-        .status-executed {
-            background: rgba(167, 139, 250, 0.2);
-            color: var(--purple);
-        }
-
-        /* Progress Bar */
-        .progress-bar {
-            width: 100%;
-            height: 8px;
-            background: var(--bg-secondary);
-            border-radius: 4px;
-            overflow: hidden;
-            margin: 0.75rem 0;
-        }
-
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--blue-accent), var(--gold));
-            border-radius: 4px;
-            transition: width 0.3s ease;
-        }
-
-        /* Calibration Section */
-        .calibration-item {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-        }
-
-        .calibration-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
-        }
-
-        .calibration-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: var(--text);
-        }
-
-        .calibration-progress {
-            font-size: 0.85rem;
-            color: var(--dim);
-        }
-
-        .calibration-details {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1.5rem;
-            margin-top: 1rem;
-        }
-
-        .calibration-detail {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .detail-label {
-            font-size: 0.8rem;
-            color: var(--dim);
-            text-transform: uppercase;
-            margin-bottom: 0.5rem;
-        }
-
-        .detail-value {
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: var(--text);
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        /* Health Details */
-        .health-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 1.5rem;
-        }
-
-        .health-section {
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 1.5rem;
-        }
-
-        .health-title {
-            font-size: 1rem;
-            font-weight: 600;
-            color: var(--text);
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .health-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0.75rem 0;
-            border-bottom: 1px solid var(--border);
-            font-size: 0.9rem;
-        }
-
-        .health-item:last-child {
-            border-bottom: none;
-        }
-
-        .health-label {
-            color: var(--dim);
-        }
-
-        .health-value {
-            color: var(--text);
-            font-weight: 600;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .health-status {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            margin-left: 0.5rem;
-        }
-
-        .status-ok {
-            background: var(--green-profit);
-        }
-
-        .status-warning {
-            background: var(--yellow-calib);
-        }
-
-        .status-critical {
-            background: var(--red-loss);
-        }
+            --bg-primary: #060A10; --bg-secondary: #0B1018; --bg-tertiary: #111820;
+            --gold: #C9A84C; --gold-dim: #7A5C1A;
+            --green-profit: #22C55E; --red-loss: #EF4444; --blue-accent: #60A5FA;
+            --purple: #A78BFA; --cyan: #22D3EE; --orange: #FB923C; --pink: #EC4899;
+            --border: #1A2332; --muted: #374151; --text: #E2E8F0; --dim: #64748B;
+            --mono: 'JetBrains Mono', monospace; --sans: 'Inter', sans-serif;
+        }
+        body { font-family: var(--sans); background: var(--bg-primary); color: var(--text); line-height: 1.6; overflow-x: hidden; }
+
+        /* Header */
+        header { background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 1rem 2rem; position: sticky; top: 0; z-index: 100; }
+        .header-container { max-width: 1600px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+        .logo { font-size: 1.5rem; font-weight: 700; color: var(--gold); display: flex; align-items: center; gap: 0.75rem; }
+        .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, var(--gold), var(--blue-accent)); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.1rem; }
+        nav { display: flex; gap: 4px; flex-wrap: wrap; }
+        nav button { background: transparent; border: none; color: var(--dim); font-size: 0.85rem; font-weight: 500; padding: 0.5rem 1rem; cursor: pointer; border-radius: 6px; transition: all 0.2s; font-family: inherit; }
+        nav button:hover { color: var(--text); background: var(--bg-tertiary); }
+        nav button.active { color: var(--text); background: var(--bg-tertiary); border: 1px solid var(--border); }
+        .header-right { display: flex; align-items: center; gap: 10px; font-size: 11px; }
+
+        /* Main */
+        main { max-width: 1600px; margin: 0 auto; padding: 24px; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* Grid */
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+        @media(max-width:1024px) { .grid-4, .grid-3 { grid-template-columns: repeat(2, 1fr); } }
+        @media(max-width:640px) { .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+
+        /* Card */
+        .card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+        .card-header { padding: 14px 16px 0; display: flex; align-items: center; justify-content: space-between; }
+        .card-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .card-body { padding: 16px; }
+
+        /* KPI */
+        .kpi-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+        .kpi-label { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+        .kpi-value { font-size: 24px; font-weight: 700; font-family: var(--mono); margin: 6px 0 4px; }
+        .kpi-sub { font-size: 11px; color: var(--dim); }
+
+        /* Banner */
+        .banner { padding: 12px 16px; border-radius: 8px; display: flex; align-items: center; gap: 12px; margin-bottom: 24px; font-size: 13px; font-weight: 600; border: 1px solid; }
+        .banner-healthy { background: rgba(34,197,94,.06); border-color: rgba(34,197,94,.2); color: var(--green-profit); }
+        .banner-warning { background: rgba(251,146,60,.06); border-color: rgba(251,146,60,.2); color: var(--orange); }
+        .banner-error { background: rgba(239,68,68,.06); border-color: rgba(239,68,68,.2); color: var(--red-loss); }
+        .banner-standby { background: rgba(100,116,139,.06); border-color: rgba(100,116,139,.2); color: var(--dim); }
+
+        /* Badge */
+        .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 99px; font-size: 10px; font-weight: 700; }
+        .badge-ok { background: rgba(34,197,94,.1); color: var(--green-profit); border: 1px solid rgba(34,197,94,.2); }
+        .badge-warn { background: rgba(251,146,60,.1); color: var(--orange); border: 1px solid rgba(251,146,60,.2); }
+        .badge-err { background: rgba(239,68,68,.1); color: var(--red-loss); border: 1px solid rgba(239,68,68,.2); }
+        .badge-info { background: rgba(96,165,250,.1); color: var(--blue-accent); border: 1px solid rgba(96,165,250,.2); }
+        .badge-dim { background: rgba(100,116,139,.1); color: var(--dim); border: 1px solid rgba(100,116,139,.2); }
+
+        /* Table */
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th { text-align: left; padding: 8px 12px; color: var(--dim); font-weight: 600; font-size: 11px; border-bottom: 1px solid var(--border); }
+        td { padding: 8px 12px; border-bottom: 1px solid rgba(26,35,50,.4); }
+        tr:hover { background: rgba(17,24,32,.5); }
+        .text-right { text-align: right; }
+        .text-mono { font-family: var(--mono); }
+        .text-profit { color: var(--green-profit); }
+        .text-loss { color: var(--red-loss); }
+        .text-dim { color: var(--dim); }
+
+        /* Smart dot */
+        .smart-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+        /* Progress */
+        .progress-bar { height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+        .progress-fill { height: 100%; border-radius: 2px; transition: width .3s; }
+
+        /* Section */
+        .section { margin-bottom: 24px; }
+        .section-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text); }
+
+        /* Bar chart */
+        .bar-chart { display: flex; align-items: flex-end; gap: 8px; height: 140px; padding: 16px 0; }
+        .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .bar { border-radius: 4px 4px 0 0; width: 100%; min-width: 20px; transition: height .5s; }
+        .bar-label { font-size: 9px; font-family: var(--mono); color: var(--dim); }
+        .bar-value { font-size: 9px; font-family: var(--mono); font-weight: 700; }
+
+        /* Pipeline */
+        .pipeline { display: flex; align-items: center; gap: 4px; }
+        .pip { width: 8px; height: 8px; border-radius: 50%; }
+        .pip-line { width: 12px; height: 1px; background: var(--muted); }
+
+        /* Empty state */
+        .empty-state { text-align: center; padding: 48px 24px; color: var(--dim); }
 
         /* Footer */
-        footer {
-            text-align: center;
-            padding: 2rem;
-            color: var(--dim);
-            font-size: 0.85rem;
-            border-top: 1px solid var(--border);
-            margin-top: 2rem;
-        }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            .cards-grid {
-                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            }
-
-            .strategy-cards-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .header-container {
-                flex-direction: column;
-                gap: 1rem;
-            }
-
-            nav {
-                width: 100%;
-                justify-content: flex-start;
-                overflow-x: auto;
-            }
-
-            main {
-                padding: 1rem;
-            }
-
-            .health-grid {
-                grid-template-columns: 1fr;
-            }
-
-            table {
-                font-size: 0.8rem;
-            }
-
-            th, td {
-                padding: 0.75rem;
-            }
-        }
-
-        /* Loading State */
-        .loading {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border: 2px solid var(--border);
-            border-top-color: var(--blue-accent);
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        /* Error State */
-        .error-state {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            color: var(--red-loss);
-            padding: 1.5rem;
-            border-radius: 10px;
-            text-align: center;
-            margin: 2rem 0;
-        }
-
-        .refresh-info {
-            font-size: 0.8rem;
-            color: var(--dim);
-            text-align: right;
-            margin-top: 1rem;
-        }
+        footer { text-align: center; padding: 2rem; color: var(--dim); font-size: 0.75rem; border-top: 1px solid var(--border); margin-top: 2rem; }
     </style>
 </head>
 <body>
     <header>
         <div class="header-container">
             <div class="logo">
-                <div class="logo-icon">E</div>
-                Egreja Investment AI
+                <img src="/static/logo.svg" alt="Egreja IA" style="height:40px;width:auto">
             </div>
             <nav id="navigation">
                 <button data-tab="dashboard" class="nav-btn active">Dashboard</button>
                 <button data-tab="derivativos" class="nav-btn">Derivativos</button>
+                <button data-tab="pnl" class="nav-btn">P&L</button>
+                <button data-tab="winrate" class="nav-btn">Win Rate</button>
+                <button data-tab="capital" class="nav-btn">Capital</button>
+                <button data-tab="trades" class="nav-btn">Trades</button>
                 <button data-tab="liquidez" class="nav-btn">Liquidez</button>
                 <button data-tab="calibracao" class="nav-btn">Calibração</button>
                 <button data-tab="saude" class="nav-btn">Saúde</button>
             </nav>
+            <div class="header-right">
+                <span id="market-clock" class="text-mono" style="color:var(--dim)"></span>
+                <span class="text-mono" style="color:var(--dim)" id="last-refresh">—</span>
+            </div>
         </div>
     </header>
 
     <main>
-        <!-- Dashboard Tab -->
-        <div id="dashboard" class="tab-content active">
-            <div class="status-banner healthy" id="dashboardStatus">
-                <div class="status-text">
-                    <span class="status-indicator"></span>
-                    <span>System Status: HEALTHY</span>
-                </div>
-                <div class="refresh-info" id="lastUpdate"></div>
-            </div>
-
-            <div class="cards-grid">
-                <div class="kpi-card">
-                    <div class="kpi-value" id="dashSystemThreads">—</div>
-                    <div class="kpi-label">System Threads</div>
-                    <div class="kpi-subtitle">Running & operational</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="dashDatabaseStatus">OK</div>
-                    <div class="kpi-label">Database</div>
-                    <div class="kpi-subtitle">Connection status</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="dashPricesCached">—</div>
-                    <div class="kpi-label">Prices Cached</div>
-                    <div class="kpi-subtitle">Market data</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="dashKillSwitch">ARMED</div>
-                    <div class="kpi-label">Kill Switch</div>
-                    <div class="kpi-subtitle">Safety mechanism</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="dashMarketRegime">—</div>
-                    <div class="kpi-label">Market Regime</div>
-                    <div class="kpi-subtitle">Current mode</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="dashHeartbeats">—</div>
-                    <div class="kpi-label">Heartbeats</div>
-                    <div class="kpi-subtitle">Loop activity</div>
-                </div>
-            </div>
-
-            <h2 style="color: var(--text); margin: 2rem 0 1.5rem; font-size: 1.3rem; font-weight: 600;">System Details</h2>
-            <div class="table-container">
-                <table id="dashboardDetailsTable">
-                    <thead>
-                        <tr>
-                            <th>Metric</th>
-                            <th>Value</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody id="dashboardDetailsBody">
-                        <tr>
-                            <td colspan="3" style="text-align: center; color: var(--dim);">Loading...</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- Derivativos Tab -->
-        <div id="derivativos" class="tab-content">
-            <div class="status-banner healthy" id="derivativosStatus">
-                <div class="status-text">
-                    <span class="status-indicator"></span>
-                    <span id="derivativosStatusText">System Status: HEALTHY</span>
-                </div>
-                <div class="refresh-info" id="derivativosLastUpdate"></div>
-            </div>
-
-            <h2 style="color: var(--text); margin: 1.5rem 0; font-size: 1.3rem; font-weight: 600;">Executive KPIs</h2>
-            <div class="cards-grid">
-                <div class="kpi-card">
-                    <div class="kpi-value" id="kpiScanLoops">—</div>
-                    <div class="kpi-label">Scan Loops Online</div>
-                    <div class="kpi-subtitle">threads vivas e escaneando</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="kpiCalibrating">—</div>
-                    <div class="kpi-label">Em Calibração</div>
-                    <div class="kpi-subtitle">FST Caso 0</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="kpiObserving">—</div>
-                    <div class="kpi-label">Em Observação</div>
-                    <div class="kpi-subtitle">OBSERVE/SHADOW state</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="kpiPaperActive">—</div>
-                    <div class="kpi-label">Paper Ativo</div>
-                    <div class="kpi-subtitle">PAPER_SMALL + PAPER_FULL</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="kpiOpportunitiesTotal">—</div>
-                    <div class="kpi-label">Oportunidades Vistas Hoje</div>
-                    <div class="kpi-subtitle">detected opportunities</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="kpiOpportunitiesPlausible">—</div>
-                    <div class="kpi-label">Oportunidades Plausíveis</div>
-                    <div class="kpi-subtitle">status = PLAUSIBLE</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="kpiTradesAudited">—</div>
-                    <div class="kpi-label">Trades Auditados</div>
-                    <div class="kpi-subtitle">paper trades executed</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-value" id="kpiHealthScore">—</div>
-                    <div class="kpi-label">Health Score</div>
-                    <div class="kpi-subtitle">0–100 index</div>
-                </div>
-            </div>
-
-            <h2 style="color: var(--text); margin: 2rem 0 1.5rem; font-size: 1.3rem; font-weight: 600;">Strategy Status</h2>
-            <div class="strategy-cards-grid" id="strategyCardsContainer">
-                <div style="grid-column: 1/-1; text-align: center; color: var(--dim); padding: 3rem 1rem;">
-                    <div class="loading" style="display: inline-block; margin-right: 1rem;"></div>
-                    Loading strategies...
-                </div>
-            </div>
-
-            <h2 style="color: var(--text); margin: 2rem 0 1.5rem; font-size: 1.3rem; font-weight: 600;">Opportunities</h2>
-            <div class="table-container">
-                <table id="opportunitiesTable">
-                    <thead>
-                        <tr>
-                            <th>Timestamp</th>
-                            <th>Estratégia</th>
-                            <th>Ativo</th>
-                            <th>Estrutura</th>
-                            <th>Status</th>
-                            <th>Edge Esperado</th>
-                            <th>Edge Plausível</th>
-                            <th>Liquidity Score</th>
-                            <th>Motivo Bloqueio</th>
-                        </tr>
-                    </thead>
-                    <tbody id="opportunitiesBody">
-                        <tr>
-                            <td colspan="9" style="text-align: center; color: var(--dim);">Loading...</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- Liquidez Tab -->
-        <div id="liquidez" class="tab-content">
-            <h2 style="color: var(--text); margin: 1.5rem 0; font-size: 1.3rem; font-weight: 600;">Liquidity Monitoring</h2>
-            <div class="table-container">
-                <table id="liquidezTable">
-                    <thead>
-                        <tr>
-                            <th>Ativo</th>
-                            <th>Estratégia</th>
-                            <th>Liquidity Score</th>
-                            <th>Spread Médio</th>
-                            <th>Depth</th>
-                            <th>Volume</th>
-                            <th>OI</th>
-                            <th>Fill Ratio</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody id="liquidezBody">
-                        <tr>
-                            <td colspan="9" style="text-align: center; color: var(--dim);">Loading...</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- Calibração Tab -->
-        <div id="calibracao" class="tab-content">
-            <h2 style="color: var(--text); margin: 1.5rem 0; font-size: 1.3rem; font-weight: 600;">Calibration Progress</h2>
-            <div id="calibrationContainer">
-                <div style="text-align: center; color: var(--dim); padding: 3rem 1rem;">
-                    <div class="loading" style="display: inline-block; margin-right: 1rem;"></div>
-                    Loading calibration data...
-                </div>
-            </div>
-        </div>
-
-        <!-- Saúde Tab -->
-        <div id="saude" class="tab-content">
-            <h2 style="color: var(--text); margin: 1.5rem 0; font-size: 1.3rem; font-weight: 600;">Module Health</h2>
-            <div class="health-grid" id="healthContainer">
-                <div style="text-align: center; color: var(--dim); padding: 3rem 1rem; grid-column: 1/-1;">
-                    <div class="loading" style="display: inline-block; margin-right: 1rem;"></div>
-                    Loading health data...
-                </div>
-            </div>
-        </div>
+        <div id="banner-container"></div>
+        <div id="dashboard" class="tab-content active"></div>
+        <div id="derivativos" class="tab-content"></div>
+        <div id="pnl" class="tab-content"></div>
+        <div id="winrate" class="tab-content"></div>
+        <div id="capital" class="tab-content"></div>
+        <div id="trades" class="tab-content"></div>
+        <div id="liquidez" class="tab-content"></div>
+        <div id="calibracao" class="tab-content"></div>
+        <div id="saude" class="tab-content"></div>
     </main>
 
-    <footer>
-        <div>v10.27 · Paper Mode · OpLab + BRAPI + Polygon</div>
-        <div class="refresh-info" id="footerTimestamp" style="margin-top: 0.5rem; text-align: center;"></div>
-    </footer>
+    <footer id="footer">v10.27 · Paper Mode · OpLab + BRAPI + Polygon</footer>
 
     <script>
-        // Configuration
-        const API_BASE = '/api';
-        const REFRESH_INTERVAL = 30000; // 30 seconds
-        const STRATEGY_MAPPING = {
-            'pcp_scan_loop': { name: 'PCP', description: 'Put-Call Parity Arbitrage' },
-            'fst_scan_loop': { name: 'FST', description: 'Futuro Sintético Triangular' },
-            'roll_arb_scan_loop': { name: 'Roll', description: 'Roll Arbitrage' },
-            'etf_basket_scan_loop': { name: 'ETF Basket', description: 'ETF Basket Arbitrage' },
-            'skew_arb_scan_loop': { name: 'Skew', description: 'Skew Arbitrage' },
-            'interlisted_scan_loop': { name: 'InterListed', description: 'InterListed ADR Arbitrage' },
-            'dividend_arb_scan_loop': { name: 'Dividend', description: 'Dividend Arbitrage' },
-            'vol_arb_scan_loop': { name: 'Vol Arb', description: 'Volatility Arbitrage' }
+    const API = '/api';
+    const STRATS = {
+        PCP: {name:'Put-Call Parity', icon:'🎯', color:'var(--blue-accent)'},
+        FST: {name:'Futuro Sintético', icon:'🔗', color:'var(--purple)'},
+        ROLL_ARB: {name:'Roll Arbitrage', icon:'🔄', color:'var(--cyan)'},
+        ETF_BASKET: {name:'ETF vs Basket', icon:'📦', color:'var(--gold)'},
+        SKEW_ARB: {name:'Skew Arbitrage', icon:'📈', color:'var(--orange)'},
+        INTERLISTED: {name:'ADR Inter-Listed', icon:'🌎', color:'var(--pink)'},
+        DIVIDEND_ARB: {name:'Dividend Arb', icon:'💰', color:'var(--green-profit)'},
+        VOL_ARB: {name:'Vol Arbitrage', icon:'⚡', color:'#F43F5E'},
+    };
+    const TIER_LABELS = {0:'OBSERVE',1:'SHADOW',2:'PAPER_SM',3:'PAPER_FULL','OBSERVE':'OBSERVE','SHADOW_EXEC':'SHADOW','PAPER_SMALL':'PAPER_SM','PAPER_FULL':'PAPER_FULL'};
+    const TIER_COLORS = {0:'var(--dim)',1:'var(--orange)',2:'var(--blue-accent)',3:'var(--green-profit)'};
+
+    let S = {
+        health: null, sysState: null, statuses: [], liquidity: {}, scorecards: [],
+        calibration: [], opps: [], learning: null,
+        capSnapshot: null, capDetail: null,
+        positions: [], tradesClosed: [],
+        pnlDaily: [], pnlMonthly: [], pnlAnnual: [], winRate: [],
+    };
+    let currentTab = 'dashboard';
+
+    // ─── FETCH ──────────────────────────────────────────────────
+    async function fetchAll() {
+        const r = await Promise.allSettled([
+            fetch(`${API}/health`).then(r=>r.json()),
+            fetch(`${API}/strategies/system-state`).then(r=>r.json()),
+            fetch(`${API}/strategies/status`).then(r=>r.json()),
+            fetch(`${API}/strategies/liquidity-score`).then(r=>r.json()),
+            fetch(`${API}/strategies/scorecard`).then(r=>r.json()),
+            fetch(`${API}/strategies/calibration`).then(r=>r.json()),
+            fetch(`${API}/strategies/opportunities?limit=200`).then(r=>r.json()),
+            fetch(`${API}/strategies/learning`).then(r=>r.json()),
+            fetch(`${API}/strategies/capital-summary`).then(r=>r.json()),
+            fetch(`${API}/strategies/capital`).then(r=>r.json()),
+            fetch(`${API}/strategies/positions`).then(r=>r.json()),
+            fetch(`${API}/strategies/trades-closed?limit=50`).then(r=>r.json()),
+            fetch(`${API}/strategies/pnl-daily`).then(r=>r.json()),
+            fetch(`${API}/strategies/pnl-monthly`).then(r=>r.json()),
+            fetch(`${API}/strategies/pnl-annual`).then(r=>r.json()),
+            fetch(`${API}/strategies/win-rate`).then(r=>r.json()),
+        ]);
+        const v = (i) => r[i].status==='fulfilled' ? r[i].value : null;
+        S.health = v(0);
+        S.sysState = v(1);
+        S.statuses = v(2)?.statuses || [];
+        S.liquidity = v(3)?.liquidity_scores || {};
+        S.scorecards = v(4)?.scorecards || [];
+        S.calibration = v(5)?.records || [];
+        const oppVal = v(6);
+        S.opps = oppVal?.by_strategy ? Object.values(oppVal.by_strategy).flat() : [];
+        S.learning = v(7);
+        S.capSnapshot = v(8);
+        S.capDetail = v(9);
+        S.positions = v(10)?.positions || [];
+        S.tradesClosed = v(11)?.trades || [];
+        S.pnlDaily = v(12)?.data || [];
+        S.pnlMonthly = v(13)?.data || [];
+        S.pnlAnnual = v(14)?.data || [];
+        S.winRate = v(15)?.data || [];
+        document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('pt-BR');
+        render();
+    }
+
+    // ─── HELPERS ────────────────────────────────────────────────
+    function kpi(label, value, sub, color='var(--text)') {
+        return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value" style="color:${color}">${value}</div><div class="kpi-sub">${sub}</div></div>`;
+    }
+    function fmtR(n) { return n!=null ? 'R$ '+parseFloat(n).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'; }
+    function fmtPct(n) { return n!=null ? (parseFloat(n)*100).toFixed(1)+'%' : '—'; }
+    function pnlColor(n) { return parseFloat(n||0)>=0?'var(--green-profit)':'var(--red-loss)'; }
+    function tierLabel(t) { return TIER_LABELS[t]||t||'OBSERVE'; }
+    function tierColor(t) { return typeof t==='number'?TIER_COLORS[t]||'var(--dim)':TIER_COLORS[t]||'var(--dim)'; }
+    function ss(k) { return S.sysState?.strategies?.[k]; }
+
+    // ─── RENDER ─────────────────────────────────────────────────
+    function render() {
+        renderBanner();
+        renderMarketClock();
+        renderFooter();
+        // Only render active tab for performance
+        const fn = {
+            dashboard: renderDashboard, derivativos: renderDerivatives,
+            pnl: renderPnl, winrate: renderWinRate, capital: renderCapital,
+            trades: renderTrades, liquidez: renderLiquidez, calibracao: renderCalibration,
+            saude: renderSaude
         };
+        if(fn[currentTab]) document.getElementById(currentTab).innerHTML = fn[currentTab]();
+    }
 
-        // State
-        let currentTab = 'dashboard';
-        let systemHealth = null;
-        let strategiesHealth = null;
-        let strategiesStatus = null;
-        let opportunities = null;
-        let calibration = null;
-        let liquidity = null;
+    function renderBanner() {
+        const el = document.getElementById('banner-container');
+        const ss = S.sysState;
+        const h = S.health;
+        if(!ss && !h) { el.innerHTML = '<div class="banner banner-standby">⏳ Conectando ao servidor...</div>'; return; }
 
-        // Format numbers
-        function formatNumber(num, decimals = 2) {
-            if (num === null || num === undefined) return '—';
-            if (typeof num !== 'number') return String(num);
-            return num.toFixed(decimals);
+        let cls = 'banner-standby', icon = '🌙', text = 'Sistema inicializando...';
+        if(ss?.overall) {
+            const ov = ss.overall;
+            if(ov.kill_switch) { cls='banner-error'; icon='🛑'; text='Kill Switch ATIVADO — execução suspensa'; }
+            else if(!ss.market?.open) { cls='banner-standby'; icon='🌙'; text=`Mercado ${ss.market?.phase?.toLowerCase()||'fechado'} — sistema em standby`; }
+            else if(ov.healthy_strategies===8) { cls='banner-healthy'; icon='✅'; text='Todas as 8 estratégias operacionais'; }
+            else if(ov.healthy_strategies>0) { cls='banner-warning'; icon='⚠️'; text=`${ov.healthy_strategies}/8 estratégias ativas`; }
+            else { cls='banner-error'; icon='🔴'; text='Nenhum scan loop respondeu — verificar sistema'; }
+        } else if(h) {
+            const dbOk = h.db==='connected' || h.db_connected;
+            cls = dbOk ? 'banner-healthy' : 'banner-error';
+            icon = dbOk ? '✅' : '🔴';
+            text = `Sistema: ${h.status||'OK'} · DB: ${dbOk?'OK':'ERRO'}`;
+        }
+        const mode = ss?.overall?.mode || S.capDetail?.mode || 'PAPER';
+        const dbBadge = (h?.db==='connected'||h?.db_connected||ss?.overall?.db_healthy) ? '<span class="badge badge-ok">DB ✓</span>' : '<span class="badge badge-err">DB ✗</span>';
+        el.innerHTML = `<div class="banner ${cls}">${icon} <span style="flex:1">${text}</span> ${dbBadge} <span class="badge badge-info">${mode}</span></div>`;
+    }
+
+    function renderMarketClock() {
+        const el = document.getElementById('market-clock');
+        const m = S.sysState?.market;
+        el.textContent = m ? `🕐 BRT ${m.brt_time} · ${m.phase}` : '';
+    }
+
+    function renderFooter() {
+        const mode = S.capDetail?.mode || S.sysState?.overall?.mode || 'PAPER';
+        document.getElementById('footer').textContent = `v10.27 · ${mode} Mode · OpLab + BRAPI + Polygon`;
+    }
+
+    // ─── DASHBOARD TAB ──────────────────────────────────────────
+    function renderDashboard() {
+        const h = S.health;
+        const ss = S.sysState;
+        const cap = S.capDetail;
+        const snap = S.capSnapshot?.snapshot;
+
+        // Top KPIs
+        const hc = ss?.overall?.healthy_strategies||0;
+        let totalPnl = 0;
+        if(ss?.strategies) for(const v of Object.values(ss.strategies)) totalPnl += v.total_pnl||0;
+        const initialCap = cap?.initial_capital || 0;
+        const utilPct = cap?.utilization_pct || 0;
+
+        // Today/month P&L
+        const todayPnl = S.pnlDaily.length>0 ? parseFloat(S.pnlDaily[0].total_pnl||0) : 0;
+        const monthPnl = S.pnlMonthly.length>0 ? parseFloat(S.pnlMonthly[0].total_pnl||0) : 0;
+        const todayTrades = S.pnlDaily.length>0 ? parseInt(S.pnlDaily[0].trade_count||0) : 0;
+
+        // Win rate global
+        let totalTr=0, totalW=0;
+        for(const w of S.winRate) { totalTr+=parseInt(w.total_trades||0); totalW+=parseInt(w.wins||0); }
+        const globalWR = totalTr>0 ? (totalW/totalTr*100).toFixed(1) : '—';
+
+        // System info
+        const threads = h?.threads || {};
+        const aliveThreads = Object.values(threads).filter(t=>t.alive&&!t.frozen).length;
+        const totalThreads = Object.keys(threads).length;
+        const dbOk = h?.db==='connected'||h?.db_connected||ss?.overall?.db_healthy;
+        const pricesCached = (h?.stock_prices_cached||0)+(h?.crypto_prices_cached||0);
+        const killSwitch = h?.kill_switch||h?.arbi_kill_switch||ss?.overall?.kill_switch;
+        const regime = h?.market_regime || ss?.market?.phase || '—';
+
+        let html = `
+        <div class="section-title">Resumo Financeiro</div>
+        <div class="grid-4 section">
+            ${kpi('Capital Inicial', fmtR(initialCap), `Utilização: ${utilPct}%`, 'var(--gold)')}
+            ${kpi('P&L Hoje', fmtR(todayPnl), `${todayTrades} trades hoje`, pnlColor(todayPnl))}
+            ${kpi('P&L Mês', fmtR(monthPnl), S.pnlMonthly.length>0?S.pnlMonthly[0].year_month||'—':'—', pnlColor(monthPnl))}
+            ${kpi('P&L Total', fmtR(totalPnl), `Win Rate: ${globalWR}%`, pnlColor(totalPnl))}
+        </div>
+
+        <div class="section-title">Sistema</div>
+        <div class="grid-4 section">
+            ${kpi('Threads', `${aliveThreads}/${totalThreads}`, 'Scan loops + workers', aliveThreads===totalThreads?'var(--green-profit)':'var(--orange)')}
+            ${kpi('Database', dbOk?'CONECTADO':'ERRO', h?.db||'—', dbOk?'var(--green-profit)':'var(--red-loss)')}
+            ${kpi('Prices Cached', pricesCached, 'Stock + Crypto', 'var(--blue-accent)')}
+            ${kpi('Kill Switch', killSwitch?'ATIVADO':'Desativado', killSwitch?'Execução suspensa':'Pronto para operar', killSwitch?'var(--red-loss)':'var(--green-profit)')}
+        </div>
+        <div class="grid-4 section">
+            ${kpi('Estratégias Ativas', `${hc}/8`, hc===8?'Todas operacionais':hc>0?'Verificar degradadas':'Nenhum loop', hc===8?'var(--green-profit)':'var(--orange)')}
+            ${kpi('Market Regime', regime, S.sysState?.market?.brt_time||'—', 'var(--blue-accent)')}
+            ${kpi('Posições Abertas', S.positions.length, S.positions.length>0?S.positions.map(p=>p.symbol).filter((v,i,a)=>a.indexOf(v)===i).join(', '):'Nenhuma', S.positions.length>0?'var(--green-profit)':'var(--dim)')}
+            ${kpi('Oportunidades', S.opps.length, 'Detectadas recentemente', S.opps.length>0?'var(--green-profit)':'var(--dim)')}
+        </div>`;
+
+        // Capital real-time
+        if(snap) {
+            html += `<div class="section-title">Capital (Tempo Real)</div>
+            <div class="grid-4 section">
+                ${kpi('Total', fmtR(snap.total_capital), 'Capital manager', 'var(--gold)')}
+                ${kpi('Alocado', fmtR(snap.allocated), `${snap.positions_count||0} posições`, 'var(--orange)')}
+                ${kpi('Disponível', fmtR(snap.available), 'Livre para novas posições', 'var(--green-profit)')}
+                ${kpi('P&L Diário', fmtR(snap.daily_pnl), `Loss restante: ${fmtR(snap.daily_loss_remaining)}`, pnlColor(snap.daily_pnl))}
+            </div>`;
         }
 
-        function formatPercent(num, decimals = 1) {
-            if (num === null || num === undefined) return '—';
-            return (num * 100).toFixed(decimals) + '%';
-        }
+        // Strategy grid
+        html += `<div class="section-title">Estratégias de Derivativos</div><div class="grid-4 section">`;
+        for(const [k,v] of Object.entries(STRATS)) {
+            const s = ss?.strategies?.[k];
+            const smart = s?.smart_status || 'Carregando...';
+            const smartIcon = s?.smart_icon;
+            const iconMap = {moon:'var(--dim)',alert:'var(--red-loss)',calibrating:'var(--orange)',scanning:'var(--blue-accent)',active:'var(--green-profit)',opportunity:'var(--orange)',idle:'var(--dim)'};
+            const dotColor = iconMap[smartIcon]||'var(--dim)';
+            const p = smartIcon==='scanning'||smartIcon==='active';
+            const tier = tierLabel(s?.best_tier);
+            const pnl = s?.total_pnl||0;
 
-        function formatTime(dateStr) {
-            if (!dateStr) return '—';
-            try {
-                const date = new Date(dateStr);
-                const now = new Date();
-                const diffMs = now - date;
-                const diffSecs = Math.floor(diffMs / 1000);
-
-                if (diffSecs < 60) return diffSecs + 's ago';
-                const diffMins = Math.floor(diffSecs / 60);
-                if (diffMins < 60) return diffMins + 'm ago';
-                const diffHours = Math.floor(diffMins / 60);
-                if (diffHours < 24) return diffHours + 'h ago';
-                return date.toLocaleDateString();
-            } catch (e) {
-                return '—';
-            }
-        }
-
-        // API Calls
-        async function fetchHealth() {
-            try {
-                const res = await fetch(`${API_BASE}/health`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                systemHealth = await res.json();
-                return systemHealth;
-            } catch (e) {
-                console.error('Error fetching health:', e);
-                return null;
-            }
-        }
-
-        async function fetchStrategiesHealth() {
-            try {
-                const res = await fetch(`${API_BASE}/strategies/health`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                strategiesHealth = await res.json();
-                return strategiesHealth;
-            } catch (e) {
-                console.error('Error fetching strategies health:', e);
-                return null;
-            }
-        }
-
-        async function fetchStrategiesStatus() {
-            try {
-                const res = await fetch(`${API_BASE}/strategies/status`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                strategiesStatus = await res.json();
-                return strategiesStatus;
-            } catch (e) {
-                console.error('Error fetching strategies status:', e);
-                return null;
-            }
-        }
-
-        async function fetchOpportunities() {
-            try {
-                const res = await fetch(`${API_BASE}/strategies/opportunities`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                opportunities = await res.json();
-                return opportunities;
-            } catch (e) {
-                console.error('Error fetching opportunities:', e);
-                return null;
-            }
-        }
-
-        async function fetchCalibration() {
-            try {
-                const res = await fetch(`${API_BASE}/strategies/calibration`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                calibration = await res.json();
-                return calibration;
-            } catch (e) {
-                console.error('Error fetching calibration:', e);
-                return null;
-            }
-        }
-
-        async function fetchLiquidity() {
-            try {
-                const res = await fetch(`${API_BASE}/strategies/liquidity`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                liquidity = await res.json();
-                return liquidity;
-            } catch (e) {
-                console.error('Error fetching liquidity:', e);
-                return null;
-            }
-        }
-
-        // Render Functions
-        function renderDashboard() {
-            if (!systemHealth) return;
-
-            const h = systemHealth;
-            const banner = document.getElementById('dashboardStatus');
-            const statusText = banner.querySelector('.status-text span:last-child');
-
-            // Determine status
-            let status = 'HEALTHY';
-            let statusClass = 'healthy';
-
-            if (h.kill_switch_active) {
-                status = 'KILL SWITCH ACTIVE';
-                statusClass = 'degraded';
-            } else if (h.db_connected === false) {
-                status = 'DATABASE ERROR';
-                statusClass = 'degraded';
-            } else if (h.provider_latency_ms > 1000) {
-                status = 'DEGRADED - High Latency';
-                statusClass = 'degraded';
-            }
-
-            statusText.textContent = `System Status: ${status}`;
-            banner.className = `status-banner ${statusClass}`;
-
-            // Update KPIs
-            document.getElementById('dashSystemThreads').textContent = `${h.system_threads_online || 0}/${h.system_threads_total || 0}`;
-            document.getElementById('dashDatabaseStatus').textContent = h.db_connected ? 'OK' : 'ERROR';
-            document.getElementById('dashPricesCached').textContent = h.prices_cached_count || '0';
-            document.getElementById('dashKillSwitch').textContent = h.kill_switch_active ? 'ACTIVE' : 'ARMED';
-            document.getElementById('dashMarketRegime').textContent = h.market_regime || '—';
-            document.getElementById('dashHeartbeats').textContent = (h.thread_heartbeats || []).length;
-
-            // Details table
-            const tbody = document.getElementById('dashboardDetailsBody');
-            tbody.innerHTML = `
-                <tr>
-                    <td>Provider Latency</td>
-                    <td>${formatNumber(h.provider_latency_ms)}ms</td>
-                    <td><span class="health-status ${h.provider_latency_ms < 500 ? 'status-ok' : h.provider_latency_ms < 1000 ? 'status-warning' : 'status-critical'}"></span></td>
-                </tr>
-                <tr>
-                    <td>Breaker Count</td>
-                    <td>${h.breaker_count || 0}</td>
-                    <td><span class="health-status ${h.breaker_count === 0 ? 'status-ok' : 'status-warning'}"></span></td>
-                </tr>
-                <tr>
-                    <td>Last Update</td>
-                    <td>${formatTime(h.last_update)}</td>
-                    <td><span class="health-status status-ok"></span></td>
-                </tr>
-                <tr>
-                    <td>Queue Size (Orders)</td>
-                    <td>${h.queue_size_orders || 0}</td>
-                    <td><span class="health-status status-ok"></span></td>
-                </tr>
-                <tr>
-                    <td>Queue Size (Risks)</td>
-                    <td>${h.queue_size_risks || 0}</td>
-                    <td><span class="health-status status-ok"></span></td>
-                </tr>
-            `;
-
-            updateTimestamp('dashboardStatus');
-        }
-
-        function getStatusBadgeClass(status) {
-            const mapping = {
-                'RUNNING': 'badge-running',
-                'CALIBRATING': 'badge-calibrating',
-                'OBSERVE': 'badge-observe',
-                'SHADOW_EXEC': 'badge-shadow',
-                'PAPER_SMALL': 'badge-paper-small',
-                'PAPER_FULL': 'badge-paper-full',
-                'LOW_LIQUIDITY': 'badge-low-liquidity',
-                'BLOCKED_BY_DATA': 'badge-blocked',
-                'ERROR': 'badge-error'
-            };
-            return mapping[status] || 'badge-running';
-        }
-
-        function renderDerivatives() {
-            if (!systemHealth || !strategiesHealth || !strategiesStatus || !opportunities) {
-                return;
-            }
-
-            // Update status banner
-            const banner = document.getElementById('derivativosStatus');
-            const statusText = banner.querySelector('.status-text span:last-child');
-            let status = 'HEALTHY';
-            let statusClass = 'healthy';
-
-            // Check for active calibration
-            const calibratingCount = (strategiesStatus || []).filter(s => s.promotion_state === 'CALIBRATING' || s.promotion_state === 'CALIBRATION_ONLY').length;
-            const observingCount = (strategiesStatus || []).filter(s => ['OBSERVE', 'SHADOW_EXEC'].includes(s.promotion_state)).length;
-            const aliveLoops = (systemHealth.thread_heartbeats || []).length;
-
-            if (calibratingCount > 0 && aliveLoops > 0) {
-                status = 'CALIBRATING';
-                statusClass = 'calibrating';
-            } else if (observingCount > 0 && aliveLoops > 0) {
-                status = 'OBSERVING MARKET';
-                statusClass = 'observing';
-            } else if (aliveLoops === 0) {
-                status = 'DEGRADED - No Loops';
-                statusClass = 'degraded';
-            }
-
-            statusText.textContent = `Status: ${status}`;
-            banner.className = `status-banner ${statusClass}`;
-
-            // KPIs
-            const aliveCount = aliveLoops;
-            const paperCount = (strategiesStatus || []).filter(s => ['PAPER_SMALL', 'PAPER_FULL'].includes(s.promotion_state)).length;
-            const oppCount = (opportunities || []).length;
-            const plausibleCount = (opportunities || []).filter(o => o.status === 'PLAUSIBLE').length;
-
-            document.getElementById('kpiScanLoops').textContent = `${aliveCount}/${Object.keys(STRATEGY_MAPPING).length}`;
-            document.getElementById('kpiCalibrating').textContent = calibratingCount;
-            document.getElementById('kpiObserving').textContent = observingCount;
-            document.getElementById('kpiPaperActive').textContent = paperCount;
-            document.getElementById('kpiOpportunitiesTotal').textContent = oppCount;
-            document.getElementById('kpiOpportunitiesPlausible').textContent = plausibleCount;
-            document.getElementById('kpiTradesAudited').textContent = (opportunities || []).filter(o => o.status === 'PAPER_EXECUTED').length;
-
-            // Health Score (0-100)
-            let healthScore = 100;
-            if (aliveCount < Object.keys(STRATEGY_MAPPING).length) healthScore -= 20;
-            if (systemHealth.provider_latency_ms > 1000) healthScore -= 10;
-            if (calibratingCount === 0 && paperCount === 0) healthScore -= 15;
-            healthScore = Math.max(0, healthScore);
-            document.getElementById('kpiHealthScore').textContent = Math.floor(healthScore);
-
-            // Strategy Cards
-            renderStrategyCards();
-            renderOpportunitiesTable();
-            updateTimestamp('derivativosStatus');
-        }
-
-        function renderStrategyCards() {
-            const container = document.getElementById('strategyCardsContainer');
-            container.innerHTML = '';
-
-            Object.entries(STRATEGY_MAPPING).forEach(([threadName, strategyInfo]) => {
-                const status = (strategiesStatus || []).find(s => s.strategy === threadName);
-                const health = (strategiesHealth || []).find(h => h.strategy === threadName);
-
-                const card = document.createElement('div');
-                card.className = 'strategy-card';
-
-                const state = status?.promotion_state || 'UNKNOWN';
-                const badgeClass = getStatusBadgeClass(state);
-
-                const opp = (opportunities || []).filter(o => o.estratégia === threadName);
-                const plausible = opp.filter(o => o.status === 'PLAUSIBLE').length;
-                const fillRatio = opp.length > 0 ? ((plausible / opp.length) * 100).toFixed(0) : '0';
-
-                const lastHeartbeat = health?.last_heartbeat ? formatTime(health.last_heartbeat) : '—';
-
-                card.innerHTML = `
-                    <div class="strategy-header">
-                        <div>
-                            <div class="strategy-name">${strategyInfo.name}</div>
-                            <div class="strategy-description">${strategyInfo.description}</div>
-                        </div>
-                        <span class="strategy-badge ${badgeClass}">${state}</span>
-                    </div>
-                    <div class="strategy-metrics">
-                        <div class="metric">
-                            <div class="metric-label">Oportunidades</div>
-                            <div class="metric-value">${opp.length}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Plausíveis</div>
-                            <div class="metric-value">${plausible}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Fill Ratio</div>
-                            <div class="metric-value">${fillRatio}%</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Liq Score</div>
-                            <div class="metric-value">${formatNumber(health?.liquidity_score || 0, 1)}</div>
-                        </div>
-                    </div>
-                    <div class="strategy-quality">
-                        <div class="quality-item">
-                            <span class="quality-label">Stale Data</span>
-                            <span class="quality-value">${health?.stale_data_count || 0}</span>
-                        </div>
-                        <div class="quality-item">
-                            <span class="quality-label">Breaker Events</span>
-                            <span class="quality-value">${health?.breaker_events || 0}</span>
-                        </div>
-                        <div class="quality-item">
-                            <span class="quality-label">Last Scan</span>
-                            <span class="quality-value">${formatTime(health?.last_scan_time)}</span>
-                        </div>
-                        <div class="quality-item">
-                            <span class="quality-label">Last Heartbeat</span>
-                            <span class="quality-value">${lastHeartbeat}</span>
-                        </div>
-                    </div>
-                    <div class="strategy-paper">
-                        <div class="paper-item">
-                            <span class="paper-label">Paper Trades</span>
-                            <span class="paper-value">${(opportunities || []).filter(o => o.status === 'PAPER_EXECUTED' && o.estratégia === threadName).length}</span>
-                        </div>
-                        <div class="paper-item">
-                            <span class="paper-label">Expected Edge</span>
-                            <span class="paper-value">${formatPercent(opp[0]?.edge_esperado || 0, 2)}</span>
-                        </div>
-                        <div class="paper-item">
-                            <span class="paper-label">Realized Edge</span>
-                            <span class="paper-value">${formatPercent(opp[0]?.edge_plausível || 0, 2)}</span>
-                        </div>
-                        <div class="paper-item">
-                            <span class="paper-label">Avg Slippage</span>
-                            <span class="paper-value">${formatPercent(health?.avg_slippage || 0, 2)}</span>
-                        </div>
-                    </div>
-                `;
-
-                container.appendChild(card);
-            });
-        }
-
-        function renderOpportunitiesTable() {
-            const tbody = document.getElementById('opportunitiesBody');
-            if (!opportunities || opportunities.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--dim);">No opportunities found</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = opportunities.slice(0, 50).map(opp => {
-                const statusClass = {
-                    'DETECTED': 'status-detected',
-                    'PLAUSIBLE': 'status-plausible',
-                    'REJECTED_LIQUIDITY': 'status-rejected-liquidity',
-                    'REJECTED_DATA': 'status-rejected-data',
-                    'REJECTED_RISK': 'status-rejected-risk',
-                    'CALIBRATION_ONLY': 'status-calibration',
-                    'PAPER_EXECUTED': 'status-executed'
-                }[opp.status] || 'status-detected';
-
-                return `
-                    <tr>
-                        <td>${formatTime(opp.timestamp)}</td>
-                        <td>${STRATEGY_MAPPING[opp.estratégia]?.name || opp.estratégia}</td>
-                        <td>${opp.ativo || '—'}</td>
-                        <td>${opp.estrutura || '—'}</td>
-                        <td><span class="status-badge-table ${statusClass}">${opp.status}</span></td>
-                        <td>${formatPercent(opp.edge_esperado, 2)}</td>
-                        <td>${formatPercent(opp.edge_plausível, 2)}</td>
-                        <td>${formatNumber(opp.liquidity_score, 1)}</td>
-                        <td>${opp.motivo_bloqueio || '—'}</td>
-                    </tr>
-                `;
-            }).join('');
-
-            updateTimestamp('derivativosStatus');
-        }
-
-        function renderLiquidez() {
-            if (!liquidity) return;
-
-            const tbody = document.getElementById('liquidezBody');
-            if (!liquidity.items || liquidity.items.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--dim);">No liquidity data available</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = liquidity.items.slice(0, 50).map(item => `
-                <tr>
-                    <td>${item.ativo || '—'}</td>
-                    <td>${STRATEGY_MAPPING[item.estratégia]?.name || item.estratégia}</td>
-                    <td>${formatNumber(item.liquidity_score, 1)}</td>
-                    <td>${formatPercent(item.spread_medio, 2)}</td>
-                    <td>${formatNumber(item.depth, 0)}</td>
-                    <td>${formatNumber(item.volume, 0)}</td>
-                    <td>${formatNumber(item.open_interest, 0)}</td>
-                    <td>${formatPercent(item.fill_ratio, 1)}</td>
-                    <td>${item.status || '—'}</td>
-                </tr>
-            `).join('');
-        }
-
-        function renderCalibration() {
-            if (!calibration) return;
-
-            const container = document.getElementById('calibrationContainer');
-            if (!calibration.items || calibration.items.length === 0) {
-                container.innerHTML = '<div style="text-align: center; color: var(--dim); padding: 2rem;">No calibration data available</div>';
-                return;
-            }
-
-            container.innerHTML = calibration.items.map(item => {
-                const progress = item.samples_collected && item.samples_required
-                    ? (item.samples_collected / item.samples_required) * 100
-                    : 0;
-
-                return `
-                    <div class="calibration-item">
-                        <div class="calibration-header">
-                            <div class="calibration-title">${STRATEGY_MAPPING[item.strategy]?.name || item.strategy}</div>
-                            <div class="calibration-progress">${Math.floor(progress)}% Complete</div>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width: ${progress}%"></div>
-                        </div>
-                        <div class="calibration-details">
-                            <div class="calibration-detail">
-                                <div class="detail-label">Samples Collected</div>
-                                <div class="detail-value">${item.samples_collected || 0}</div>
-                            </div>
-                            <div class="calibration-detail">
-                                <div class="detail-label">Samples Required</div>
-                                <div class="detail-value">${item.samples_required || 0}</div>
-                            </div>
-                            <div class="calibration-detail">
-                                <div class="detail-label">Mean Spreads</div>
-                                <div class="detail-value">${formatPercent(item.mean_spreads, 2)}</div>
-                            </div>
-                            <div class="calibration-detail">
-                                <div class="detail-label">Std Dev</div>
-                                <div class="detail-value">${formatPercent(item.std_dev, 2)}</div>
-                            </div>
-                            <div class="calibration-detail">
-                                <div class="detail-label">Threshold</div>
-                                <div class="detail-value">${formatPercent(item.threshold, 2)}</div>
-                            </div>
-                            <div class="calibration-detail">
-                                <div class="detail-label">Start Date</div>
-                                <div class="detail-value">${item.start_date ? new Date(item.start_date).toLocaleDateString('pt-BR') : '—'}</div>
-                            </div>
-                            <div class="calibration-detail">
-                                <div class="detail-label">Est. Paper Date</div>
-                                <div class="detail-value">${item.estimated_paper_date ? new Date(item.estimated_paper_date).toLocaleDateString('pt-BR') : '—'}</div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-        }
-
-        function renderSaude() {
-            if (!systemHealth) return;
-
-            const container = document.getElementById('healthContainer');
-
-            const threads = systemHealth.thread_heartbeats || [];
-            const aliveThreads = threads.filter(t => {
-                const lastHB = new Date(t.last_heartbeat);
-                const now = new Date();
-                return (now - lastHB) < 60000; // 60 seconds
-            });
-
-            container.innerHTML = `
-                <div class="health-section">
-                    <div class="health-title">
-                        <span>Scan Loops Status</span>
-                        <span class="health-status ${aliveThreads.length === threads.length ? 'status-ok' : aliveThreads.length > threads.length / 2 ? 'status-warning' : 'status-critical'}"></span>
-                    </div>
-                    ${threads.map(t => {
-                        const lastHB = new Date(t.last_heartbeat);
-                        const now = new Date();
-                        const diffSecs = Math.floor((now - lastHB) / 1000);
-                        const isAlive = diffSecs < 60;
-
-                        return `
-                            <div class="health-item">
-                                <span class="health-label">${t.thread_name}</span>
-                                <span class="health-value">${isAlive ? 'ALIVE' : 'DEAD'} (${formatTime(t.last_heartbeat)})</span>
-                                <span class="health-status ${isAlive ? 'status-ok' : 'status-critical'}"></span>
-                            </div>
-                        `;
-                    }).join('')}
+            html += `<div class="kpi-card" style="cursor:pointer" onclick="switchTab('derivativos')">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                    <span style="font-size:13px;font-weight:600">${v.icon} ${v.name}</span>
+                    <span class="badge badge-dim" style="font-size:9px">${tier}</span>
                 </div>
-
-                <div class="health-section">
-                    <div class="health-title">
-                        <span>System Resources</span>
-                    </div>
-                    <div class="health-item">
-                        <span class="health-label">Provider Latency</span>
-                        <span class="health-value">${formatNumber(systemHealth.provider_latency_ms, 0)}ms</span>
-                        <span class="health-status ${systemHealth.provider_latency_ms < 500 ? 'status-ok' : systemHealth.provider_latency_ms < 1000 ? 'status-warning' : 'status-critical'}"></span>
-                    </div>
-                    <div class="health-item">
-                        <span class="health-label">Breaker Count</span>
-                        <span class="health-value">${systemHealth.breaker_count || 0}</span>
-                        <span class="health-status ${(systemHealth.breaker_count || 0) === 0 ? 'status-ok' : 'status-warning'}"></span>
-                    </div>
-                    <div class="health-item">
-                        <span class="health-label">Queue Size (Orders)</span>
-                        <span class="health-value">${systemHealth.queue_size_orders || 0}</span>
-                        <span class="health-status status-ok"></span>
-                    </div>
-                    <div class="health-item">
-                        <span class="health-label">Queue Size (Risks)</span>
-                        <span class="health-value">${systemHealth.queue_size_risks || 0}</span>
-                        <span class="health-status status-ok"></span>
-                    </div>
-                    <div class="health-item">
-                        <span class="health-label">Prices Cached</span>
-                        <span class="health-value">${systemHealth.prices_cached_count || 0}</span>
-                        <span class="health-status status-ok"></span>
-                    </div>
+                <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);margin-bottom:8px">
+                    <span class="smart-dot${p?' pulse':''}" style="background:${dotColor}"></span>${smart}
                 </div>
-
-                <div class="health-section">
-                    <div class="health-title">
-                        <span>Database & Connection</span>
-                    </div>
-                    <div class="health-item">
-                        <span class="health-label">DB Connected</span>
-                        <span class="health-value">${systemHealth.db_connected ? 'YES' : 'NO'}</span>
-                        <span class="health-status ${systemHealth.db_connected ? 'status-ok' : 'status-critical'}"></span>
-                    </div>
-                    <div class="health-item">
-                        <span class="health-label">Kill Switch</span>
-                        <span class="health-value">${systemHealth.kill_switch_active ? 'ACTIVE' : 'ARMED'}</span>
-                        <span class="health-status ${systemHealth.kill_switch_active ? 'status-critical' : 'status-ok'}"></span>
-                    </div>
-                    <div class="health-item">
-                        <span class="health-label">Market Regime</span>
-                        <span class="health-value">${systemHealth.market_regime || '—'}</span>
-                        <span class="health-status status-ok"></span>
-                    </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:11px">
+                    <div style="color:var(--dim)">Opp: <span class="text-mono" style="color:${(s?.opportunities_1h||0)>0?'var(--green-profit)':'var(--dim)'}">${s?.opportunities_1h||0}</span></div>
+                    <div style="color:var(--dim)">P&L: <span class="text-mono" style="color:${pnlColor(pnl)}">${pnl.toFixed(0)}</span></div>
+                    <div style="color:var(--dim)">Open: <span class="text-mono">${s?.open_trades||0}</span></div>
+                    <div style="color:var(--dim)">Cal: <span class="text-mono">${s?.calibration_records||0}</span></div>
                 </div>
-            `;
+            </div>`;
         }
+        html += '</div>';
 
-        function updateTimestamp(elementId) {
-            const now = new Date();
-            const timeStr = now.toLocaleTimeString('pt-BR');
-            const elem = document.getElementById(elementId === 'derivativosStatus' ? 'derivativosLastUpdate' : 'lastUpdate');
-            if (elem) elem.textContent = `Last updated: ${timeStr}`;
-            const footer = document.getElementById('footerTimestamp');
-            if (footer) footer.textContent = `Last updated: ${timeStr}`;
-        }
-
-        // Navigation
-        function switchTab(tabName) {
-            currentTab = tabName;
-
-            // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(el => {
-                el.classList.remove('active');
-            });
-
-            // Show selected tab
-            const selectedTab = document.getElementById(tabName);
-            if (selectedTab) {
-                selectedTab.classList.add('active');
+        // Thread details
+        if(Object.keys(threads).length > 0) {
+            let trows = '';
+            for(const [name, t] of Object.entries(threads)) {
+                const alive = t.alive && !t.frozen;
+                trows += `<tr>
+                    <td style="font-weight:600">${name}</td>
+                    <td><span class="badge ${alive?'badge-ok':'badge-err'}">${alive?'ALIVE':'DEAD'}</span></td>
+                    <td class="text-mono text-right">${t.hb_age_s!=null?t.hb_age_s.toFixed(0)+'s':'—'}</td>
+                    <td class="text-right">${t.restarts||0}</td>
+                </tr>`;
             }
-
-            // Update nav buttons
-            document.querySelectorAll('.nav-btn').forEach(btn => {
-                btn.classList.remove('active');
-            });
-            document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+            html += `<div class="card section"><div class="card-header"><div class="card-title">🔄 Thread Heartbeats</div></div>
+                <div class="card-body"><table><thead><tr><th>Thread</th><th>Status</th><th class="text-right">HB Age</th><th class="text-right">Restarts</th></tr></thead>
+                <tbody>${trows}</tbody></table></div></div>`;
         }
 
-        document.querySelectorAll('.nav-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                switchTab(btn.dataset.tab);
-            });
-        });
+        return html;
+    }
 
-        // Data Refresh
-        async function refreshAllData() {
-            await Promise.all([
-                fetchHealth(),
-                fetchStrategiesHealth(),
-                fetchStrategiesStatus(),
-                fetchOpportunities(),
-                fetchCalibration(),
-                fetchLiquidity()
-            ]);
+    // ─── DERIVATIVOS TAB ────────────────────────────────────────
+    function renderDerivatives() {
+        return `<div style="text-align:center;padding:2rem">
+            <p style="font-size:14px;margin-bottom:12px">O painel completo de derivativos está na página dedicada:</p>
+            <a href="/strategies/derivatives" style="display:inline-flex;align-items:center;gap:8px;padding:12px 24px;background:var(--blue-accent);color:#fff;border-radius:8px;font-weight:600;font-size:14px;text-decoration:none">📊 Abrir Dashboard de Derivativos</a>
+            <p style="font-size:12px;color:var(--dim);margin-top:12px">Inclui: 8 estratégias, P&L por estratégia, Win Rate, Learning Engine, Calibração, Liquidez, Health detalhado</p>
+        </div>`;
+    }
 
-            if (currentTab === 'dashboard') renderDashboard();
-            else if (currentTab === 'derivativos') renderDerivatives();
-            else if (currentTab === 'liquidez') renderLiquidez();
-            else if (currentTab === 'calibracao') renderCalibration();
-            else if (currentTab === 'saude') renderSaude();
+    // ─── P&L TAB ────────────────────────────────────────────────
+    function renderPnl() {
+        let html = '';
+        // Annual
+        html += '<div class="section-title">P&L Anual</div>';
+        if(S.pnlAnnual.length>0) {
+            let rows = '';
+            for(const r of S.pnlAnnual) {
+                const c = pnlColor(r.total_pnl);
+                rows += `<tr>
+                    <td class="text-mono" style="font-weight:700">${r.year||'—'}</td>
+                    <td>${STRATS[r.strategy_type]?.name||r.strategy_type}</td>
+                    <td class="text-right">${r.trade_count||0}</td>
+                    <td class="text-right" style="color:${parseFloat(r.win_rate||0)>=0.5?'var(--green-profit)':'var(--red-loss)'}">${fmtPct(r.win_rate)}</td>
+                    <td class="text-right text-mono" style="font-weight:700;color:${c}">${fmtR(r.total_pnl)}</td>
+                    <td class="text-right text-mono">${fmtR(r.avg_pnl)}</td>
+                    <td class="text-right text-mono text-profit">${fmtR(r.best_trade)}</td>
+                    <td class="text-right text-mono text-loss">${fmtR(r.worst_trade)}</td>
+                </tr>`;
+            }
+            html += `<div class="card section"><div class="card-body" style="overflow-x:auto"><table><thead><tr><th>Ano</th><th>Estratégia</th><th class="text-right">Trades</th><th class="text-right">Win Rate</th><th class="text-right">P&L Total</th><th class="text-right">P&L Médio</th><th class="text-right">Melhor</th><th class="text-right">Pior</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        } else { html += '<div class="card section"><div class="card-body"><div class="empty-state">Nenhum dado anual — trades aparecerão após primeiros fechamentos</div></div></div>'; }
+
+        // Monthly
+        html += '<div class="section-title">P&L Mensal</div>';
+        if(S.pnlMonthly.length>0) {
+            let rows = '';
+            for(const r of S.pnlMonthly) {
+                rows += `<tr>
+                    <td class="text-mono" style="font-weight:700">${r.year_month||'—'}</td>
+                    <td>${STRATS[r.strategy_type]?.name||r.strategy_type}</td>
+                    <td class="text-right">${r.trade_count||0}</td>
+                    <td class="text-right" style="color:${parseFloat(r.win_rate||0)>=0.5?'var(--green-profit)':'var(--red-loss)'}">${fmtPct(r.win_rate)}</td>
+                    <td class="text-right text-mono" style="font-weight:700;color:${pnlColor(r.total_pnl)}">${fmtR(r.total_pnl)}</td>
+                    <td class="text-right text-mono">${parseFloat(r.profit_factor||0).toFixed(2)}</td>
+                </tr>`;
+            }
+            html += `<div class="card section"><div class="card-body" style="overflow-x:auto"><table><thead><tr><th>Mês</th><th>Estratégia</th><th class="text-right">Trades</th><th class="text-right">Win Rate</th><th class="text-right">P&L</th><th class="text-right">Profit Factor</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        } else { html += '<div class="card section"><div class="card-body"><div class="empty-state">Nenhum dado mensal</div></div></div>'; }
+
+        // Daily with chart
+        html += '<div class="section-title">P&L Diário</div>';
+        if(S.pnlDaily.length>0) {
+            const last20 = S.pnlDaily.slice(0,20).reverse();
+            const maxAbs = Math.max(...last20.map(d=>Math.abs(parseFloat(d.total_pnl||0))),1);
+            let bars = '';
+            for(const d of last20) {
+                const pnl = parseFloat(d.total_pnl||0);
+                const h = Math.max(4, Math.abs(pnl)/maxAbs*80);
+                const c = pnl>=0?'var(--green-profit)':'var(--red-loss)';
+                const dt = d.trade_date ? new Date(d.trade_date+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'}):'';
+                bars += `<div class="bar-col"><div class="bar-value" style="color:${c}">${pnl.toFixed(0)}</div><div class="bar" style="height:${h}px;background:${c}"></div><div class="bar-label">${dt}</div></div>`;
+            }
+            html += `<div class="card section"><div class="card-body"><div class="bar-chart">${bars}</div></div></div>`;
+
+            let rows = '';
+            for(const r of S.pnlDaily.slice(0,30)) {
+                rows += `<tr>
+                    <td class="text-mono">${r.trade_date||'—'}</td>
+                    <td>${STRATS[r.strategy_type]?.name||r.strategy_type}</td>
+                    <td class="text-right">${r.trade_count||0}</td>
+                    <td class="text-right" style="color:${parseFloat(r.win_rate||0)>=0.5?'var(--green-profit)':'var(--red-loss)'}">${((r.win_rate||0)*100).toFixed(0)}%</td>
+                    <td class="text-right text-mono" style="font-weight:700;color:${pnlColor(r.total_pnl)}">${fmtR(r.total_pnl)}</td>
+                    <td class="text-right text-mono" style="color:${pnlColor(r.cumulative_pnl)}">${fmtR(r.cumulative_pnl)}</td>
+                </tr>`;
+            }
+            html += `<div class="card section"><div class="card-body" style="overflow-x:auto"><table><thead><tr><th>Data</th><th>Estratégia</th><th class="text-right">Trades</th><th class="text-right">WR</th><th class="text-right">P&L</th><th class="text-right">Acumulado</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        } else { html += '<div class="card section"><div class="card-body"><div class="empty-state">Nenhum P&L diário registrado</div></div></div>'; }
+
+        return html;
+    }
+
+    // ─── WIN RATE TAB ───────────────────────────────────────────
+    function renderWinRate() {
+        if(S.winRate.length===0) return '<div class="card"><div class="card-body"><div class="empty-state">Sem dados de win rate — aparecerão após primeiros trades fechados</div></div></div>';
+
+        let totalTr=0,totalW=0,totalPnl=0;
+        for(const w of S.winRate){totalTr+=parseInt(w.total_trades||0);totalW+=parseInt(w.wins||0);totalPnl+=parseFloat(w.total_pnl||0);}
+        const gwr = totalTr>0?(totalW/totalTr*100).toFixed(1):'0';
+
+        let html = `<div class="grid-4 section">
+            ${kpi('Win Rate Global', gwr+'%', `${totalW}W / ${totalTr-totalW}L de ${totalTr}`, parseFloat(gwr)>=50?'var(--green-profit)':'var(--red-loss)')}
+            ${kpi('P&L Total (90d)', fmtR(totalPnl), `${totalTr} trades`, pnlColor(totalPnl))}
+            ${kpi('Pares Avaliados', S.winRate.length, 'Estratégia/Ativo', 'var(--purple)')}
+            ${kpi('Posições Abertas', S.positions.length, 'Ativas agora', 'var(--blue-accent)')}
+        </div>`;
+
+        // Per-strategy cards
+        const bySt = {};
+        for(const w of S.winRate) { const sk=w.strategy_type; if(!bySt[sk])bySt[sk]={tr:0,w:0,pnl:0}; bySt[sk].tr+=parseInt(w.total_trades||0); bySt[sk].w+=parseInt(w.wins||0); bySt[sk].pnl+=parseFloat(w.total_pnl||0); }
+        html += '<div class="grid-4 section">';
+        for(const [sk,d] of Object.entries(bySt)) {
+            const wr = d.tr>0?(d.w/d.tr*100).toFixed(1):'0';
+            const meta = STRATS[sk];
+            html += `<div class="kpi-card"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span>${meta?.icon||'📊'}</span><span style="font-size:12px;font-weight:600">${meta?.name||sk}</span></div>
+                <div class="kpi-value" style="color:${parseFloat(wr)>=50?'var(--green-profit)':'var(--red-loss)'}">${wr}%</div>
+                <div class="kpi-sub">${d.w}W / ${d.tr-d.w}L · P&L: ${fmtR(d.pnl)}</div></div>`;
+        }
+        html += '</div>';
+
+        // Table
+        let rows = '';
+        for(const w of S.winRate) {
+            rows += `<tr>
+                <td>${STRATS[w.strategy_type]?.name||w.strategy_type}</td>
+                <td class="text-mono" style="font-weight:700">${w.symbol||'—'}</td>
+                <td class="text-right">${w.total_trades||0}</td>
+                <td class="text-right text-mono" style="font-weight:700;color:${parseFloat(w.win_rate||0)>=0.5?'var(--green-profit)':'var(--red-loss)'}">${fmtPct(w.win_rate)}</td>
+                <td class="text-right text-mono" style="color:${pnlColor(w.total_pnl)}">${fmtR(w.total_pnl)}</td>
+                <td class="text-right text-mono">${parseFloat(w.reward_risk_ratio||0).toFixed(2)}</td>
+                <td class="text-right text-mono" style="font-weight:700;color:var(--blue-accent)">${parseFloat(w.expectancy||0).toFixed(2)}</td>
+            </tr>`;
+        }
+        html += `<div class="card section"><div class="card-header"><div class="card-title">📋 Detalhamento</div></div>
+            <div class="card-body" style="overflow-x:auto"><table><thead><tr><th>Estratégia</th><th>Ativo</th><th class="text-right">Trades</th><th class="text-right">Win Rate</th><th class="text-right">P&L</th><th class="text-right">Rew/Risk</th><th class="text-right">Expectancy</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        return html;
+    }
+
+    // ─── CAPITAL TAB ────────────────────────────────────────────
+    function renderCapital() {
+        const cap = S.capDetail;
+        const snap = S.capSnapshot?.snapshot;
+        let html = `<div class="grid-4 section">
+            ${kpi('Capital Inicial', cap?fmtR(cap.initial_capital):'—', 'Configurado no sistema', 'var(--gold)')}
+            ${kpi('Notional Alocado', cap?fmtR(cap.total_allocated_notional):'—', `Utilização: ${cap?.utilization_pct||0}%`, 'var(--orange)')}
+            ${kpi('Reserva', cap?fmtR(cap.available_reserve):'—', 'Capital não alocado', 'var(--green-profit)')}
+            ${kpi('Max Loss/Dia', cap?fmtR(cap.max_daily_loss_global):'—', 'Limite global', 'var(--red-loss)')}
+        </div>`;
+
+        if(snap) {
+            const usedPct = snap.total_capital>0?(snap.allocated/snap.total_capital*100).toFixed(1):0;
+            html += `<div class="section-title">Capital Manager (Tempo Real)</div>
+            <div class="grid-4 section">
+                ${kpi('Total', fmtR(snap.total_capital), '', 'var(--gold)')}
+                ${kpi('Em Uso', fmtR(snap.allocated), usedPct+'% utilizado', 'var(--orange)')}
+                ${kpi('Livre', fmtR(snap.available), '', 'var(--green-profit)')}
+                ${kpi('P&L Hoje', fmtR(snap.daily_pnl), `Loss restante: ${fmtR(snap.daily_loss_remaining)}`, pnlColor(snap.daily_pnl))}
+            </div>`;
         }
 
-        // Initial load
-        async function init() {
-            await refreshAllData();
-            setInterval(refreshAllData, REFRESH_INTERVAL);
+        // Per-strategy allocation
+        if(cap?.strategies) {
+            let rows = '';
+            for(const [sk,s] of Object.entries(cap.strategies)) {
+                const m = STRATS[sk];
+                rows += `<tr>
+                    <td>${m?.icon||'📊'} ${m?.name||sk}</td>
+                    <td class="text-right text-mono" style="font-weight:700">${fmtR(s.max_notional)}</td>
+                    <td class="text-right text-mono text-loss">${fmtR(s.max_daily_loss)}</td>
+                    <td class="text-right">${s.max_positions||0}</td>
+                    <td class="text-right"><span class="badge ${s.enabled?'badge-ok':'badge-err'}">${s.enabled?'ATIVO':'OFF'}</span></td>
+                </tr>`;
+            }
+            html += `<div class="card section"><div class="card-header"><div class="card-title">📊 Alocação por Estratégia</div></div>
+                <div class="card-body"><table><thead><tr><th>Estratégia</th><th class="text-right">Max Notional</th><th class="text-right">Max Loss/Dia</th><th class="text-right">Max Posições</th><th class="text-right">Status</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        }
+        return html;
+    }
+
+    // ─── TRADES TAB ─────────────────────────────────────────────
+    function renderTrades() {
+        let html = '';
+        if(S.positions.length>0) {
+            let rows = '';
+            for(const p of S.positions) {
+                rows += `<tr>
+                    <td class="text-mono" style="font-weight:700">${p.symbol}</td>
+                    <td>${STRATS[p.strategy]?.name||p.strategy}</td>
+                    <td class="text-dim">${p.structure_type||'—'}</td>
+                    <td class="text-right text-mono">${fmtR(p.notional)}</td>
+                    <td class="text-right text-mono" style="font-weight:700;color:${pnlColor(p.unrealized_pnl)}">${p.unrealized_pnl!=null?fmtR(p.unrealized_pnl):'—'}</td>
+                    <td class="text-right text-dim">${p.opened_at?new Date(p.opened_at).toLocaleString('pt-BR'):'—'}</td>
+                </tr>`;
+            }
+            html += `<div class="section-title">Posições Abertas</div>
+                <div class="card section"><div class="card-body" style="overflow-x:auto"><table><thead><tr><th>Ativo</th><th>Estratégia</th><th>Estrutura</th><th class="text-right">Notional</th><th class="text-right">P&L NR</th><th class="text-right">Aberto</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
         }
 
-        // Start
-        init();
+        html += '<div class="section-title">Trades Fechados</div>';
+        if(S.tradesClosed.length>0) {
+            let rows = '';
+            for(const t of S.tradesClosed) {
+                rows += `<tr>
+                    <td class="text-mono text-dim" style="font-size:10px">${(t.trade_id||'').substring(0,8)}</td>
+                    <td>${STRATS[t.strategy_type]?.name||t.strategy_type}</td>
+                    <td class="text-mono" style="font-weight:700">${t.symbol}</td>
+                    <td class="text-right text-mono">${parseFloat(t.expected_edge||0).toFixed(2)}bps</td>
+                    <td class="text-right text-mono" style="font-weight:700;color:${pnlColor(t.pnl)}">${fmtR(t.pnl)}</td>
+                    <td class="text-right text-mono">${parseFloat(t.slippage||0).toFixed(4)}</td>
+                    <td class="text-dim">${t.close_reason||'—'}</td>
+                    <td class="text-right text-dim" style="font-size:10px">${t.closed_at?new Date(t.closed_at).toLocaleString('pt-BR'):'—'}</td>
+                </tr>`;
+            }
+            html += `<div class="card section"><div class="card-body" style="overflow-x:auto"><table><thead><tr><th>ID</th><th>Estratégia</th><th>Ativo</th><th class="text-right">Edge</th><th class="text-right">P&L</th><th class="text-right">Slippage</th><th>Motivo</th><th class="text-right">Fechado</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        } else { html += '<div class="card section"><div class="card-body"><div class="empty-state">Nenhum trade fechado registrado</div></div></div>'; }
+        return html;
+    }
+
+    // ─── LIQUIDEZ TAB ───────────────────────────────────────────
+    function renderLiquidez() {
+        const entries = Object.entries(S.liquidity);
+        if(entries.length===0) return '<div class="card"><div class="card-body"><div class="empty-state">Sem dados de liquidez — serão calculados durante mercado aberto</div></div></div>';
+
+        const maxS = Math.max(...entries.map(([,v])=>v),100);
+        let bars = '';
+        for(const [sym,score] of entries) {
+            const h = Math.max(4, (score/maxS)*120);
+            const c = score>=80?'var(--green-profit)':score>=50?'var(--orange)':'var(--red-loss)';
+            bars += `<div class="bar-col"><div class="bar-value" style="color:${c}">${score.toFixed(0)}</div><div class="bar" style="height:${h}px;background:${c}"></div><div class="bar-label">${sym}</div></div>`;
+        }
+        let html = `<div class="card section"><div class="card-header"><div class="card-title">📊 Scores de Liquidez</div></div><div class="card-body"><div class="bar-chart">${bars}</div></div></div>`;
+
+        let rows = '';
+        for(const [sym,score] of entries) {
+            const c = score>=80?'var(--green-profit)':score>=50?'var(--orange)':'var(--red-loss)';
+            const tier = score>=80?'PAPER_FULL':score>=60?'PAPER_SM':score>=40?'SHADOW':'OBSERVE';
+            rows += `<tr><td class="text-mono" style="font-weight:700">${sym}</td><td class="text-right text-mono" style="font-weight:700;color:${c}">${score.toFixed(1)}</td><td><span class="badge badge-dim">${tier}</span></td></tr>`;
+        }
+        html += `<div class="card section"><div class="card-body"><table><thead><tr><th>Ativo</th><th class="text-right">Score</th><th>Tier Sugerido</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        return html;
+    }
+
+    // ─── CALIBRAÇÃO TAB ─────────────────────────────────────────
+    function renderCalibration() {
+        let html = '<div class="grid-4 section">';
+        for(const [k,v] of Object.entries(STRATS)) {
+            const s = S.sysState?.strategies?.[k];
+            const cal = s?.calibration_records||0;
+            const pct = Math.min(100, cal*5);
+            const c = pct>=100?'var(--green-profit)':pct>=50?'var(--orange)':'var(--red-loss)';
+            html += `<div class="kpi-card"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span>${v.icon}</span><span style="font-size:12px;font-weight:600">${v.name}</span></div>
+                <div class="kpi-value" style="color:${c};font-size:20px">${cal} <span style="font-size:12px;color:var(--dim)">registros</span></div>
+                <div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${c}"></div></div>
+                <div class="kpi-sub">${s?.last_calibration?'Última: '+new Date(s.last_calibration).toLocaleString('pt-BR'):'Sem calibração'}</div></div>`;
+        }
+        html += '</div>';
+
+        if(S.calibration.length>0) {
+            let rows = '';
+            for(const c of S.calibration.slice(0,50)) {
+                rows += `<tr><td>${STRATS[c.strategy_type]?.name||c.strategy_type}</td><td class="text-mono">${c.symbol||'—'}</td><td class="text-dim">${c.metric_name||'—'}</td><td class="text-right text-mono">${c.mean_val!=null?parseFloat(c.mean_val).toFixed(4):'—'}</td><td class="text-right text-mono">${c.std_val!=null?parseFloat(c.std_val).toFixed(4):'—'}</td><td class="text-right">${c.sample_count||'—'}</td></tr>`;
+            }
+            html += `<div class="card section"><div class="card-header"><div class="card-title">📋 Dados de Calibração</div></div><div class="card-body" style="overflow-x:auto"><table><thead><tr><th>Estratégia</th><th>Ativo</th><th>Métrica</th><th class="text-right">Média</th><th class="text-right">Std</th><th class="text-right">Amostras</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        } else { html += '<div class="card section"><div class="card-body"><div class="empty-state">Calibração será populada após primeiros ciclos de scan</div></div></div>'; }
+        return html;
+    }
+
+    // ─── SAÚDE TAB ──────────────────────────────────────────────
+    function renderSaude() {
+        const ss = S.sysState;
+        const h = S.health;
+        let html = '';
+
+        // System overview
+        html += `<div class="grid-3 section">
+            ${kpi('Mercado', ss?.market?.phase||'—', `BRT ${ss?.market?.brt_time||'—'}`, ss?.market?.open?'var(--green-profit)':'var(--dim)')}
+            ${kpi('Database', (h?.db==='connected'||ss?.overall?.db_healthy)?'CONECTADO':'ERRO', '', (h?.db==='connected'||ss?.overall?.db_healthy)?'var(--green-profit)':'var(--red-loss)')}
+            ${kpi('Modo', ss?.overall?.mode||h?.market_regime||'—', `Kill Switch: ${ss?.overall?.kill_switch?'ATIVADO':'Off'}`, 'var(--blue-accent)')}
+        </div>`;
+
+        // Providers
+        const provs = ss?.providers||{};
+        if(Object.keys(provs).length>0) {
+            let prows = '';
+            for(const [pn,ph] of Object.entries(provs)) {
+                const ok = ph.status==='healthy'||ph.status==='ok';
+                prows += `<tr><td style="font-weight:600">${pn.toUpperCase()}</td><td><span class="badge ${ok?'badge-ok':'badge-warn'}">${ph.status||'unknown'}</span></td><td class="text-dim">${ph.last_check?new Date(ph.last_check).toLocaleString('pt-BR'):'—'}</td></tr>`;
+            }
+            html += `<div class="card section"><div class="card-header"><div class="card-title">🔌 Providers</div></div><div class="card-body"><table><thead><tr><th>Provider</th><th>Status</th><th>Último Check</th></tr></thead><tbody>${prows}</tbody></table></div></div>`;
+        }
+
+        // Scan loops
+        if(ss?.strategies) {
+            let rows = '';
+            for(const [k,v] of Object.entries(STRATS)) {
+                const s = ss.strategies[k];
+                if(!s) continue;
+                const hbAge = s.seconds_since_heartbeat!=null?(s.seconds_since_heartbeat<60?Math.round(s.seconds_since_heartbeat)+'s':Math.round(s.seconds_since_heartbeat/60)+'min'):'—';
+                rows += `<tr>
+                    <td>${v.icon} ${v.name}</td>
+                    <td><span class="badge ${s.loop_healthy?'badge-ok':'badge-dim'}">${s.loop_healthy?'ATIVO':'INATIVO'}</span></td>
+                    <td class="text-mono text-dim">${hbAge}</td>
+                    <td class="text-right">${s.opportunities_1h}</td>
+                    <td class="text-right">${s.calibration_records}</td>
+                    <td class="text-right">${s.total_trades}</td>
+                    <td class="text-dim" style="font-size:11px">${s.smart_status}</td>
+                </tr>`;
+            }
+            html += `<div class="card section"><div class="card-header"><div class="card-title">🔄 Scan Loops</div></div>
+                <div class="card-body"><table><thead><tr><th>Estratégia</th><th>Status</th><th>Heartbeat</th><th class="text-right">Opp/h</th><th class="text-right">Cal</th><th class="text-right">Trades</th><th>Estado</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+        }
+
+        // Thread heartbeats
+        const threads = h?.threads||{};
+        if(Object.keys(threads).length>0) {
+            let trows = '';
+            for(const [name,t] of Object.entries(threads)) {
+                const alive = t.alive&&!t.frozen;
+                trows += `<tr><td style="font-weight:600">${name}</td><td><span class="badge ${alive?'badge-ok':'badge-err'}">${alive?'ALIVE':'DEAD'}</span></td><td class="text-mono">${t.hb_age_s!=null?t.hb_age_s.toFixed(0)+'s':'—'}</td><td class="text-right">${t.restarts||0}</td></tr>`;
+            }
+            html += `<div class="card section"><div class="card-header"><div class="card-title">🧵 Thread Heartbeats</div></div><div class="card-body"><table><thead><tr><th>Thread</th><th>Status</th><th>HB Age</th><th class="text-right">Restarts</th></tr></thead><tbody>${trows}</tbody></table></div></div>`;
+        }
+
+        // Learning
+        if(S.learning?.summary) {
+            const ls = S.learning.summary;
+            html += `<div class="card section"><div class="card-header"><div class="card-title">🧠 Learning Engine</div></div><div class="card-body"><div class="grid-4">`;
+            if(typeof ls==='object') for(const [lk,lv] of Object.entries(ls)) html += `<div><div class="kpi-label">${lk.replace(/_/g,' ')}</div><div class="text-mono" style="font-size:14px;font-weight:700">${typeof lv==='number'?lv.toFixed(4):lv}</div></div>`;
+            html += '</div></div></div>';
+        }
+
+        return html;
+    }
+
+    // ─── NAVIGATION ─────────────────────────────────────────────
+    function switchTab(tabName) {
+        currentTab = tabName;
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        const el = document.getElementById(tabName);
+        if(el) el.classList.add('active');
+        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+        const btn = document.querySelector(`[data-tab="${tabName}"]`);
+        if(btn) btn.classList.add('active');
+        render();
+    }
+
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+
+    // ─── INIT ───────────────────────────────────────────────────
+    fetchAll();
+    setInterval(fetchAll, 30000);
     </script>
 </body>
 </html>

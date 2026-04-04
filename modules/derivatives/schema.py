@@ -323,8 +323,96 @@ def create_derivatives_tables(connection: Any) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """)
         
+        # 14. Daily Capital Summary - End-of-day capital snapshots
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS derivatives_daily_capital (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            trade_date DATE NOT NULL,
+            total_capital DECIMAL(16, 2),
+            allocated DECIMAL(16, 2),
+            daily_pnl DECIMAL(14, 2),
+            trades_count INT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_trade_date (trade_date),
+            INDEX idx_trade_date (trade_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+
+        # 15. Monthly P&L Aggregation
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS derivatives_monthly_pnl (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            year_month VARCHAR(7) NOT NULL,
+            strategy_type VARCHAR(32),
+            symbol VARCHAR(16),
+            total_pnl DECIMAL(16, 2),
+            trade_count INT,
+            win_count INT,
+            loss_count INT,
+            win_rate DECIMAL(5, 4),
+            avg_edge_realized DECIMAL(10, 4),
+            avg_slippage DECIMAL(10, 4),
+            sharpe DECIMAL(8, 4),
+            profit_factor DECIMAL(8, 4),
+            max_drawdown DECIMAL(14, 2),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_month_strat_sym (year_month, strategy_type, symbol),
+            INDEX idx_year_month (year_month),
+            INDEX idx_strategy (strategy_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+
+        # 16. Annual P&L Aggregation
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS derivatives_annual_pnl (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            year INT NOT NULL,
+            strategy_type VARCHAR(32),
+            symbol VARCHAR(16),
+            total_pnl DECIMAL(16, 2),
+            trade_count INT,
+            win_count INT,
+            loss_count INT,
+            win_rate DECIMAL(5, 4),
+            sharpe DECIMAL(8, 4),
+            profit_factor DECIMAL(8, 4),
+            max_drawdown DECIMAL(14, 2),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_year_strat_sym (year, strategy_type, symbol),
+            INDEX idx_year (year),
+            INDEX idx_strategy (strategy_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+
+        # 17. Learning Outcomes - Detailed learning data per trade
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS derivatives_learning_outcomes (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            trade_id VARCHAR(64) NOT NULL,
+            strategy_type VARCHAR(32) NOT NULL,
+            symbol VARCHAR(16) NOT NULL,
+            structure_type VARCHAR(32),
+            expected_edge DECIMAL(12, 4),
+            realized_pnl DECIMAL(14, 2),
+            slippage_total DECIMAL(10, 4),
+            latency_avg_ms DECIMAL(10, 2),
+            time_in_trade_hours DECIMAL(10, 2),
+            close_reason VARCHAR(255),
+            liquidity_score DECIMAL(5, 2),
+            active_status VARCHAR(32),
+            legs_count INT,
+            legging_incidents INT,
+            confidence_at_entry DECIMAL(5, 4),
+            confidence_adj_after DECIMAL(5, 4),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_trade_id (trade_id),
+            INDEX idx_strategy_symbol (strategy_type, symbol),
+            INDEX idx_created_at (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+
         connection.commit()
-        logger.info("All derivatives tables created successfully")
+        logger.info("All derivatives tables created successfully (17 tables)")
         
     except Exception as e:
         connection.rollback()

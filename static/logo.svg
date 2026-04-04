@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 80" fill="none">
+  <!-- Bars - ascending chart -->
+  <rect x="10" y="55" width="12" height="18" rx="2" fill="#22B8CF"/>
+  <rect x="26" y="45" width="12" height="28" rx="2" fill="#20C997"/>
+  <rect x="42" y="35" width="12" height="38" rx="2" fill="#2ECC71"/>
+  <rect x="58" y="22" width="12" height="51" rx="2" fill="#27AE60"/>
+  <rect x="74" y="12" width="12" height="61" rx="2" fill="#1E8449"/>
+  <!-- Arrow -->
+  <path d="M12 60 Q45 20 82 8 L78 4 L88 6 L84 16 L82 12" stroke="url(#arrowGrad)" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <polygon points="88,6 82,2 84,12" fill="url(#arrowGrad)"/>
+  <!-- Chip icon -->
+  <rect x="88" y="14" width="22" height="22" rx="3" stroke="#2ECC71" stroke-width="1.5" fill="none"/>
+  <circle cx="99" cy="25" r="4" stroke="#2ECC71" stroke-width="1.2" fill="none"/>
+  <line x1="95" y1="25" x2="91" y2="25" stroke="#2ECC71" stroke-width="1"/>
+  <line x1="103" y1="25" x2="107" y2="25" stroke="#2ECC71" stroke-width="1"/>
+  <line x1="99" y1="21" x2="99" y2="17" stroke="#2ECC71" stroke-width="1"/>
+  <line x1="99" y1="29" x2="99" y2="33" stroke="#2ECC71" stroke-width="1"/>
+  <!-- Text -->
+  <text x="10" y="77" font-family="Inter, system-ui, sans-serif" font-weight="700" font-size="22">
+    <tspan fill="url(#textGrad1)">EGREJA</tspan>
+    <tspan fill="url(#textGrad2)" dx="6">IA</tspan>
+  </text>
+  <defs>
+    <linearGradient id="arrowGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#60A5FA"/>
+      <stop offset="100%" stop-color="#CBD5E1"/>
+    </linearGradient>
+    <linearGradient id="textGrad1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#CBD5E1"/>
+      <stop offset="100%" stop-color="#94A3B8"/>
+    </linearGradient>
+    <linearGradient id="textGrad2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22B8CF"/>
+      <stop offset="100%" stop-color="#2ECC71"/>
+    </linearGradient>
+  </defs>
+</svg>

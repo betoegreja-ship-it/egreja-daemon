@@ -11,6 +11,22 @@ Provides comprehensive infrastructure for derivatives trading across multiple st
 - Dividend Arbitrage
 - Volatility Arbitrage
 
+Infrastructure (Phase 1):
+  - config.py: Environment-driven configuration, strategy params
+  - providers.py: Market data providers (OpLab, Cedro, Simulated)
+  - services.py: Greeks calculator, IV engine, caches, calibration
+  - liquidity.py: 7-dimension liquidity scoring, promotion engine
+  - schema.py: 13 MySQL tables for derivatives infrastructure
+  - endpoints.py: 17 Flask API endpoints
+
+Autonomous Execution (Phase 2):
+  - capital.py: Capital allocation, daily loss limits, reconciliation
+  - position_sizing.py: Dynamic sizing (Kelly + liquidity + Greeks margin)
+  - deriv_execution.py: Multi-leg order execution with legging risk
+  - monitoring.py: Real-time P&L (Greeks-based), exit triggers
+  - learning.py: Adaptive confidence calibration, slippage prediction
+  - strategies.py: 8 scan loops with autonomous execution pipeline
+
 Thread-safe, fully instrumented for production use.
 """
 
@@ -83,4 +99,4 @@ __all__ = [
     "get_provider_manager",
 ]
 
-__version__ = "1.0.0"
+__version__ = "2.0.0-autonomous"

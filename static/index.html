@@ -150,7 +150,8 @@
     <footer id="footer">v10.27 · Paper Mode · OpLab + BRAPI + Polygon</footer>
 
     <script>
-    const API = '/api';
+    const RW = 'https://diligent-spirit-production.up.railway.app';
+    const API = RW;   // base URL for Railway backend
     const STRATS = {
         PCP: {name:'Put-Call Parity', icon:'🎯', color:'var(--blue-accent)'},
         FST: {name:'Futuro Sintético', icon:'🔗', color:'var(--purple)'},
@@ -192,6 +193,7 @@
             fetch(`${API}/strategies/pnl-monthly`).then(r=>r.json()),
             fetch(`${API}/strategies/pnl-annual`).then(r=>r.json()),
             fetch(`${API}/strategies/win-rate`).then(r=>r.json()),
+            fetch(`${API}/signals`).then(r=>r.json()),
         ]);
         const v = (i) => r[i].status==='fulfilled' ? r[i].value : null;
         S.health = v(0);

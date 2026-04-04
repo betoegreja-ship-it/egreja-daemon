@@ -1,0 +1,19 @@
+{
+  "outputDirectory": "static",
+  "rewrites": [
+    { "source": "/strategies/:path*", "destination": "https://diligent-spirit-production.up.railway.app/strategies/:path*" },
+    { "source": "/api/:path*", "destination": "https://diligent-spirit-production.up.railway.app/api/:path*" },
+    { "source": "/health", "destination": "https://diligent-spirit-production.up.railway.app/health" },
+    { "source": "/signals", "destination": "https://diligent-spirit-production.up.railway.app/signals" },
+    { "source": "/stats", "destination": "https://diligent-spirit-production.up.railway.app/stats" },
+    { "source": "/trades/:path*", "destination": "https://diligent-spirit-production.up.railway.app/trades/:path*" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    }
+  ]
+}

@@ -135,6 +135,46 @@ except Exception as _mod_err:
     pcp_scan_loop = fst_scan_loop = roll_arb_scan_loop = etf_basket_scan_loop = None
     skew_arb_scan_loop = interlisted_scan_loop = dividend_arb_scan_loop = vol_arb_scan_loop = None
 
+# ── [v10.28] Pure business logic modules ───────────────────────────────
+try:
+    from modules.trading_config import (
+        INITIAL_CAPITAL_STOCKS, INITIAL_CAPITAL_CRYPTO,
+        MAX_POSITION_STOCKS, MAX_POSITION_CRYPTO, CRYPTO_MAX_POSITION_BY_SYM,
+        MAX_CAPITAL_PCT_STOCKS, MAX_CAPITAL_PCT_CRYPTO,
+        MAX_POSITIONS_STOCKS, MAX_POSITIONS_CRYPTO, MAX_POSITIONS_NYSE,
+        FMP_API_KEY as _TC_FMP_API_KEY, POLYGON_API_KEY as _TC_POLYGON_API_KEY,
+        BRAPI_TOKEN as _TC_BRAPI_TOKEN, API_SECRET_KEY as _TC_API_SECRET_KEY,
+        B3_TO_ADR, B3_ADR_SYMBOLS, CRYPTO_SYMBOLS, CRYPTO_NAMES,
+        ENV as _TC_ENV
+    )
+    from modules.market_calendar import (
+        is_b3_open, is_nyse_open, is_lse_open, is_hkex_open,
+        is_tsx_open, is_euronext_open, market_open_for,
+        NYSE_HOLIDAYS, B3_HOLIDAYS, LSE_HOLIDAYS, HKEX_HOLIDAYS,
+        TZ_SAO_PAULO as _TZ_SP, TZ_NEW_YORK as _TZ_NY, TZ_LONDON as _TZ_LN, TZ_HK as _TZ_HK
+    )
+    from modules.feature_engine import (
+        extract_features, make_feature_hash,
+        _score_bucket, _rsi_bucket, _ema_alignment, _change_pct_bucket,
+        _volatility_bucket, _time_bucket, _data_quality_bucket,
+        _atr_bucket, _volume_bucket, _calc_atr
+    )
+    from modules.fees import (
+        calc_fee as _module_calc_fee, apply_fee_to_trade as _module_apply_fee_to_trade,
+        get_fees, _binance_rt, BINANCE_VIP_TIER, USE_BNB_DISCOUNT
+    )
+    from modules.learning_engine import (
+        calc_learning_confidence, get_risk_multiplier
+    )
+    # Note: log is not yet initialized, so use print. It will be logged after logging.basicConfig
+    print('[v10.28] Pure business logic modules loaded: trading_config, market_calendar, feature_engine, fees, learning_engine', flush=True)
+    _PURE_MODULES_LOADED = True
+except Exception as _pm_err:
+    import traceback as _pm_tb
+    print(f'[v10.28] WARNING: Failed to load pure modules: {_pm_err}', flush=True)
+    _pm_tb.print_exc()
+    _PURE_MODULES_LOADED = False
+
 logging.basicConfig(level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger('egreja')
@@ -822,97 +862,118 @@ def _db_insert_audit(entry):
 # ═══════════════════════════════════════════════════════════════
 # CALENDÁRIO DE FERIADOS 2025-2027
 # ═══════════════════════════════════════════════════════════════
-_NYSE_HOLIDAYS = {
-    date(2025,1,1), date(2025,1,20), date(2025,2,17), date(2025,4,18),
-    date(2025,5,26), date(2025,6,19), date(2025,7,4), date(2025,9,1),
-    date(2025,11,27), date(2025,12,25),
-    date(2026,1,1), date(2026,1,19), date(2026,2,16), date(2026,4,3),
-    date(2026,5,25), date(2026,6,19), date(2026,7,3), date(2026,9,7),
-    date(2026,11,26), date(2026,12,25),
-    date(2027,1,1), date(2027,1,18), date(2027,2,15), date(2027,3,26),
-    date(2027,5,31), date(2027,6,18), date(2027,7,5), date(2027,9,6),
-    date(2027,11,25), date(2027,12,24),
-}
-_B3_HOLIDAYS = {
-    date(2025,1,1), date(2025,3,3), date(2025,3,4), date(2025,4,18),
-    date(2025,4,21), date(2025,5,1), date(2025,6,19), date(2025,9,7),
-    date(2025,10,12), date(2025,11,2), date(2025,11,15), date(2025,11,20), date(2025,12,25),
-    date(2026,1,1), date(2026,2,16), date(2026,2,17), date(2026,4,3),
-    date(2026,4,21), date(2026,5,1), date(2026,6,4), date(2026,9,7),
-    date(2026,10,12), date(2026,11,2), date(2026,11,15), date(2026,11,20), date(2026,12,25),
-    date(2027,1,1), date(2027,2,8), date(2027,2,9), date(2027,3,26),
-    date(2027,4,21), date(2027,5,1), date(2027,5,27), date(2027,9,7),
-    date(2027,10,12), date(2027,11,2), date(2027,11,15), date(2027,11,20), date(2027,12,25),
-}
-_LSE_HOLIDAYS = {
-    date(2025,1,1), date(2025,4,18), date(2025,4,21), date(2025,5,5),
-    date(2025,5,26), date(2025,8,25), date(2025,12,25), date(2025,12,26),
-    date(2026,1,1), date(2026,4,3), date(2026,4,6), date(2026,5,4),
-    date(2026,5,25), date(2026,8,31), date(2026,12,25), date(2026,12,28),
-    date(2027,1,1), date(2027,3,26), date(2027,3,29), date(2027,5,3),
-    date(2027,5,31), date(2027,8,30), date(2027,12,27), date(2027,12,28),
-}
-_HKEX_HOLIDAYS = {
-    date(2025,1,1), date(2025,1,29), date(2025,1,30), date(2025,1,31),
-    date(2025,4,4), date(2025,4,18), date(2025,4,21), date(2025,5,1),
-    date(2025,5,5), date(2025,6,2), date(2025,7,1), date(2025,10,1),
-    date(2025,10,2), date(2025,10,7), date(2025,12,25), date(2025,12,26),
-    date(2026,1,1), date(2026,2,17), date(2026,2,18), date(2026,2,19),
-    date(2026,4,3), date(2026,4,6), date(2026,4,7), date(2026,5,1),
-    date(2026,5,25), date(2026,6,19), date(2026,7,1), date(2026,10,1),
-    date(2026,10,2), date(2026,12,25),
-}
+# [v10.28] Holidays from market_calendar module — reassign with underscores for backward compatibility
+if _PURE_MODULES_LOADED:
+    _NYSE_HOLIDAYS = NYSE_HOLIDAYS
+    _B3_HOLIDAYS = B3_HOLIDAYS
+    _LSE_HOLIDAYS = LSE_HOLIDAYS
+    _HKEX_HOLIDAYS = HKEX_HOLIDAYS
+else:
+    _NYSE_HOLIDAYS = {
+        date(2025,1,1), date(2025,1,20), date(2025,2,17), date(2025,4,18),
+        date(2025,5,26), date(2025,6,19), date(2025,7,4), date(2025,9,1),
+        date(2025,11,27), date(2025,12,25),
+        date(2026,1,1), date(2026,1,19), date(2026,2,16), date(2026,4,3),
+        date(2026,5,25), date(2026,6,19), date(2026,7,3), date(2026,9,7),
+        date(2026,11,26), date(2026,12,25),
+        date(2027,1,1), date(2027,1,18), date(2027,2,15), date(2027,3,26),
+        date(2027,5,31), date(2027,6,18), date(2027,7,5), date(2027,9,6),
+        date(2027,11,25), date(2027,12,24),
+    }
+    _B3_HOLIDAYS = {
+        date(2025,1,1), date(2025,3,3), date(2025,3,4), date(2025,4,18),
+        date(2025,4,21), date(2025,5,1), date(2025,6,19), date(2025,9,7),
+        date(2025,10,12), date(2025,11,2), date(2025,11,15), date(2025,11,20), date(2025,12,25),
+        date(2026,1,1), date(2026,2,16), date(2026,2,17), date(2026,4,3),
+        date(2026,4,21), date(2026,5,1), date(2026,6,4), date(2026,9,7),
+        date(2026,10,12), date(2026,11,2), date(2026,11,15), date(2026,11,20), date(2026,12,25),
+        date(2027,1,1), date(2027,2,8), date(2027,2,9), date(2027,3,26),
+        date(2027,4,21), date(2027,5,1), date(2027,5,27), date(2027,9,7),
+        date(2027,10,12), date(2027,11,2), date(2027,11,15), date(2027,11,20), date(2027,12,25),
+    }
+    _LSE_HOLIDAYS = {
+        date(2025,1,1), date(2025,4,18), date(2025,4,21), date(2025,5,5),
+        date(2025,5,26), date(2025,8,25), date(2025,12,25), date(2025,12,26),
+        date(2026,1,1), date(2026,4,3), date(2026,4,6), date(2026,5,4),
+        date(2026,5,25), date(2026,8,31), date(2026,12,25), date(2026,12,28),
+        date(2027,1,1), date(2027,3,26), date(2027,3,29), date(2027,5,3),
+        date(2027,5,31), date(2027,8,30), date(2027,12,27), date(2027,12,28),
+    }
+    _HKEX_HOLIDAYS = {
+        date(2025,1,1), date(2025,1,29), date(2025,1,30), date(2025,1,31),
+        date(2025,4,4), date(2025,4,18), date(2025,4,21), date(2025,5,1),
+        date(2025,5,5), date(2025,6,2), date(2025,7,1), date(2025,10,1),
+        date(2025,10,2), date(2025,10,7), date(2025,12,25), date(2025,12,26),
+        date(2026,1,1), date(2026,2,17), date(2026,2,18), date(2026,2,19),
+        date(2026,4,3), date(2026,4,6), date(2026,4,7), date(2026,5,1),
+        date(2026,5,25), date(2026,6,19), date(2026,7,1), date(2026,10,1),
+        date(2026,10,2), date(2026,12,25),
+    }
 
-TZ_SAO_PAULO = ZoneInfo('America/Sao_Paulo')
-TZ_NEW_YORK  = ZoneInfo('America/New_York')
-TZ_LONDON    = ZoneInfo('Europe/London')
-TZ_HK        = ZoneInfo('Asia/Hong_Kong')
+# [v10.28] Timezones from market_calendar module — reassign for backward compatibility
+# Module imports them as _TZ_SP, _TZ_NY, _TZ_LN, _TZ_HK to avoid conflicts
+if _PURE_MODULES_LOADED:
+    TZ_SAO_PAULO = _TZ_SP
+    TZ_NEW_YORK  = _TZ_NY
+    TZ_LONDON    = _TZ_LN
+    TZ_HK        = _TZ_HK
+else:
+    TZ_SAO_PAULO = ZoneInfo('America/Sao_Paulo')
+    TZ_NEW_YORK  = ZoneInfo('America/New_York')
+    TZ_LONDON    = ZoneInfo('Europe/London')
+    TZ_HK        = ZoneInfo('Asia/Hong_Kong')
 
-def is_b3_open():
-    now = datetime.now(TZ_SAO_PAULO)
-    if now.weekday()>=5 or now.date() in _B3_HOLIDAYS: return False
-    h = now.hour + now.minute/60.0; return 10.0<=h<17.0
+# [v10.28] Market open functions imported from market_calendar module
+# The module provides: is_b3_open, is_nyse_open, is_lse_open, is_hkex_open,
+# is_tsx_open, is_euronext_open, market_open_for
+# These are imported at the top if _PURE_MODULES_LOADED=True
+# If modules failed to load, define fallback implementations:
+if not _PURE_MODULES_LOADED:
+    def is_b3_open():
+        now = datetime.now(TZ_SAO_PAULO)
+        if now.weekday()>=5 or now.date() in _B3_HOLIDAYS: return False
+        h = now.hour + now.minute/60.0; return 10.0<=h<17.0
 
-def is_nyse_open():
-    now = datetime.now(TZ_NEW_YORK)
-    if now.weekday()>=5 or now.date() in _NYSE_HOLIDAYS: return False
-    h = now.hour + now.minute/60.0; return 9.5<=h<16.0
+    def is_nyse_open():
+        now = datetime.now(TZ_NEW_YORK)
+        if now.weekday()>=5 or now.date() in _NYSE_HOLIDAYS: return False
+        h = now.hour + now.minute/60.0; return 9.5<=h<16.0
 
-def is_lse_open():
-    now = datetime.now(TZ_LONDON)
-    if now.weekday()>=5 or now.date() in _LSE_HOLIDAYS: return False
-    h = now.hour + now.minute/60.0; return 8.0<=h<16.5
+    def is_lse_open():
+        now = datetime.now(TZ_LONDON)
+        if now.weekday()>=5 or now.date() in _LSE_HOLIDAYS: return False
+        h = now.hour + now.minute/60.0; return 8.0<=h<16.5
 
-def is_hkex_open():
-    now = datetime.now(TZ_HK)
-    if now.weekday()>=5 or now.date() in _HKEX_HOLIDAYS: return False
-    h = now.hour + now.minute/60.0; return (9.5<=h<12.0) or (13.0<=h<16.0)
+    def is_hkex_open():
+        now = datetime.now(TZ_HK)
+        if now.weekday()>=5 or now.date() in _HKEX_HOLIDAYS: return False
+        h = now.hour + now.minute/60.0; return (9.5<=h<12.0) or (13.0<=h<16.0)
 
-def is_tsx_open():
-    # TSX (Toronto) abre 09:30-16:00 ET = mesmo horário da NYSE
-    now = datetime.now(TZ_NEW_YORK)
-    if now.weekday()>=5: return False
-    h = now.hour + now.minute/60.0; return 9.5<=h<16.0
+    def is_tsx_open():
+        # TSX (Toronto) abre 09:30-16:00 ET = mesmo horário da NYSE
+        now = datetime.now(TZ_NEW_YORK)
+        if now.weekday()>=5: return False
+        h = now.hour + now.minute/60.0; return 9.5<=h<16.0
 
-def is_euronext_open():
-    # Euronext/XETRA 09:00-17:30 CET = 08:00-16:30 UTC (aprox)
-    try:
-        from zoneinfo import ZoneInfo as _ZI
-        TZ_CET = _ZI('Europe/Paris')
-    except: TZ_CET = TZ_LONDON
-    now = datetime.now(TZ_CET)
-    if now.weekday()>=5: return False
-    h = now.hour + now.minute/60.0; return 9.0<=h<17.5
+    def is_euronext_open():
+        # Euronext/XETRA 09:00-17:30 CET = 08:00-16:30 UTC (aprox)
+        try:
+            from zoneinfo import ZoneInfo as _ZI
+            TZ_CET = _ZI('Europe/Paris')
+        except: TZ_CET = TZ_LONDON
+        now = datetime.now(TZ_CET)
+        if now.weekday()>=5: return False
+        h = now.hour + now.minute/60.0; return 9.0<=h<17.5
 
-def market_open_for(mkt):
-    if mkt=='CRYPTO':                        return True
-    if mkt=='B3':                            return is_b3_open()
-    if mkt in ('NYSE','NASDAQ','US'):        return is_nyse_open()
-    if mkt=='LSE':                           return is_lse_open()
-    if mkt=='HKEX':                          return is_hkex_open()
-    if mkt=='TSX':                           return is_tsx_open()
-    if mkt in ('EURONEXT','XETRA','XAMS'):  return is_euronext_open()
-    return False
+    def market_open_for(mkt):
+        if mkt=='CRYPTO':                        return True
+        if mkt=='B3':                            return is_b3_open()
+        if mkt in ('NYSE','NASDAQ','US'):        return is_nyse_open()
+        if mkt=='LSE':                           return is_lse_open()
+        if mkt=='HKEX':                          return is_hkex_open()
+        if mkt=='TSX':                           return is_tsx_open()
+        if mkt in ('EURONEXT','XETRA','XAMS'):  return is_euronext_open()
+        return False
 
 # ═══════════════════════════════════════════════════════════════
 # RISK ENGINE
@@ -1444,143 +1505,147 @@ def get_cross_market_crypto_adj() -> int:
 # [L-1] FEATURE ENGINEERING — extração determinística e bucketing
 # ═══════════════════════════════════════════════════════════════
 
-def _score_bucket(score: float) -> str:
-    if score <= 29:   return 'VERY_LOW'
-    if score <= 49:   return 'LOW'
-    if score <= 69:   return 'NEUTRAL'
-    if score <= 84:   return 'HIGH'
-    return 'VERY_HIGH'
+# [v10.28] Feature engineering functions imported from feature_engine module
+# These helper functions and extract_features are provided by modules.feature_engine
+# If modules failed to load, define fallback implementations:
+if not _PURE_MODULES_LOADED:
+    def _score_bucket(score: float) -> str:
+        if score <= 29:   return 'VERY_LOW'
+        if score <= 49:   return 'LOW'
+        if score <= 69:   return 'NEUTRAL'
+        if score <= 84:   return 'HIGH'
+        return 'VERY_HIGH'
 
-def _rsi_bucket(rsi: float) -> str:
-    if rsi < 30:    return 'OVERSOLD'
-    if rsi < 45:    return 'WEAK'
-    if rsi < 55:    return 'NEUTRAL'
-    if rsi < 70:    return 'STRONG'
-    return 'OVERBOUGHT'
+    def _rsi_bucket(rsi: float) -> str:
+        if rsi < 30:    return 'OVERSOLD'
+        if rsi < 45:    return 'WEAK'
+        if rsi < 55:    return 'NEUTRAL'
+        if rsi < 70:    return 'STRONG'
+        return 'OVERBOUGHT'
 
-def _ema_alignment(ema9: float, ema21: float, ema50: float, price: float) -> str:
-    """Alinhamento das EMAs em relação ao preço e entre si."""
-    if price > ema9 > ema21 > ema50:  return 'BULLISH_STACK'
-    if price < ema9 < ema21 < ema50:  return 'BEARISH_STACK'
-    if ema9 > ema21:                   return 'BULLISH_CROSS'
-    if ema9 < ema21:                   return 'BEARISH_CROSS'
-    return 'MIXED'
+    def _ema_alignment(ema9: float, ema21: float, ema50: float, price: float) -> str:
+        """Alinhamento das EMAs em relação ao preço e entre si."""
+        if price > ema9 > ema21 > ema50:  return 'BULLISH_STACK'
+        if price < ema9 < ema21 < ema50:  return 'BEARISH_STACK'
+        if ema9 > ema21:                   return 'BULLISH_CROSS'
+        if ema9 < ema21:                   return 'BEARISH_CROSS'
+        return 'MIXED'
 
-def _change_pct_bucket(change_pct: float) -> str:
-    a = abs(change_pct)
-    if a < 0.5:   return 'FLAT'
-    if a < 1.5:   return 'SMALL'
-    if a < 3.0:   return 'MEDIUM'
-    if a < 6.0:   return 'LARGE'
-    return 'EXTREME'
+    def _change_pct_bucket(change_pct: float) -> str:
+        a = abs(change_pct)
+        if a < 0.5:   return 'FLAT'
+        if a < 1.5:   return 'SMALL'
+        if a < 3.0:   return 'MEDIUM'
+        if a < 6.0:   return 'LARGE'
+        return 'EXTREME'
 
-def _volatility_bucket(regime_volatility: str) -> str:
-    return regime_volatility or 'NORMAL'
+    def _volatility_bucket(regime_volatility: str) -> str:
+        return regime_volatility or 'NORMAL'
 
-def _time_bucket(dt: datetime) -> str:
-    h = dt.hour
-    if h < 6:    return 'OVERNIGHT'
-    if h < 10:   return 'PRE_MARKET'
-    if h < 12:   return 'MORNING'
-    if h < 14:   return 'MIDDAY'
-    if h < 17:   return 'AFTERNOON'
-    if h < 20:   return 'EVENING'
-    return 'NIGHT'
+    def _time_bucket(dt: datetime) -> str:
+        h = dt.hour
+        if h < 6:    return 'OVERNIGHT'
+        if h < 10:   return 'PRE_MARKET'
+        if h < 12:   return 'MORNING'
+        if h < 14:   return 'MIDDAY'
+        if h < 17:   return 'AFTERNOON'
+        if h < 20:   return 'EVENING'
+        return 'NIGHT'
 
-def _data_quality_bucket(dq_score: float) -> str:
-    if dq_score >= 90: return 'HIGH'
-    if dq_score >= 60: return 'MEDIUM'
-    return 'LOW'
+    def _data_quality_bucket(dq_score: float) -> str:
+        if dq_score >= 90: return 'HIGH'
+        if dq_score >= 60: return 'MEDIUM'
+        return 'LOW'
 
-def _atr_bucket(atr_pct: float) -> str:
-    """[v10.4] ATR como % do preço — volatility real, não só regime de crypto."""
-    if atr_pct <= 0:    return 'UNKNOWN'
-    if atr_pct < 0.5:   return 'VERY_LOW'
-    if atr_pct < 1.5:   return 'LOW'
-    if atr_pct < 3.0:   return 'NORMAL'
-    if atr_pct < 6.0:   return 'HIGH'
-    return 'EXTREME'
+    def _atr_bucket(atr_pct: float) -> str:
+        """[v10.4] ATR como % do preço — volatility real, não só regime de crypto."""
+        if atr_pct <= 0:    return 'UNKNOWN'
+        if atr_pct < 0.5:   return 'VERY_LOW'
+        if atr_pct < 1.5:   return 'LOW'
+        if atr_pct < 3.0:   return 'NORMAL'
+        if atr_pct < 6.0:   return 'HIGH'
+        return 'EXTREME'
 
-def _volume_bucket(vol_ratio: float) -> str:
-    """[v10.4] Ratio volume_atual / volume_médio_20d.
-    >1.5 = volume acima da média (confirma movimento); <0.7 = volume fraco."""
-    if vol_ratio <= 0:   return 'UNKNOWN'
-    if vol_ratio < 0.5:  return 'VERY_LOW'
-    if vol_ratio < 0.8:  return 'LOW'
-    if vol_ratio < 1.3:  return 'NORMAL'
-    if vol_ratio < 2.0:  return 'HIGH'
-    return 'SURGE'
+    def _volume_bucket(vol_ratio: float) -> str:
+        """[v10.4] Ratio volume_atual / volume_médio_20d.
+        >1.5 = volume acima da média (confirma movimento); <0.7 = volume fraco."""
+        if vol_ratio <= 0:   return 'UNKNOWN'
+        if vol_ratio < 0.5:  return 'VERY_LOW'
+        if vol_ratio < 0.8:  return 'LOW'
+        if vol_ratio < 1.3:  return 'NORMAL'
+        if vol_ratio < 2.0:  return 'HIGH'
+        return 'SURGE'
 
-def _calc_atr(closes: list, highs: list = None, lows: list = None, period: int = 14) -> float:
-    """[v10.4] ATR simplificado. Se highs/lows não disponíveis, usa desvio de closes."""
-    if len(closes) < 2: return 0.0
-    if highs and lows and len(highs) == len(closes):
-        trs = []
-        for i in range(1, min(period + 1, len(closes))):
-            hl = highs[i] - lows[i]
-            hc = abs(highs[i] - closes[i-1])
-            lc = abs(lows[i] - closes[i-1])
-            trs.append(max(hl, hc, lc))
-        return sum(trs) / len(trs) if trs else 0.0
-    # Fallback: desvio médio absoluto dos closes
-    n = min(period, len(closes))
-    diffs = [abs(closes[i] - closes[i-1]) for i in range(1, n + 1)]
-    return sum(diffs) / len(diffs) if diffs else 0.0
+    def _calc_atr(closes: list, highs: list = None, lows: list = None, period: int = 14) -> float:
+        """[v10.4] ATR simplificado. Se highs/lows não disponíveis, usa desvio de closes."""
+        if len(closes) < 2: return 0.0
+        if highs and lows and len(highs) == len(closes):
+            trs = []
+            for i in range(1, min(period + 1, len(closes))):
+                hl = highs[i] - lows[i]
+                hc = abs(highs[i] - closes[i-1])
+                lc = abs(lows[i] - closes[i-1])
+                trs.append(max(hl, hc, lc))
+            return sum(trs) / len(trs) if trs else 0.0
+        # Fallback: desvio médio absoluto dos closes
+        n = min(period, len(closes))
+        diffs = [abs(closes[i] - closes[i-1]) for i in range(1, n + 1)]
+        return sum(diffs) / len(diffs) if diffs else 0.0
 
-def extract_features(sig: dict, regime: dict, dq_score: float, now: datetime) -> dict:
-    """[L-1][v10.4] Extrai features canônicas de um sinal para learning.
-    Inclui atr_bucket e volume_bucket para espaço de padrões mais discriminativo.
-    """
-    score     = float(sig.get('score', 50) or 50)
-    rsi       = float(sig.get('rsi', 50) or 50)
-    ema9      = float(sig.get('ema9', 0) or 0)
-    ema21     = float(sig.get('ema21', 0) or 0)
-    ema50     = float(sig.get('ema50', 0) or 0)
-    price     = float(sig.get('price', 0) or 0)
-    change    = float(sig.get('change_pct', sig.get('change_24h', 0)) or 0)
-    direction = 'LONG' if sig.get('signal') == 'COMPRA' else ('SHORT' if sig.get('signal') == 'VENDA' else 'NEUTRAL')
-    asset_t   = sig.get('asset_type', 'stock')
-    mkt       = sig.get('market_type', 'NYSE')
+    def extract_features(sig: dict, regime: dict, dq_score: float, now: datetime) -> dict:
+        """[L-1][v10.4] Extrai features canônicas de um sinal para learning.
+        Inclui atr_bucket e volume_bucket para espaço de padrões mais discriminativo.
+        """
+        score     = float(sig.get('score', 50) or 50)
+        rsi       = float(sig.get('rsi', 50) or 50)
+        ema9      = float(sig.get('ema9', 0) or 0)
+        ema21     = float(sig.get('ema21', 0) or 0)
+        ema50     = float(sig.get('ema50', 0) or 0)
+        price     = float(sig.get('price', 0) or 0)
+        change    = float(sig.get('change_pct', sig.get('change_24h', 0)) or 0)
+        direction = 'LONG' if sig.get('signal') == 'COMPRA' else ('SHORT' if sig.get('signal') == 'VENDA' else 'NEUTRAL')
+        asset_t   = sig.get('asset_type', 'stock')
+        mkt       = sig.get('market_type', 'NYSE')
 
-    # [v10.4] ATR e volume — vindos do price_dict ou do sig_enriched
-    atr_pct    = float(sig.get('atr_pct', 0) or 0)
-    vol_ratio  = float(sig.get('volume_ratio', 0) or 0)
+        # [v10.4] ATR e volume — vindos do price_dict ou do sig_enriched
+        atr_pct    = float(sig.get('atr_pct', 0) or 0)
+        vol_ratio  = float(sig.get('volume_ratio', 0) or 0)
 
-    return {
-        'score_bucket':     _score_bucket(score),
-        'rsi_bucket':       _rsi_bucket(rsi),
-        'ema_alignment':    _ema_alignment(ema9, ema21, ema50, price),
-        'change_pct_bucket':_change_pct_bucket(change),
-        'volatility_bucket':_volatility_bucket(regime.get('volatility', 'NORMAL')),
-        'regime_mode':      regime.get('mode', 'UNKNOWN'),
-        'time_bucket':      _time_bucket(now),
-        'weekday':          now.weekday(),   # 0=segunda
-        'asset_type':       asset_t,
-        'market_type':      mkt,
-        'direction':        direction,
-        'dq_bucket':        _data_quality_bucket(dq_score),
-        'atr_bucket':       _atr_bucket(atr_pct),       # [v10.4] volatility real por ativo
-        'volume_bucket':    _volume_bucket(vol_ratio),  # [v10.4] confirmação por volume
-    }
+        return {
+            'score_bucket':     _score_bucket(score),
+            'rsi_bucket':       _rsi_bucket(rsi),
+            'ema_alignment':    _ema_alignment(ema9, ema21, ema50, price),
+            'change_pct_bucket':_change_pct_bucket(change),
+            'volatility_bucket':_volatility_bucket(regime.get('volatility', 'NORMAL')),
+            'regime_mode':      regime.get('mode', 'UNKNOWN'),
+            'time_bucket':      _time_bucket(now),
+            'weekday':          now.weekday(),   # 0=segunda
+            'asset_type':       asset_t,
+            'market_type':      mkt,
+            'direction':        direction,
+            'dq_bucket':        _data_quality_bucket(dq_score),
+            'atr_bucket':       _atr_bucket(atr_pct),       # [v10.4] volatility real por ativo
+            'volume_bucket':    _volume_bucket(vol_ratio),  # [v10.4] confirmação por volume
+        }
 
-def make_feature_hash(features: dict) -> str:
-    """[L-1][v10.4] Hash canônico determinístico — espaço ampliado com atr, volume e weekday.
-    weekday distingue comportamento segunda-feira (gap open) de quarta/quinta (fluxo normal).
-    """
-    canonical = '|'.join([
-        features.get('score_bucket', ''),
-        features.get('rsi_bucket', ''),
-        features.get('ema_alignment', ''),
-        features.get('volatility_bucket', ''),
-        features.get('regime_mode', ''),
-        features.get('time_bucket', ''),
-        features.get('asset_type', ''),
-        features.get('direction', ''),
-        features.get('atr_bucket', ''),       # [v10.4]
-        features.get('volume_bucket', ''),    # [v10.4]
-        str(features.get('weekday', '')),     # [v10.4]
-    ])
-    return hashlib.md5(canonical.encode()).hexdigest()[:16]
+    def make_feature_hash(features: dict) -> str:
+        """[L-1][v10.4] Hash canônico determinístico — espaço ampliado com atr, volume e weekday.
+        weekday distingue comportamento segunda-feira (gap open) de quarta/quinta (fluxo normal).
+        """
+        canonical = '|'.join([
+            features.get('score_bucket', ''),
+            features.get('rsi_bucket', ''),
+            features.get('ema_alignment', ''),
+            features.get('volatility_bucket', ''),
+            features.get('regime_mode', ''),
+            features.get('time_bucket', ''),
+            features.get('asset_type', ''),
+            features.get('direction', ''),
+            features.get('atr_bucket', ''),       # [v10.4]
+            features.get('volume_bucket', ''),    # [v10.4]
+            str(features.get('weekday', '')),     # [v10.4]
+        ])
+        return hashlib.md5(canonical.encode()).hexdigest()[:16]
 
 def get_dq_score(symbol: str) -> float:
     """Retorna data quality score do símbolo ou 50 se desconhecido."""
@@ -9409,84 +9474,103 @@ def _report_scheduler():
 # P&L LÍQUIDO = gross - fee (usado para reporting e aprendizado)
 # ═══════════════════════════════════════════════════════════════════
 
-# Taxas round-trip (entrada + saída) por mercado
-# [v10.14] ARBI agora via BTG Pactual (não Binance)
-# BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
-# vs Binance 0.200% — economia de $2.261 por trade!
-# [v10.14] Corretagem real por mercado — verificado em março/2026
-# B3 + NYSE + Arbi: BTG Pactual Day Trade (corretagem ZERO, só emolumentos)
-# Crypto: Binance Spot — taxas reais por VIP tier
-#   VIP 0:       0.100% maker + 0.100% taker = 0.200% rt
-#   VIP 0+BNB:   0.075% + 0.075% = 0.150% rt
-#   VIP 3:       0.042% + 0.060% = 0.102% rt   (elegível: vol>$20M/30d)
-#   VIP 3+BNB:   0.0315% + 0.045% = 0.0765% rt ← TAXA REAL com nosso volume
-BINANCE_VIP_TIER   = int(os.environ.get('BINANCE_VIP_TIER', 3))
-USE_BNB_DISCOUNT   = bool(os.environ.get('USE_BNB_DISCOUNT', 'true').lower() == 'true')
-BROKER             = 'BTG'   # B3, NYSE, Arbi via BTG | Crypto via Binance
+# [v10.28] Fees from modules.fees — reassign with adapter functions for backward compatibility
+if _PURE_MODULES_LOADED:
+    # Use module exports (already imported above)
+    # Module provides: calc_fee, apply_fee_to_trade, get_fees, _binance_rt, BINANCE_VIP_TIER, USE_BNB_DISCOUNT
+    # Create wrapper functions that ignore the new optional parameters when called from api_server
+    _module_calc_fee_orig = _module_calc_fee
+    _module_apply_fee_orig = _module_apply_fee_to_trade
+    # Create a static FEES dict for backward compatibility
+    FEES = get_fees()  # Computed once at startup
 
-# Tabela maker/taker Binance por VIP tier (valores por LADO, sem BNB)
-_BINANCE_FEES = {0:(0.0010,0.0010), 1:(0.0009,0.0010), 2:(0.0008,0.0010),
-                 3:(0.00042,0.0006), 4:(0.0002,0.0004), 5:(0.00012,0.0003)}
-def _binance_rt() -> float:
-    m,t = _BINANCE_FEES.get(BINANCE_VIP_TIER, (0.001,0.001))
-    if USE_BNB_DISCOUNT: m,t = m*0.75, t*0.75
-    return round(m+t, 6)   # round trip = maker+taker (compra taker + venda taker)
+    def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> float:
+        """[v10.28] Wrapper around modules.fees.calc_fee for backward compatibility."""
+        return _module_calc_fee_orig(position_value, market, asset_type)
 
-FEES = {
-    'B3':    0.00030,   # BTG Day Trade: ZERO corretagem + emolumentos B3 (era 0.195% XP)
-    'NYSE':  0.00020,   # BTG US: ~0.020% rt spread+SEC (era 0.012% IBKR)
-    'CRYPTO':_binance_rt(),  # Binance VIP3+BNB = 0.0765% rt (era 0.200%)
-    'ARBI':  0.00010,   # BTG Day Trade: ZERO corretagem + emolumentos ~0.010% rt
-}
+    def apply_fee_to_trade(trade: dict) -> dict:
+        """[v10.28] Wrapper around modules.fees.apply_fee_to_trade for backward compatibility."""
+        return _module_apply_fee_orig(trade)
+else:
+    # Fallback: define fees locally if modules not loaded
+    # Taxas round-trip (entrada + saída) por mercado
+    # [v10.14] ARBI agora via BTG Pactual (não Binance)
+    # BTG Day Trade: corretagem ZERO + emolumentos B3 ~0.010% round trip
+    # vs Binance 0.200% — economia de $2.261 por trade!
+    # [v10.14] Corretagem real por mercado — verificado em março/2026
+    # B3 + NYSE + Arbi: BTG Pactual Day Trade (corretagem ZERO, só emolumentos)
+    # Crypto: Binance Spot — taxas reais por VIP tier
+    #   VIP 0:       0.100% maker + 0.100% taker = 0.200% rt
+    #   VIP 0+BNB:   0.075% + 0.075% = 0.150% rt
+    #   VIP 3:       0.042% + 0.060% = 0.102% rt   (elegível: vol>$20M/30d)
+    #   VIP 3+BNB:   0.0315% + 0.045% = 0.0765% rt ← TAXA REAL com nosso volume
+    BINANCE_VIP_TIER   = int(os.environ.get('BINANCE_VIP_TIER', 3))
+    USE_BNB_DISCOUNT   = bool(os.environ.get('USE_BNB_DISCOUNT', 'true').lower() == 'true')
+    BROKER             = 'BTG'   # B3, NYSE, Arbi via BTG | Crypto via Binance
 
-def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> float:
-    """[v10.14] Calcula taxa estimada de corretagem para uma operação round-trip.
-    FEES já incorpora BNB discount via _binance_rt() — não precisa de FEES_BNB separado.
-    """
-    pv = abs(float(position_value or 0))
-    if asset_type == 'stock':
-        rate = FEES.get(market, FEES['NYSE'])
-    elif asset_type == 'crypto':
-        rate = FEES['CRYPTO']   # já calculado com VIP tier + BNB por _binance_rt()
-    else:                       # arbi — BTG Day Trade: emolumentos B3 ~0.010% rt
-        # Já capturado em total_cost_estimated na abertura — não duplicar
-        # Retornar só emolumentos mínimos para registro
-        rate = FEES['ARBI']  # 0.010%
-    return round(pv * rate, 2)
+    # Tabela maker/taker Binance por VIP tier (valores por LADO, sem BNB)
+    _BINANCE_FEES = {0:(0.0010,0.0010), 1:(0.0009,0.0010), 2:(0.0008,0.0010),
+                     3:(0.00042,0.0006), 4:(0.0002,0.0004), 5:(0.00012,0.0003)}
+    def _binance_rt() -> float:
+        m,t = _BINANCE_FEES.get(BINANCE_VIP_TIER, (0.001,0.001))
+        if USE_BNB_DISCOUNT: m,t = m*0.75, t*0.75
+        return round(m+t, 6)   # round trip = maker+taker (compra taker + venda taker)
 
-def apply_fee_to_trade(trade: dict) -> dict:
-    """
-    [v10.14] Calcula e registra a taxa estimada de corretagem.
-    IMPORTANTE: pnl e pnl_pct NÃO são alterados — permanecem como bruto.
-    O sistema interno (capital, learning, WR, SL, TP) usa sempre o bruto.
-    Campos adicionados para exibição no frontend:
-      - trade['pnl_gross']    = cópia do pnl bruto (igual a pnl)
-      - trade['fee_estimated'] = taxa calculada
-      - trade['pnl_net']      = pnl - fee (só para display)
-      - trade['pnl_net_pct']  = pnl_net / position_value × 100
-    """
-    if trade.get('_fee_applied'):
-        return trade
-    pv    = float(trade.get('position_value', 0) or trade.get('position_size', 0) or 0)
-    mkt   = trade.get('market', 'NYSE')
-    atype = trade.get('asset_type', 'stock')
-    # Para arbi: usar total_cost_estimated que já tem fee+slippage+fx_cost
-    if atype in ('arbitrage','arbi') or mkt == 'ARBI':
-        fee = float(trade.get('total_cost_estimated', 0) or 0)
-        if fee == 0:  # fallback para trades antigas sem o campo
+    FEES = {
+        'B3':    0.00030,   # BTG Day Trade: ZERO corretagem + emolumentos B3 (era 0.195% XP)
+        'NYSE':  0.00020,   # BTG US: ~0.020% rt spread+SEC (era 0.012% IBKR)
+        'CRYPTO':_binance_rt(),  # Binance VIP3+BNB = 0.0765% rt (era 0.200%)
+        'ARBI':  0.00010,   # BTG Day Trade: ZERO corretagem + emolumentos ~0.010% rt
+    }
+
+    def calc_fee(position_value: float, market: str, asset_type: str = 'stock') -> float:
+        """[v10.14] Calcula taxa estimada de corretagem para uma operação round-trip.
+        FEES já incorpora BNB discount via _binance_rt() — não precisa de FEES_BNB separado.
+        """
+        pv = abs(float(position_value or 0))
+        if asset_type == 'stock':
+            rate = FEES.get(market, FEES['NYSE'])
+        elif asset_type == 'crypto':
+            rate = FEES['CRYPTO']   # já calculado com VIP tier + BNB por _binance_rt()
+        else:                       # arbi — BTG Day Trade: emolumentos B3 ~0.010% rt
+            # Já capturado em total_cost_estimated na abertura — não duplicar
+            # Retornar só emolumentos mínimos para registro
+            rate = FEES['ARBI']  # 0.010%
+        return round(pv * rate, 2)
+
+    def apply_fee_to_trade(trade: dict) -> dict:
+        """
+        [v10.14] Calcula e registra a taxa estimada de corretagem.
+        IMPORTANTE: pnl e pnl_pct NÃO são alterados — permanecem como bruto.
+        O sistema interno (capital, learning, WR, SL, TP) usa sempre o bruto.
+        Campos adicionados para exibição no frontend:
+          - trade['pnl_gross']    = cópia do pnl bruto (igual a pnl)
+          - trade['fee_estimated'] = taxa calculada
+          - trade['pnl_net']      = pnl - fee (só para display)
+          - trade['pnl_net_pct']  = pnl_net / position_value × 100
+        """
+        if trade.get('_fee_applied'):
+            return trade
+        pv    = float(trade.get('position_value', 0) or trade.get('position_size', 0) or 0)
+        mkt   = trade.get('market', 'NYSE')
+        atype = trade.get('asset_type', 'stock')
+        # Para arbi: usar total_cost_estimated que já tem fee+slippage+fx_cost
+        if atype in ('arbitrage','arbi') or mkt == 'ARBI':
+            fee = float(trade.get('total_cost_estimated', 0) or 0)
+            if fee == 0:  # fallback para trades antigas sem o campo
+                fee = calc_fee(pv, mkt, atype)
+        else:
             fee = calc_fee(pv, mkt, atype)
-    else:
-        fee = calc_fee(pv, mkt, atype)
-    gross = float(trade.get('pnl', 0) or 0)
-    net   = round(gross - fee, 2)
-    net_pct = round(net / pv * 100, 4) if pv > 0 else 0
-    # NUNCA sobrescreve pnl ou pnl_pct — lógica interna usa bruto
-    trade['pnl_gross']     = gross   # igual a pnl (bruto)
-    trade['fee_estimated'] = fee
-    trade['pnl_net']       = net     # líquido = só para display
-    trade['pnl_net_pct']   = net_pct
-    trade['_fee_applied']  = True
-    return trade
+        gross = float(trade.get('pnl', 0) or 0)
+        net   = round(gross - fee, 2)
+        net_pct = round(net / pv * 100, 4) if pv > 0 else 0
+        # NUNCA sobrescreve pnl ou pnl_pct — lógica interna usa bruto
+        trade['pnl_gross']     = gross   # igual a pnl (bruto)
+        trade['fee_estimated'] = fee
+        trade['pnl_net']       = net     # líquido = só para display
+        trade['pnl_net_pct']   = net_pct
+        trade['_fee_applied']  = True
+        return trade
 
 
 @app.route('/admin/db-cleanup', methods=['POST'])

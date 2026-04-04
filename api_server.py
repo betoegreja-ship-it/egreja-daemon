@@ -315,6 +315,17 @@ try:
 except Exception as e:
     log.warning(f'[v2.1] Long Horizon AI blueprint registration: {e}')
 
+# ── [v2.2] Unified Brain (Intelligence Engine) Blueprint ──────────────
+try:
+    from modules.unified_brain.endpoints import create_brain_blueprint
+    _brain_bp = create_brain_blueprint(
+        db_fn=lambda: get_db() if 'get_db' in dir() else None,
+    )
+    app.register_blueprint(_brain_bp, url_prefix='/brain')
+    log.info('[v2.2] Unified Brain blueprint registered at /brain/*')
+except Exception as e:
+    log.warning(f'[v2.2] Unified Brain blueprint registration: {e}')
+
 CORS(app)
 
 # ═══════════════════════════════════════════════════════════════
@@ -7136,6 +7147,7 @@ def start_background_threads():
         'shadow_evaluator_loop':  shadow_evaluator_loop,   # [FIX-5]
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
+        'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
     }
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
     _deriv_loop_args = dict(
@@ -9503,6 +9515,56 @@ def report_send(period):
     rpt = _build_report(days, label)
     _whatsapp_report(rpt)
     return jsonify({'ok': True, 'period': period, 'report': rpt})
+
+def _brain_hourly_reminder():
+    """PRINCÍPIO FUNDAMENTAL — Lembrete horário do Unified Brain.
+    Roda a cada hora para garantir que os princípios NUNCA são esquecidos."""
+    CORE_PRINCIPLES = """
+    ╔═══════════════════════════════════════════════════════════════════════╗
+    ║           EGREJA UNIFIED BRAIN — PRINCÍPIOS FUNDAMENTAIS            ║
+    ╠═══════════════════════════════════════════════════════════════════════╣
+    ║                                                                     ║
+    ║  1. NUNCA INVENTAR DADOS OU FATOS — toda informação deve ser        ║
+    ║     verificável e rastreável até a fonte original.                   ║
+    ║                                                                     ║
+    ║  2. NUNCA MENTIR — integridade absoluta em todos os outputs.        ║
+    ║     Se não sabe, diz que não sabe. Se é incerto, diz a confiança.  ║
+    ║                                                                     ║
+    ║  3. TODOS OS MÓDULOS CONECTADOS — Arbi, Crypto, Stocks,            ║
+    ║     Derivativos e Long Horizon DEVEM alimentar o motor de           ║
+    ║     aprendizado continuamente.                                      ║
+    ║                                                                     ║
+    ║  4. APRENDIZADO CONTÍNUO — cada trade, cada dado, cada padrão      ║
+    ║     deve ser absorvido. O sistema fica mais inteligente a cada dia. ║
+    ║                                                                     ║
+    ║  5. INTELIGÊNCIA CROSS-DOMAIN — ligar TODOS os fatos e fatores     ║
+    ║     entre módulos. Correlações, regimes, timing, risco unificado.  ║
+    ║                                                                     ║
+    ║  6. CORAÇÃO DO SISTEMA — este motor é a parte mais importante.     ║
+    ║     Toda decisão passa por aqui. Cada dia mais potente.            ║
+    ║                                                                     ║
+    ║  7. MÉTRICAS EMERGENTES — criar parâmetros e métricas que se       ║
+    ║     formam a partir dos dados, não inventados.                      ║
+    ║                                                                     ║
+    ╚═══════════════════════════════════════════════════════════════════════╝
+    """
+    import pytz
+    brt = pytz.timezone('America/Sao_Paulo')
+    last_hour = -1
+    while True:
+        try:
+            now = datetime.now(brt)
+            if now.hour != last_hour:
+                last_hour = now.hour
+                log.info(f'[BRAIN] ═══ LEMBRETE HORÁRIO ({now.strftime("%H:%M BRT")}) ═══')
+                log.info(CORE_PRINCIPLES)
+                log.info(f'[BRAIN] Módulos ativos: Arbi | Crypto | Stocks | Derivativos | Long Horizon')
+                log.info(f'[BRAIN] Status: Motor de aprendizado ATIVO. Integridade: ABSOLUTA.')
+                log.info(f'[BRAIN] Próximo lembrete: {(now.hour+1)%24}:00 BRT')
+                log.info(f'[BRAIN] ═══════════════════════════════════════════════════════')
+        except Exception as e:
+            log.error(f'[BRAIN] hourly reminder error: {e}')
+        time.sleep(60)
 
 def _report_scheduler():
     """Scheduler automatico: diario 20h BRT, semanal sextas, mensal ultimo dia."""

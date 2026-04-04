@@ -95,6 +95,10 @@ class PromotionDemotionRules:
 class DerivativesConfig:
     """Root configuration for derivatives trading module."""
     
+    # Capital allocation for derivatives trading
+    initial_capital: float = float(os.getenv("DERIVATIVES_CAPITAL", "5_000_000"))
+    max_daily_loss_global: float = float(os.getenv("DERIVATIVES_MAX_DAILY_LOSS", "100_000"))
+
     # Market rates (from environment, with defaults)
     selic_rate: float = float(os.getenv("SELIC_RATE", "14.75"))
     cdi_rate: float = float(os.getenv("CDI_RATE", "14.90"))
@@ -242,6 +246,7 @@ class DerivativesConfig:
         
         logger.info(
             f"Derivatives config initialized: mode={self.derivatives_mode}, "
+            f"capital=R${self.initial_capital:,.0f}, max_daily_loss=R${self.max_daily_loss_global:,.0f}, "
             f"selic={self.selic_rate}%, cdi={self.cdi_rate}%"
         )
     

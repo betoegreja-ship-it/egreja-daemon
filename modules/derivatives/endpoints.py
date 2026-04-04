@@ -445,13 +445,62 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
 
             all_healthy = all(h['healthy'] for h in health_status.values())
 
+            # Include capital info from config
+            try:
+                from modules.derivatives.config import get_config
+                cfg = get_config()
+                capital_info = {
+                    'initial_capital': cfg.initial_capital,
+                    'max_daily_loss_global': cfg.max_daily_loss_global,
+                    'mode': cfg.derivatives_mode,
+                }
+            except Exception:
+                capital_info = {}
+
             return jsonify({
                 'overall_health': 'HEALTHY' if all_healthy else 'DEGRADED',
                 'strategies': health_status,
+                'capital': capital_info,
                 'timestamp': datetime.utcnow().isoformat()
             }), 200
         except Exception as e:
             log.error(f"GET /health error: {e}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e)}), 500
+
+    @strategies_bp.route('/capital', methods=['GET'])
+    def get_capital():
+        """GET /strategies/capital - Derivatives capital allocation and usage"""
+        try:
+            from modules.derivatives.config import get_config
+            cfg = get_config()
+
+            # Sum max_notional across all strategies
+            total_allocated = 0
+            strategy_allocations = {}
+
+            for strat_name in cfg.active_strategies:
+                strat_cfg = cfg.get_strategy_config(strat_name)
+                notional = strat_cfg.get('max_notional', 0)
+                total_allocated += notional
+                strategy_allocations[strat_name] = {
+                    'max_notional': notional,
+                    'max_daily_loss': strat_cfg.get('max_daily_loss', 0),
+                    'enabled': strat_cfg.get('enabled', True),
+                    'max_positions': strat_cfg.get('max_positions', 0),
+                }
+
+            return jsonify({
+                'initial_capital': cfg.initial_capital,
+                'total_allocated_notional': total_allocated,
+                'available_reserve': max(0, cfg.initial_capital - total_allocated),
+                'utilization_pct': round(total_allocated / cfg.initial_capital * 100, 1) if cfg.initial_capital > 0 else 0,
+                'max_daily_loss_global': cfg.max_daily_loss_global,
+                'mode': cfg.derivatives_mode,
+                'strategies': strategy_allocations,
+                'timestamp': datetime.utcnow().isoformat()
+            }), 200
+        except Exception as e:
+            log.error(f"GET /capital error: {e}\n{traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
 
     @strategies_bp.route('/status', methods=['GET'])

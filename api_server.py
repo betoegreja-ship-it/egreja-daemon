@@ -310,6 +310,7 @@ try:
     from modules.long_horizon.endpoints import create_long_horizon_blueprint
     _lh_bp = create_long_horizon_blueprint(
         db_fn=lambda: get_db() if 'get_db' in dir() else None,
+        log=log if 'log' in dir() else logging.getLogger('egreja'),
     )
     app.register_blueprint(_lh_bp, url_prefix='/long-horizon')
     log.info('[v2.1] Long Horizon AI blueprint registered at /long-horizon/*')
@@ -321,9 +322,10 @@ except Exception as e:
 # ── [v2.2] Unified Brain (Intelligence Engine) Blueprint ──────────────
 _brain_load_error = None
 try:
-    from modules.unified_brain.endpoints import create_brain_blueprint
-    _brain_bp = create_brain_blueprint(
+    from modules.unified_brain.endpoints import create_unified_brain_blueprint
+    _brain_bp = create_unified_brain_blueprint(
         db_fn=lambda: get_db() if 'get_db' in dir() else None,
+        log=log if 'log' in dir() else logging.getLogger('egreja'),
     )
     app.register_blueprint(_brain_bp, url_prefix='/brain')
     log.info('[v2.2] Unified Brain blueprint registered at /brain/*')

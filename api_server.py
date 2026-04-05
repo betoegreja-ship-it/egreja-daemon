@@ -294,8 +294,8 @@ except Exception as e:
 # [v10.25] Register derivatives strategies blueprint
 try:
     _strategies_bp = create_strategies_blueprint(
-        db_fn=lambda: get_db() if 'get_db' in dir() else None,
-        log=log if 'log' in dir() else logging.getLogger('egreja'),
+        db_fn=get_db,
+        log=log,
         provider_mgr=globals().get('_deriv_provider_mgr'),
         services_dict=globals().get('_deriv_services', {}),
     )
@@ -309,8 +309,8 @@ _lh_load_error = None
 try:
     from modules.long_horizon.endpoints import create_long_horizon_blueprint
     _lh_bp = create_long_horizon_blueprint(
-        db_fn=lambda: get_db() if 'get_db' in dir() else None,
-        log=log if 'log' in dir() else logging.getLogger('egreja'),
+        db_fn=get_db,
+        log=log,
     )
     app.register_blueprint(_lh_bp, url_prefix='/long-horizon')
     log.info('[v2.1] Long Horizon AI blueprint registered at /long-horizon/*')
@@ -325,8 +325,8 @@ try:
     from modules.unified_brain.endpoints import create_unified_brain_blueprint
     from modules.unified_brain.schema import create_unified_brain_tables
     _brain_bp = create_unified_brain_blueprint(
-        db_fn=lambda: get_db() if 'get_db' in dir() else None,
-        log=log if 'log' in dir() else logging.getLogger('egreja'),
+        db_fn=get_db,
+        log=log,
     )
     app.register_blueprint(_brain_bp, url_prefix='/brain')
     log.info('[v2.2] Unified Brain blueprint registered at /brain/*')

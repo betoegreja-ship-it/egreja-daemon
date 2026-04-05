@@ -42,13 +42,16 @@ def get_model_portfolios() -> dict:
             'target_return': 10.5,  # Annual %
             'risk_level': 'Moderate',
             'allocations': {
-                'PETR4': 0.15,
-                'VALE3': 0.15,
-                'ITUB4': 0.20,
-                'BBDC4': 0.10,
-                'ABEV3': 0.15,
-                'B3SA3': 0.10,
-                'BOVA11': 0.15,
+                'PETR4': 0.12,
+                'VALE3': 0.12,
+                'ITUB4': 0.18,
+                'BBDC4': 0.08,
+                'ABEV3': 0.12,
+                'WEGE3': 0.15,   # Added: WEG - quality engineering
+                'SUZB3': 0.05,   # Added: Suzano - pulp & paper
+                'EMBR3': 0.05,   # Added: Embraer - aerospace
+                'B3SA3': 0.08,   # Exchange operator
+                'BRFS3': 0.05,   # Added: BRF - protein production
             }
         },
         'Dividendos + Proteção': {
@@ -57,12 +60,16 @@ def get_model_portfolios() -> dict:
             'target_return': 9.0,
             'risk_level': 'Conservative',
             'allocations': {
-                'PETR4': 0.25,    # High dividend yield
-                'VALE3': 0.20,    # Cyclical but defensive
-                'ITUB4': 0.15,    # Stable income
-                'BBAS3': 0.15,    # Government support
-                'BBDC4': 0.10,    # Defensive banking
-                'ABEV3': 0.15,    # Dividend growth
+                'PETR4': 0.20,    # High dividend yield
+                'VALE3': 0.15,    # Cyclical but defensive
+                'ITUB4': 0.12,    # Stable income
+                'BBAS3': 0.12,    # Government support
+                'BBDC4': 0.08,    # Defensive banking
+                'ABEV3': 0.12,    # Dividend growth
+                'TAEE11': 0.10,   # Added: Taesa - energy transmission
+                'VIVT3': 0.05,    # Added: Vivo - telecom dividend
+                'EGIE3': 0.05,    # Added: EGE - energy utility
+                'RADL3': 0.01,    # Diagnostics
             }
         },
         'Brasil + EUA': {
@@ -70,14 +77,19 @@ def get_model_portfolios() -> dict:
             'target_return': 12.0,
             'risk_level': 'Moderate-Aggressive',
             'allocations': {
-                'PETR4': 0.10,
-                'VALE3': 0.10,
-                'ITUB4': 0.10,
-                'BOVA11': 0.20,   # Brazil ETF for diversification
-                'AAPL': 0.15,     # Apple (US)
-                'MSFT': 0.15,     # Microsoft (US)
-                'GOOGL': 0.10,    # Google (US)
-                'AMZN': 0.10,     # Amazon (US)
+                'PETR4': 0.08,
+                'VALE3': 0.08,
+                'ITUB4': 0.08,
+                'BBDC4': 0.05,
+                'ABEV3': 0.05,
+                'BOVA11': 0.11,   # Brazil ETF for diversification
+                'AAPL': 0.12,     # Apple (US)
+                'MSFT': 0.12,     # Microsoft (US)
+                'NVDA': 0.05,     # Added: NVIDIA - AI/semiconductors
+                'META': 0.05,     # Added: Meta - social/AI
+                'JPM': 0.05,      # Added: JP Morgan - US banking
+                'GOOGL': 0.08,    # Google (US)
+                'AMZN': 0.08,     # Amazon (US)
             }
         }
     }
@@ -85,26 +97,129 @@ def get_model_portfolios() -> dict:
 
 def get_realistic_asset_prices() -> dict:
     """
-    Get realistic current prices for all assets (demo data in BRL/USD).
+    Get realistic current prices for all assets (April 2026 estimates in BRL/USD).
 
     Returns:
         {ticker: {'price': float, 'currency': str}, ...}
     """
+    # Exchange rate: 1 USD = 5.15 BRL (April 2026 estimate)
+    usd_to_brl = 5.15
+
     return {
-        # Brazilian stocks (BRL)
+        # Brazilian stocks (BRL) - 57 stocks
         'PETR4': {'price': 27.50, 'currency': 'BRL'},
         'VALE3': {'price': 59.20, 'currency': 'BRL'},
         'ITUB4': {'price': 29.80, 'currency': 'BRL'},
         'BBDC4': {'price': 18.90, 'currency': 'BRL'},
         'BBAS3': {'price': 35.40, 'currency': 'BRL'},
         'ABEV3': {'price': 14.50, 'currency': 'BRL'},
+        'WEGE3': {'price': 32.15, 'currency': 'BRL'},
+        'RENT3': {'price': 8.75, 'currency': 'BRL'},
+        'LREN3': {'price': 22.50, 'currency': 'BRL'},
+        'SUZB3': {'price': 11.20, 'currency': 'BRL'},
+        'GGBR4': {'price': 28.40, 'currency': 'BRL'},
+        'EMBR3': {'price': 19.30, 'currency': 'BRL'},
+        'CSNA3': {'price': 15.80, 'currency': 'BRL'},
+        'CMIG4': {'price': 12.40, 'currency': 'BRL'},
+        'CPLE6': {'price': 30.70, 'currency': 'BRL'},
+        'VIVT3': {'price': 38.50, 'currency': 'BRL'},
+        'SBSP3': {'price': 45.20, 'currency': 'BRL'},
+        'CSAN3': {'price': 16.90, 'currency': 'BRL'},
+        'GOAU4': {'price': 7.65, 'currency': 'BRL'},
+        'USIM5': {'price': 13.45, 'currency': 'BRL'},
+        'BPAC11': {'price': 26.30, 'currency': 'BRL'},
+        'RADL3': {'price': 41.80, 'currency': 'BRL'},
+        'PRIO3': {'price': 24.60, 'currency': 'BRL'},
+        'BRFS3': {'price': 18.75, 'currency': 'BRL'},
+        'MRFG3': {'price': 12.15, 'currency': 'BRL'},
+        'JBSS3': {'price': 28.90, 'currency': 'BRL'},
+        'EGIE3': {'price': 21.50, 'currency': 'BRL'},
+        'CMIN3': {'price': 10.30, 'currency': 'BRL'},
+        'AESB3': {'price': 27.60, 'currency': 'BRL'},
+        'BBDC3': {'price': 20.75, 'currency': 'BRL'},
+        'BBSE3': {'price': 32.40, 'currency': 'BRL'},
+        'ALOS3': {'price': 6.95, 'currency': 'BRL'},
+        'MULT3': {'price': 13.20, 'currency': 'BRL'},
+        'SMFT3': {'price': 16.45, 'currency': 'BRL'},
+        'EQTL3': {'price': 34.70, 'currency': 'BRL'},
+        'TAEE11': {'price': 35.90, 'currency': 'BRL'},
+        'ENEV3': {'price': 8.40, 'currency': 'BRL'},
+        'CPFE3': {'price': 28.15, 'currency': 'BRL'},
+        'CXSE3': {'price': 14.70, 'currency': 'BRL'},
+        'VBBR3': {'price': 19.60, 'currency': 'BRL'},
+        'UGPA3': {'price': 25.85, 'currency': 'BRL'},
+        'KLBN11': {'price': 11.75, 'currency': 'BRL'},
+        'TOTS3': {'price': 9.30, 'currency': 'BRL'},
+        'MGLU3': {'price': 7.10, 'currency': 'BRL'},
+        'CASH3': {'price': 42.30, 'currency': 'BRL'},
+        'HAPV3': {'price': 23.50, 'currency': 'BRL'},
+        'RDOR3': {'price': 31.20, 'currency': 'BRL'},
+        'HYPE3': {'price': 5.85, 'currency': 'BRL'},
+        'COGN3': {'price': 3.40, 'currency': 'BRL'},
+        'YDUQ3': {'price': 18.95, 'currency': 'BRL'},
+        'NTCO3': {'price': 29.45, 'currency': 'BRL'},
+        'AZUL4': {'price': 22.70, 'currency': 'BRL'},
+        'CCRO3': {'price': 24.15, 'currency': 'BRL'},
+        'MDIA3': {'price': 8.60, 'currency': 'BRL'},
+        'ALPA4': {'price': 19.30, 'currency': 'BRL'},
+        'POMO4': {'price': 27.85, 'currency': 'BRL'},
+        'AMER3': {'price': 10.20, 'currency': 'BRL'},
+        'RECV3': {'price': 15.45, 'currency': 'BRL'},
         'B3SA3': {'price': 12.10, 'currency': 'BRL'},
         'BOVA11': {'price': 102.30, 'currency': 'BRL'},
-        # US stocks (USD, converted to BRL with 5.15 rate for demo)
-        'AAPL': {'price': 175.00 * 5.15, 'currency': 'BRL'},    # ~901.25 BRL
-        'MSFT': {'price': 420.00 * 5.15, 'currency': 'BRL'},    # ~2,163 BRL
-        'GOOGL': {'price': 140.00 * 5.15, 'currency': 'BRL'},   # ~721 BRL
-        'AMZN': {'price': 180.00 * 5.15, 'currency': 'BRL'},    # ~927 BRL
+
+        # US stocks (USD converted to BRL) - 51 stocks
+        'AAPL': {'price': 175.00 * usd_to_brl, 'currency': 'BRL'},
+        'MSFT': {'price': 420.00 * usd_to_brl, 'currency': 'BRL'},
+        'NVDA': {'price': 875.00 * usd_to_brl, 'currency': 'BRL'},
+        'AMZN': {'price': 180.00 * usd_to_brl, 'currency': 'BRL'},
+        'GOOGL': {'price': 140.00 * usd_to_brl, 'currency': 'BRL'},
+        'META': {'price': 495.00 * usd_to_brl, 'currency': 'BRL'},
+        'TSLA': {'price': 245.00 * usd_to_brl, 'currency': 'BRL'},
+        'NFLX': {'price': 285.00 * usd_to_brl, 'currency': 'BRL'},
+        'AMD': {'price': 165.00 * usd_to_brl, 'currency': 'BRL'},
+        'INTC': {'price': 42.00 * usd_to_brl, 'currency': 'BRL'},
+        'JPM': {'price': 195.00 * usd_to_brl, 'currency': 'BRL'},
+        'BAC': {'price': 38.50 * usd_to_brl, 'currency': 'BRL'},
+        'GS': {'price': 445.00 * usd_to_brl, 'currency': 'BRL'},
+        'MS': {'price': 375.00 * usd_to_brl, 'currency': 'BRL'},
+        'V': {'price': 265.00 * usd_to_brl, 'currency': 'BRL'},
+        'MA': {'price': 475.00 * usd_to_brl, 'currency': 'BRL'},
+        'JNJ': {'price': 155.00 * usd_to_brl, 'currency': 'BRL'},
+        'PFE': {'price': 28.75 * usd_to_brl, 'currency': 'BRL'},
+        'UNH': {'price': 515.00 * usd_to_brl, 'currency': 'BRL'},
+        'XOM': {'price': 115.00 * usd_to_brl, 'currency': 'BRL'},
+        'CVX': {'price': 165.00 * usd_to_brl, 'currency': 'BRL'},
+        'COP': {'price': 65.00 * usd_to_brl, 'currency': 'BRL'},
+        'DIS': {'price': 95.00 * usd_to_brl, 'currency': 'BRL'},
+        'UBER': {'price': 72.50 * usd_to_brl, 'currency': 'BRL'},
+        'LYFT': {'price': 18.50 * usd_to_brl, 'currency': 'BRL'},
+        'SPOT': {'price': 335.00 * usd_to_brl, 'currency': 'BRL'},
+        'COIN': {'price': 145.00 * usd_to_brl, 'currency': 'BRL'},
+        'SPY': {'price': 585.00 * usd_to_brl, 'currency': 'BRL'},
+        'QQQ': {'price': 410.00 * usd_to_brl, 'currency': 'BRL'},
+        'IWM': {'price': 195.00 * usd_to_brl, 'currency': 'BRL'},
+        'TSM': {'price': 160.00 * usd_to_brl, 'currency': 'BRL'},
+        'AVGO': {'price': 145.00 * usd_to_brl, 'currency': 'BRL'},
+        'MU': {'price': 110.00 * usd_to_brl, 'currency': 'BRL'},
+        'ARM': {'price': 165.00 * usd_to_brl, 'currency': 'BRL'},
+        'SMCI': {'price': 18.50 * usd_to_brl, 'currency': 'BRL'},
+        'ADBE': {'price': 625.00 * usd_to_brl, 'currency': 'BRL'},
+        'CRM': {'price': 315.00 * usd_to_brl, 'currency': 'BRL'},
+        'NOW': {'price': 695.00 * usd_to_brl, 'currency': 'BRL'},
+        'ORCL': {'price': 145.00 * usd_to_brl, 'currency': 'BRL'},
+        'SNOW': {'price': 145.00 * usd_to_brl, 'currency': 'BRL'},
+        'SHOP': {'price': 72.50 * usd_to_brl, 'currency': 'BRL'},
+        'MELI': {'price': 1850.00 * usd_to_brl, 'currency': 'BRL'},
+        'HOOD': {'price': 23.50 * usd_to_brl, 'currency': 'BRL'},
+        'HUBS': {'price': 575.00 * usd_to_brl, 'currency': 'BRL'},
+        'TCOM': {'price': 18.25 * usd_to_brl, 'currency': 'BRL'},
+        'BABA': {'price': 95.00 * usd_to_brl, 'currency': 'BRL'},
+        'LLY': {'price': 815.00 * usd_to_brl, 'currency': 'BRL'},
+        'TME': {'price': 6.50 * usd_to_brl, 'currency': 'BRL'},
+        'PLTR': {'price': 42.50 * usd_to_brl, 'currency': 'BRL'},
+        'OKLO': {'price': 14.85 * usd_to_brl, 'currency': 'BRL'},
+        'TGT': {'price': 85.00 * usd_to_brl, 'currency': 'BRL'},
     }
 
 

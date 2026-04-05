@@ -35,21 +35,92 @@ class LongHorizonDataCollector:
     and returns unified asset profiles for scoring.
     """
 
-    # MVP assets: 6 Brazilian stocks + Banco do Brasil + BOVA11 ETF
-    MVP_ASSETS = [
-        'PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'BBAS3', 'ABEV3', 'B3SA3', 'BOVA11'
+    # B3 stocks (47 major tickers on B3)
+    B3_TICKERS = [
+        'PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'ABEV3', 'WEGE3', 'RENT3', 'LREN3',
+        'SUZB3', 'GGBR4', 'EMBR3', 'CSNA3', 'CMIG4', 'CPLE6', 'BBAS3', 'VIVT3',
+        'SBSP3', 'CSAN3', 'GOAU4', 'USIM5', 'BPAC11', 'RADL3', 'PRIO3', 'BRFS3',
+        'MRFG3', 'JBSS3', 'EGIE3', 'CMIN3', 'AESB3', 'BBDC3', 'BBSE3', 'ALOS3',
+        'MULT3', 'SMFT3', 'EQTL3', 'TAEE11', 'ENEV3', 'CPFE3', 'CXSE3', 'VBBR3',
+        'UGPA3', 'KLBN11', 'TOTS3', 'MGLU3', 'CASH3', 'HAPV3', 'RDOR3', 'HYPE3',
+        'COGN3', 'YDUQ3', 'NTCO3', 'AZUL4', 'CCRO3', 'MDIA3', 'ALPA4', 'POMO4',
+        'AMER3', 'RECV3'
     ]
 
-    # B3 to ADR mapping
+    # US stocks (40 major tickers)
+    US_TICKERS = [
+        'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'NFLX',
+        'AMD', 'INTC', 'JPM', 'BAC', 'GS', 'MS', 'V', 'MA',
+        'JNJ', 'PFE', 'UNH', 'XOM', 'CVX', 'COP', 'DIS', 'UBER',
+        'LYFT', 'SPOT', 'COIN', 'SPY', 'QQQ', 'IWM', 'TSM', 'AVGO',
+        'MU', 'ARM', 'SMCI', 'ADBE', 'CRM', 'NOW', 'ORCL', 'SNOW',
+        'SHOP', 'MELI', 'HOOD', 'HUBS', 'TCOM', 'BABA', 'LLY', 'TME',
+        'PLTR', 'OKLO', 'TGT'
+    ]
+
+    # Combined universe
+    UNIVERSE = B3_TICKERS + US_TICKERS
+
+    # B3 to ADR mapping (expanded)
     B3_TO_ADR = {
         'PETR4': 'PBR',
         'VALE3': 'VALE',
         'ITUB4': 'ITUB',
         'BBDC4': 'BBD',
-        'BBAS3': None,      # No direct ADR
         'ABEV3': 'ABEV',
-        'B3SA3': None,      # No ADR
-        'BOVA11': None,     # ETF - no ADR equivalent
+        'WEGE3': None,
+        'RENT3': None,
+        'LREN3': None,
+        'SUZB3': 'SUZ',
+        'GGBR4': 'GGB',
+        'EMBR3': 'ERJ',
+        'CSNA3': None,
+        'CMIG4': 'CIG',
+        'CPLE6': None,
+        'BBAS3': 'BDORY',  # OTC
+        'VIVT3': None,
+        'SBSP3': None,
+        'CSAN3': None,
+        'GOAU4': None,
+        'USIM5': None,
+        'BPAC11': None,
+        'RADL3': None,
+        'PRIO3': None,
+        'BRFS3': 'BRFS',
+        'MRFG3': None,
+        'JBSS3': 'JBSAY',  # OTC
+        'EGIE3': None,
+        'CMIN3': None,
+        'AESB3': None,
+        'BBDC3': None,
+        'BBSE3': None,
+        'ALOS3': None,
+        'MULT3': None,
+        'SMFT3': None,
+        'EQTL3': None,
+        'TAEE11': None,
+        'ENEV3': None,
+        'CPFE3': None,
+        'CXSE3': None,
+        'VBBR3': None,
+        'UGPA3': None,
+        'KLBN11': None,
+        'TOTS3': None,
+        'MGLU3': None,
+        'CASH3': None,
+        'HAPV3': None,
+        'RDOR3': None,
+        'HYPE3': None,
+        'COGN3': None,
+        'YDUQ3': None,
+        'NTCO3': None,
+        'AZUL4': 'AZUL',
+        'CCRO3': None,
+        'MDIA3': None,
+        'ALPA4': None,
+        'POMO4': None,
+        'AMER3': None,
+        'RECV3': None,
     }
 
     def __init__(self, max_workers: int = 3, timeout: int = 30):
@@ -136,12 +207,12 @@ class LongHorizonDataCollector:
 
     def collect_universe(self) -> Dict[str, Dict[str, Any]]:
         """
-        Collect data for all MVP assets in parallel.
+        Collect data for all UNIVERSE assets in parallel.
 
         Returns:
             {ticker: unified_profile_dict, ...}
         """
-        logger.info(f"Collecting data for all {len(self.MVP_ASSETS)} MVP assets")
+        logger.info(f"Collecting data for all {len(self.UNIVERSE)} universe assets")
         t0 = time.time()
 
         results = {}
@@ -150,7 +221,7 @@ class LongHorizonDataCollector:
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
                 executor.submit(self.collect_all, ticker): ticker
-                for ticker in self.MVP_ASSETS
+                for ticker in self.UNIVERSE
             }
 
             for future in as_completed(futures, timeout=self.timeout * 3):
@@ -167,7 +238,7 @@ class LongHorizonDataCollector:
         success_count = sum(1 for r in results.values() if r is not None)
 
         logger.info(
-            f"Universe collection complete: {success_count}/{len(self.MVP_ASSETS)} "
+            f"Universe collection complete: {success_count}/{len(self.UNIVERSE)} "
             f"in {duration:.2f}s"
         )
 
@@ -179,7 +250,7 @@ class LongHorizonDataCollector:
                 results[ticker].get('data_quality', {}).get('quality_score', 0)
                 if results[ticker] else 0
             )
-            for ticker in self.MVP_ASSETS
+            for ticker in self.UNIVERSE
         }
 
         return results
@@ -229,6 +300,8 @@ class LongHorizonDataCollector:
         """
         Collect from all 3 providers in parallel for a ticker.
 
+        Route B3 tickers to BRAPI+OpLab, US tickers to Polygon.
+
         Returns: {
             'brapi': result or None,
             'oplab': result or None,
@@ -237,13 +310,21 @@ class LongHorizonDataCollector:
         """
         results = {}
 
+        # Determine if this is a B3 or US ticker
+        is_b3_ticker = ticker in self.B3_TICKERS
+        is_us_ticker = ticker in self.US_TICKERS
+
         with ThreadPoolExecutor(max_workers=3) as executor:
-            # Submit all jobs
-            futures = {
-                'brapi': executor.submit(self._fetch_brapi, ticker),
-                'oplab': executor.submit(self._fetch_oplab, ticker),
-                'polygon': executor.submit(self._fetch_polygon, ticker),
-            }
+            # Submit jobs based on ticker type
+            futures = {}
+
+            if is_b3_ticker:
+                # B3 tickers use BRAPI and OpLab
+                futures['brapi'] = executor.submit(self._fetch_brapi, ticker)
+                futures['oplab'] = executor.submit(self._fetch_oplab, ticker)
+            elif is_us_ticker:
+                # US tickers use Polygon
+                futures['polygon'] = executor.submit(self._fetch_polygon, ticker)
 
             # Wait for completion
             for provider, future in futures.items():
@@ -367,7 +448,7 @@ def collect_all(ticker: str) -> Dict[str, Any]:
     return get_collector().collect_all(ticker)
 
 def collect_universe() -> Dict[str, Dict[str, Any]]:
-    """Collect all MVP assets."""
+    """Collect all universe assets."""
     return get_collector().collect_universe()
 
 def health_check() -> Dict[str, Any]:

@@ -50,6 +50,7 @@ class LearningEngine:
         self.db_fn = db_fn
         self.log = log or self._dummy_log()
         self._lock = threading.Lock()
+        self._initialized = False
 
         # In-memory cache — always synced with DB
         self._lessons = []
@@ -60,6 +61,13 @@ class LearningEngine:
         self._regime = {}
         self._evolution = []
         self._digest = {}
+
+    def ensure_initialized(self):
+        """Lazy initialization — loads from DB on first access.
+        This is deferred because brain tables may not exist yet at blueprint registration time."""
+        if self._initialized:
+            return
+        self._initialized = True
 
         # Load all memory from DB
         self._load_from_db()
@@ -342,6 +350,7 @@ class LearningEngine:
                        impact_score: float = 7.0, confidence: float = 75.0,
                        strategy: str = '', data_json: dict = None) -> Optional[int]:
         """Record a NEW lesson learned. Persists to MySQL and updates cache."""
+        self.ensure_initialized()
         now = datetime.now()
         lid = self._exec_write(
             """INSERT INTO brain_lessons
@@ -370,6 +379,7 @@ class LearningEngine:
                         modules_involved: list, correlation: float = 0.7,
                         confidence: float = 80.0) -> Optional[int]:
         """Record a NEW cross-domain pattern. Persists to MySQL and updates cache."""
+        self.ensure_initialized()
         today = date.today()
         # Check if pattern already exists (by type) — if so, update occurrences
         existing = self._exec(
@@ -422,6 +432,7 @@ class LearningEngine:
                          reasoning: str = '', confidence: float = 75.0,
                          factors: dict = None) -> Optional[int]:
         """Record a NEW AI decision/recommendation."""
+        self.ensure_initialized()
         now = datetime.now()
         did = self._exec_write(
             """INSERT INTO brain_decisions
@@ -447,6 +458,7 @@ class LearningEngine:
 
     def resolve_decision(self, decision_id: int, outcome: str):
         """Mark a decision as resolved with its outcome (correct/incorrect/partial)."""
+        self.ensure_initialized()
         self._exec_write(
             "UPDATE brain_decisions SET outcome=%s, resolved_at=%s WHERE decision_id=%s",
             (outcome, datetime.now(), decision_id)
@@ -461,6 +473,7 @@ class LearningEngine:
                             correlation_coeff: float, timeframe: str = 'daily',
                             sample_size: int = 252, reliability: float = 75.0):
         """Update or insert a correlation observation. Uses UPSERT."""
+        self.ensure_initialized()
         self._exec_write(
             """INSERT INTO brain_correlations
                (asset_a, asset_b, module_a, module_b, correlation_coeff, timeframe, sample_size, reliability, last_updated)
@@ -494,6 +507,7 @@ class LearningEngine:
 
     def persist_metric(self, module: str, metric_name: str, value: float, trend: str = 'stable'):
         """Record a daily metric. Uses UPSERT (one per day per module per metric)."""
+        self.ensure_initialized()
         today = date.today()
         self._exec_write(
             """INSERT INTO brain_metrics (date, module, metric_name, value, trend)
@@ -506,6 +520,7 @@ class LearningEngine:
                        indicators: dict = None, duration_days: int = 1,
                        module_signals: dict = None):
         """Record a market regime change. One per day (UPSERT)."""
+        self.ensure_initialized()
         today = date.today()
         self._exec_write(
             """INSERT INTO brain_regime (date, regime_type, confidence, indicators_json, duration_days, module_signals)
@@ -530,6 +545,7 @@ class LearningEngine:
 
     def update_evolution(self):
         """Update today's brain evolution score based on current state."""
+        self.ensure_initialized()
         today = date.today()
         with self._lock:
             total_lessons = len(self._lessons)
@@ -587,6 +603,7 @@ class LearningEngine:
 
     def save_daily_digest(self, digest: dict):
         """Persist daily digest to DB."""
+        self.ensure_initialized()
         today = date.today()
         insights = digest.get('key_insights', [])
         alerts = digest.get('alerts', [])
@@ -887,6 +904,7 @@ class LearningEngine:
 
     def get_daily_digest(self) -> Dict[str, Any]:
         """Generate comprehensive daily intelligence report."""
+        self.ensure_initialized()
         today = date.today()
         with self._lock:
             lessons = self._lessons[:5]
@@ -927,6 +945,7 @@ class LearningEngine:
 
     def get_cross_correlations(self) -> Dict[str, Any]:
         """Return cross-module correlation matrix from persistent memory."""
+        self.ensure_initialized()
         with self._lock:
             correlations = list(self._correlations)
 
@@ -946,6 +965,7 @@ class LearningEngine:
 
     def get_market_regime(self) -> Dict[str, Any]:
         """Return current detected market regime from persistent memory."""
+        self.ensure_initialized()
         with self._lock:
             return dict(self._regime) if self._regime else {
                 'date': date.today().isoformat(),
@@ -958,6 +978,7 @@ class LearningEngine:
 
     def get_lessons_summary(self) -> Dict[str, Any]:
         """Return summary of ALL lessons learned (from persistent memory)."""
+        self.ensure_initialized()
         with self._lock:
             lessons = list(self._lessons)
 
@@ -982,6 +1003,7 @@ class LearningEngine:
 
     def get_pattern_alerts(self) -> Dict[str, Any]:
         """Return active patterns from persistent memory."""
+        self.ensure_initialized()
         with self._lock:
             patterns = list(self._patterns)
 
@@ -996,6 +1018,7 @@ class LearningEngine:
 
     def get_decision_support(self, module: str, context: Optional[Dict] = None) -> Dict[str, Any]:
         """Provide AI recommendations from persistent memory."""
+        self.ensure_initialized()
         with self._lock:
             if module == 'all':
                 decisions = list(self._decisions)
@@ -1012,6 +1035,7 @@ class LearningEngine:
 
     def get_evolution_score(self) -> Dict[str, Any]:
         """Return brain evolution score from persistent memory."""
+        self.ensure_initialized()
         with self._lock:
             evolution = list(self._evolution)
 
@@ -1043,6 +1067,7 @@ class LearningEngine:
 
     def get_risk_radar(self) -> Dict[str, Any]:
         """Return unified risk assessment from persistent memory."""
+        self.ensure_initialized()
         with self._lock:
             regime = dict(self._regime) if self._regime else {}
             decisions = [d for d in self._decisions if d.get('decision_type') in ('RISK_ALERT', 'KILL_SWITCH')]
@@ -1068,6 +1093,7 @@ class LearningEngine:
 
     def get_metrics_summary(self) -> Dict[str, Any]:
         """Return aggregated metrics summary. Reads from DB for latest data."""
+        self.ensure_initialized()
         # Read latest 30 days of metrics from DB
         rows = self._exec(
             "SELECT * FROM brain_metrics WHERE date >= %s ORDER BY date DESC",
@@ -1098,6 +1124,7 @@ class LearningEngine:
 
     def get_system_state(self) -> Dict[str, Any]:
         """Return comprehensive system state for dashboard."""
+        self.ensure_initialized()
         evolution = self.get_evolution_score()
         regime = self.get_market_regime()
         correlations = self.get_cross_correlations()

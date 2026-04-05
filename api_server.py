@@ -323,6 +323,7 @@ except Exception as e:
 _brain_load_error = None
 try:
     from modules.unified_brain.endpoints import create_unified_brain_blueprint
+    from modules.unified_brain.schema import create_unified_brain_tables
     _brain_bp = create_unified_brain_blueprint(
         db_fn=lambda: get_db() if 'get_db' in dir() else None,
         log=log if 'log' in dir() else logging.getLogger('egreja'),
@@ -859,6 +860,10 @@ def persistence_worker():
             elif kind == 'factor_stats':       _db_upsert_factor_stats(task['data'])
             elif kind == 'shadow_decision':    _db_save_shadow_decision(task['data'])
             elif kind == 'ledger_event':       _db_save_ledger_event(task['data'])
+            elif kind == 'brain_lesson':       _brain_persist_lesson(task['data'])
+            elif kind == 'brain_decision':     _brain_persist_decision(task['data'])
+            elif kind == 'brain_pattern':      _brain_persist_pattern(task['data'])
+            elif kind == 'brain_regime':       _brain_persist_regime(task['data'])
             urgent_queue.task_done()
 
             # [V9-2] Monitorar crescimento da fila após cada processamento
@@ -1235,6 +1240,35 @@ def alert_trade_closed(trade):
     alerted_trades[key]=True
     pnl=trade.get('pnl',0); result='OK' if pnl>=0 else 'LOSS'
     send_whatsapp(f"Trade {result} | {trade.get('symbol','')} | {trade.get('close_reason','')} | {'+'if pnl>=0 else ''}{pnl:,.2f} ({trade.get('pnl_pct',0):+.2f}%)")
+
+    # [v3.0] Brain learns from every closed trade
+    try:
+        sym = trade.get('symbol', '')
+        pnl_pct = trade.get('pnl_pct', 0)
+        reason = trade.get('close_reason', '')
+        signal = trade.get('signal_type', '')
+        asset_type = trade.get('asset_type', 'stock')
+        module = 'Crypto' if asset_type == 'crypto' else 'Stocks'
+
+        if pnl >= 0:
+            desc = f'{sym}: trade POSITIVO +{pnl_pct:.1f}% (sinal {signal}, saida {reason}) — padrao validado'
+            impact = min(6.0 + pnl_pct * 0.3, 9.5)
+        else:
+            desc = f'{sym}: trade NEGATIVO {pnl_pct:.1f}% (sinal {signal}, saida {reason}) — revisar parametros'
+            impact = min(6.0 + abs(pnl_pct) * 0.4, 9.5)
+
+        enqueue_brain_lesson(
+            module=module,
+            description=desc,
+            lesson_type='Trade_Outcome',
+            impact_score=round(impact, 1),
+            confidence=min(70 + abs(pnl_pct) * 2, 95),
+            strategy=signal,
+            data_json={'symbol': sym, 'pnl': pnl, 'pnl_pct': pnl_pct,
+                       'close_reason': reason, 'signal': signal, 'trade_id': key}
+        )
+    except Exception as _be:
+        log.warning(f'[Brain] Trade learning hook error: {_be}')
 
 # ═══════════════════════════════════════════════════════════════
 # ORDERS
@@ -3140,6 +3174,100 @@ def _db_save_shadow_decision(shadow: dict):
         log.error(f'_db_save_shadow_decision: {e}')
     finally:
         conn.close()   # [v10.7] sempre devolve ao pool
+
+# =========================================================
+# [v3.0] Brain Persistence Helpers — brain never forgets
+# =========================================================
+
+def _get_brain_engine():
+    """Get the brain learning engine from the registered blueprint."""
+    try:
+        bp = app.blueprints.get('unified_brain')
+        if bp and hasattr(bp, 'deferred_functions'):
+            # Engine is on the blueprint module scope; access via the factory's closure
+            pass
+        # Fallback: create a quick engine instance sharing the same DB
+        from modules.unified_brain.learning_engine import LearningEngine
+        if not hasattr(_get_brain_engine, '_instance'):
+            _get_brain_engine._instance = LearningEngine(
+                db_fn=lambda: get_db(),
+                log=log
+            )
+        return _get_brain_engine._instance
+    except Exception as e:
+        log.error(f'[Brain] _get_brain_engine: {e}')
+        return None
+
+def _brain_persist_lesson(data: dict):
+    """Persist a brain lesson via the learning engine."""
+    engine = _get_brain_engine()
+    if engine:
+        engine.persist_lesson(
+            module=data.get('module', 'Unknown'),
+            lesson_type=data.get('lesson_type', 'Trade_Outcome'),
+            description=data.get('description', ''),
+            impact_score=data.get('impact_score', 7.0),
+            confidence=data.get('confidence', 70.0),
+            strategy=data.get('strategy', ''),
+            data_json=data.get('data_json', {})
+        )
+
+def _brain_persist_decision(data: dict):
+    """Persist a brain decision via the learning engine."""
+    engine = _get_brain_engine()
+    if engine:
+        engine.persist_decision(
+            decision_type=data.get('decision_type', 'MONITOR'),
+            module=data.get('module', 'Unknown'),
+            recommendation=data.get('recommendation', ''),
+            reasoning=data.get('reasoning', ''),
+            confidence=data.get('confidence', 70.0),
+            factors=data.get('factors', {})
+        )
+
+def _brain_persist_pattern(data: dict):
+    """Persist a brain pattern via the learning engine."""
+    engine = _get_brain_engine()
+    if engine:
+        engine.persist_pattern(
+            pattern_type=data.get('pattern_type', 'Unknown'),
+            description=data.get('description', ''),
+            modules_involved=data.get('modules_involved', []),
+            correlation=data.get('correlation', 0.7),
+            confidence=data.get('confidence', 75.0)
+        )
+
+def _brain_persist_regime(data: dict):
+    """Persist market regime change via the learning engine."""
+    engine = _get_brain_engine()
+    if engine:
+        engine.persist_regime(
+            regime_type=data.get('regime_type', 'UNKNOWN'),
+            confidence=data.get('confidence', 80.0),
+            indicators=data.get('indicators', {}),
+            duration_days=data.get('duration_days', 1),
+            module_signals=data.get('module_signals', {})
+        )
+
+def enqueue_brain_lesson(module: str, description: str, **kwargs):
+    """Helper to enqueue a brain lesson for persistence (non-blocking)."""
+    try:
+        data = {'module': module, 'description': description}
+        data.update(kwargs)
+        urgent_queue.put((3, next(_urgent_seq), {'kind': 'brain_lesson', 'data': data}))
+    except Exception as e:
+        log.error(f'enqueue_brain_lesson: {e}')
+
+def enqueue_brain_decision(decision_type: str, module: str, recommendation: str, **kwargs):
+    """Helper to enqueue a brain decision for persistence (non-blocking)."""
+    try:
+        data = {'decision_type': decision_type, 'module': module, 'recommendation': recommendation}
+        data.update(kwargs)
+        urgent_queue.put((3, next(_urgent_seq), {'kind': 'brain_decision', 'data': data}))
+    except Exception as e:
+        log.error(f'enqueue_brain_decision: {e}')
+
+# =========================================================
 
 def _db_log_learning_audit(event_type: str, entity_id: str, payload: dict):
     conn = get_db()
@@ -5082,6 +5210,20 @@ def _update_market_regime():
     avg=sum(abs(v) for v in vals)/n
     vol='HIGH' if avg>4 else ('LOW' if avg<1 else 'NORMAL')
     market_regime={'mode':mode,'volatility':vol,'avg_change_pct':round(avg,2),'updated_at':datetime.utcnow().isoformat()}
+
+    # [v3.0] Brain persists regime changes
+    try:
+        urgent_queue.put((4, next(_urgent_seq), {'kind': 'brain_regime', 'data': {
+            'regime_type': mode,
+            'confidence': 85 if n > 3 else 60,
+            'indicators': {'volatility': vol, 'avg_change_pct': round(avg, 2),
+                           'trending_pct': round(trending / max(n, 1), 2),
+                           'high_vol_pct': round(high_vol / max(n, 1), 2)},
+            'duration_days': 1,
+            'module_signals': {'Crypto': mode, 'Stocks': 'monitoring', 'Arbitrage': 'active'}
+        }}))
+    except Exception:
+        pass
 
 def calc_period_pnl(trades, days):
     cutoff=(datetime.utcnow()-timedelta(days=days)).isoformat()
@@ -9848,6 +9990,17 @@ if __name__ == '__main__':
     except Exception as _e:
         log.warning(f'Pre-init cleanup error: {_e}')
     init_all_tables()
+
+    # [v3.0] Create unified brain tables (persistent memory — the brain never forgets)
+    try:
+        _brain_conn = get_db()
+        if _brain_conn:
+            create_unified_brain_tables(_brain_conn)
+            _brain_conn.close()
+            log.info('[v3.0] Unified Brain tables created/verified (8 tables — persistent memory)')
+    except Exception as _be:
+        log.warning(f'[v3.0] Brain tables creation warning: {_be}')
+
     fetch_fx_rates()          # [v10.6-P1-4] FX carregado ANTES de stock — ADR usa USDBRL
     fetch_crypto_prices()
     fetch_stock_prices()
@@ -9865,6 +10018,18 @@ if __name__ == '__main__':
     _update_market_regime()
     take_portfolio_snapshot()
     _check_degraded()
+
+    # [v3.0] Initialize brain persistent memory and update evolution score
+    try:
+        engine = _get_brain_engine()
+        if engine:
+            engine.update_evolution()
+            log.info(f'[v3.0] Brain memory initialized: {len(engine._lessons)} lessons, '
+                     f'{len(engine._patterns)} patterns, {len(engine._correlations)} correlations, '
+                     f'{len(engine._decisions)} decisions — persistent MySQL')
+    except Exception as _be:
+        log.warning(f'[v3.0] Brain init warning: {_be}')
+
     log.info('Init complete.')
 
     start_background_threads()

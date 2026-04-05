@@ -155,16 +155,19 @@ class LearningEngine:
         """Execute many inserts in a single transaction."""
         conn = self._get_conn()
         if not conn:
+            self.log.error(f'[Brain] _exec_many: no DB connection! query={query[:80]}')
             return False
         try:
             c = conn.cursor()
             c.executemany(query, data_list)
             conn.commit()
+            rows_affected = c.rowcount
             c.close()
             conn.close()
+            self.log.info(f'[Brain] _exec_many OK: {rows_affected} rows | query={query[:80]}')
             return True
         except Exception as e:
-            self.log.error(f'[Brain] Batch write error: {e}')
+            self.log.error(f'[Brain] Batch write error: {e} | query={query[:80]} | rows={len(data_list)}')
             try:
                 conn.close()
             except Exception:
@@ -627,6 +630,30 @@ class LearningEngine:
     def _seed_foundational_knowledge(self):
         """Insert foundational knowledge into the brain on first boot.
         This is the brain's initial education — real data from observed market behavior."""
+        self.log.info('[Brain] Starting seed — checking DB connection...')
+        conn = self._get_conn()
+        if not conn:
+            self.log.error('[Brain] SEED ABORTED: no DB connection available!')
+            return
+        try:
+            # Verify brain_lessons table exists
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM brain_lessons")
+            cnt = c.fetchone()[0]
+            c.close()
+            conn.close()
+            self.log.info(f'[Brain] brain_lessons table exists, current rows: {cnt}')
+            if cnt > 0:
+                self.log.info('[Brain] Already seeded — reloading from DB')
+                self._load_from_db()
+                return
+        except Exception as e:
+            self.log.error(f'[Brain] Table check failed: {e} — tables may not exist yet')
+            try:
+                conn.close()
+            except:
+                pass
+            return
 
         # ---- LESSONS ----
         seed_lessons = [

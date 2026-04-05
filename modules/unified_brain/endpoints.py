@@ -423,4 +423,78 @@ def create_unified_brain_blueprint(db_fn, log, **kwargs):
             log.error(f"GET /cross-insights error: {e}\n{traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
 
+    @brain_bp.route('/debug-memory', methods=['GET'])
+    def debug_memory():
+        """GET /brain/debug-memory - Debug brain persistent memory state"""
+        try:
+            # Check tables exist and row counts
+            tables_info = {}
+            table_names = ['brain_lessons', 'brain_patterns', 'brain_correlations',
+                           'brain_decisions', 'brain_metrics', 'brain_regime',
+                           'brain_daily_digest', 'brain_evolution']
+            for t in table_names:
+                try:
+                    row = _safe_query(f"SELECT COUNT(*) as cnt FROM {t}", fetch='one')
+                    tables_info[t] = row['cnt'] if row else 'ERROR'
+                except Exception as te:
+                    tables_info[t] = f'ERROR: {te}'
+
+            # Check engine state
+            engine_state = {
+                'initialized': learning_engine._initialized,
+                'lessons_in_memory': len(learning_engine._lessons),
+                'patterns_in_memory': len(learning_engine._patterns),
+                'correlations_in_memory': len(learning_engine._correlations),
+                'decisions_in_memory': len(learning_engine._decisions),
+                'regime_in_memory': bool(learning_engine._regime),
+                'evolution_in_memory': len(learning_engine._evolution),
+            }
+
+            # Try to get DB connection
+            conn = get_db()
+            db_ok = conn is not None
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
+
+            return jsonify({
+                'status': 'debug',
+                'db_connection_ok': db_ok,
+                'tables': tables_info,
+                'engine': engine_state,
+                'timestamp': datetime.now().isoformat(),
+            }), 200
+
+        except Exception as e:
+            log.error(f"GET /debug-memory error: {e}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    @brain_bp.route('/force-seed', methods=['POST'])
+    def force_seed():
+        """POST /brain/force-seed - Force re-seed foundational knowledge"""
+        try:
+            learning_engine._initialized = False
+            learning_engine._lessons = []
+            learning_engine._patterns = []
+            learning_engine._correlations = []
+            learning_engine._decisions = []
+            learning_engine._evolution = []
+            learning_engine._regime = {}
+            learning_engine.ensure_initialized()
+
+            return jsonify({
+                'status': 'seeded',
+                'lessons': len(learning_engine._lessons),
+                'patterns': len(learning_engine._patterns),
+                'correlations': len(learning_engine._correlations),
+                'decisions': len(learning_engine._decisions),
+                'evolution': len(learning_engine._evolution),
+            }), 200
+
+        except Exception as e:
+            log.error(f"POST /force-seed error: {e}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
     return brain_bp

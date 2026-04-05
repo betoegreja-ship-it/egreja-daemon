@@ -173,10 +173,20 @@ let state = {
 };
 
 let autoInterval = null;
+  let tickerPrices = {}; // real-time prices from ticker-tape API
+  async function fetchTickerPrices() {
+    try {
+      const res = await fetch(RW + '/api/ticker-tape');
+      if (!res.ok) return;
+      const data = await res.json();
+      (data.items || []).forEach(i => { tickerPrices[i.t] = i; });
+    } catch(e) { console.warn('ticker-prices:', e.message); }
+  }
 let thesesLoaded = false;
 
 // ─── Data Fetching ──────────────────────────────────────────────
 async function fetchAll() {
+    fetchTickerPrices(); // refresh real-time prices in background
   state.loading = true;
   renderRefreshBtn();
   try {
@@ -471,10 +481,20 @@ function renderRanking() {
     const barPct = (r.score / 100) * 100;
     const convBadge = convictionBadge(r.conviction || 'Neutral');
 
+    const tp = tickerPrices[r.ticker] || {};
+    const price = tp.p || 0;
+    const chg = tp.c || 0;
+    const cur = tp.cur === 'USD' ? '$' : 'R$';
+    const priceStr = price > 0 ? cur + price.toLocaleString(tp.cur === 'USD' ? 'en-US' : 'pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+    const chgColor = chg > 0.01 ? '#22C55E' : chg < -0.01 ? '#EF4444' : '#64748B';
+    const chgArrow = chg > 0.01 ? '▲' : chg < -0.01 ? '▼' : '─';
+    const chgBg = chg > 0.01 ? 'rgba(34,197,94,0.08)' : chg < -0.01 ? 'rgba(239,68,68,0.08)' : 'transparent';
+    const chgStr = price > 0 ? chgArrow + ' ' + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%' : '—';
     rows += `<tr style="cursor:pointer" onclick="showAssetDetail('${r.ticker}')">
       <td>${i + 1}</td>
       <td style="font-family:var(--mono);font-weight:600">${r.ticker}</td>
-      <td>${r.name}</td>
+      <td style="text-align:right;font-family:var(--mono);font-size:12px;color:var(--text)">${priceStr}</td>
+      <td style="text-align:right;font-family:var(--mono);font-size:11px;font-weight:600;color:${chgColor};background:${chgBg};border-radius:3px;padding:6px 8px">${chgStr}</td>
       <td>
         <div class="score-bar">
           <div class="score-bar-container">
@@ -487,7 +507,6 @@ function renderRanking() {
       <td class="text-right">${formatPct(r.quality_score || 0)}</td>
       <td class="text-right">${formatPct(r.valuation_score || 0)}</td>
       <td class="text-right">${formatPct(r.market_score || 0)}</td>
-      <td class="text-right">${formatPct(r.hedge_score || 0)}</td>
       <td style="color:var(--dim);text-align:center">${r.action || '—'}</td>
     </tr>`;
   }
@@ -500,8 +519,8 @@ function renderRanking() {
       <table>
         <thead>
           <tr>
-            <th>Pos</th><th>Ticker</th><th>Nome</th><th>Score</th><th>Convicção</th>
-            <th class="text-right">Qualidade</th><th class="text-right">Valuation</th><th class="text-right">Mercado</th><th class="text-right">Hedge</th><th style="text-align:center">Ação</th>
+            <th>Pos</th><th>Ticker</th><th style="text-align:right">Preço</th><th style="text-align:right">Var %</th><th>Score</th><th>Convicção</th>
+            <th class="text-right">Qualidade</th><th class="text-right">Valuation</th><th class="text-right">Mercado</th><th style="text-align:center">Ação</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>

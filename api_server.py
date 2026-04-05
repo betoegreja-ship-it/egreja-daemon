@@ -305,6 +305,7 @@ except Exception as e:
     log.warning(f'[v10.25] Strategies blueprint registration: {e}')
 
 # ── [v2.1] Long Horizon AI Blueprint ─────────────────────────────────
+_lh_load_error = None
 try:
     from modules.long_horizon.endpoints import create_long_horizon_blueprint
     _lh_bp = create_long_horizon_blueprint(
@@ -313,9 +314,12 @@ try:
     app.register_blueprint(_lh_bp, url_prefix='/long-horizon')
     log.info('[v2.1] Long Horizon AI blueprint registered at /long-horizon/*')
 except Exception as e:
-    log.warning(f'[v2.1] Long Horizon AI blueprint registration: {e}')
+    import traceback as _tb
+    _lh_load_error = _tb.format_exc()
+    log.warning(f'[v2.1] Long Horizon AI blueprint registration FAILED:\n{_lh_load_error}')
 
 # ── [v2.2] Unified Brain (Intelligence Engine) Blueprint ──────────────
+_brain_load_error = None
 try:
     from modules.unified_brain.endpoints import create_brain_blueprint
     _brain_bp = create_brain_blueprint(
@@ -324,7 +328,9 @@ try:
     app.register_blueprint(_brain_bp, url_prefix='/brain')
     log.info('[v2.2] Unified Brain blueprint registered at /brain/*')
 except Exception as e:
-    log.warning(f'[v2.2] Unified Brain blueprint registration: {e}')
+    import traceback as _tb
+    _brain_load_error = _tb.format_exc()
+    log.warning(f'[v2.2] Unified Brain blueprint registration FAILED:\n{_brain_load_error}')
 
 CORS(app)
 
@@ -7609,6 +7615,18 @@ def api_info():
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'lse':is_lse_open(),'hkex':is_hkex_open(),'crypto':True},
         'deploy_mode':'single-process',
         'degraded': _read_degraded()['active'],   # [V91-5] flag rápida
+    })
+
+@app.route('/api/modules-debug')
+def modules_debug():
+    """Debug: check if blueprints loaded successfully."""
+    bp_names = [bp.name for bp in app.iter_blueprints()]
+    return jsonify({
+        'registered_blueprints': bp_names,
+        'long_horizon_loaded': 'long_horizon' in bp_names,
+        'brain_loaded': 'brain' in bp_names or 'unified_brain' in bp_names,
+        'lh_error': _lh_load_error,
+        'brain_error': _brain_load_error,
     })
 
 @app.route('/degraded')

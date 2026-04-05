@@ -898,7 +898,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path in ('/derivatives', '/api/info', '/api/modules-debug'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -7630,6 +7630,40 @@ def modules_debug():
         'lh_error': _lh_load_error,
         'brain_error': _brain_load_error,
     })
+
+@app.route('/api/ticker-tape')
+def ticker_tape():
+    """Public endpoint: all stock + crypto prices for real-time ticker tape display."""
+    items = []
+    # Stocks
+    for sym, data in dict(stock_prices).items():
+        if not isinstance(data, dict):
+            continue
+        ticker = sym.replace('.SA', '')
+        items.append({
+            't': ticker,
+            'p': round(data.get('price', 0), 2),
+            'c': round(data.get('change_pct', 0), 2),
+            'm': data.get('market', 'B3'),
+            'cur': 'BRL' if data.get('market') == 'B3' else 'USD',
+        })
+    # Crypto
+    for sym, price in dict(crypto_prices).items():
+        if not isinstance(price, (int, float)):
+            continue
+        ticker = sym.replace('USDT', '')
+        chg = crypto_momentum.get(sym, 0)
+        items.append({
+            't': ticker,
+            'p': round(price, 2),
+            'c': round(chg, 2) if isinstance(chg, (int, float)) else 0,
+            'm': 'CRYPTO',
+            'cur': 'USD',
+        })
+    # Sort: B3 first, then US, then Crypto — alphabetically within each
+    order = {'B3': 0, 'NYSE': 1, 'CRYPTO': 2}
+    items.sort(key=lambda x: (order.get(x['m'], 9), x['t']))
+    return jsonify({'items': items, 'count': len(items), 'ts': datetime.utcnow().isoformat()})
 
 @app.route('/degraded')
 def degraded_route():

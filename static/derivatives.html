@@ -123,21 +123,19 @@ tr:hover{background:rgba(17,24,32,.5)}
 </head>
 <body>
 
-<div class="header">
-  <div>
-    <div style="display:flex;align-items:center;gap:10px">
-      <a href="/" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit" title="Voltar ao Dashboard Principal">
-        <img src="/logo.png" alt="Egreja IA" style="height:36px;width:auto">
-      </a>
-      <div>
-        <h1>Derivativos B3</h1>
-        <p id="header-subtitle">8 Estratégias · Inicializando...</p>
-      </div>
+<div class="header" style="flex-wrap:wrap;gap:12px">
+  <div style="display:flex;align-items:center;gap:16px">
+    <a href="/" style="display:inline-flex;align-items:center;gap:8px;padding:8px 18px;background:linear-gradient(135deg,#C9A84C,#7A5C1A);color:#fff;border-radius:8px;font-size:13px;font-weight:700;text-decoration:none;letter-spacing:.02em;box-shadow:0 2px 8px rgba(201,168,76,.3);transition:all .2s" title="Voltar ao Dashboard Principal">
+      <span style="font-size:18px">←</span> Dashboard Principal
+    </a>
+    <img src="/logo.png" alt="Egreja IA" style="height:34px;width:auto">
+    <div>
+      <h1>Derivativos B3</h1>
+      <p id="header-subtitle">8 Estratégias · Inicializando...</p>
     </div>
   </div>
   <div class="header-right">
     <span id="market-clock" class="text-mono" style="font-size:11px;color:var(--dim)"></span>
-    <a href="/" class="btn" style="background:var(--s3);color:var(--gold);font-weight:600;text-decoration:none" title="Voltar ao Dashboard Principal">← Dashboard Principal</a>
     <span class="text-mono" style="font-size:11px;color:var(--dim)" id="last-refresh">—</span>
     <button class="btn" onclick="refresh()" id="refresh-btn">🔄 Atualizar</button>
     <button class="btn btn-active" onclick="toggleAuto()" id="auto-btn">⚡ Auto ON</button>
@@ -1383,5 +1381,7 @@ function renderHealthTab() {
 fetchAll();
 autoInterval = setInterval(fetchAll, 30000);
 </script>
+<script src="/ticker-tape.js"></script>
+<script>initTickerTape('https://diligent-spirit-production.up.railway.app');</script>
 </body>
 </html>

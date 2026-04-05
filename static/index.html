@@ -398,11 +398,70 @@
 
     // ─── DERIVATIVOS TAB ────────────────────────────────────────
     function renderDerivatives() {
-        return `<div style="text-align:center;padding:2rem">
-            <p style="font-size:14px;margin-bottom:12px">O painel completo de derivativos está na página dedicada:</p>
-            <a href="/derivatives.html" style="display:inline-flex;align-items:center;gap:8px;padding:12px 24px;background:var(--blue-accent);color:#fff;border-radius:8px;font-weight:600;font-size:14px;text-decoration:none">📊 Abrir Dashboard de Derivativos</a>
-            <p style="font-size:12px;color:var(--dim);margin-top:12px">Inclui: 8 estratégias, P&L por estratégia, Win Rate, Learning Engine, Calibração, Liquidez, Health detalhado</p>
+        const ss = S.sysState || {};
+        const strats = ss.strategies || {};
+        const market = ss.market_phase || 'UNKNOWN';
+        const killSwitch = ss.kill_switch || {};
+        let html = '';
+
+        // Header with link to full page
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+            <div>
+                <h2 style="font-size:18px;font-weight:700">Derivativos B3 — Resumo</h2>
+                <p style="font-size:12px;color:var(--dim);margin-top:4px">Mercado: <strong style="color:${market==='OPEN'?'var(--green-profit)':'var(--gold)'}">${market}</strong> · Kill Switch: <strong style="color:${killSwitch.active?'var(--red-loss)':'var(--green-profit)'}">${killSwitch.active?'ATIVADO':'OFF'}</strong></p>
+            </div>
+            <a href="/derivatives.html" style="display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:var(--blue-accent);color:#fff;border-radius:8px;font-weight:600;font-size:13px;text-decoration:none">📊 Dashboard Completo de Derivativos →</a>
         </div>`;
+
+        // Strategy cards grid
+        const stratNames = {PCP:'Put-Call Parity',FST:'Futuro Sintético',ROLL_ARB:'Roll Arbitrage',ETF_BASKET:'ETF vs Basket',SKEW_ARB:'Skew Arbitrage',VOL_SMILE:'Vol Smile',TERM_STRUCT:'Term Structure',DIVIDEND_ARB:'Dividend Arbitrage'};
+        const stratIcons = {PCP:'🎯',FST:'🔗',ROLL_ARB:'🔄',ETF_BASKET:'📦',SKEW_ARB:'📈',VOL_SMILE:'😊',TERM_STRUCT:'📉',DIVIDEND_ARB:'💰'};
+        const stratColors = {PCP:'var(--blue-accent)',FST:'var(--purple)',ROLL_ARB:'var(--cyan)',ETF_BASKET:'var(--gold)',SKEW_ARB:'var(--orange)',VOL_SMILE:'var(--pink)',TERM_STRUCT:'#6EE7B7',DIVIDEND_ARB:'var(--green-profit)'};
+        const keys = Object.keys(stratNames);
+        html += '<div class="grid-4" style="margin-bottom:20px">';
+        for(const k of keys) {
+            const s = strats[k] || {};
+            const statusDot = s.loop_healthy ? 'var(--green-profit)' : 'var(--dim)';
+            const statusText = s.smart_status || (market==='WEEKEND'?'Weekend — standby':'Aguardando...');
+            const icon = s.smart_icon || stratIcons[k];
+            const trades = s.total_trades || 0;
+            const open = s.open_trades || 0;
+            const pnl = s.total_pnl || 0;
+            const pnlColor = pnl >= 0 ? 'var(--green-profit)' : 'var(--red-loss)';
+            const tier = s.best_tier != null ? 'Tier ' + s.best_tier : '—';
+            html += `<div class="card">
+                <div class="card-header">
+                    <span class="card-title"><span style="color:${stratColors[k]}">${icon}</span> ${stratNames[k]}</span>
+                    <span style="width:8px;height:8px;border-radius:50%;background:${statusDot};display:inline-block"></span>
+                </div>
+                <div class="card-body">
+                    <div style="font-size:11px;color:var(--dim);margin-bottom:8px">${statusText}</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+                        <div><span style="font-size:10px;color:var(--dim)">Trades</span><br><span class="text-mono" style="font-size:14px;font-weight:700">${trades}</span></div>
+                        <div><span style="font-size:10px;color:var(--dim)">Abertas</span><br><span class="text-mono" style="font-size:14px;font-weight:700">${open}</span></div>
+                        <div><span style="font-size:10px;color:var(--dim)">P&L Total</span><br><span class="text-mono" style="font-size:14px;font-weight:700;color:${pnlColor}">${fmtR(pnl)}</span></div>
+                        <div><span style="font-size:10px;color:var(--dim)">Tier</span><br><span class="text-mono" style="font-size:14px;font-weight:700">${tier}</span></div>
+                    </div>
+                </div>
+            </div>`;
+        }
+        html += '</div>';
+
+        // Capital summary
+        const cap = ss.capital || {};
+        if(cap.initial_capital || cap.allocated_notional) {
+            html += `<div class="card section"><div class="card-header"><span class="card-title">💰 Capital Derivativos</span></div><div class="card-body">
+                <div class="grid-4">
+                    <div class="kpi-card"><div style="font-size:10px;color:var(--dim)">Capital Inicial</div><div class="text-mono" style="font-size:18px;font-weight:700;color:var(--gold)">${fmtR(cap.initial_capital)}</div></div>
+                    <div class="kpi-card"><div style="font-size:10px;color:var(--dim)">Alocado</div><div class="text-mono" style="font-size:18px;font-weight:700">${fmtR(cap.allocated_notional)}</div></div>
+                    <div class="kpi-card"><div style="font-size:10px;color:var(--dim)">Reserva</div><div class="text-mono" style="font-size:18px;font-weight:700">${fmtR(cap.reserve)}</div></div>
+                    <div class="kpi-card"><div style="font-size:10px;color:var(--dim)">Loss Diário Max</div><div class="text-mono" style="font-size:18px;font-weight:700;color:var(--red-loss)">${fmtR(cap.max_daily_loss)}</div></div>
+                </div>
+            </div></div>`;
+        }
+
+        html += `<div style="text-align:center;padding:16px"><a href="/derivatives.html" style="color:var(--blue-accent);font-size:13px">Ver dashboard completo de derivativos com calibração, liquidez e health detalhado →</a></div>`;
+        return html;
     }
 
     // ─── P&L TAB ────────────────────────────────────────────────
@@ -739,5 +798,7 @@
     fetchAll();
     setInterval(fetchAll, 30000);
     </script>
+    <script src="/ticker-tape.js"></script>
+    <script>initTickerTape('https://diligent-spirit-production.up.railway.app');</script>
 </body>
 </html>

@@ -9,7 +9,10 @@
     { "source": "/health", "destination": "https://diligent-spirit-production.up.railway.app/health" },
     { "source": "/signals", "destination": "https://diligent-spirit-production.up.railway.app/signals" },
     { "source": "/stats", "destination": "https://diligent-spirit-production.up.railway.app/stats" },
-    { "source": "/trades/:path*", "destination": "https://diligent-spirit-production.up.railway.app/trades/:path*" }
+    { "source": "/trades/:path*", "destination": "https://diligent-spirit-production.up.railway.app/trades/:path*" },
+    { "source": "/long-horizon/:path*", "destination": "https://diligent-spirit-production.up.railway.app/long-horizon/:path*" },
+    { "source": "/brain/:path*", "destination": "https://diligent-spirit-production.up.railway.app/brain/:path*" },
+    { "source": "/prices/:path*", "destination": "https://diligent-spirit-production.up.railway.app/prices/:path*" }
   ],
   "headers": [
     {

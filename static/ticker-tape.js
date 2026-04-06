@@ -211,8 +211,8 @@
         const items = await fetchPrices();
         if (!items || items.length === 0) return;
 
-        // Faster scroll: ~0.6s per item so 120 items = ~72s full cycle
-        _animDuration = Math.max(40, items.length * 0.6);
+        // Fast scroll: 0.35s per item so 120 items = ~42s full cycle
+        _animDuration = Math.max(30, items.length * 0.35);
 
         if (!_initialized) {
             // First load: build full HTML

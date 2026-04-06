@@ -9,12 +9,10 @@ import traceback
 from datetime import datetime, timedelta
 import statistics
 
-# Global diagnostic dict for scan loop debugging
-_scan_loop_diag = {}
-
 
 def _parse_expiry(expiry_val):
-    """Parse expiry from string or datetime to datetime object."""
+    """Parse expiry from string or datetime to datetime object.
+    Handles ISO strings, date strings, and datetime objects."""
     if isinstance(expiry_val, datetime):
         return expiry_val
     if isinstance(expiry_val, str):
@@ -274,18 +272,14 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
             cdi_rate = cfg.cdi_rate / 100.0 if cfg.cdi_rate > 1 else cfg.cdi_rate
 
             opportunities_found = 0
-            _scan_diag = {'assets_checked': 0, 'spot_ok': 0, 'chains_ok': 0, 'strikes_checked': 0, 'liq_pass': 0, 'dte_pass': 0, 'errors': [], 'ts': str(datetime.now())}
 
             for asset in eligible_assets:
                 try:
-                    _scan_diag['assets_checked'] += 1
                     # Get market data
                     spot_quote = provider_mgr.get_spot(asset)
                     if not spot_quote or spot_quote.bid is None:
-                        log.debug(f'PCP {asset}: no spot quote')
                         continue
 
-                    _scan_diag['spot_ok'] += 1
                     spot_price = spot_quote.mid
                     spot_ask = spot_quote.ask
                     spot_bid = spot_quote.bid
@@ -295,16 +289,13 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
 
                     if not call_chain or not put_chain:
-                        log.debug(f'PCP {asset}: no chains (calls={len(call_chain) if call_chain else 0}, puts={len(put_chain) if put_chain else 0})')
                         continue
-                    _scan_diag['chains_ok'] += 1
 
                     # Extract service objects
                     greeks_calc = services_dict.get('greeks_calculator')
                     rates_service = services_dict.get('rates_curve')
 
                     for strike in sorted(set(call_chain.keys()) & set(put_chain.keys())):
-                        _scan_diag['strikes_checked'] += 1
                         call_quote = call_chain.get(strike)
                         put_quote = put_chain.get(strike)
 
@@ -317,13 +308,11 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
 
                         if not call_spread or not put_spread or call_spread > 0.02 * spot_price:
                             continue
-                        _scan_diag['liq_pass'] += 1
 
                         # Calculate PV(K) using CDI rate
                         days_to_expiry = _days_to_expiry(call_quote.expiry)
                         if days_to_expiry <= 0:
                             continue
-                        _scan_diag['dte_pass'] += 1
 
                         discount_factor = 1.0 / ((1 + cdi_rate) ** (days_to_expiry / 252))
                         pv_strike = strike * discount_factor
@@ -335,7 +324,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                         if dividend_service and _expiry_dt:
                             try:
                                 divs = dividend_service.get_expected_dividends(asset, datetime.now(), _expiry_dt)
-                                div_adj = sum(d.get('amount', 0) for d in divs if divs) if divs else 0.0
+                                div_adj = sum(d.get('amount', 0) for d in divs) if divs else 0.0
                             except Exception:
                                 div_adj = 0.0
 
@@ -370,7 +359,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                             _safe_insert_opportunity(
                                 get_db_fn, log, 'PCP', asset, edge_magnitude,
                                 strike=strike,
-                                expiry=_expiry_str(call_quote.expiry) if call_quote.expiry else None,
+                                expiry=_expiry_str(call_quote.expiry),
                                 opportunity_type=edge_type
                             )
 
@@ -383,7 +372,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
 
                             if tier_str in ('PAPER_FULL', 'PAPER_SMALL'):
                                 # Build multi-leg order
-                                expiry_str = _expiry_str(call_quote.expiry) if call_quote.expiry else ''
+                                expiry_str = _expiry_str(call_quote.expiry)
                                 if edge_type == 'CONVERSION':
                                     legs = [
                                         {'leg_type': 'CALL', 'symbol': f'{asset}_C{strike}', 'qty': 1, 'side': 'SELL', 'intended_price': call_quote.bid},
@@ -410,12 +399,10 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                                 )
 
                 except Exception as e:
-                    _scan_diag['errors'].append(f'{asset}: {e}')
                     log.warning(f"PCP scan error for {asset}: {e}")
 
-            _scan_diag['opportunities'] = opportunities_found
-            _scan_loop_diag['pcp'] = _scan_diag
-            log.info(f"PCP scan: {opportunities_found} opps | {_scan_diag}")
+            if opportunities_found > 0:
+                log.info(f"PCP scan completed: {opportunities_found} opportunities")
 
         except Exception as e:
             log.error(f"PCP loop error: {e}\n{traceback.format_exc()}")
@@ -445,14 +432,14 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
             for asset in cfg.universe_tier_a:
                 try:
                     asset_key = f"fst_{asset}"
-                    created_at = calibration_data.get(f"{asset_key}_created", datetime.now())
+                    # Initialize calibration timestamp on first encounter
+                    if f"{asset_key}_created" not in calibration_data:
+                        calibration_data[f"{asset_key}_created"] = datetime.now()
+                        log.info(f"FST {asset}: starting calibration from now")
+                    created_at = calibration_data[f"{asset_key}_created"]
                     days_running = (datetime.now() - created_at).days
 
-                    if days_running < 5:
-                        log.info(f"FST {asset}: calibration phase ({days_running}/5 days)")
-                        beat_fn(loop_name)
-                        time.sleep(10)
-                        continue
+                    in_calibration = days_running < 5
 
                     # Get spot price
                     spot_quote = provider_mgr.get_spot(asset)
@@ -477,7 +464,7 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     if not call_quote or not put_quote:
                         continue
 
-                    days_to_expiry = (future_expiry - datetime.now()).days
+                    days_to_expiry = _days_to_expiry(future_expiry)
                     if days_to_expiry <= 0:
                         continue
 
@@ -512,8 +499,13 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     if len(calibration_data[asset_key]) > 20:
                         calibration_data[asset_key].pop(0)
 
-                    # Check for opportunity
-                    if len(calibration_data[asset_key]) > 5:
+                    if in_calibration:
+                        log.info(f"FST {asset}: calibration day {days_running}/5, samples={len(calibration_data[asset_key])}, spread_a={spread_a:.4f}")
+                        beat_fn(loop_name)
+                        continue
+
+                    # Check for opportunity (only after calibration phase)
+                    if not in_calibration and len(calibration_data[asset_key]) > 5:
                         mean_spread = statistics.mean(calibration_data[asset_key])
                         stdev_spread = statistics.stdev(calibration_data[asset_key]) if len(calibration_data[asset_key]) > 1 else 0
 
@@ -957,11 +949,10 @@ def dividend_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict,
                         _ex_date = dividend.get('ex_date') if isinstance(dividend, dict) else getattr(dividend, 'ex_date', None)
                         if not _ex_date:
                             continue
-                        if isinstance(_ex_date, str):
-                            _ex_date = _parse_expiry(_ex_date)
-                        if not _ex_date:
+                        _ex_dt = _parse_expiry(_ex_date) if isinstance(_ex_date, str) else _ex_date
+                        if not _ex_dt:
                             continue
-                        days_to_ex = (_ex_date - datetime.now()).days
+                        days_to_ex = (_ex_dt - datetime.now()).days
                         if days_to_ex <= 0 or days_to_ex > 60:
                             continue
 
@@ -986,7 +977,7 @@ def dividend_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict,
 
                         if net_edge > 0:
                             log.info(
-                                f"Dividend Arb {asset}: ex-date={_ex_date.date() if _ex_date else '?'} "
+                                f"Dividend Arb {asset}: ex-date={_ex_dt} "
                                 f"dividend={_div_amount:.2f} net_edge={net_edge:.4f}"
                             )
 
@@ -1043,25 +1034,14 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                     if not spot_prices or len(spot_prices) < 20:
                         continue
 
-                    # Normalize price history: extract close prices if dicts
-                    _prices = []
-                    for _p in spot_prices:
-                        if isinstance(_p, dict):
-                            _prices.append(_p.get('close', _p.get('Close', 0)))
-                        else:
-                            _prices.append(float(_p))
-                    _prices = [p for p in _prices if p > 0]
-                    if len(_prices) < 20:
-                        continue
-
                     # Calculate 20-day and 60-day realized vol
                     returns_20 = [
-                        (_prices[i] - _prices[i-1]) / _prices[i-1]
-                        for i in range(max(1, len(_prices)-20), len(_prices))
+                        (spot_prices[i] - spot_prices[i-1]) / spot_prices[i-1]
+                        for i in range(max(1, len(spot_prices)-20), len(spot_prices))
                     ]
                     returns_60 = [
-                        (_prices[i] - _prices[i-1]) / _prices[i-1]
-                        for i in range(1, len(_prices))
+                        (spot_prices[i] - spot_prices[i-1]) / spot_prices[i-1]
+                        for i in range(1, len(spot_prices))
                     ]
 
                     if returns_20 and returns_60:

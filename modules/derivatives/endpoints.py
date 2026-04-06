@@ -1420,4 +1420,115 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             import traceback as tb
             return jsonify({'error': str(e), 'traceback': tb.format_exc()}), 500
 
+
+    @strategies_bp.route('/scan-test', methods=['GET'])
+    def scan_test():
+        """GET /strategies/scan-test — run one PCP calc + test DB insert"""
+        try:
+            from modules.derivatives.strategies import _days_to_expiry, _parse_expiry, _expiry_str
+            from modules.derivatives.config import get_config
+            asset = request.args.get('asset', 'PETR4')
+            result = {'asset': asset, 'tests': []}
+
+            cfg = get_config()
+            cdi_rate = cfg.cdi_rate / 100.0 if cfg.cdi_rate > 1 else cfg.cdi_rate
+            result['cdi_rate'] = cdi_rate
+            result['universe'] = list(set(cfg.universe_tier_a + cfg.universe_tier_b))
+
+            # Test spot
+            spot_quote = provider_mgr.get_spot(asset)
+            if not spot_quote or spot_quote.bid is None:
+                result['tests'].append({'test': 'spot', 'status': 'FAIL'})
+                return jsonify(result), 200
+            spot_price = spot_quote.mid
+            spot_ask = spot_quote.ask
+            spot_bid = spot_quote.bid
+            result['spot'] = {'bid': spot_bid, 'ask': spot_ask, 'mid': spot_price}
+
+            # Test chains
+            call_chain = provider_mgr.get_option_chain(asset, option_type='CALL')
+            put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
+            if not call_chain or not put_chain:
+                result['tests'].append({'test': 'chains', 'status': 'FAIL'})
+                return jsonify(result), 200
+
+            matching = sorted(set(call_chain.keys()) & set(put_chain.keys()))
+            result['matching_strikes'] = len(matching)
+
+            # Find ATM strike
+            atm_strike = min(matching, key=lambda k: abs(k - spot_price))
+            cq = call_chain[atm_strike]
+            pq = put_chain[atm_strike]
+
+            dte = _days_to_expiry(cq.expiry)
+            if dte <= 0:
+                result['tests'].append({'test': 'dte', 'status': 'FAIL', 'dte': dte, 'expiry_raw': str(cq.expiry)})
+                return jsonify(result), 200
+
+            discount = 1.0 / ((1 + cdi_rate) ** (dte / 252))
+            pv_k = atm_strike * discount
+
+            fees = {'option_buy': 0.001, 'option_sell': 0.001, 'stock_buy': 0.0005}
+            call_cost = cq.ask * fees['option_buy']
+            put_cost = pq.bid * fees['option_sell']
+            stock_cost = spot_ask * fees['stock_buy']
+            total_costs = (call_cost + put_cost + stock_cost) * 1.75
+
+            conv_edge = cq.bid - pq.ask - spot_ask + pv_k - total_costs
+            rev_edge = spot_bid - cq.ask + pq.bid - pv_k - total_costs
+
+            result['pcp_calc'] = {
+                'strike': atm_strike, 'dte': dte,
+                'call_bid': cq.bid, 'call_ask': cq.ask,
+                'put_bid': pq.bid, 'put_ask': pq.ask,
+                'pv_k': round(pv_k, 4), 'total_costs': round(total_costs, 6),
+                'conversion_edge': round(conv_edge, 4),
+                'reversal_edge': round(rev_edge, 4),
+                'has_opportunity': conv_edge > 0 or rev_edge > 0,
+            }
+
+            # Test DB insert
+            conn = None
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) as cnt FROM strategy_opportunities_log')
+                row = cursor.fetchone()
+                existing = row['cnt'] if isinstance(row, dict) else row[0]
+                result['db_test'] = {'existing_rows': existing, 'status': 'OK'}
+                cursor.close()
+            except Exception as db_err:
+                result['db_test'] = {'status': 'FAIL', 'error': str(db_err)}
+            finally:
+                if conn:
+                    try: conn.close()
+                    except: pass
+
+            # Test actual insert if opportunity
+            if conv_edge > 0 or rev_edge > 0:
+                try:
+                    conn2 = get_db()
+                    cursor2 = conn2.cursor()
+                    cursor2.execute(
+                        """INSERT INTO strategy_opportunities_log
+                        (strategy_type, symbol, strike, expiry, opportunity_type, expected_edge_bps)
+                        VALUES (%s, %s, %s, %s, %s, %s)""",
+                        ('PCP_TEST', asset, atm_strike, _expiry_str(cq.expiry), 'TEST', max(conv_edge, rev_edge))
+                    )
+                    conn2.commit()
+                    cursor2.close()
+                    result['insert_test'] = {'status': 'OK', 'inserted': True}
+                    conn2.close()
+                except Exception as ie:
+                    result['insert_test'] = {'status': 'FAIL', 'error': str(ie)}
+                    if conn2:
+                        try: conn2.close()
+                        except: pass
+
+            return jsonify(result), 200
+        except Exception as e:
+            import traceback as tb
+            return jsonify({'error': str(e), 'traceback': tb.format_exc()}), 500
+
+
     return strategies_bp

@@ -10,6 +10,43 @@ from datetime import datetime, timedelta
 import statistics
 
 
+def _parse_expiry(expiry_val):
+    """Parse expiry from string or datetime to datetime object."""
+    if isinstance(expiry_val, datetime):
+        return expiry_val
+    if isinstance(expiry_val, str):
+        for fmt in ('%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d', '%Y%m%d'):
+            try:
+                return datetime.strptime(expiry_val.split('+')[0].split('Z')[0], fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def _days_to_expiry(expiry_val):
+    """Return days to expiry as int, or -1 if unparseable."""
+    dt = _parse_expiry(expiry_val)
+    if dt is None:
+        return -1
+    return (dt - datetime.now()).days
+
+
+def _expiry_str(expiry_val, fmt='%Y%m%d'):
+    """Format expiry as string, handling both str and datetime inputs."""
+    dt = _parse_expiry(expiry_val)
+    if dt is None:
+        return str(expiry_val) if expiry_val else ''
+    return dt.strftime(fmt)
+
+
+def _expiry_date_str(expiry_val):
+    """Format expiry as date string for logging."""
+    dt = _parse_expiry(expiry_val)
+    if dt is None:
+        return str(expiry_val) if expiry_val else '?'
+    return str(dt.date())
+
+
 def _get_config():
     """Lazy-load derivatives config."""
     try:
@@ -272,7 +309,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                             continue
 
                         # Calculate PV(K) using CDI rate
-                        days_to_expiry = (call_quote.expiry - datetime.now()).days
+                        days_to_expiry = _days_to_expiry(call_quote.expiry)
                         if days_to_expiry <= 0:
                             continue
 
@@ -309,7 +346,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
 
                             log.info(
                                 f"PCP {edge_type} opportunity: {asset} K={strike} "
-                                f"expiry={call_quote.expiry.date()} edge={edge_magnitude:.4f}"
+                                f"expiry={_expiry_date_str(call_quote.expiry)} edge={edge_magnitude:.4f}"
                             )
 
                             opportunities_found += 1
@@ -317,7 +354,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                             _safe_insert_opportunity(
                                 get_db_fn, log, 'PCP', asset, edge_magnitude,
                                 strike=strike,
-                                expiry=call_quote.expiry.strftime('%Y%m%d') if call_quote.expiry else None,
+                                expiry=_expiry_str(call_quote.expiry) if call_quote.expiry else None,
                                 opportunity_type=edge_type
                             )
 
@@ -330,7 +367,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
 
                             if tier_str in ('PAPER_FULL', 'PAPER_SMALL'):
                                 # Build multi-leg order
-                                expiry_str = call_quote.expiry.strftime('%Y%m%d') if call_quote.expiry else ''
+                                expiry_str = _expiry_str(call_quote.expiry) if call_quote.expiry else ''
                                 if edge_type == 'CONVERSION':
                                     legs = [
                                         {'leg_type': 'CALL', 'symbol': f'{asset}_C{strike}', 'qty': 1, 'side': 'SELL', 'intended_price': call_quote.bid},
@@ -532,8 +569,8 @@ def roll_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                     roll_cost_realized = future_2.mid - future_1.mid
 
                     # Calculate theoretical carry
-                    days_f1 = (future_1.expiry - datetime.now()).days
-                    days_f2 = (future_2.expiry - datetime.now()).days
+                    days_f1 = _days_to_expiry(future_1.expiry)
+                    days_f2 = _days_to_expiry(future_2.expiry)
                     days_between = days_f2 - days_f1
 
                     carry_theoretical = future_1.mid * cdi_rate * (days_between / 252)
@@ -712,11 +749,11 @@ def skew_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                     if greeks_calc:
                         call_iv = greeks_calc.implied_vol(
                             spot_price, otm_call_strike, call_quote.mid,
-                            (call_quote.expiry - datetime.now()).days / 365, 'call'
+                            _days_to_expiry(call_quote.expiry) / 365, 'call'
                         )
                         put_iv = greeks_calc.implied_vol(
                             spot_price, otm_put_strike, put_quote.mid,
-                            (put_quote.expiry - datetime.now()).days / 365, 'put'
+                            _days_to_expiry(put_quote.expiry) / 365, 'put'
                         )
 
                         # Calculate risk reversal
@@ -1001,7 +1038,7 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                         if greeks_calc:
                             iv = greeks_calc.implied_vol(
                                 spot_price, int(spot_price), call_quote.mid,
-                                (call_quote.expiry - datetime.now()).days / 365, 'call'
+                                _days_to_expiry(call_quote.expiry) / 365, 'call'
                             )
 
                             # Calculate IV/RV ratios
@@ -1011,7 +1048,7 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                             # Estimate delta-hedge cost
                             delta = greeks_calc.get_delta(
                                 spot_price, int(spot_price), iv,
-                                (call_quote.expiry - datetime.now()).days / 365, 'call'
+                                _days_to_expiry(call_quote.expiry) / 365, 'call'
                             )
 
                             hedge_cost_pct = delta * 2 * fees.get('stock_buy', 0.0005)

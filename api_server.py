@@ -273,20 +273,42 @@ _deriv_services = {}
 try:
     _deriv_services['options_cache'] = OptionsChainCache() if OptionsChainCache else None
     _deriv_services['futures_cache'] = FuturesChainCache() if FuturesChainCache else None
-    _deriv_services['dividend_svc'] = DividendEventService() if DividendEventService else None
-    _deriv_services['rates_svc'] = RatesCurveService() if RatesCurveService else None
-    _rates_svc = _deriv_services.get('rates_svc')
-    _deriv_services['greeks_calc'] = GreeksCalculator(_rates_svc) if GreeksCalculator and _rates_svc else None
+    # Keys must match what strategies.py expects via services_dict.get(...)
+    _deriv_services['dividend_service'] = DividendEventService() if DividendEventService else None
+    _deriv_services['rates_curve'] = RatesCurveService() if RatesCurveService else None
+    _rates_svc = _deriv_services.get('rates_curve')
+    _deriv_services['greeks_calculator'] = GreeksCalculator(_rates_svc) if GreeksCalculator and _rates_svc else None
     _deriv_services['calibration_svc'] = CalibrationService() if CalibrationService else None
     _deriv_services['scorecard_svc'] = StrategyScorecard() if StrategyScorecard else None
     _deriv_services['order_executor'] = StructuredOrderExecutor() if StructuredOrderExecutor else None
-    _deriv_services['nav_calc'] = NAVCalculatorService() if NAVCalculatorService else None
-    _greeks = _deriv_services.get('greeks_calc')
+    _deriv_services['nav_calculator'] = NAVCalculatorService() if NAVCalculatorService else None
+    _greeks = _deriv_services.get('greeks_calculator')
     _deriv_services['iv_engine'] = ImpliedVolEngine(_greeks) if ImpliedVolEngine and _greeks else None
     _deriv_services['liquidity_engine'] = LiquidityScoreEngine() if LiquidityScoreEngine else None
     _deriv_services['promotion_engine'] = PromotionEngine() if PromotionEngine else None
-    _deriv_services['status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None
-    log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
+    _deriv_services['active_status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None
+    # [v3.3] Initialize execution pipeline modules
+    try:
+        from modules.derivatives.capital import DerivativesCapitalManager as CapitalManager
+        _deriv_services['capital_manager'] = CapitalManager(_deriv_config, get_db_fn=get_db)
+    except Exception as _ce:
+        log.info(f'[v3.3] CapitalManager not loaded: {_ce}')
+    try:
+        from modules.derivatives.position_sizing import DerivativesPositionSizer as PositionSizer
+        _deriv_services['deriv_sizer'] = PositionSizer(_deriv_config)
+    except Exception as _se:
+        log.info(f'[v3.3] PositionSizer not loaded: {_se}')
+    try:
+        from modules.derivatives.deriv_execution import DerivativesExecutionEngine as DerivExecution
+        _deriv_services['deriv_execution'] = DerivExecution(_deriv_config, _deriv_services.get('capital_manager'), get_db_fn=get_db)
+    except Exception as _ee:
+        log.info(f'[v3.3] DerivExecution not loaded: {_ee}')
+    try:
+        from modules.derivatives.learning import DerivativesLearningEngine as DerivLearner
+        _deriv_services['deriv_learner'] = DerivLearner(_deriv_config, get_db_fn=get_db)
+    except Exception as _le:
+        log.info(f'[v3.3] DerivLearner not loaded: {_le}')
+    log.info(f'[v3.3] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')
 # ═══ END DERIVATIVES INIT ═══

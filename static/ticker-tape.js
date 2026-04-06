@@ -205,16 +205,53 @@
         }
     }
 
+    let _initialized = false;
+
     async function updateTape() {
         const items = await fetchPrices();
         if (!items || items.length === 0) return;
 
-        // Calculate animation duration based on item count
-        _animDuration = Math.max(60, items.length * 1.2);
+        // Faster scroll: ~0.6s per item so 120 items = ~72s full cycle
+        _animDuration = Math.max(40, items.length * 0.6);
 
-        _tape.style.setProperty('--tape-duration', _animDuration + 's');
-        _tape.innerHTML = `<div class="ticker-tape-track">${buildTapeHTML(items)}</div>`;
-        _track = _tape.querySelector('.ticker-tape-track');
+        if (!_initialized) {
+            // First load: build full HTML
+            _tape.style.setProperty('--tape-duration', _animDuration + 's');
+            _tape.innerHTML = `<div class="ticker-tape-track">${buildTapeHTML(items)}</div>`;
+            _track = _tape.querySelector('.ticker-tape-track');
+            _initialized = true;
+        } else {
+            // Subsequent loads: update prices in-place WITHOUT resetting scroll position
+            const allItems = _track.querySelectorAll('.ticker-tape-item');
+            const itemMap = {};
+            for (const item of items) {
+                itemMap[item.t] = item;
+            }
+            allItems.forEach(el => {
+                const symEl = el.querySelector('.tt-symbol');
+                if (!symEl) return;
+                const ticker = symEl.textContent.trim();
+                const data = itemMap[ticker];
+                if (!data) return;
+
+                // Update price
+                const priceEl = el.querySelector('.tt-price');
+                if (priceEl) {
+                    const cur = data.cur === 'BRL' ? 'R$' : '$';
+                    priceEl.textContent = `${cur}${formatPrice(data.p, data.cur)}`;
+                }
+
+                // Update change
+                const changeEl = el.querySelector('.tt-change');
+                if (changeEl) {
+                    const dir = data.c > 0.01 ? 'up' : (data.c < -0.01 ? 'down' : 'flat');
+                    const arrow = dir === 'up' ? '▲' : (dir === 'down' ? '▼' : '─');
+                    const sign = data.c > 0 ? '+' : '';
+                    changeEl.className = `tt-change ${dir}`;
+                    changeEl.textContent = `${arrow} ${sign}${data.c.toFixed(2)}%`;
+                }
+            });
+        }
     }
 
     /**

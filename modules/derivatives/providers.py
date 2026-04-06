@@ -1664,11 +1664,16 @@ class ProviderManager:
         chain = p.get_options_chain(underlying)
         if not chain:
             return None
+        # Normalize option_type: accept 'CALL'/'PUT' or 'C'/'P'
+        _type_map = {'CALL': 'C', 'PUT': 'P', 'C': 'C', 'P': 'P'}
+        norm_type = _type_map.get((option_type or '').upper()) if option_type else None
         # Filter by type if requested and return as dict keyed by strike
         result = {}
         for quote in chain:
-            if option_type and hasattr(quote, 'option_type') and quote.option_type != option_type:
-                continue
+            if norm_type and hasattr(quote, 'option_type'):
+                qt = _type_map.get((quote.option_type or '').upper())
+                if qt != norm_type:
+                    continue
             result[quote.strike] = quote
         return result if result else None
 
@@ -1694,6 +1699,23 @@ class ProviderManager:
         if hasattr(p, 'get_price_history'):
             return p.get_price_history(symbol, lookback_days)
         return None
+
+
+    def get_provider_health(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get health status for a named provider (used by dashboard)."""
+        with self._lock:
+            provider = self._providers.get(name)
+            if not provider:
+                return None
+            try:
+                healthy = provider.health_check()
+                last_check = getattr(provider, '_last_health_check', None)
+                return {
+                    'status': 'healthy' if healthy else 'unhealthy',
+                    'last_check': last_check.isoformat() if last_check else None,
+                }
+            except Exception as e:
+                return {'status': f'error: {e}', 'last_check': None}
 
 
 # Global singleton instance helper

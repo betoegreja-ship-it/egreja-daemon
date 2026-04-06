@@ -395,21 +395,22 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
     def get_health():
         """GET /strategies/health - Health of all strategy loops"""
         try:
-            strategies = [
-                'pcp_scan_loop',
-                'fst_scan_loop',
-                'roll_arb_scan_loop',
-                'etf_basket_scan_loop',
-                'skew_arb_scan_loop',
-                'interlisted_scan_loop',
-                'dividend_arb_scan_loop',
-                'vol_arb_scan_loop'
-            ]
+            # Map loop names to strategy_type values used in strategy_opportunities_log
+            strategies = {
+                'pcp_scan_loop': 'PCP',
+                'fst_scan_loop': 'FST',
+                'roll_arb_scan_loop': 'ROLL_ARB',
+                'etf_basket_scan_loop': 'ETF_BASKET',
+                'skew_arb_scan_loop': 'SKEW_ARB',
+                'interlisted_scan_loop': 'INTERLISTED',
+                'dividend_arb_scan_loop': 'DIVIDEND_ARB',
+                'vol_arb_scan_loop': 'VOL_ARB',
+            }
 
             health_status = {}
             now = datetime.utcnow()
 
-            for strat in strategies:
+            for strat, db_type in strategies.items():
                 row = _safe_query(
                     """
                     SELECT MAX(timestamp) as last_heartbeat, COUNT(*) as opp_count
@@ -417,7 +418,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                     WHERE strategy_type = %s
                     AND timestamp > NOW() - INTERVAL 1 HOUR
                     """,
-                    (strat,),
+                    (db_type,),
                     fetch='one'
                 )
 

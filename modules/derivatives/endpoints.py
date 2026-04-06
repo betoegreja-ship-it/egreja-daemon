@@ -1531,4 +1531,102 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             return jsonify({'error': str(e), 'traceback': tb.format_exc()}), 500
 
 
+
+    @strategies_bp.route('/pcp-run', methods=['GET'])
+    def pcp_run():
+        """Run one PCP scan cycle synchronously and return full diagnostics."""
+        try:
+            from modules.derivatives.strategies import _days_to_expiry, _parse_expiry, _expiry_str, _b3_fees
+            from modules.derivatives.config import get_config
+
+            cfg = get_config()
+            fees = _b3_fees()
+            eligible_assets = list(set(cfg.universe_tier_a + cfg.universe_tier_b))
+            cdi_rate = cfg.cdi_rate / 100.0 if cfg.cdi_rate > 1 else cfg.cdi_rate
+
+            result = {
+                'eligible_assets': eligible_assets,
+                'cdi_rate': cdi_rate,
+                'assets': {},
+                'total_opportunities': 0,
+            }
+
+            for asset in eligible_assets:
+                asset_info = {'steps': []}
+                try:
+                    spot_quote = provider_mgr.get_spot(asset)
+                    if not spot_quote or spot_quote.bid is None:
+                        asset_info['steps'].append('no_spot')
+                        result['assets'][asset] = asset_info
+                        continue
+                    spot_price = spot_quote.mid
+                    spot_ask = spot_quote.ask
+                    spot_bid = spot_quote.bid
+                    asset_info['spot'] = spot_price
+
+                    call_chain = provider_mgr.get_option_chain(asset, option_type='CALL')
+                    put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
+
+                    if not call_chain or not put_chain:
+                        asset_info['steps'].append(f'no_chains_call={len(call_chain) if call_chain else 0}_put={len(put_chain) if put_chain else 0}')
+                        result['assets'][asset] = asset_info
+                        continue
+
+                    matching = sorted(set(call_chain.keys()) & set(put_chain.keys()))
+                    asset_info['matching_strikes'] = len(matching)
+                    liq_pass = 0
+                    dte_pass = 0
+                    opps = []
+
+                    for strike in matching:
+                        cq = call_chain.get(strike)
+                        pq = put_chain.get(strike)
+                        if not cq or not pq:
+                            continue
+
+                        call_spread = cq.ask - cq.bid if cq.ask else None
+                        put_spread = pq.ask - pq.bid if pq.ask else None
+
+                        if not call_spread or not put_spread or call_spread > 0.02 * spot_price:
+                            continue
+                        liq_pass += 1
+
+                        dte = _days_to_expiry(cq.expiry)
+                        if dte <= 0:
+                            continue
+                        dte_pass += 1
+
+                        discount = 1.0 / ((1 + cdi_rate) ** (dte / 252))
+                        pv_k = strike * discount
+
+                        call_cost = cq.ask * fees.get('option_buy', 0.001)
+                        put_cost = pq.bid * fees.get('option_sell', 0.001)
+                        stock_cost = spot_ask * fees.get('stock_buy', 0.0005)
+                        total_costs = (call_cost + put_cost + stock_cost) * 1.75
+
+                        conv = cq.bid - pq.ask - spot_ask + pv_k - total_costs
+                        rev = spot_bid - cq.ask + pq.bid - pv_k - total_costs
+
+                        if conv > 0 or rev > 0:
+                            edge_type = 'CONV' if conv > rev else 'REV'
+                            edge_val = max(conv, rev)
+                            opps.append({'K': strike, 'type': edge_type, 'edge': round(edge_val, 4), 'dte': dte})
+
+                    asset_info['liq_pass'] = liq_pass
+                    asset_info['dte_pass'] = dte_pass
+                    asset_info['opportunities'] = opps[:10]  # limit to first 10
+                    asset_info['total_opps'] = len(opps)
+                    result['total_opportunities'] += len(opps)
+
+                except Exception as e:
+                    asset_info['error'] = str(e)
+
+                result['assets'][asset] = asset_info
+
+            return jsonify(result), 200
+        except Exception as e:
+            import traceback as tb
+            return jsonify({'error': str(e), 'traceback': tb.format_exc()}), 500
+
+
     return strategies_bp

@@ -273,42 +273,20 @@ _deriv_services = {}
 try:
     _deriv_services['options_cache'] = OptionsChainCache() if OptionsChainCache else None
     _deriv_services['futures_cache'] = FuturesChainCache() if FuturesChainCache else None
-    # Keys must match what strategies.py expects via services_dict.get(...)
-    _deriv_services['dividend_service'] = DividendEventService() if DividendEventService else None
-    _deriv_services['rates_curve'] = RatesCurveService() if RatesCurveService else None
-    _rates_svc = _deriv_services.get('rates_curve')
-    _deriv_services['greeks_calculator'] = GreeksCalculator(_rates_svc) if GreeksCalculator and _rates_svc else None
+    _deriv_services['dividend_svc'] = DividendEventService() if DividendEventService else None
+    _deriv_services['rates_svc'] = RatesCurveService() if RatesCurveService else None
+    _rates_svc = _deriv_services.get('rates_svc')
+    _deriv_services['greeks_calc'] = GreeksCalculator(_rates_svc) if GreeksCalculator and _rates_svc else None
     _deriv_services['calibration_svc'] = CalibrationService() if CalibrationService else None
     _deriv_services['scorecard_svc'] = StrategyScorecard() if StrategyScorecard else None
     _deriv_services['order_executor'] = StructuredOrderExecutor() if StructuredOrderExecutor else None
-    _deriv_services['nav_calculator'] = NAVCalculatorService() if NAVCalculatorService else None
-    _greeks = _deriv_services.get('greeks_calculator')
+    _deriv_services['nav_calc'] = NAVCalculatorService() if NAVCalculatorService else None
+    _greeks = _deriv_services.get('greeks_calc')
     _deriv_services['iv_engine'] = ImpliedVolEngine(_greeks) if ImpliedVolEngine and _greeks else None
     _deriv_services['liquidity_engine'] = LiquidityScoreEngine() if LiquidityScoreEngine else None
     _deriv_services['promotion_engine'] = PromotionEngine() if PromotionEngine else None
-    _deriv_services['active_status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None
-    # [v3.3] Initialize execution pipeline modules
-    try:
-        from modules.derivatives.capital import DerivativesCapitalManager as CapitalManager
-        _deriv_services['capital_manager'] = CapitalManager(_deriv_config, get_db_fn=get_db)
-    except Exception as _ce:
-        log.info(f'[v3.3] CapitalManager not loaded: {_ce}')
-    try:
-        from modules.derivatives.position_sizing import DerivativesPositionSizer as PositionSizer
-        _deriv_services['deriv_sizer'] = PositionSizer(_deriv_config)
-    except Exception as _se:
-        log.info(f'[v3.3] PositionSizer not loaded: {_se}')
-    try:
-        from modules.derivatives.deriv_execution import DerivativesExecutionEngine as DerivExecution
-        _deriv_services['deriv_execution'] = DerivExecution(_deriv_config, _deriv_services.get('capital_manager'), get_db_fn=get_db)
-    except Exception as _ee:
-        log.info(f'[v3.3] DerivExecution not loaded: {_ee}')
-    try:
-        from modules.derivatives.learning import DerivativesLearningEngine as DerivLearner
-        _deriv_services['deriv_learner'] = DerivLearner(_deriv_config, get_db_fn=get_db)
-    except Exception as _le:
-        log.info(f'[v3.3] DerivLearner not loaded: {_le}')
-    log.info(f'[v3.3] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
+    _deriv_services['status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None
+    log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')
 # ═══ END DERIVATIVES INIT ═══
@@ -340,7 +318,6 @@ except Exception as e:
     import traceback as _tb
     _lh_load_error = _tb.format_exc()
     log.warning(f'[v2.1] Long Horizon AI blueprint registration FAILED:\n{_lh_load_error}')
-
 
 # ── [v3.2] Monthly Picks Sleeve (modular) ─────────────────────────────
 _mp_load_error = None
@@ -943,7 +920,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -7338,7 +7315,7 @@ def start_background_threads():
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
         'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
-        'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal
+        'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
     }
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
     _deriv_loop_args = dict(
@@ -7789,6 +7766,11 @@ def broker_execution_profile_v1023():
 def index():
     """Serve main web dashboard. API info moved to /api/info."""
     return send_from_directory('static', 'index.html')
+
+@app.route('/ticker-tape.js')
+def ticker_tape_js():
+    """Serve ticker tape JS (loaded by index.html)."""
+    return send_from_directory('static', 'ticker-tape.js')
 
 @app.route('/api/info')
 def api_info():

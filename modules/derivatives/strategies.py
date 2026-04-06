@@ -333,8 +333,11 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                         dividend_service = services_dict.get('dividend_service')
                         _expiry_dt = _parse_expiry(call_quote.expiry)
                         if dividend_service and _expiry_dt:
-                            divs = dividend_service.get_dividend_stream(asset, _expiry_dt)
-                            div_adj = sum(d.amount for d in divs if d.ex_date <= _expiry_dt)
+                            try:
+                                divs = dividend_service.get_expected_dividends(asset, datetime.now(), _expiry_dt)
+                                div_adj = sum(d.get('amount', 0) for d in divs if divs) if divs else 0.0
+                            except Exception:
+                                div_adj = 0.0
 
                         # Calculate transaction costs
                         call_cost = call_quote.ask * fees.get('option_buy', 0.001)
@@ -487,8 +490,13 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     dividend_service = services_dict.get('dividend_service')
                     div_sum = 0.0
                     if dividend_service:
-                        divs = dividend_service.get_dividend_stream(asset, future_expiry)
-                        div_sum = sum(d.amount for d in divs if d.ex_date <= future_expiry)
+                        try:
+                            _fut_exp = _parse_expiry(future_expiry) if isinstance(future_expiry, str) else future_expiry
+                            if _fut_exp:
+                                divs = dividend_service.get_expected_dividends(asset, datetime.now(), _fut_exp)
+                                div_sum = sum(d.get('amount', 0) for d in divs) if divs else 0.0
+                        except Exception:
+                            div_sum = 0.0
 
                     carry_theoretical = spot_price * ((1 + cdi_rate) ** (days_to_expiry / 252)) - div_sum
 
@@ -766,14 +774,15 @@ def skew_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                         _put_dte = _days_to_expiry(put_quote.expiry)
                         if _call_dte <= 0 or _put_dte <= 0:
                             continue
-                        call_iv = greeks_calc.implied_vol(
-                            spot_price, otm_call_strike, call_quote.mid,
-                            _call_dte / 365, 'call'
-                        )
-                        put_iv = greeks_calc.implied_vol(
-                            spot_price, otm_put_strike, put_quote.mid,
-                            _put_dte / 365, 'put'
-                        )
+                        try:
+                            call_iv = greeks_calc.calculate_iv_newton_raphson(
+                                'call', spot_price, otm_call_strike, _call_dte, call_quote.mid
+                            )
+                            put_iv = greeks_calc.calculate_iv_newton_raphson(
+                                'put', spot_price, otm_put_strike, _put_dte, put_quote.mid
+                            )
+                        except Exception:
+                            continue
 
                         # Calculate risk reversal
                         rr = put_iv - call_iv
@@ -937,13 +946,22 @@ def dividend_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict,
                     spot_price = spot_quote.mid
 
                     # Get upcoming dividends (next 60 days)
-                    upcoming_divs = dividend_service.get_dividend_stream(
-                        asset,
-                        datetime.now() + timedelta(days=60)
-                    )
+                    try:
+                        upcoming_divs = dividend_service.get_expected_dividends(
+                            asset, datetime.now(), datetime.now() + timedelta(days=60)
+                        )
+                    except Exception:
+                        upcoming_divs = []
 
-                    for dividend in upcoming_divs:
-                        days_to_ex = (dividend.ex_date - datetime.now()).days
+                    for dividend in (upcoming_divs or []):
+                        _ex_date = dividend.get('ex_date') if isinstance(dividend, dict) else getattr(dividend, 'ex_date', None)
+                        if not _ex_date:
+                            continue
+                        if isinstance(_ex_date, str):
+                            _ex_date = _parse_expiry(_ex_date)
+                        if not _ex_date:
+                            continue
+                        days_to_ex = (_ex_date - datetime.now()).days
                         if days_to_ex <= 0 or days_to_ex > 60:
                             continue
 
@@ -963,12 +981,13 @@ def dividend_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict,
                         buy_cost = spot_price * fees.get('stock_buy', 0.0005)
                         put_hedge_cost = put_cost * fees.get('option_buy', 0.001)
 
-                        net_edge = dividend.amount - buy_cost - put_hedge_cost
+                        _div_amount = dividend.get('amount', 0) if isinstance(dividend, dict) else getattr(dividend, 'amount', 0)
+                        net_edge = _div_amount - buy_cost - put_hedge_cost
 
                         if net_edge > 0:
                             log.info(
-                                f"Dividend Arb {asset}: ex-date={dividend.ex_date.date()} "
-                                f"dividend={dividend.amount:.2f} net_edge={net_edge:.4f}"
+                                f"Dividend Arb {asset}: ex-date={_ex_date.date() if _ex_date else '?'} "
+                                f"dividend={_div_amount:.2f} net_edge={net_edge:.4f}"
                             )
 
                             _safe_insert_opportunity(
@@ -1024,14 +1043,25 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                     if not spot_prices or len(spot_prices) < 20:
                         continue
 
+                    # Normalize price history: extract close prices if dicts
+                    _prices = []
+                    for _p in spot_prices:
+                        if isinstance(_p, dict):
+                            _prices.append(_p.get('close', _p.get('Close', 0)))
+                        else:
+                            _prices.append(float(_p))
+                    _prices = [p for p in _prices if p > 0]
+                    if len(_prices) < 20:
+                        continue
+
                     # Calculate 20-day and 60-day realized vol
                     returns_20 = [
-                        (spot_prices[i] - spot_prices[i-1]) / spot_prices[i-1]
-                        for i in range(max(1, len(spot_prices)-20), len(spot_prices))
+                        (_prices[i] - _prices[i-1]) / _prices[i-1]
+                        for i in range(max(1, len(_prices)-20), len(_prices))
                     ]
                     returns_60 = [
-                        (spot_prices[i] - spot_prices[i-1]) / spot_prices[i-1]
-                        for i in range(1, len(spot_prices))
+                        (_prices[i] - _prices[i-1]) / _prices[i-1]
+                        for i in range(1, len(_prices))
                     ]
 
                     if returns_20 and returns_60:
@@ -1058,20 +1088,23 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                             _vol_dte = _days_to_expiry(call_quote.expiry)
                             if _vol_dte <= 0:
                                 continue
-                            iv = greeks_calc.implied_vol(
-                                spot_price, int(spot_price), call_quote.mid,
-                                _vol_dte / 365, 'call'
-                            )
+                            try:
+                                iv = greeks_calc.calculate_iv_newton_raphson(
+                                    'call', spot_price, int(spot_price), _vol_dte, call_quote.mid
+                                )
+                            except Exception:
+                                continue
 
                             # Calculate IV/RV ratios
                             iv_rv_20 = iv / rv_20 if rv_20 > 0 else 0
                             iv_rv_60 = iv / rv_60 if rv_60 > 0 else 0
 
                             # Estimate delta-hedge cost
-                            delta = greeks_calc.get_delta(
-                                spot_price, int(spot_price), iv,
-                                _vol_dte / 365, 'call'
-                            )
+                            try:
+                                greeks_data = greeks_calc.calculate_greeks('call', spot_price, int(spot_price), _vol_dte, iv)
+                                delta = greeks_data.delta if hasattr(greeks_data, 'delta') else 0.5
+                            except Exception:
+                                delta = 0.5
 
                             hedge_cost_pct = delta * 2 * fees.get('stock_buy', 0.0005)
 

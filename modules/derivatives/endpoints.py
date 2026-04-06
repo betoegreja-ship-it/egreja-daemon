@@ -1341,4 +1341,83 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             log.error(f"GET /capital-summary error: {e}\n{traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
 
+
+    @strategies_bp.route('/scan-debug', methods=['GET'])
+    def scan_debug():
+        """GET /strategies/scan-debug — trace PCP scan pipeline for one asset"""
+        try:
+            from modules.derivatives.strategies import _days_to_expiry, _parse_expiry
+            asset = request.args.get('asset', 'PETR4')
+            result = {'asset': asset, 'steps': []}
+
+            # Step 1: spot price
+            spot_quote = provider_mgr.get_spot(asset)
+            if not spot_quote:
+                result['steps'].append({'step': 'get_spot', 'status': 'FAIL', 'detail': 'returned None'})
+                return jsonify(result), 200
+            result['steps'].append({
+                'step': 'get_spot', 'status': 'OK',
+                'bid': spot_quote.bid, 'ask': spot_quote.ask, 'mid': spot_quote.mid
+            })
+
+            # Step 2: option chains
+            call_chain = provider_mgr.get_option_chain(asset, option_type='CALL')
+            put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
+            result['steps'].append({
+                'step': 'get_option_chain',
+                'call_chain_count': len(call_chain) if call_chain else 0,
+                'put_chain_count': len(put_chain) if put_chain else 0,
+                'call_strikes_sample': sorted(list(call_chain.keys()))[:5] if call_chain else [],
+                'put_strikes_sample': sorted(list(put_chain.keys()))[:5] if put_chain else [],
+            })
+
+            if not call_chain or not put_chain:
+                result['steps'][-1]['status'] = 'FAIL'
+                return jsonify(result), 200
+            result['steps'][-1]['status'] = 'OK'
+
+            # Step 3: matching strikes
+            matching = sorted(set(call_chain.keys()) & set(put_chain.keys()))
+            result['steps'].append({
+                'step': 'matching_strikes',
+                'count': len(matching),
+                'sample': matching[:5]
+            })
+
+            if not matching:
+                result['steps'][-1]['status'] = 'FAIL'
+                return jsonify(result), 200
+            result['steps'][-1]['status'] = 'OK'
+
+            # Step 4: first matching strike detail
+            strike = matching[len(matching)//2]  # pick middle strike
+            cq = call_chain[strike]
+            pq = put_chain[strike]
+            spot_price = spot_quote.mid
+
+            call_spread = cq.ask - cq.bid if cq.ask and cq.bid else None
+            put_spread = pq.ask - pq.bid if pq.ask and pq.bid else None
+
+            dte = _days_to_expiry(cq.expiry)
+
+            result['steps'].append({
+                'step': 'strike_detail',
+                'strike': strike,
+                'call_bid': cq.bid, 'call_ask': cq.ask, 'call_mid': cq.mid,
+                'call_expiry_raw': str(cq.expiry),
+                'call_option_type': getattr(cq, 'option_type', '?'),
+                'put_bid': pq.bid, 'put_ask': pq.ask, 'put_mid': pq.mid,
+                'call_spread': call_spread,
+                'put_spread': put_spread,
+                'spread_pct': call_spread / spot_price if call_spread and spot_price else None,
+                'days_to_expiry': dte,
+                'liquidity_pass': bool(call_spread and put_spread and call_spread <= 0.02 * spot_price),
+                'expiry_pass': dte > 0,
+            })
+
+            return jsonify(result), 200
+        except Exception as e:
+            import traceback as tb
+            return jsonify({'error': str(e), 'traceback': tb.format_exc()}), 500
+
     return strategies_bp

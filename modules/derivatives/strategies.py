@@ -271,14 +271,18 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
             cdi_rate = cfg.cdi_rate / 100.0 if cfg.cdi_rate > 1 else cfg.cdi_rate
 
             opportunities_found = 0
+            _scan_diag = {'assets_checked': 0, 'spot_ok': 0, 'chains_ok': 0, 'strikes_checked': 0, 'liq_pass': 0, 'dte_pass': 0}
 
             for asset in eligible_assets:
                 try:
+                    _scan_diag['assets_checked'] += 1
                     # Get market data
                     spot_quote = provider_mgr.get_spot(asset)
                     if not spot_quote or spot_quote.bid is None:
+                        log.debug(f'PCP {asset}: no spot quote')
                         continue
 
+                    _scan_diag['spot_ok'] += 1
                     spot_price = spot_quote.mid
                     spot_ask = spot_quote.ask
                     spot_bid = spot_quote.bid
@@ -288,13 +292,16 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
 
                     if not call_chain or not put_chain:
+                        log.debug(f'PCP {asset}: no chains (calls={len(call_chain) if call_chain else 0}, puts={len(put_chain) if put_chain else 0})')
                         continue
+                    _scan_diag['chains_ok'] += 1
 
                     # Extract service objects
                     greeks_calc = services_dict.get('greeks_calculator')
                     rates_service = services_dict.get('rates_curve')
 
                     for strike in sorted(set(call_chain.keys()) & set(put_chain.keys())):
+                        _scan_diag['strikes_checked'] += 1
                         call_quote = call_chain.get(strike)
                         put_quote = put_chain.get(strike)
 
@@ -307,11 +314,13 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
 
                         if not call_spread or not put_spread or call_spread > 0.02 * spot_price:
                             continue
+                        _scan_diag['liq_pass'] += 1
 
                         # Calculate PV(K) using CDI rate
                         days_to_expiry = _days_to_expiry(call_quote.expiry)
                         if days_to_expiry <= 0:
                             continue
+                        _scan_diag['dte_pass'] += 1
 
                         discount_factor = 1.0 / ((1 + cdi_rate) ** (days_to_expiry / 252))
                         pv_strike = strike * discount_factor
@@ -319,9 +328,10 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                         # Calculate dividend adjustment
                         div_adj = 0.0
                         dividend_service = services_dict.get('dividend_service')
-                        if dividend_service:
-                            divs = dividend_service.get_dividend_stream(asset, call_quote.expiry)
-                            div_adj = sum(d.amount for d in divs if d.ex_date <= call_quote.expiry)
+                        _expiry_dt = _parse_expiry(call_quote.expiry)
+                        if dividend_service and _expiry_dt:
+                            divs = dividend_service.get_dividend_stream(asset, _expiry_dt)
+                            div_adj = sum(d.amount for d in divs if d.ex_date <= _expiry_dt)
 
                         # Calculate transaction costs
                         call_cost = call_quote.ask * fees.get('option_buy', 0.001)
@@ -397,7 +407,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     log.warning(f"PCP scan error for {asset}: {e}")
 
             if opportunities_found > 0:
-                log.info(f"PCP scan completed: {opportunities_found} opportunities")
+                log.info(f"PCP scan completed: {opportunities_found} opportunities | diag={_scan_diag}")
 
         except Exception as e:
             log.error(f"PCP loop error: {e}\n{traceback.format_exc()}")
@@ -747,13 +757,17 @@ def skew_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                     # Extract IV
                     greeks_calc = services_dict.get('greeks_calculator')
                     if greeks_calc:
+                        _call_dte = _days_to_expiry(call_quote.expiry)
+                        _put_dte = _days_to_expiry(put_quote.expiry)
+                        if _call_dte <= 0 or _put_dte <= 0:
+                            continue
                         call_iv = greeks_calc.implied_vol(
                             spot_price, otm_call_strike, call_quote.mid,
-                            _days_to_expiry(call_quote.expiry) / 365, 'call'
+                            _call_dte / 365, 'call'
                         )
                         put_iv = greeks_calc.implied_vol(
                             spot_price, otm_put_strike, put_quote.mid,
-                            _days_to_expiry(put_quote.expiry) / 365, 'put'
+                            _put_dte / 365, 'put'
                         )
 
                         # Calculate risk reversal
@@ -1036,9 +1050,12 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
 
                         greeks_calc = services_dict.get('greeks_calculator')
                         if greeks_calc:
+                            _vol_dte = _days_to_expiry(call_quote.expiry)
+                            if _vol_dte <= 0:
+                                continue
                             iv = greeks_calc.implied_vol(
                                 spot_price, int(spot_price), call_quote.mid,
-                                _days_to_expiry(call_quote.expiry) / 365, 'call'
+                                _vol_dte / 365, 'call'
                             )
 
                             # Calculate IV/RV ratios
@@ -1048,7 +1065,7 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                             # Estimate delta-hedge cost
                             delta = greeks_calc.get_delta(
                                 spot_price, int(spot_price), iv,
-                                _days_to_expiry(call_quote.expiry) / 365, 'call'
+                                _vol_dte / 365, 'call'
                             )
 
                             hedge_cost_pct = delta * 2 * fees.get('stock_buy', 0.0005)

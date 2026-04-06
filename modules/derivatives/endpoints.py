@@ -1629,4 +1629,15 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             return jsonify({'error': str(e), 'traceback': tb.format_exc()}), 500
 
 
+
+    @strategies_bp.route('/loop-diag', methods=['GET'])
+    def loop_diag():
+        """Read scan loop diagnostic data."""
+        try:
+            from modules.derivatives.strategies import _scan_loop_diag
+            return jsonify(_scan_loop_diag), 200
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+
     return strategies_bp

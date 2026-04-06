@@ -9,6 +9,9 @@ import traceback
 from datetime import datetime, timedelta
 import statistics
 
+# Global diagnostic dict for scan loop debugging
+_scan_loop_diag = {}
+
 
 def _parse_expiry(expiry_val):
     """Parse expiry from string or datetime to datetime object."""
@@ -271,7 +274,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
             cdi_rate = cfg.cdi_rate / 100.0 if cfg.cdi_rate > 1 else cfg.cdi_rate
 
             opportunities_found = 0
-            _scan_diag = {'assets_checked': 0, 'spot_ok': 0, 'chains_ok': 0, 'strikes_checked': 0, 'liq_pass': 0, 'dte_pass': 0}
+            _scan_diag = {'assets_checked': 0, 'spot_ok': 0, 'chains_ok': 0, 'strikes_checked': 0, 'liq_pass': 0, 'dte_pass': 0, 'errors': [], 'ts': str(datetime.now())}
 
             for asset in eligible_assets:
                 try:
@@ -404,10 +407,12 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                                 )
 
                 except Exception as e:
+                    _scan_diag['errors'].append(f'{asset}: {e}')
                     log.warning(f"PCP scan error for {asset}: {e}")
 
-            if opportunities_found > 0:
-                log.info(f"PCP scan completed: {opportunities_found} opportunities | diag={_scan_diag}")
+            _scan_diag['opportunities'] = opportunities_found
+            _scan_loop_diag['pcp'] = _scan_diag
+            log.info(f"PCP scan: {opportunities_found} opps | {_scan_diag}")
 
         except Exception as e:
             log.error(f"PCP loop error: {e}\n{traceback.format_exc()}")

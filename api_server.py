@@ -319,6 +319,24 @@ except Exception as e:
     _lh_load_error = _tb.format_exc()
     log.warning(f'[v2.1] Long Horizon AI blueprint registration FAILED:\n{_lh_load_error}')
 
+
+# ── [v3.2] Monthly Picks Sleeve (modular) ─────────────────────────────
+_mp_load_error = None
+try:
+    from modules.long_horizon.monthly_picks.endpoints import create_monthly_picks_blueprint
+    from modules.long_horizon.monthly_picks.repositories import MonthlyPicksRepository
+    _mp_bp = create_monthly_picks_blueprint(
+        db_fn=get_db,
+        log=log,
+        brain_lesson_fn=enqueue_brain_lesson,
+    )
+    app.register_blueprint(_mp_bp, url_prefix='/monthly-picks')
+    log.info('[v3.2] Monthly Picks sleeve registered at /monthly-picks/* (modular)')
+except Exception as e:
+    import traceback as _tb
+    _mp_load_error = _tb.format_exc()
+    log.warning(f'[v3.2] Monthly Picks sleeve registration FAILED:\n{_mp_load_error}')
+
 # ── [v2.2] Unified Brain (Intelligence Engine) Blueprint ──────────────
 _brain_load_error = None
 try:
@@ -7298,6 +7316,7 @@ def start_background_threads():
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
         'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
+        'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal
     }
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
     _deriv_loop_args = dict(
@@ -9712,6 +9731,23 @@ def report_send(period):
     _whatsapp_report(rpt)
     return jsonify({'ok': True, 'period': period, 'report': rpt})
 
+def _monthly_picks_worker():
+    """[v3.2] Monthly Picks Sleeve — scan mensal + review semanal + discovery.
+    Delega para scheduler_hooks.monthly_picks_worker() (modular).
+    """
+    try:
+        from modules.long_horizon.monthly_picks.scheduler_hooks import monthly_picks_worker
+        monthly_picks_worker(
+            db_fn=get_db,
+            log=log,
+            brain_lesson_fn=enqueue_brain_lesson,
+        )
+    except Exception as e:
+        log.error(f'[MonthlyPicks] Worker import/start error: {e}')
+        import traceback
+        log.error(traceback.format_exc())
+
+
 def _brain_hourly_reminder():
     """PRINCÍPIO FUNDAMENTAL — Lembrete horário do Unified Brain.
     Roda a cada hora para garantir que os princípios NUNCA são esquecidos."""
@@ -10000,6 +10036,18 @@ if __name__ == '__main__':
             log.info('[v3.0] Unified Brain tables created/verified (8 tables — persistent memory)')
     except Exception as _be:
         log.warning(f'[v3.0] Brain tables creation warning: {_be}')
+
+    # [v3.2] Monthly Picks tables (8 tables — modular sleeve)
+    try:
+        _mp_conn = get_db()
+        if _mp_conn:
+            from modules.long_horizon.monthly_picks.repositories import MonthlyPicksRepository
+            _mp_repo = MonthlyPicksRepository(_mp_conn)
+            _mp_repo.create_tables()
+            _mp_conn.close()
+            log.info('[v3.2] Monthly Picks tables created/verified (8 tables — modular sleeve)')
+    except Exception as _mpe:
+        log.warning(f'[v3.2] Monthly Picks tables warning: {_mpe}')
 
     fetch_fx_rates()          # [v10.6-P1-4] FX carregado ANTES de stock — ADR usa USDBRL
     fetch_crypto_prices()

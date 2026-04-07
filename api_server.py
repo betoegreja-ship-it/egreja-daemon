@@ -324,10 +324,12 @@ _mp_load_error = None
 try:
     from modules.long_horizon.monthly_picks.endpoints import create_monthly_picks_blueprint
     from modules.long_horizon.monthly_picks.repositories import MonthlyPicksRepository
+    # NOTE: enqueue_brain_lesson is defined later in this file, so we pass a
+    # late-binding lambda that resolves at call-time instead of import-time.
     _mp_bp = create_monthly_picks_blueprint(
         db_fn=get_db,
         log=log,
-        brain_lesson_fn=enqueue_brain_lesson,
+        brain_lesson_fn=lambda *a, **k: enqueue_brain_lesson(*a, **k) if 'enqueue_brain_lesson' in globals() else None,
     )
     app.register_blueprint(_mp_bp, url_prefix='/monthly-picks')
     log.info('[v3.2] Monthly Picks sleeve registered at /monthly-picks/* (modular)')

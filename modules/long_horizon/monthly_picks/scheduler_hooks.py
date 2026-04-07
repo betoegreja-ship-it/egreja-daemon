@@ -113,20 +113,73 @@ def discovery_hook(db_fn: Callable, log=None):
 # LIGHTWEIGHT WORKER (optional — only if justified)
 # ──────────────────────────────────────────────────────────────
 
+def _last_scan_month(db_fn, log) -> str:
+    """Return 'YYYY-MM' of most recent scan, or '' if none."""
+    try:
+        conn = db_fn()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT MAX(scan_date) AS last FROM mp_scan_runs")
+        row = cur.fetchone()
+        conn.close()
+        if row and row.get('last'):
+            return str(row['last'])[:7]
+    except Exception as e:
+        try: log.warning(f'[MP Worker] last_scan_month err: {e}')
+        except Exception: pass
+    return ''
+
+
+def _last_review_date(db_fn, log) -> str:
+    try:
+        conn = db_fn()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT MAX(review_date) AS last FROM mp_reviews")
+        row = cur.fetchone()
+        conn.close()
+        if row and row.get('last'):
+            return str(row['last'])[:10]
+    except Exception:
+        pass
+    return ''
+
+
 def monthly_picks_worker(db_fn: Callable, log=None,
                          brain_lesson_fn: Callable = None):
     """
     Lightweight orchestration worker.
-    Only checks schedule and delegates to hooks — no heavy computation.
-    Runs every hour, checks if it's time to scan or review.
-
-    This is the function registered in start_background_threads() if needed.
+    On startup:
+      - If there is no scan this month, runs one now (catch-up).
+      - If there is no review this week, runs one now.
+    Then checks hourly for the regular schedule windows.
     """
     log = log or logger
     log.info('[MP Worker] Starting lightweight orchestration worker')
 
-    # Startup delay
-    time.sleep(120)
+    # Startup delay (small)
+    time.sleep(30)
+
+    # Startup catch-up: scan if missing this month
+    try:
+        now = datetime.datetime.now()
+        cur_month = now.strftime('%Y-%m')
+        last_scan = _last_scan_month(db_fn, log)
+        if last_scan != cur_month:
+            log.info(f'[MP Worker] Catch-up: no scan for {cur_month} (last={last_scan}) — running now')
+            monthly_scan_hook(db_fn, log, brain_lesson_fn)
+        # Catch-up review: if nothing in last 7 days
+        last_rev = _last_review_date(db_fn, log)
+        needs_review = True
+        if last_rev:
+            try:
+                d = datetime.date.fromisoformat(last_rev)
+                needs_review = (datetime.date.today() - d).days >= 7
+            except Exception:
+                needs_review = True
+        if needs_review:
+            log.info(f'[MP Worker] Catch-up: running weekly review (last={last_rev})')
+            weekly_review_hook(db_fn, log, brain_lesson_fn)
+    except Exception as e:
+        log.error(f'[MP Worker] Startup catch-up error: {e}')
 
     while True:
         try:

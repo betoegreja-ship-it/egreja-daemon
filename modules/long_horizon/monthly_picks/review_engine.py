@@ -205,12 +205,44 @@ class ReviewEngine:
     # ── HELPERS ─────────────────────────────────────────────
 
     def _get_current_price(self, ticker: str, fallback: float) -> float:
-        """Get latest price from Long Horizon portfolio engine or DB."""
+        """Get latest price from live providers (BRAPI for BR, Polygon for US).
+        Falls back to lh_assets last_price, then to the hardcoded estimate map,
+        then to the provided fallback.
+        """
+        # 1) BRAPI live quote (covers BR + US via Brapi's multi-market endpoint)
+        try:
+            from modules.long_horizon.brapi_provider import BRAPIProvider
+            q = BRAPIProvider().get_quote(ticker)
+            if q and float(q.get('price', 0) or 0) > 0:
+                return float(q['price'])
+        except Exception as e:
+            try: self.log.debug(f'[MP Review] BRAPI price miss {ticker}: {e}')
+            except Exception: pass
+        # 2) Polygon (US ADRs)
+        try:
+            from modules.long_horizon.polygon_provider import PolygonProvider
+            q = PolygonProvider().get_quote(ticker)
+            if q and float(q.get('price', 0) or 0) > 0:
+                return float(q['price'])
+        except Exception:
+            pass
+        # 3) lh_assets.last_price snapshot
+        try:
+            conn = self.db_fn()
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT last_price FROM lh_assets WHERE ticker=%s", (ticker,))
+            row = cur.fetchone()
+            conn.close()
+            if row and row.get('last_price') and float(row['last_price']) > 0:
+                return float(row['last_price'])
+        except Exception:
+            pass
+        # 4) Static estimate map (legacy) — only as last resort
         try:
             from modules.long_horizon.portfolio_engine import get_realistic_asset_prices
             prices = get_realistic_asset_prices()
-            if ticker in prices:
-                return float(prices[ticker].get('price', fallback))
+            if ticker in prices and float(prices[ticker].get('price', 0) or 0) > 0:
+                return float(prices[ticker]['price'])
         except Exception:
             pass
         return fallback

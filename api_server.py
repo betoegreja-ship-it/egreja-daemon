@@ -7795,8 +7795,10 @@ def modules_debug():
     return jsonify({
         'registered_blueprints': bp_names,
         'long_horizon_loaded': 'long_horizon' in bp_names,
+        'monthly_picks_loaded': any('monthly' in n for n in bp_names),
         'brain_loaded': 'brain' in bp_names or 'unified_brain' in bp_names,
         'lh_error': _lh_load_error,
+        'mp_error': _mp_load_error,
         'brain_error': _brain_load_error,
     })
 

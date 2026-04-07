@@ -95,6 +95,21 @@ class LiquidityScoreEngine:
         self._lock = threading.RLock()
         self.history: Dict[Tuple, list] = defaultdict(list)
         
+    def get_liquidity_score(self, symbol: str, **kwargs) -> float:
+        """Backwards-compat wrapper used by legacy endpoints. Returns a float 0-100."""
+        try:
+            res = self.compute_score(
+                asset=symbol,
+                strategy=kwargs.get('strategy', 'PCP'),
+                expiry=kwargs.get('expiry', ''),
+                strike=float(kwargs.get('strike', 0) or 0),
+                window=kwargs.get('window', 'MID'),
+                market_data=kwargs.get('market_data'),
+            )
+            return float(getattr(res, 'score', 0) or 0)
+        except Exception:
+            return 0.0
+
     def compute_score(
         self,
         asset: str,

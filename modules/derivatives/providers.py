@@ -1656,26 +1656,56 @@ class ProviderManager:
         p = self._resolve()
         return p.get_spot(symbol) if p else None
 
-    def get_option_chain(self, underlying: str, option_type: str = None) -> Optional[dict]:
-        """Get option chain, keyed by strike. Wraps provider's get_options_chain."""
+    def get_option_chain(self, underlying: str, option_type: str = None, expiry=None) -> Optional[dict]:
+        """Get option chain keyed by strike for the NEAREST valid expiry (or a specific one).
+        Previously collapsed all expiries into one dict, losing ~80% of strikes.
+        """
         p = self._resolve()
         if not p:
             return None
         chain = p.get_options_chain(underlying)
         if not chain:
             return None
-        # Normalize option_type: accept 'CALL'/'PUT' or 'C'/'P'
         _type_map = {'CALL': 'C', 'PUT': 'P', 'C': 'C', 'P': 'P'}
         norm_type = _type_map.get((option_type or '').upper()) if option_type else None
-        # Filter by type if requested and return as dict keyed by strike
-        result = {}
+        # Group by expiry
+        import datetime as _dt
+        by_expiry = {}
         for quote in chain:
             if norm_type and hasattr(quote, 'option_type'):
                 qt = _type_map.get((quote.option_type or '').upper())
                 if qt != norm_type:
                     continue
-            result[quote.strike] = quote
-        return result if result else None
+            exp = getattr(quote, 'expiry', None)
+            by_expiry.setdefault(exp, {})[quote.strike] = quote
+        if not by_expiry:
+            return None
+        # Choose expiry
+        today = _dt.date.today()
+        def _to_date(e):
+            if isinstance(e, _dt.datetime): return e.date()
+            if isinstance(e, _dt.date): return e
+            try: return _dt.datetime.strptime(str(e)[:10], '%Y-%m-%d').date()
+            except Exception: return None
+        if expiry is not None:
+            tgt = _to_date(expiry)
+            if tgt and tgt in [_to_date(k) for k in by_expiry]:
+                for k in by_expiry:
+                    if _to_date(k) == tgt:
+                        return by_expiry[k] or None
+        valid = []
+        for k in by_expiry:
+            d = _to_date(k)
+            if d and d >= today:
+                valid.append((d, k))
+        if not valid:
+            # Fallback: merge everything (legacy behavior)
+            merged = {}
+            for d in by_expiry.values():
+                merged.update(d)
+            return merged or None
+        valid.sort()
+        return by_expiry[valid[0][1]] or None
 
     def get_future(self, underlying: str, tenor_offset: int = 0) -> Optional[FutureQuote]:
         """Get future quote for given underlying. tenor_offset=0 is nearest."""
@@ -1699,7 +1729,6 @@ class ProviderManager:
         if hasattr(p, 'get_price_history'):
             return p.get_price_history(symbol, lookback_days)
         return None
-
 
     def get_provider_health(self, name: str) -> Optional[Dict[str, Any]]:
         """Get health status for a named provider (used by dashboard)."""

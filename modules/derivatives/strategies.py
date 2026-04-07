@@ -53,6 +53,17 @@ _scan_loop_diag = {}
 _pcp_calibration = {}
 
 
+def _pick_nearest_strike(chain, target):
+    """Return the quote in chain whose strike is closest to target. chain is {strike: quote}."""
+    if not chain:
+        return None, None
+    try:
+        best = min(chain.keys(), key=lambda k: abs(float(k) - float(target)))
+    except Exception:
+        return None, None
+    return best, chain.get(best)
+
+
 def _get_config():
     """Lazy-load derivatives config."""
     try:
@@ -582,8 +593,9 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
 
                     # Calculate synthetic future for nearest maturity
                     future_expiry = future_quote.expiry
-                    call_quote = call_chain.get(int(spot_price))
-                    put_quote = put_chain.get(int(spot_price))
+                    _fst_k, call_quote = _pick_nearest_strike(call_chain, spot_price)
+                    put_quote = put_chain.get(_fst_k) if _fst_k is not None else None
+                    _fst_strike_used = _fst_k if _fst_k is not None else _fst_strike_used
 
                     if not call_quote or not put_quote:
                         continue
@@ -593,7 +605,7 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                         continue
 
                     discount_factor = 1.0 / ((1 + cdi_rate) ** (days_to_expiry / 252))
-                    pv_strike = int(spot_price) * discount_factor
+                    pv_strike = _fst_strike_used * discount_factor
 
                     synthetic_future = call_quote.mid - put_quote.mid + pv_strike
 
@@ -650,7 +662,7 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
 
                             _fst_liq = _compute_liq_score(
                                 services_dict, asset, 'FST',
-                                _expiry_str(future_expiry), int(spot_price),
+                                _expiry_str(future_expiry), _fst_strike_used,
                                 opt_q=call_quote
                             )
                             _fst_cost = float(abs(spread_a) * 0.002)  # 20 bps est on spread notional
@@ -661,7 +673,7 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                                 _fst_rej = f'liquidity_too_low({_fst_liq:.1f})'
                             _safe_insert_opportunity(
                                 get_db_fn, log, 'FST', asset, spread_a,
-                                strike=int(spot_price),
+                                strike=_fst_strike_used,
                                 expiry=_expiry_str(future_expiry),
                                 opportunity_type='SPREAD_DIVERGENCE',
                                 liquidity_score=_fst_liq,
@@ -675,15 +687,15 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                                 log, services_dict, 'fst', asset,
                                 'SPREAD_DIVERGENCE', abs(spread_a),
                                 spot_price * 100, spot_price,
-                                strike=int(spot_price),
+                                strike=_fst_strike_used,
                                 legs=[
                                     {'leg_type': 'FUTURE', 'symbol': f'{asset}_FUT', 'qty': 1,
                                      'side': 'SELL' if spread_a > 0 else 'BUY',
                                      'intended_price': future_quote.mid},
-                                    {'leg_type': 'CALL', 'symbol': f'{asset}_C{int(spot_price)}', 'qty': 1,
+                                    {'leg_type': 'CALL', 'symbol': f'{asset}_C{_fst_strike_used}', 'qty': 1,
                                      'side': 'BUY' if spread_a > 0 else 'SELL',
                                      'intended_price': call_quote.mid},
-                                    {'leg_type': 'PUT', 'symbol': f'{asset}_P{int(spot_price)}', 'qty': 1,
+                                    {'leg_type': 'PUT', 'symbol': f'{asset}_P{_fst_strike_used}', 'qty': 1,
                                      'side': 'SELL' if spread_a > 0 else 'BUY',
                                      'intended_price': put_quote.mid},
                                 ],
@@ -909,8 +921,10 @@ def skew_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                         continue
 
                     # Pick 1-delta OTM call and put
-                    otm_call_strike = int(spot_price * 1.05)
-                    otm_put_strike = int(spot_price * 0.95)
+                    otm_call_strike, _skew_call_q = _pick_nearest_strike(call_chain, spot_price * 1.05)
+                    otm_put_strike, _skew_put_q = _pick_nearest_strike(put_chain, spot_price * 0.95)
+                    if otm_call_strike is None or otm_put_strike is None:
+                        continue
 
                     call_quote = call_chain.get(otm_call_strike)
                     put_quote = put_chain.get(otm_put_strike)
@@ -1126,7 +1140,8 @@ def dividend_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict,
                         if not put_chain:
                             continue
 
-                        strike = int(spot_price)
+                        strike, _div_put_q = _pick_nearest_strike(put_chain, spot_price)
+                        if strike is None: continue
                         put_quote = put_chain.get(strike)
                         if not put_quote:
                             continue
@@ -1226,7 +1241,8 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                             continue
 
                         spot_price = spot_quote.mid
-                        call_quote = call_chain.get(int(spot_price))
+                        _vol_k, call_quote = _pick_nearest_strike(call_chain, spot_price)
+                        _vol_strike_used = _vol_k if _vol_k is not None else _vol_strike_used
 
                         if not call_quote:
                             continue
@@ -1238,7 +1254,7 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                                 continue
                             try:
                                 iv = greeks_calc.calculate_iv_newton_raphson(
-                                    'call', spot_price, int(spot_price), _vol_dte, call_quote.mid
+                                    'call', spot_price, _vol_strike_used, _vol_dte, call_quote.mid
                                 )
                             except Exception:
                                 continue
@@ -1249,7 +1265,7 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
 
                             # Estimate delta-hedge cost
                             try:
-                                greeks_data = greeks_calc.calculate_greeks('call', spot_price, int(spot_price), _vol_dte, iv)
+                                greeks_data = greeks_calc.calculate_greeks('call', spot_price, _vol_strike_used, _vol_dte, iv)
                                 delta = greeks_data.delta if hasattr(greeks_data, 'delta') else 0.5
                             except Exception:
                                 delta = 0.5
@@ -1273,9 +1289,9 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                                     log, services_dict, 'vol_arb', asset,
                                     'IV_HIGH_SELL', (iv - rv_60) * spot_price,
                                     spot_price * 100, spot_price,
-                                    strike=int(spot_price),
+                                    strike=_vol_strike_used,
                                     legs=[
-                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{int(spot_price)}', 'qty': 1,
+                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{_vol_strike_used}', 'qty': 1,
                                          'side': 'SELL', 'intended_price': call_quote.mid},
                                         {'leg_type': 'STOCK', 'symbol': asset,
                                          'qty': int(abs(delta) * 100) or 50,
@@ -1299,9 +1315,9 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                                     log, services_dict, 'vol_arb', asset,
                                     'IV_LOW_BUY', (rv_60 - iv) * spot_price,
                                     spot_price * 100, spot_price,
-                                    strike=int(spot_price),
+                                    strike=_vol_strike_used,
                                     legs=[
-                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{int(spot_price)}', 'qty': 1,
+                                        {'leg_type': 'CALL', 'symbol': f'{asset}_C{_vol_strike_used}', 'qty': 1,
                                          'side': 'BUY', 'intended_price': call_quote.mid},
                                         {'leg_type': 'STOCK', 'symbol': asset,
                                          'qty': int(abs(delta) * 100) or 50,

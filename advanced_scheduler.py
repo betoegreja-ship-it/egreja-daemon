@@ -170,7 +170,7 @@ class AdvancedScheduler:
             
             # Check API
             try:
-                api_url = "/signals"
+                api_url = "https://diligent-spirit-production.up.railway.app/signals"
                 response = requests.get(api_url, timeout=5)
                 api_status = "✅ OK" if response.status_code == 200 else f"❌ {response.status_code}"
             except:

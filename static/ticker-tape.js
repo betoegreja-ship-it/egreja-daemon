@@ -5,7 +5,7 @@
  * Auto-refreshes every 15 seconds. Green/red color coding with arrows.
  *
  * Usage: Include this script, then call initTickerTape(apiBase) where apiBase
- * is the backend URL (e.g., '')
+ * is the backend URL (e.g., 'https://diligent-spirit-production.up.railway.app')
  */
 
 (function() {

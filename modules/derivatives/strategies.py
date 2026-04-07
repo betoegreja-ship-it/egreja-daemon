@@ -50,6 +50,7 @@ def _expiry_date_str(expiry_val):
 
 # Global diagnostic dict — read by /strategies/loop-diag endpoint
 _scan_loop_diag = {}
+_pcp_calibration = {}
 
 
 def _get_config():
@@ -225,7 +226,9 @@ def _b3_fees():
 
 
 def _safe_insert_opportunity(get_db_fn, log, strategy_type, symbol, edge_value,
-                              strike=None, expiry=None, opportunity_type=None):
+                              strike=None, expiry=None, opportunity_type=None,
+                              liquidity_score=None, cost_estimate=None,
+                              decision=None, rejection_reason=None):
     """Insert an opportunity into strategy_opportunities_log using MySQL."""
     conn = None
     try:
@@ -236,10 +239,12 @@ def _safe_insert_opportunity(get_db_fn, log, strategy_type, symbol, edge_value,
         cursor.execute(
             """
             INSERT INTO strategy_opportunities_log
-            (strategy_type, symbol, strike, expiry, opportunity_type, expected_edge_bps)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            (strategy_type, symbol, strike, expiry, opportunity_type, expected_edge_bps,
+             cost_estimate, liquidity_score, decision, rejection_reason)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (strategy_type, symbol, strike, expiry, opportunity_type, edge_value)
+            (strategy_type, symbol, strike, expiry, opportunity_type, edge_value,
+             cost_estimate, liquidity_score, decision, rejection_reason)
         )
         conn.commit()
         cursor.close()
@@ -251,6 +256,73 @@ def _safe_insert_opportunity(get_db_fn, log, strategy_type, symbol, edge_value,
                 conn.close()
             except Exception:
                 pass
+
+
+def _upsert_calibration(get_db_fn, log, strategy_type, symbol, metric_name,
+                        samples, expiry=None):
+    """Persist calibration stats (mean/std/p5/p95/count) to calibration_data table."""
+    if not samples or len(samples) < 2:
+        return
+    conn = None
+    try:
+        mean_v = float(statistics.mean(samples))
+        std_v = float(statistics.stdev(samples)) if len(samples) > 1 else 0.0
+        sorted_s = sorted(samples)
+        n = len(sorted_s)
+        p5 = float(sorted_s[max(0, int(0.05 * n))])
+        p95 = float(sorted_s[min(n - 1, int(0.95 * n))])
+        conn = get_db_fn()
+        if conn is None:
+            return
+        cursor = conn.cursor()
+        cursor.execute(
+            """DELETE FROM calibration_data
+               WHERE strategy_type=%s AND symbol=%s AND metric_name=%s
+                 AND (expiry=%s OR (expiry IS NULL AND %s IS NULL))""",
+            (strategy_type, symbol, metric_name, expiry, expiry)
+        )
+        cursor.execute(
+            """INSERT INTO calibration_data
+               (strategy_type, symbol, expiry, metric_name, mean_val, std_val,
+                p5, p95, sample_count, window_start, window_end)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (strategy_type, symbol, expiry, metric_name, mean_v, std_v, p5, p95,
+             n, datetime.now() - timedelta(days=1), datetime.now())
+        )
+        conn.commit()
+        cursor.close()
+    except Exception as e:
+        log.warning(f"Upsert calibration error ({strategy_type}/{symbol}/{metric_name}): {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _compute_liq_score(services_dict, asset, strategy, expiry, strike, opt_q=None):
+    """Safe wrapper: compute liquidity composite via LiquidityScoreEngine.compute_score."""
+    try:
+        engine = services_dict.get('liquidity_engine') if services_dict else None
+        if engine is None or not hasattr(engine, 'compute_score'):
+            return None
+        md = {}
+        if opt_q is not None:
+            md['bid'] = getattr(opt_q, 'bid', 0) or 0
+            md['ask'] = getattr(opt_q, 'ask', 0) or 0
+            md['last'] = getattr(opt_q, 'mid', (md.get('bid', 0) + md.get('ask', 0)) / 2 if md.get('bid') and md.get('ask') else 0)
+            md['volume'] = getattr(opt_q, 'volume', 0) or 0
+            md['open_interest'] = getattr(opt_q, 'open_interest', 0) or 0
+        result = engine.compute_score(
+            asset=asset, strategy=strategy,
+            expiry=str(expiry or ''), strike=float(strike or 0),
+            window='MID', market_data=md,
+        )
+        score = getattr(result, 'score', None)
+        return float(score) if score is not None else None
+    except Exception:
+        return None
 
 
 def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_check_fn, audit_fn):
@@ -357,23 +429,60 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                             spot_bid - call_quote.ask + put_quote.bid - pv_strike - div_adj - total_costs
                         )
 
+                        # Collect calibration sample: observed C - P vs theoretical (S - PV(K) + div)
+                        try:
+                            parity_resid = (call_quote.mid - put_quote.mid) - (spot_price - pv_strike + div_adj)
+                            _pcp_cal_key = f"{asset}_{_expiry_str(call_quote.expiry)}"
+                            _pcp_calibration.setdefault(_pcp_cal_key, []).append(parity_resid)
+                            if len(_pcp_calibration[_pcp_cal_key]) > 60:
+                                _pcp_calibration[_pcp_cal_key] = _pcp_calibration[_pcp_cal_key][-60:]
+                            if len(_pcp_calibration[_pcp_cal_key]) % 5 == 0:
+                                _upsert_calibration(
+                                    get_db_fn, log, 'PCP', asset, 'parity_residual',
+                                    _pcp_calibration[_pcp_cal_key],
+                                    expiry=_expiry_str(call_quote.expiry)
+                                )
+                        except Exception:
+                            pass
+
+                        # Compute liquidity composite + cost estimate regardless of edge
+                        _liq_score = _compute_liq_score(
+                            services_dict, asset, 'PCP',
+                            _expiry_str(call_quote.expiry), strike, opt_q=call_quote
+                        )
+                        _cost_est = float(total_costs) if total_costs is not None else None
+
                         if conversion_edge > 0 or reversal_edge > 0:
                             edge_type = "CONVERSION" if conversion_edge > reversal_edge else "REVERSAL"
                             edge_magnitude = max(conversion_edge, reversal_edge)
 
                             log.info(
                                 f"PCP {edge_type} opportunity: {asset} K={strike} "
-                                f"expiry={_expiry_date_str(call_quote.expiry)} edge={edge_magnitude:.4f}"
+                                f"expiry={_expiry_date_str(call_quote.expiry)} edge={edge_magnitude:.4f} "
+                                f"liq={_liq_score} cost={_cost_est}"
                             )
 
                             opportunities_found += 1
                             _diag['opportunities'] += 1
 
+                            _decision = 'CANDIDATE'
+                            _rej = None
+                            if _liq_score is not None and _liq_score < 40:
+                                _decision = 'REJECTED'
+                                _rej = f'liquidity_too_low({_liq_score:.1f})'
+                            elif _cost_est is not None and edge_magnitude < _cost_est:
+                                _decision = 'REJECTED'
+                                _rej = 'edge_below_cost'
+
                             _safe_insert_opportunity(
                                 get_db_fn, log, 'PCP', asset, edge_magnitude,
                                 strike=strike,
                                 expiry=_expiry_str(call_quote.expiry),
-                                opportunity_type=edge_type
+                                opportunity_type=edge_type,
+                                liquidity_score=_liq_score,
+                                cost_estimate=_cost_est,
+                                decision=_decision,
+                                rejection_reason=_rej,
                             )
 
                             # Autonomous execution via new pipeline
@@ -454,7 +563,7 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     created_at = calibration_data[f"{asset_key}_created"]
                     days_running = (datetime.now() - created_at).days
 
-                    in_calibration = days_running < 5
+                    in_calibration = days_running < 1  # reduced from 5 for faster activation
 
                     # Get spot price
                     spot_quote = provider_mgr.get_spot(asset)
@@ -514,6 +623,15 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     if len(calibration_data[asset_key]) > 20:
                         calibration_data[asset_key].pop(0)
 
+                    # Persist calibration stats to DB every few samples so the
+                    # dashboard shows non-zero calibration_records.
+                    if len(calibration_data[asset_key]) >= 3 and len(calibration_data[asset_key]) % 3 == 0:
+                        _upsert_calibration(
+                            get_db_fn, log, 'FST', asset, 'spread_a',
+                            calibration_data[asset_key],
+                            expiry=_expiry_str(future_expiry)
+                        )
+
                     if in_calibration:
                         log.info(f"FST {asset}: calibration day {days_running}/5, samples={len(calibration_data[asset_key])}, spread_a={spread_a:.4f}")
                         beat_fn(loop_name)
@@ -530,9 +648,26 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                                 f"(mean={mean_spread:.4f}), spread_c={spread_c:.4f}"
                             )
 
+                            _fst_liq = _compute_liq_score(
+                                services_dict, asset, 'FST',
+                                _expiry_str(future_expiry), int(spot_price),
+                                opt_q=call_quote
+                            )
+                            _fst_cost = float(abs(spread_a) * 0.002)  # 20 bps est on spread notional
+                            _fst_decision = 'CANDIDATE'
+                            _fst_rej = None
+                            if _fst_liq is not None and _fst_liq < 40:
+                                _fst_decision = 'REJECTED'
+                                _fst_rej = f'liquidity_too_low({_fst_liq:.1f})'
                             _safe_insert_opportunity(
                                 get_db_fn, log, 'FST', asset, spread_a,
-                                opportunity_type='SPREAD_DIVERGENCE'
+                                strike=int(spot_price),
+                                expiry=_expiry_str(future_expiry),
+                                opportunity_type='SPREAD_DIVERGENCE',
+                                liquidity_score=_fst_liq,
+                                cost_estimate=_fst_cost,
+                                decision=_fst_decision,
+                                rejection_reason=_fst_rej,
                             )
 
                             # Autonomous execution

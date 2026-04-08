@@ -628,7 +628,12 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                 except Exception:
                     universe = ['PETR4', 'VALE3', 'BOVA11', 'ITUB4', 'BBDC4', 'BBAS3', 'ABEV3', 'B3SA3']
 
+                import time as _lt
+                _deadline = _lt.time() + 5.0
                 for asset in universe:
+                    if _lt.time() > _deadline:
+                        scores[asset] = 0
+                        continue
                     try:
                         spot = provider_mgr.get_spot(asset) if provider_mgr else None
                     except Exception:
@@ -898,7 +903,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             # Try to get learning engine from services_dict
             learner = services_dict.get('deriv_learner')
             if not learner:
-                return jsonify({'error': 'Learning engine not initialized'}), 503
+                return jsonify({'summary': {}, 'stats': {}, 'note': 'learning engine not initialized'}), 200
 
             summary = learner.get_learning_summary()
             stats = learner.get_strategy_stats(strategy or None)
@@ -1125,7 +1130,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                     )
 
                 last_hb = hb_row.get('last_hb') if hb_row else None
-                opp_count = hb_row.get('opp_count', 0) if hb_row else 0
+                opp_count = (hb_row.get('opp_count') or 0) if hb_row else 0
 
                 # Calibration: count calibration records
                 cal_row = _safe_query(
@@ -1134,7 +1139,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                        WHERE strategy_type = %s""",
                     (sk,), fetch='one'
                 )
-                cal_count = cal_row.get('cal_count', 0) if cal_row else 0
+                cal_count = (cal_row.get('cal_count') or 0) if cal_row else 0
                 last_cal = cal_row.get('last_cal') if cal_row else None
 
                 # Active status registry: best tier for this strategy
@@ -1155,7 +1160,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
 
                 best_tier = tier_row.get('current_status', 'OBSERVE') if tier_row else 'OBSERVE'
                 tier_symbol = tier_row.get('symbol') if tier_row else None
-                days_in_status = tier_row.get('days_in_status', 0) if tier_row else 0
+                days_in_status = (tier_row.get('days_in_status') or 0) if tier_row else 0
 
                 # Trades: recent activity
                 trades_row = _safe_query(
@@ -1165,9 +1170,9 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                        WHERE strategy_type = %s""",
                     (sk,), fetch='one'
                 )
-                total_trades = trades_row.get('total', 0) if trades_row else 0
-                open_trades = trades_row.get('open_count', 0) if trades_row else 0
-                total_pnl = float(trades_row.get('total_pnl', 0) or 0) if trades_row else 0.0
+                total_trades = (trades_row.get('total') or 0) if trades_row else 0
+                open_trades = (trades_row.get('open_count') or 0) if trades_row else 0
+                total_pnl = float(trades_row.get('total_pnl') or 0) if trades_row else 0.0
 
                 # [FORENSIC-FIX] Heartbeat real da thread via services_dict (nao depende de log de oportunidades)
                 import time as _t
@@ -1333,7 +1338,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
         try:
             capital_mgr = services_dict.get('capital_manager')
             if not capital_mgr:
-                return jsonify({'error': 'Capital manager not initialized'}), 503
+                return jsonify({'snapshot': {'total_capital': 0, 'allocated': 0, 'available': 0, 'daily_pnl': 0, 'daily_loss_remaining': 0, 'positions_count': 0}, 'strategies': {}, 'note': 'capital manager not initialized'}), 200
 
             snapshot = capital_mgr.get_snapshot()
             strategy_summary = capital_mgr.get_strategy_summary()

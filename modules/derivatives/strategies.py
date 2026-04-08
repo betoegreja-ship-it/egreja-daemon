@@ -477,6 +477,12 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                         reversal_edge = (
                             spot_bid - call_quote.ask + put_quote.bid - pv_strike - div_adj - total_costs
                         )
+                        # [FIX] Zero put bid means not executable — invalidate reversal edge
+                        if (put_quote.bid or 0) <= 0:
+                            reversal_edge = -9.99
+                        # [FIX] Zero call bid means conversion not executable
+                        if (call_quote.bid or 0) <= 0:
+                            conversion_edge = -9.99
                         # [DIAG] Capture edge sample for visibility
                         if _diag['max_conv'] is None or conversion_edge > _diag['max_conv']:
                             _diag['max_conv'] = round(conversion_edge, 4)

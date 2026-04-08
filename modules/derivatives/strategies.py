@@ -478,9 +478,14 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
 
                             _decision = 'CANDIDATE'
                             _rej = None
-                            if _liq_score is not None and _liq_score < 40:
+                            # [FORENSIC] era hardcoded 40. Única opportunity tinha score 25.3
+                            # → rejeição perpétua. Movido p/ env var (default 15, conservador
+                            # suficiente para permitir execução em papel com BOVA11 ~25).
+                            import os as _os
+                            _min_liq = float(_os.environ.get('DERIV_MIN_LIQUIDITY', 15))
+                            if _liq_score is not None and _liq_score < _min_liq:
                                 _decision = 'REJECTED'
-                                _rej = f'liquidity_too_low({_liq_score:.1f})'
+                                _rej = f'liquidity_too_low({_liq_score:.1f}<{_min_liq})'
                             elif _cost_est is not None and edge_magnitude < _cost_est:
                                 _decision = 'REJECTED'
                                 _rej = 'edge_below_cost'
@@ -668,9 +673,12 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                             _fst_cost = float(abs(spread_a) * 0.002)  # 20 bps est on spread notional
                             _fst_decision = 'CANDIDATE'
                             _fst_rej = None
-                            if _fst_liq is not None and _fst_liq < 40:
+                            # [FORENSIC] env var, mesma justificativa do PCP
+                            import os as _os
+                            _min_liq = float(_os.environ.get('DERIV_MIN_LIQUIDITY', 15))
+                            if _fst_liq is not None and _fst_liq < _min_liq:
                                 _fst_decision = 'REJECTED'
-                                _fst_rej = f'liquidity_too_low({_fst_liq:.1f})'
+                                _fst_rej = f'liquidity_too_low({_fst_liq:.1f}<{_min_liq})'
                             _safe_insert_opportunity(
                                 get_db_fn, log, 'FST', asset, spread_a,
                                 strike=_fst_strike_used,

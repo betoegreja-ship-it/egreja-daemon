@@ -286,6 +286,13 @@ try:
     _deriv_services['liquidity_engine'] = LiquidityScoreEngine() if LiquidityScoreEngine else None
     _deriv_services['promotion_engine'] = PromotionEngine() if PromotionEngine else None
     _deriv_services['status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None
+    # [FORENSIC-ALIASES] strategies.py usa nomes diferentes; sem esses aliases 8 serviços ficavam invisíveis e nenhum derivativo executava
+    _deriv_services['active_status_registry'] = _deriv_services.get('status_registry')
+    _deriv_services['greeks_calculator']      = _deriv_services.get('greeks_calc')
+    _deriv_services['rates_curve']            = _deriv_services.get('rates_svc')
+    _deriv_services['dividend_service']       = _deriv_services.get('dividend_svc')
+    _deriv_services['deriv_execution']        = _deriv_services.get('order_executor')
+    _deriv_services['nav_calculator']         = _deriv_services.get('nav_calc')
     log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')
@@ -497,6 +504,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'stock_execution_worker': 300,   # [v10.9] 5min — era 150s, loop de 60s + processamento
     'arbi_scan_loop':         600,
     'arbi_monitor_loop':      180,
+    'arbi_learning_loop':     900,   # [FIX-ZOMBIE] pattern learning pode demorar >2min; era default 120s → gerava zombies
     'snapshot_loop':          600,
     'persistence_worker':     60,    # [v10.9] 60s
     'alert_worker':           60,
@@ -748,7 +756,29 @@ _reconciliation_log: list = []    # últimas N reconciliações
 def gen_id(prefix='TRD'):
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
+# [FIX-ZOMBIE] Registry of current thread per loop name.
+# When watchdog restarts a frozen loop the old thread may eventually wake up
+# and keep running — that's a zombie. On its next beat() it raises SystemExit
+# and the zombie dies cleanly.
+_thread_current = {}
+_thread_current_lock = threading.Lock()
+
+def _register_current_thread(name, thread_obj):
+    with _thread_current_lock:
+        _thread_current[name] = thread_obj
+
 def beat(name):
+    # [FIX-ZOMBIE] kill zombies at their next beat
+    try:
+        owner = _thread_current.get(name)
+        cur   = threading.current_thread()
+        if owner is not None and owner is not cur:
+            log.warning(f'[ZOMBIE-KILL] {name}: thread {cur.name} is not current owner → exiting')
+            raise SystemExit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
     thread_heartbeat[name] = time.time()
 
 # ═══════════════════════════════════════════════════════════════
@@ -4010,9 +4040,18 @@ def init_all_tables():
             status VARCHAR(10) DEFAULT 'OPEN', close_reason VARCHAR(20),
             opened_at DATETIME, closed_at DATETIME, extensions INT DEFAULT 0)""")
         # [v10.23] Colunas de custo de aluguel
+        # [FORENSIC-SELF-HEAL] DBs antigos não tinham as colunas de custo do INSERT
+        # do motor. Sem elas, TODA trade Arbi era perdida com ProgrammingError 1054.
+        # Lista idempotente — ALTER falha silencioso se coluna já existir.
         for _col_sql in [
             "ALTER TABLE arbi_trades ADD COLUMN lending_cost DECIMAL(10,2) DEFAULT 0",
             "ALTER TABLE arbi_trades ADD COLUMN lending_rate_annual DECIMAL(6,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_cost DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN slippage_cost_a DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN slippage_cost_b DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN exchange_fee_a DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN exchange_fee_b DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN total_cost_estimated DECIMAL(12,2) DEFAULT 0",
         ]:
             try: cursor.execute(_col_sql); conn.commit()
             except: pass  # coluna já existe
@@ -7275,8 +7314,9 @@ def watchdog():
                         # Marcar heartbeat para não tentar de novo em loop
                         thread_heartbeat[name] = time.time()
                     else:
-                        new_t=threading.Thread(target=fn,daemon=True); new_t.start()
+                        new_t=threading.Thread(target=fn,daemon=True,name=name); new_t.start()
                         thread_health[name]=new_t
+                        _register_current_thread(name, new_t)  # [FIX-ZOMBIE] old thread dies on next beat
                         thread_restart_count[name]=count+1
                         thread_last_restart[name]=now
                         thread_heartbeat[name]=now
@@ -7394,8 +7434,9 @@ def start_background_threads():
     for name,fn in defs.items():
         thread_fns[name]=fn; thread_restart_count[name]=0
         thread_last_restart[name]=0; thread_heartbeat[name]=now
-        t=threading.Thread(target=fn,daemon=True); t.start()
+        t=threading.Thread(target=fn,daemon=True,name=name); t.start()
         thread_health[name]=t
+        _register_current_thread(name, t)  # [FIX-ZOMBIE]
         log.info(f'Thread started: {name} (hb_timeout={THREAD_HEARTBEAT_TIMEOUT.get(name,DEFAULT_HB_TIMEOUT)}s)')
 
 # ═══════════════════════════════════════════════════════════════

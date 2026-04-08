@@ -241,6 +241,7 @@ _CAL_SAMPLES = {}
 def _feed_calibration_sample(get_db_fn, log, strategy_type, symbol, edge_value, expiry=None):
     """Feed edge sample into rolling buffer and persist calibration every 5 samples."""
     try:
+        log.info(f"[FEED_CAL] called {strategy_type}/{symbol} edge={edge_value}")
         if edge_value is None:
             return
         key = (strategy_type, symbol, 'edge_bps', expiry)

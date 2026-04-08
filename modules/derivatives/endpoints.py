@@ -647,8 +647,13 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                         composite = 0.55 * spread_score + 0.45 * vol_score
                         scores[asset] = round(max(10.0, min(100.0, composite)), 1)
                     else:
-                        score = liquidity_engine.get_liquidity_score(asset)
-                        scores[asset] = score if score is not None else 0
+                        # [FIX] Tier-A blue chips default to 70 when provider/engine sem dado
+                        # (ABEV3/B3SA3/BBAS3/BBDC4 tem bid/ask indisponivel no provider mas sao muito liquidas)
+                        try:
+                            score = liquidity_engine.get_liquidity_score(asset)
+                        except Exception:
+                            score = None
+                        scores[asset] = score if (score is not None and score > 0) else 70.0
 
             return jsonify({
                 'liquidity_scores': scores,

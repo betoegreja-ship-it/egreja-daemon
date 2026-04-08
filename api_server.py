@@ -288,6 +288,21 @@ try:
     _deriv_services['liquidity_engine'] = LiquidityScoreEngine() if LiquidityScoreEngine else None
     _deriv_services['promotion_engine'] = PromotionEngine() if PromotionEngine else None
     _deriv_services['status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None
+    # [FIX] strategies.py reads this under 'active_status_registry' — alias
+    _deriv_services['active_status_registry'] = _deriv_services['status_registry']
+    # [FIX] Seed all tier-A × 8 strategies → PAPER_SMALL (paper mode)
+    try:
+        _sr = _deriv_services['status_registry']
+        if _sr is not None:
+            from modules.derivatives.liquidity import ExecutionTier as _ET
+            _tier_a = ['PETR4','VALE3','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3','BOVA11']
+            _strats = ['PCP','FST','ROLL_ARB','ETF_BASKET','SKEW_ARB','INTERLISTED','DIVIDEND_ARB','VOL_ARB']
+            for _a in _tier_a:
+                for _s in _strats:
+                    _sr.set_status(_a, _s, _ET.PAPER_SMALL, reason='bootstrap_seed')
+            log.info(f'[FIX] Seeded {len(_tier_a)*len(_strats)} pairs to PAPER_SMALL')
+    except Exception as _seed_err:
+        log.warning(f'[FIX] registry seed failed: {_seed_err}')
     # [FORENSIC-ALIASES] strategies.py usa nomes diferentes; sem esses aliases 8 serviços ficavam invisíveis e nenhum derivativo executava
     _deriv_services['active_status_registry'] = _deriv_services.get('status_registry')
     _deriv_services['greeks_calculator']      = _deriv_services.get('greeks_calc')

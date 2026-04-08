@@ -622,11 +622,15 @@ def _get_pool():
             pool_cfg = dict(db_config)
             pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
             pool_cfg.pop('connection_timeout', None)
+            # [FORENSIC] pool_size 30→32 (limite MySQL connector). Falha de pool é
+            # principal suspeita do sumiço de trades arbi: get_db retornava None,
+            # _db_save_arbi_trade abortava silenciosamente, restart perdia memória.
             _db_pool = MySQLConnectionPool(
-                pool_name='egreja', pool_size=30,
+                pool_name='egreja', pool_size=32,
+                pool_reset_session=False,
                 autocommit=True, connection_timeout=10,
                 **pool_cfg)
-            log.info('[v10.7] MySQL connection pool inicializado (size=30)')
+            log.info('[FORENSIC] MySQL connection pool inicializado (size=32, reset=False)')
         except Exception as e:
             log.error(f'MySQL pool init: {e}')
     return _db_pool
@@ -4438,9 +4442,32 @@ def _db_save_trade(trade):
         conn.commit(); cursor.close(); conn.close()
     except Exception as e: log.error(f'db_save_trade: {e}')
 
+ARBI_FORENSIC_FILE = '/tmp/arbi_forensic.jsonl'
+ARBI_LOST_FILE     = '/tmp/arbi_lost_trades.jsonl'
+_arbi_persist_stats = {'attempts':0,'success':0,'lost_no_conn':0,'lost_exception':0,'last_error':None,'last_lost':None}
+
+def _arbi_forensic_write(path, payload):
+    try:
+        import json as _j
+        with open(path, 'a') as _f:
+            _f.write(_j.dumps({'ts':datetime.utcnow().isoformat(), **payload}, default=str) + '\n')
+    except Exception as _e:
+        log.error(f'forensic write {path}: {_e}')
+
 def _db_save_arbi_trade(trade):
+    _arbi_persist_stats['attempts'] += 1
+    # [FORENSIC] write-ahead-log: SEMPRE grava em disco antes de tentar DB.
+    # Se DB falhar, ainda temos rastro. Arquivo é truncado por rotation simples.
+    _arbi_forensic_write(ARBI_FORENSIC_FILE, {'event':'persist_attempt','trade':trade})
     conn=get_db()
-    if not conn: return
+    if not conn:
+        _arbi_persist_stats['lost_no_conn'] += 1
+        _arbi_persist_stats['last_lost'] = datetime.utcnow().isoformat()
+        log.error(f"[ARBI-LOST] _db_save_arbi_trade: get_db()=None. trade_id={trade.get('id')} pair={trade.get('pair_id')} status={trade.get('status')} pnl={trade.get('pnl')}")
+        _arbi_forensic_write(ARBI_LOST_FILE, {'reason':'get_db_none','trade':trade})
+        try: send_whatsapp(f"[ARBI-LOST] persist falhou (no conn) {trade.get('id')} {trade.get('pair_id')}")
+        except: pass
+        return
     try:
         cursor=conn.cursor(); t=trade
         cursor.execute("""INSERT INTO arbi_trades (id,pair_id,name,leg_a,leg_b,mkt_a,mkt_b,
@@ -4463,7 +4490,18 @@ def _db_save_arbi_trade(trade):
              t.get('exchange_fee_a',0),t.get('exchange_fee_b',0),
              t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0)))
         conn.commit(); cursor.close(); conn.close()
-    except Exception as e: log.error(f'db_save_arbi_trade: {e}')
+        _arbi_persist_stats['success'] += 1
+        _arbi_forensic_write(ARBI_FORENSIC_FILE, {'event':'persist_ok','id':trade.get('id'),'status':trade.get('status')})
+    except Exception as e:
+        _arbi_persist_stats['lost_exception'] += 1
+        _arbi_persist_stats['last_error'] = f'{type(e).__name__}: {e}'
+        _arbi_persist_stats['last_lost'] = datetime.utcnow().isoformat()
+        log.error(f"[ARBI-LOST] db_save_arbi_trade EXCEPTION: {e}. trade_id={trade.get('id')} pair={trade.get('pair_id')}")
+        _arbi_forensic_write(ARBI_LOST_FILE, {'reason':f'exception:{type(e).__name__}','error':str(e),'trade':trade})
+        try: send_whatsapp(f"[ARBI-LOST] persist exception {trade.get('id')} {type(e).__name__}")
+        except: pass
+        try: conn.close()
+        except: pass
 
 def _db_save_cooldown(symbol, ts):
     conn=get_db()
@@ -7230,8 +7268,9 @@ def watchdog():
                     # [v10.14-FIX] Verificar limite de threads antes de criar novo
                     import threading as _th
                     active = _th.active_count()
-                    if active > 45:  # limite seguro (padrão Python = 50)
-                        log.error(f'WATCHDOG: {name} NÃO reiniciada — threads ativos={active} (limite atingido)')
+                    if active > 200:  # [FORENSIC] era 45 — bloqueava arbi_learning_loop
+                        _names = sorted([t.name for t in _th.enumerate()])
+                        log.error(f'WATCHDOG: {name} NÃO reiniciada — threads ativos={active} (limite 200). Threads: {_names[:60]}')
                         send_whatsapp(f'CRITICO: thread starvation! {active} threads ativos. Reiniciar o serviço.')
                         # Marcar heartbeat para não tentar de novo em loop
                         thread_heartbeat[name] = time.time()
@@ -8804,6 +8843,46 @@ def arbi_fix_trade():
     finally:
         try: cur.close(); conn.close()
         except: pass
+
+@app.route('/arbitrage/forensic')
+def arbi_forensic_route():
+    """[FORENSIC] Diagnóstico ao vivo do motor de Arbi. Auth bypass via /arbitrage."""
+    import threading as _th, os as _os
+    with state_lock:
+        open_t=list(arbi_open); closed_t_count=len(arbi_closed); cap=arbi_capital
+    th_names = sorted([t.name for t in _th.enumerate()])
+    arbi_thread_state = {}
+    for n in ('arbi_scan_loop','arbi_monitor_loop','arbi_learning_loop'):
+        hb = thread_heartbeat.get(n)
+        arbi_thread_state[n] = {
+            'last_beat_iso': datetime.utcfromtimestamp(hb).isoformat() if hb else None,
+            'seconds_ago': round(time.time()-hb,1) if hb else None,
+            'restart_count': thread_restart_count.get(n,0),
+            'alive': any(t.name==n for t in _th.enumerate()),
+        }
+    lost_tail=[]; forensic_tail=[]
+    try:
+        if _os.path.exists(ARBI_LOST_FILE):
+            with open(ARBI_LOST_FILE) as _f:
+                lost_tail = _f.readlines()[-30:]
+    except: pass
+    try:
+        if _os.path.exists(ARBI_FORENSIC_FILE):
+            with open(ARBI_FORENSIC_FILE) as _f:
+                forensic_tail = _f.readlines()[-30:]
+    except: pass
+    return jsonify({
+        'persist_stats': _arbi_persist_stats,
+        'arbi_open_in_memory': len(open_t),
+        'arbi_closed_in_memory': closed_t_count,
+        'arbi_capital': round(cap,2),
+        'urgent_queue_size': urgent_queue.qsize(),
+        'thread_count_total': _th.active_count(),
+        'arbi_threads': arbi_thread_state,
+        'all_thread_names': th_names,
+        'lost_trades_tail': lost_tail,
+        'forensic_log_tail': forensic_tail,
+    })
 
 @app.route('/arbitrage/trades')
 def arbi_trades_route():

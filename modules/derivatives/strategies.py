@@ -393,7 +393,8 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
 
             opportunities_found = 0
             _diag = {'assets_checked': 0, 'spot_ok': 0, 'chains_ok': 0, 'strikes_checked': 0,
-                     'liq_pass': 0, 'dte_pass': 0, 'opportunities': 0, 'errors': [], 'ts': str(datetime.now())}
+                     'liq_pass': 0, 'dte_pass': 0, 'opportunities': 0, 'errors': [], 'ts': str(datetime.now()),
+                     'edge_samples': [], 'max_conv': None, 'max_rev': None}
 
             for asset in eligible_assets:
                 try:
@@ -473,6 +474,21 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                         reversal_edge = (
                             spot_bid - call_quote.ask + put_quote.bid - pv_strike - div_adj - total_costs
                         )
+                        # [DIAG] Capture edge sample for visibility
+                        if _diag['max_conv'] is None or conversion_edge > _diag['max_conv']:
+                            _diag['max_conv'] = round(conversion_edge, 4)
+                        if _diag['max_rev'] is None or reversal_edge > _diag['max_rev']:
+                            _diag['max_rev'] = round(reversal_edge, 4)
+                        if len(_diag['edge_samples']) < 8:
+                            _diag['edge_samples'].append({
+                                'asset': asset, 'K': float(strike), 'dte': int(days_to_expiry),
+                                'cbid': round(call_quote.bid or 0, 4), 'cask': round(call_quote.ask or 0, 4),
+                                'pbid': round(put_quote.bid or 0, 4), 'pask': round(put_quote.ask or 0, 4),
+                                'sbid': round(spot_bid, 4), 'sask': round(spot_ask, 4),
+                                'pvK': round(pv_strike, 4), 'div': round(div_adj, 4),
+                                'cost': round(total_costs, 4),
+                                'conv': round(conversion_edge, 4), 'rev': round(reversal_edge, 4),
+                            })
 
                         # Collect calibration sample: observed C - P vs theoretical (S - PV(K) + div)
                         try:
@@ -754,7 +770,8 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                 except Exception as e:
                     log.warning(f"FST scan error for {asset}: {e}")
 
-            _scan_loop_diag['fst'] = {'ts': str(datetime.now()), 'status': 'ran'}
+            _scan_loop_diag['fst'] = {'ts': str(datetime.now()), 'status': 'ran',
+                'iteration': _scan_loop_diag.get('fst',{}).get('iteration',0)+1}
 
         except Exception as e:
             log.error(f"FST loop error: {e}\n{traceback.format_exc()}")
@@ -835,7 +852,8 @@ def roll_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                 except Exception as e:
                     log.warning(f"Roll arb error for {asset}: {e}")
 
-            _scan_loop_diag['roll_arb'] = {'ts': str(datetime.now()), 'status': 'ran'}
+            _scan_loop_diag['roll_arb'] = {'ts': str(datetime.now()), 'status': 'ran',
+                'iteration': _scan_loop_diag.get('roll_arb',{}).get('iteration',0)+1}
 
         except Exception as e:
             log.error(f"Roll Arb loop error: {e}\n{traceback.format_exc()}")
@@ -929,7 +947,8 @@ def etf_basket_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, r
             except Exception as e:
                 log.warning(f"ETF Basket scan error: {e}")
 
-            _scan_loop_diag['etf_basket'] = {'ts': str(datetime.now()), 'status': 'ran'}
+            _scan_loop_diag['etf_basket'] = {'ts': str(datetime.now()), 'status': 'ran',
+                'iteration': _scan_loop_diag.get('etf_basket',{}).get('iteration',0)+1}
 
         except Exception as e:
             log.error(f"ETF Basket loop error: {e}\n{traceback.format_exc()}")
@@ -1054,7 +1073,8 @@ def skew_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                 except Exception as e:
                     log.warning(f"Skew scan error for {asset}: {e}")
 
-            _scan_loop_diag['skew_arb'] = {'ts': str(datetime.now()), 'status': 'ran'}
+            _scan_loop_diag['skew_arb'] = {'ts': str(datetime.now()), 'status': 'ran',
+                'iteration': _scan_loop_diag.get('skew_arb',{}).get('iteration',0)+1}
 
         except Exception as e:
             log.error(f"Skew loop error: {e}\n{traceback.format_exc()}")
@@ -1127,7 +1147,8 @@ def interlisted_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, 
                 except Exception as e:
                     log.warning(f"InterListed scan error for {b3_ticker}/{adr_ticker}: {e}")
 
-            _scan_loop_diag['interlisted'] = {'ts': str(datetime.now()), 'status': 'ran'}
+            _scan_loop_diag['interlisted'] = {'ts': str(datetime.now()), 'status': 'ran',
+                'iteration': _scan_loop_diag.get('interlisted',{}).get('iteration',0)+1}
 
         except Exception as e:
             log.error(f"InterListed loop error: {e}\n{traceback.format_exc()}")
@@ -1233,7 +1254,8 @@ def dividend_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict,
                 except Exception as e:
                     log.warning(f"Dividend arb error for {asset}: {e}")
 
-            _scan_loop_diag['dividend_arb'] = {'ts': str(datetime.now()), 'status': 'ran'}
+            _scan_loop_diag['dividend_arb'] = {'ts': str(datetime.now()), 'status': 'ran',
+                'iteration': _scan_loop_diag.get('dividend_arb',{}).get('iteration',0)+1}
 
         except Exception as e:
             log.error(f"Dividend Arb loop error: {e}\n{traceback.format_exc()}")

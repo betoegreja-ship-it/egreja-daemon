@@ -293,6 +293,23 @@ try:
     _deriv_services['dividend_service']       = _deriv_services.get('dividend_svc')
     _deriv_services['deriv_execution']        = _deriv_services.get('order_executor')
     _deriv_services['nav_calculator']         = _deriv_services.get('nav_calc')
+
+    # [FORENSIC-SEED] Registry vazio → tier=None → OBSERVE → nada executa.
+    # Semear universo Tier-A em PAPER_SMALL para PCP/FST para destravar execução.
+    try:
+        _reg = _deriv_services.get('active_status_registry')
+        if _reg:
+            from modules.derivatives.liquidity import ExecutionTier as _ET
+            _seed_universe = ['PETR4','VALE3','BOVA11','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3']
+            _seed_tier_str = os.environ.get('DERIV_SEED_TIER', 'PAPER_SMALL')
+            _seed_tier = getattr(_ET, _seed_tier_str, _ET.PAPER_SMALL)
+            for _sym in _seed_universe:
+                for _strat in ('PCP', 'FST'):
+                    if _reg.get_status(_sym, _strat) is None:
+                        _reg.set_status(_sym, _strat, _seed_tier, reason='startup_seed')
+            log.info(f'[FORENSIC-SEED] active_status_registry seeded {len(_seed_universe)} assets x 2 strategies @ {_seed_tier_str}')
+    except Exception as _e:
+        log.warning(f'[FORENSIC-SEED] seed failed: {_e}')
     log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')

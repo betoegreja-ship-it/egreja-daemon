@@ -460,7 +460,8 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                         call_cost = call_quote.ask * fees.get('option_buy', 0.001)
                         put_cost = put_quote.bid * fees.get('option_sell', 0.001)
                         stock_cost = spot_ask * fees.get('stock_buy', 0.0005)
-                        safety_factor = 1.75
+                        import os as _os2
+                        safety_factor = float(_os2.environ.get('PCP_SAFETY_FACTOR', '1.0'))
                         total_costs = (call_cost + put_cost + stock_cost) * safety_factor
 
                         # Check conversion edge: C_bid - P_ask - S_ask + PV(K) + div_adj

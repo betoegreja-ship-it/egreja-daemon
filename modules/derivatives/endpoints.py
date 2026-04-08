@@ -629,8 +629,21 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                     universe = ['PETR4', 'VALE3', 'BOVA11', 'ITUB4', 'BBDC4', 'BBAS3', 'ABEV3', 'B3SA3']
 
                 for asset in universe:
-                    score = liquidity_engine.get_liquidity_score(asset)
-                    scores[asset] = score if score is not None else 0
+                    try:
+                        spot = provider_mgr.get_spot(asset) if provider_mgr else None
+                    except Exception:
+                        spot = None
+                    if spot and spot.bid > 0 and spot.ask > 0:
+                        spread_bps = float(spot.spread_bps)
+                        vol = float(getattr(spot, 'volume', 0) or 0)
+                        # Heuristic: tight spread + high volume → high score
+                        spread_score = max(0.0, 100.0 - spread_bps)  # 0bps=100, 100bps=0
+                        vol_score = min(100.0, (vol / 1_000_000.0) * 100.0) if vol > 0 else 30.0
+                        composite = 0.55 * spread_score + 0.45 * vol_score
+                        scores[asset] = round(max(10.0, min(100.0, composite)), 1)
+                    else:
+                        score = liquidity_engine.get_liquidity_score(asset)
+                        scores[asset] = score if score is not None else 0
 
             return jsonify({
                 'liquidity_scores': scores,

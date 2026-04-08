@@ -236,11 +236,29 @@ def _b3_fees():
     }
 
 
+_CAL_SAMPLES = {}
+
+def _feed_calibration_sample(get_db_fn, log, strategy_type, symbol, edge_value, expiry=None):
+    """Feed edge sample into rolling buffer and persist calibration every 5 samples."""
+    try:
+        if edge_value is None:
+            return
+        key = (strategy_type, symbol, 'edge_bps', expiry)
+        buf = _CAL_SAMPLES.setdefault(key, [])
+        buf.append(float(edge_value))
+        if len(buf) > 100:
+            buf.pop(0)
+        if len(buf) >= 3 and len(buf) % 5 == 0:
+            _upsert_calibration(get_db_fn, log, strategy_type, symbol, 'edge_bps', list(buf), expiry=expiry)
+    except Exception as e:
+        log.warning(f"_feed_calibration_sample error ({strategy_type}/{symbol}): {e}")
+
 def _safe_insert_opportunity(get_db_fn, log, strategy_type, symbol, edge_value,
                               strike=None, expiry=None, opportunity_type=None,
                               liquidity_score=None, cost_estimate=None,
                               decision=None, rejection_reason=None):
     """Insert an opportunity into strategy_opportunities_log using MySQL."""
+    _feed_calibration_sample(get_db_fn, log, strategy_type, symbol, edge_value, expiry=expiry)
     conn = None
     try:
         conn = get_db_fn()

@@ -4532,12 +4532,32 @@ def _db_save_arbi_trade(trade):
             direction,buy_leg,buy_mkt,short_leg,short_mkt,entry_spread,current_spread,
             position_size,pnl,pnl_pct,peak_pnl_pct,fx_rate,status,close_reason,opened_at,closed_at,extensions,
             fx_cost,slippage_cost_a,slippage_cost_b,exchange_fee_a,exchange_fee_b,
-            lending_cost,lending_rate_annual,total_cost_estimated)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            lending_cost,lending_rate_annual,total_cost_estimated,
+            price_a_entry,price_b_entry,price_a_exit,price_b_exit,
+            price_a_usd_norm_entry,price_b_usd_norm_entry,
+            price_a_usd_norm_exit,price_b_usd_norm_exit,
+            fx_rate_entry,fx_rate_exit,
+            bid_a_entry,ask_a_entry,bid_b_entry,ask_b_entry,
+            bid_a_exit,ask_a_exit,bid_b_exit,ask_b_exit,
+            spread_bps_a_entry,spread_bps_b_entry,spread_bps_a_exit,spread_bps_b_exit,
+            qty_a,qty_b)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_spread=VALUES(current_spread),pnl=VALUES(pnl),
             pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
             status=VALUES(status),close_reason=VALUES(close_reason),
-            closed_at=VALUES(closed_at),extensions=VALUES(extensions)""",
+            closed_at=VALUES(closed_at),extensions=VALUES(extensions),
+            price_a_exit=COALESCE(VALUES(price_a_exit),price_a_exit),
+            price_b_exit=COALESCE(VALUES(price_b_exit),price_b_exit),
+            price_a_usd_norm_exit=COALESCE(VALUES(price_a_usd_norm_exit),price_a_usd_norm_exit),
+            price_b_usd_norm_exit=COALESCE(VALUES(price_b_usd_norm_exit),price_b_usd_norm_exit),
+            fx_rate_exit=COALESCE(VALUES(fx_rate_exit),fx_rate_exit),
+            bid_a_exit=COALESCE(VALUES(bid_a_exit),bid_a_exit),
+            ask_a_exit=COALESCE(VALUES(ask_a_exit),ask_a_exit),
+            bid_b_exit=COALESCE(VALUES(bid_b_exit),bid_b_exit),
+            ask_b_exit=COALESCE(VALUES(ask_b_exit),ask_b_exit),
+            spread_bps_a_exit=COALESCE(VALUES(spread_bps_a_exit),spread_bps_a_exit),
+            spread_bps_b_exit=COALESCE(VALUES(spread_bps_b_exit),spread_bps_b_exit)""",
             (t.get('id'),t.get('pair_id'),t.get('name'),t.get('leg_a'),t.get('leg_b'),
              t.get('mkt_a'),t.get('mkt_b'),t.get('direction'),t.get('buy_leg'),t.get('buy_mkt'),
              t.get('short_leg'),t.get('short_mkt'),t.get('entry_spread'),t.get('current_spread'),
@@ -4546,7 +4566,17 @@ def _db_save_arbi_trade(trade):
              t.get('opened_at'),t.get('closed_at'),t.get('extensions',0),
              t.get('fx_cost',0),t.get('slippage_cost_a',0),t.get('slippage_cost_b',0),
              t.get('exchange_fee_a',0),t.get('exchange_fee_b',0),
-             t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0)))
+             t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0),
+             t.get('price_a_entry'),t.get('price_b_entry'),
+             t.get('price_a_exit'),t.get('price_b_exit'),
+             t.get('price_a_usd_norm'),t.get('price_b_usd_norm'),
+             t.get('price_a_usd_norm_exit'),t.get('price_b_usd_norm_exit'),
+             t.get('fx_rate_entry',t.get('fx_rate')),t.get('fx_rate_exit'),
+             t.get('bid_a'),t.get('ask_a'),t.get('bid_b'),t.get('ask_b'),
+             t.get('bid_a_exit'),t.get('ask_a_exit'),t.get('bid_b_exit'),t.get('ask_b_exit'),
+             t.get('spread_bps_a'),t.get('spread_bps_b'),
+             t.get('spread_bps_a_exit'),t.get('spread_bps_b_exit'),
+             t.get('qty_a'),t.get('qty_b')))
         conn.commit(); cursor.close(); conn.close()
         _arbi_persist_stats['success'] += 1
         _arbi_forensic_write(ARBI_FORENSIC_FILE, {'event':'persist_ok','id':trade.get('id'),'status':trade.get('status')})
@@ -7112,7 +7142,7 @@ def arbi_scan_loop():
                             'current_spread':spread['spread_pct'],
                             'position_size':round(pos,2),
                             'pnl':0,'pnl_pct':0,'peak_pnl_pct':0,
-                            'fx_rate':spread['fx_rate'],'fx_ts':spread.get('fx_ts',_entry_ts),
+                            'fx_rate':spread['fx_rate'],'fx_rate_entry':spread['fx_rate'],'fx_ts':spread.get('fx_ts',_entry_ts),
                             # Timestamps Sprint 1
                             'entry_ts':_entry_ts,
                             'signal_ts_a':spread.get('signal_ts_a',_entry_ts),
@@ -7200,6 +7230,20 @@ def arbi_monitor_loop():
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else: reason='TIMEOUT'
                     if reason:
+                        # [FORENSIC] Snapshot de saída — preços, FX, bid/ask no momento do close
+                        _sd_exit = arbi_spreads.get(trade['pair_id']) or {}
+                        if _sd_exit:
+                            trade['price_a_exit'] = _sd_exit.get('price_a')
+                            trade['price_b_exit'] = _sd_exit.get('price_b')
+                            trade['price_a_usd_norm_exit'] = _sd_exit.get('price_a_usd')
+                            trade['price_b_usd_norm_exit'] = _sd_exit.get('price_b_usd')
+                            trade['fx_rate_exit'] = _sd_exit.get('fx_rate')
+                            trade['bid_a_exit'] = _sd_exit.get('bid_a')
+                            trade['ask_a_exit'] = _sd_exit.get('ask_a')
+                            trade['bid_b_exit'] = _sd_exit.get('bid_b')
+                            trade['ask_b_exit'] = _sd_exit.get('ask_b')
+                            trade['spread_bps_a_exit'] = _sd_exit.get('spread_bps_a')
+                            trade['spread_bps_b_exit'] = _sd_exit.get('spread_bps_b')
                         # [v10.20] Ledger: RELEASE + PNL_CREDIT arbi (ordem contábil correta)
                         arbi_capital += trade['position_size']
                         ledger_record('arbi', 'RELEASE', trade.get('name', trade.get('pair_id', '')),

@@ -1156,13 +1156,16 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                 open_trades = trades_row.get('open_count', 0) if trades_row else 0
                 total_pnl = float(trades_row.get('total_pnl', 0) or 0) if trades_row else 0.0
 
-                # Determine scan loop health
+                # [FORENSIC-FIX] Heartbeat real da thread via services_dict (nao depende de log de oportunidades)
+                import time as _t
+                _hb_getter = services_dict.get('thread_heartbeat_getter') if services_dict else None
+                _thread_hb_ts = _hb_getter(loop_name) if _hb_getter else None
                 loop_healthy = False
                 seconds_since_hb = None
-                if last_hb:
-                    hb_time = last_hb if isinstance(last_hb, datetime) else datetime.fromisoformat(str(last_hb))
-                    seconds_since_hb = (now - hb_time).total_seconds()
-                    loop_healthy = seconds_since_hb < 300
+                if _thread_hb_ts:
+                    seconds_since_hb = _t.time() - _thread_hb_ts
+                    loop_healthy = seconds_since_hb < 600
+                    last_hb = datetime.utcfromtimestamp(_thread_hb_ts)
 
                 # Smart status description
                 if not market_open and market_phase in ('CLOSED', 'WEEKEND'):

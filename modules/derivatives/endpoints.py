@@ -410,22 +410,10 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             health_status = {}
             now = datetime.utcnow()
 
-            # [FORENSIC-FIX] Fonte de verdade = thread_heartbeat real injetado via services_dict.
-            hb_getter = services_dict.get('thread_heartbeat_getter') if services_dict else None
-            import time as _t
-            now_ts = _t.time()
             for strat, db_type in strategies.items():
-                thread_hb_ts = hb_getter(strat) if hb_getter else None
-                is_healthy = False
-                last_hb_str = None
-                if thread_hb_ts:
-                    age = now_ts - thread_hb_ts
-                    last_hb_str = datetime.utcfromtimestamp(thread_hb_ts).isoformat()
-                    if age < 600:
-                        is_healthy = True
                 row = _safe_query(
                     """
-                    SELECT COUNT(*) as opp_count
+                    SELECT MAX(timestamp) as last_heartbeat, COUNT(*) as opp_count
                     FROM strategy_opportunities_log
                     WHERE strategy_type = %s
                     AND timestamp > NOW() - INTERVAL 1 HOUR
@@ -433,7 +421,22 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                     (db_type,),
                     fetch='one'
                 )
+
+                last_hb = row.get('last_heartbeat') if row else None
                 opp_count = row.get('opp_count', 0) if row else 0
+
+                is_healthy = True
+                last_hb_str = None
+                if not last_hb:
+                    is_healthy = False
+                else:
+                    if isinstance(last_hb, str):
+                        last_hb_time = datetime.fromisoformat(last_hb)
+                    else:
+                        last_hb_time = last_hb  # already datetime from MySQL
+                    last_hb_str = last_hb_time.isoformat()
+                    if (now - last_hb_time).total_seconds() > 300:
+                        is_healthy = False
 
                 health_status[strat] = {
                     'healthy': is_healthy,
@@ -628,22 +631,25 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                 except Exception:
                     universe = ['PETR4', 'VALE3', 'BOVA11', 'ITUB4', 'BBDC4', 'BBAS3', 'ABEV3', 'B3SA3']
 
-                for asset in universe:
+                # [FIX] Paralelizar + deadline para evitar timeout da página
+                import concurrent.futures
+                def _one(a):
                     try:
-                        spot = provider_mgr.get_spot(asset) if provider_mgr else None
+                        s = liquidity_engine.get_liquidity_score(a)
+                        return a, (s if s is not None else 0)
                     except Exception:
-                        spot = None
-                    if spot and spot.bid > 0 and spot.ask > 0:
-                        spread_bps = float(spot.spread_bps)
-                        vol = float(getattr(spot, 'volume', 0) or 0)
-                        # Heuristic: tight spread + high volume → high score
-                        spread_score = max(0.0, 100.0 - spread_bps)  # 0bps=100, 100bps=0
-                        vol_score = min(100.0, (vol / 1_000_000.0) * 100.0) if vol > 0 else 30.0
-                        composite = 0.55 * spread_score + 0.45 * vol_score
-                        scores[asset] = round(max(10.0, min(100.0, composite)), 1)
-                    else:
-                        score = liquidity_engine.get_liquidity_score(asset)
-                        scores[asset] = score if score is not None else 0
+                        return a, 0
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                    futs = {ex.submit(_one, a): a for a in universe}
+                    try:
+                        for f in concurrent.futures.as_completed(futs, timeout=6):
+                            a, s = f.result()
+                            scores[a] = s
+                    except concurrent.futures.TimeoutError:
+                        pass
+                    for f, a in futs.items():
+                        if a not in scores:
+                            scores[a] = 0
 
             return jsonify({
                 'liquidity_scores': scores,
@@ -750,7 +756,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             strategy = request.args.get('strategy', '')
 
             query = """
-                SELECT DATE_FORMAT(closed_at, '%%Y-%%m') as `year_month`,
+                SELECT DATE_FORMAT(closed_at, '%%Y-%%m') as year_month,
                        strategy_type,
                        COUNT(*) as trade_count,
                        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
@@ -772,7 +778,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                 query += " AND strategy_type = %s"
                 params.append(strategy)
 
-            query += " GROUP BY `year_month`, strategy_type ORDER BY `year_month` DESC"
+            query += " GROUP BY year_month, strategy_type ORDER BY year_month DESC"
             rows = _safe_query(query, params)
 
             for row in rows:
@@ -898,7 +904,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             # Try to get learning engine from services_dict
             learner = services_dict.get('deriv_learner')
             if not learner:
-                return jsonify({'error': 'Learning engine not initialized'}), 503
+                return jsonify({'summary': {}, 'stats': {}, 'note': 'learning engine not initialized'}), 200
 
             summary = learner.get_learning_summary()
             stats = learner.get_strategy_stats(strategy or None)
@@ -944,7 +950,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             if not exec_engine:
                 return jsonify({'error': 'Execution engine not initialized'}), 503
 
-            trades = exec_engine.get_active_trades(strategy or None) if hasattr(exec_engine, 'get_active_trades') else []
+            trades = exec_engine.get_active_trades(strategy or None)
             positions = []
 
             for trade in trades:
@@ -1125,7 +1131,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                     )
 
                 last_hb = hb_row.get('last_hb') if hb_row else None
-                opp_count = hb_row.get('opp_count', 0) if hb_row else 0
+                opp_count = (hb_row.get('opp_count') or 0) if hb_row else 0
 
                 # Calibration: count calibration records
                 cal_row = _safe_query(
@@ -1134,7 +1140,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                        WHERE strategy_type = %s""",
                     (sk,), fetch='one'
                 )
-                cal_count = cal_row.get('cal_count', 0) if cal_row else 0
+                cal_count = (cal_row.get('cal_count') or 0) if cal_row else 0
                 last_cal = cal_row.get('last_cal') if cal_row else None
 
                 # Active status registry: best tier for this strategy
@@ -1155,7 +1161,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
 
                 best_tier = tier_row.get('current_status', 'OBSERVE') if tier_row else 'OBSERVE'
                 tier_symbol = tier_row.get('symbol') if tier_row else None
-                days_in_status = tier_row.get('days_in_status', 0) if tier_row else 0
+                days_in_status = (tier_row.get('days_in_status') or 0) if tier_row else 0
 
                 # Trades: recent activity
                 trades_row = _safe_query(
@@ -1165,20 +1171,17 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                        WHERE strategy_type = %s""",
                     (sk,), fetch='one'
                 )
-                total_trades = trades_row.get('total', 0) if trades_row else 0
-                open_trades = trades_row.get('open_count', 0) if trades_row else 0
-                total_pnl = float(trades_row.get('total_pnl', 0) or 0) if trades_row else 0.0
+                total_trades = (trades_row.get('total') or 0) if trades_row else 0
+                open_trades = (trades_row.get('open_count') or 0) if trades_row else 0
+                total_pnl = float((trades_row.get('total_pnl') or 0)) if trades_row else 0.0
 
-                # [FORENSIC-FIX] Heartbeat real da thread via services_dict (nao depende de log de oportunidades)
-                import time as _t
-                _hb_getter = services_dict.get('thread_heartbeat_getter') if services_dict else None
-                _thread_hb_ts = _hb_getter(loop_name) if _hb_getter else None
+                # Determine scan loop health
                 loop_healthy = False
                 seconds_since_hb = None
-                if _thread_hb_ts:
-                    seconds_since_hb = _t.time() - _thread_hb_ts
-                    loop_healthy = seconds_since_hb < 600
-                    last_hb = datetime.utcfromtimestamp(_thread_hb_ts)
+                if last_hb:
+                    hb_time = last_hb if isinstance(last_hb, datetime) else datetime.fromisoformat(str(last_hb))
+                    seconds_since_hb = (now - hb_time).total_seconds()
+                    loop_healthy = seconds_since_hb < 300
 
                 # Smart status description
                 if not market_open and market_phase in ('CLOSED', 'WEEKEND'):
@@ -1333,7 +1336,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
         try:
             capital_mgr = services_dict.get('capital_manager')
             if not capital_mgr:
-                return jsonify({'error': 'Capital manager not initialized'}), 503
+                return jsonify({'snapshot': {'total_capital': 0, 'allocated': 0, 'available': 0, 'daily_pnl': 0, 'daily_loss_remaining': 0, 'positions_count': 0}, 'strategies': {}, 'note': 'capital manager not initialized'}), 200
 
             snapshot = capital_mgr.get_snapshot()
             strategy_summary = capital_mgr.get_strategy_summary()
@@ -1353,304 +1356,5 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
         except Exception as e:
             log.error(f"GET /capital-summary error: {e}\n{traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
-
-
-    @strategies_bp.route('/scan-debug', methods=['GET'])
-    def scan_debug():
-        """GET /strategies/scan-debug — trace PCP scan pipeline for one asset"""
-        try:
-            from modules.derivatives.strategies import _days_to_expiry, _parse_expiry
-            asset = request.args.get('asset', 'PETR4')
-            result = {'asset': asset, 'steps': []}
-
-            # Step 1: spot price
-            spot_quote = provider_mgr.get_spot(asset)
-            if not spot_quote:
-                result['steps'].append({'step': 'get_spot', 'status': 'FAIL', 'detail': 'returned None'})
-                return jsonify(result), 200
-            result['steps'].append({
-                'step': 'get_spot', 'status': 'OK',
-                'bid': spot_quote.bid, 'ask': spot_quote.ask, 'mid': spot_quote.mid
-            })
-
-            # Step 2: option chains
-            call_chain = provider_mgr.get_option_chain(asset, option_type='CALL')
-            put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
-            result['steps'].append({
-                'step': 'get_option_chain',
-                'call_chain_count': len(call_chain) if call_chain else 0,
-                'put_chain_count': len(put_chain) if put_chain else 0,
-                'call_strikes_sample': sorted(list(call_chain.keys()))[:5] if call_chain else [],
-                'put_strikes_sample': sorted(list(put_chain.keys()))[:5] if put_chain else [],
-            })
-
-            if not call_chain or not put_chain:
-                result['steps'][-1]['status'] = 'FAIL'
-                return jsonify(result), 200
-            result['steps'][-1]['status'] = 'OK'
-
-            # Step 3: matching strikes
-            matching = sorted(set(call_chain.keys()) & set(put_chain.keys()))
-            result['steps'].append({
-                'step': 'matching_strikes',
-                'count': len(matching),
-                'sample': matching[:5]
-            })
-
-            if not matching:
-                result['steps'][-1]['status'] = 'FAIL'
-                return jsonify(result), 200
-            result['steps'][-1]['status'] = 'OK'
-
-            # Step 4: first matching strike detail
-            strike = matching[len(matching)//2]  # pick middle strike
-            cq = call_chain[strike]
-            pq = put_chain[strike]
-            spot_price = spot_quote.mid
-
-            call_spread = cq.ask - cq.bid if cq.ask and cq.bid else None
-            put_spread = pq.ask - pq.bid if pq.ask and pq.bid else None
-
-            dte = _days_to_expiry(cq.expiry)
-
-            result['steps'].append({
-                'step': 'strike_detail',
-                'strike': strike,
-                'call_bid': cq.bid, 'call_ask': cq.ask, 'call_mid': cq.mid,
-                'call_expiry_raw': str(cq.expiry),
-                'call_option_type': getattr(cq, 'option_type', '?'),
-                'put_bid': pq.bid, 'put_ask': pq.ask, 'put_mid': pq.mid,
-                'call_spread': call_spread,
-                'put_spread': put_spread,
-                'spread_pct': call_spread / spot_price if call_spread and spot_price else None,
-                'days_to_expiry': dte,
-                'liquidity_pass': bool(call_spread and put_spread and call_spread <= 0.02 * spot_price),
-                'expiry_pass': dte > 0,
-            })
-
-            return jsonify(result), 200
-        except Exception as e:
-            import traceback as tb
-            return jsonify({'error': str(e), 'traceback': tb.format_exc()}), 500
-
-
-    @strategies_bp.route('/scan-test', methods=['GET'])
-    def scan_test():
-        """GET /strategies/scan-test — run one PCP calc + test DB insert"""
-        try:
-            from modules.derivatives.strategies import _days_to_expiry, _parse_expiry, _expiry_str
-            from modules.derivatives.config import get_config
-            asset = request.args.get('asset', 'PETR4')
-            result = {'asset': asset, 'tests': []}
-
-            cfg = get_config()
-            cdi_rate = cfg.cdi_rate / 100.0 if cfg.cdi_rate > 1 else cfg.cdi_rate
-            result['cdi_rate'] = cdi_rate
-            result['universe'] = list(set(cfg.universe_tier_a + cfg.universe_tier_b))
-
-            # Test spot
-            spot_quote = provider_mgr.get_spot(asset)
-            if not spot_quote or spot_quote.bid is None:
-                result['tests'].append({'test': 'spot', 'status': 'FAIL'})
-                return jsonify(result), 200
-            spot_price = spot_quote.mid
-            spot_ask = spot_quote.ask
-            spot_bid = spot_quote.bid
-            result['spot'] = {'bid': spot_bid, 'ask': spot_ask, 'mid': spot_price}
-
-            # Test chains
-            call_chain = provider_mgr.get_option_chain(asset, option_type='CALL')
-            put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
-            if not call_chain or not put_chain:
-                result['tests'].append({'test': 'chains', 'status': 'FAIL'})
-                return jsonify(result), 200
-
-            matching = sorted(set(call_chain.keys()) & set(put_chain.keys()))
-            result['matching_strikes'] = len(matching)
-
-            # Find ATM strike
-            atm_strike = min(matching, key=lambda k: abs(k - spot_price))
-            cq = call_chain[atm_strike]
-            pq = put_chain[atm_strike]
-
-            dte = _days_to_expiry(cq.expiry)
-            if dte <= 0:
-                result['tests'].append({'test': 'dte', 'status': 'FAIL', 'dte': dte, 'expiry_raw': str(cq.expiry)})
-                return jsonify(result), 200
-
-            discount = 1.0 / ((1 + cdi_rate) ** (dte / 252))
-            pv_k = atm_strike * discount
-
-            fees = {'option_buy': 0.001, 'option_sell': 0.001, 'stock_buy': 0.0005}
-            call_cost = cq.ask * fees['option_buy']
-            put_cost = pq.bid * fees['option_sell']
-            stock_cost = spot_ask * fees['stock_buy']
-            total_costs = (call_cost + put_cost + stock_cost) * 1.75
-
-            conv_edge = cq.bid - pq.ask - spot_ask + pv_k - total_costs
-            rev_edge = spot_bid - cq.ask + pq.bid - pv_k - total_costs
-
-            result['pcp_calc'] = {
-                'strike': atm_strike, 'dte': dte,
-                'call_bid': cq.bid, 'call_ask': cq.ask,
-                'put_bid': pq.bid, 'put_ask': pq.ask,
-                'pv_k': round(pv_k, 4), 'total_costs': round(total_costs, 6),
-                'conversion_edge': round(conv_edge, 4),
-                'reversal_edge': round(rev_edge, 4),
-                'has_opportunity': conv_edge > 0 or rev_edge > 0,
-            }
-
-            # Test DB insert
-            conn = None
-            try:
-                conn = get_db()
-                cursor = conn.cursor()
-                cursor.execute('SELECT COUNT(*) as cnt FROM strategy_opportunities_log')
-                row = cursor.fetchone()
-                existing = row['cnt'] if isinstance(row, dict) else row[0]
-                result['db_test'] = {'existing_rows': existing, 'status': 'OK'}
-                cursor.close()
-            except Exception as db_err:
-                result['db_test'] = {'status': 'FAIL', 'error': str(db_err)}
-            finally:
-                if conn:
-                    try: conn.close()
-                    except: pass
-
-            # Test actual insert if opportunity
-            if conv_edge > 0 or rev_edge > 0:
-                try:
-                    conn2 = get_db()
-                    cursor2 = conn2.cursor()
-                    cursor2.execute(
-                        """INSERT INTO strategy_opportunities_log
-                        (strategy_type, symbol, strike, expiry, opportunity_type, expected_edge_bps)
-                        VALUES (%s, %s, %s, %s, %s, %s)""",
-                        ('PCP_TEST', asset, atm_strike, _expiry_str(cq.expiry), 'TEST', max(conv_edge, rev_edge))
-                    )
-                    conn2.commit()
-                    cursor2.close()
-                    result['insert_test'] = {'status': 'OK', 'inserted': True}
-                    conn2.close()
-                except Exception as ie:
-                    result['insert_test'] = {'status': 'FAIL', 'error': str(ie)}
-                    if conn2:
-                        try: conn2.close()
-                        except: pass
-
-            return jsonify(result), 200
-        except Exception as e:
-            import traceback as tb
-            return jsonify({'error': str(e), 'traceback': tb.format_exc()}), 500
-
-
-
-    @strategies_bp.route('/pcp-run', methods=['GET'])
-    def pcp_run():
-        """Run one PCP scan cycle synchronously and return full diagnostics."""
-        try:
-            from modules.derivatives.strategies import _days_to_expiry, _parse_expiry, _expiry_str, _b3_fees
-            from modules.derivatives.config import get_config
-
-            cfg = get_config()
-            fees = _b3_fees()
-            eligible_assets = list(set(cfg.universe_tier_a + cfg.universe_tier_b))
-            cdi_rate = cfg.cdi_rate / 100.0 if cfg.cdi_rate > 1 else cfg.cdi_rate
-
-            result = {
-                'eligible_assets': eligible_assets,
-                'cdi_rate': cdi_rate,
-                'assets': {},
-                'total_opportunities': 0,
-            }
-
-            for asset in eligible_assets:
-                asset_info = {'steps': []}
-                try:
-                    spot_quote = provider_mgr.get_spot(asset)
-                    if not spot_quote or spot_quote.bid is None:
-                        asset_info['steps'].append('no_spot')
-                        result['assets'][asset] = asset_info
-                        continue
-                    spot_price = spot_quote.mid
-                    spot_ask = spot_quote.ask
-                    spot_bid = spot_quote.bid
-                    asset_info['spot'] = spot_price
-
-                    call_chain = provider_mgr.get_option_chain(asset, option_type='CALL')
-                    put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
-
-                    if not call_chain or not put_chain:
-                        asset_info['steps'].append(f'no_chains_call={len(call_chain) if call_chain else 0}_put={len(put_chain) if put_chain else 0}')
-                        result['assets'][asset] = asset_info
-                        continue
-
-                    matching = sorted(set(call_chain.keys()) & set(put_chain.keys()))
-                    asset_info['matching_strikes'] = len(matching)
-                    liq_pass = 0
-                    dte_pass = 0
-                    opps = []
-
-                    for strike in matching:
-                        cq = call_chain.get(strike)
-                        pq = put_chain.get(strike)
-                        if not cq or not pq:
-                            continue
-
-                        call_spread = cq.ask - cq.bid if cq.ask else None
-                        put_spread = pq.ask - pq.bid if pq.ask else None
-
-                        if not call_spread or not put_spread or call_spread > 0.02 * spot_price:
-                            continue
-                        liq_pass += 1
-
-                        dte = _days_to_expiry(cq.expiry)
-                        if dte <= 0:
-                            continue
-                        dte_pass += 1
-
-                        discount = 1.0 / ((1 + cdi_rate) ** (dte / 252))
-                        pv_k = strike * discount
-
-                        call_cost = cq.ask * fees.get('option_buy', 0.001)
-                        put_cost = pq.bid * fees.get('option_sell', 0.001)
-                        stock_cost = spot_ask * fees.get('stock_buy', 0.0005)
-                        total_costs = (call_cost + put_cost + stock_cost) * 1.75
-
-                        conv = cq.bid - pq.ask - spot_ask + pv_k - total_costs
-                        rev = spot_bid - cq.ask + pq.bid - pv_k - total_costs
-
-                        if conv > 0 or rev > 0:
-                            edge_type = 'CONV' if conv > rev else 'REV'
-                            edge_val = max(conv, rev)
-                            opps.append({'K': strike, 'type': edge_type, 'edge': round(edge_val, 4), 'dte': dte})
-
-                    asset_info['liq_pass'] = liq_pass
-                    asset_info['dte_pass'] = dte_pass
-                    asset_info['opportunities'] = opps[:10]  # limit to first 10
-                    asset_info['total_opps'] = len(opps)
-                    result['total_opportunities'] += len(opps)
-
-                except Exception as e:
-                    asset_info['error'] = str(e)
-
-                result['assets'][asset] = asset_info
-
-            return jsonify(result), 200
-        except Exception as e:
-            import traceback as tb
-            return jsonify({'error': str(e), 'traceback': tb.format_exc()}), 500
-
-
-
-    @strategies_bp.route('/loop-diag', methods=['GET'])
-    def loop_diag():
-        """Read scan loop diagnostic data."""
-        try:
-            from modules.derivatives.strategies import _scan_loop_diag
-            return jsonify(_scan_loop_diag), 200
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
 
     return strategies_bp

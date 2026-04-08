@@ -410,8 +410,11 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     spot_bid = spot_quote.bid
 
                     # Get option chains (calls american, puts european)
-                    call_chain = provider_mgr.get_option_chain(asset, option_type='CALL')
-                    put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
+                    # [FIX] min_dte=15 para pular weeklies ilíquidas (puts bid=0)
+                    import os as _os3
+                    _pcp_min_dte = int(_os3.environ.get('PCP_MIN_DTE', '15'))
+                    call_chain = provider_mgr.get_option_chain(asset, option_type='CALL', min_dte=_pcp_min_dte)
+                    put_chain = provider_mgr.get_option_chain(asset, option_type='PUT', min_dte=_pcp_min_dte)
 
                     if not call_chain or not put_chain:
                         continue

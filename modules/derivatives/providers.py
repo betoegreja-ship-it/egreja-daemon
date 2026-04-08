@@ -1656,7 +1656,7 @@ class ProviderManager:
         p = self._resolve()
         return p.get_spot(symbol) if p else None
 
-    def get_option_chain(self, underlying: str, option_type: str = None, expiry=None) -> Optional[dict]:
+    def get_option_chain(self, underlying: str, option_type: str = None, expiry=None, min_dte: int = 0) -> Optional[dict]:
         """Get option chain keyed by strike for the NEAREST valid expiry (or a specific one).
         Previously collapsed all expiries into one dict, losing ~80% of strikes.
         """
@@ -1694,10 +1694,17 @@ class ProviderManager:
                     if _to_date(k) == tgt:
                         return by_expiry[k] or None
         valid = []
+        _min_d = today + _dt.timedelta(days=int(min_dte)) if min_dte else today
         for k in by_expiry:
             d = _to_date(k)
-            if d and d >= today:
+            if d and d >= _min_d:
                 valid.append((d, k))
+        # If min_dte filter empty, fall back to any >= today
+        if not valid and min_dte:
+            for k in by_expiry:
+                d = _to_date(k)
+                if d and d >= today:
+                    valid.append((d, k))
         if not valid:
             # Fallback: merge everything (legacy behavior)
             merged = {}

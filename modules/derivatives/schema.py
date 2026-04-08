@@ -342,7 +342,7 @@ def create_derivatives_tables(connection: Any) -> None:
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS derivatives_monthly_pnl (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
-            year_month VARCHAR(7) NOT NULL,
+            `year_month` VARCHAR(7) NOT NULL,
             strategy_type VARCHAR(32),
             symbol VARCHAR(16),
             total_pnl DECIMAL(16, 2),
@@ -356,8 +356,8 @@ def create_derivatives_tables(connection: Any) -> None:
             profit_factor DECIMAL(8, 4),
             max_drawdown DECIMAL(14, 2),
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE KEY unique_month_strat_sym (year_month, strategy_type, symbol),
-            INDEX idx_year_month (year_month),
+            UNIQUE KEY unique_month_strat_sym (`year_month`, strategy_type, symbol),
+            INDEX idx_year_month (`year_month`),
             INDEX idx_strategy (strategy_type)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """)

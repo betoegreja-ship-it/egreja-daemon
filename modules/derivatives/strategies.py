@@ -855,7 +855,11 @@ def etf_basket_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, r
                 # Calculate NAV from components
                 nav_calc = services_dict.get('nav_calculator')
                 if nav_calc:
-                    nav_value = nav_calc.calculate_nav(etf_ticker)
+                    # [FORENSIC] calculate_nav exige component_prices; sem basket registrado, skip silencioso
+                    try:
+                        nav_value = nav_calc.calculate_nav(etf_ticker, {})
+                    except TypeError:
+                        nav_value = 0
 
                     if nav_value:
                         divergence = (etf_price - nav_value) / nav_value
@@ -1243,6 +1247,12 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                     spot_prices = provider_mgr.get_price_history(asset, lookback_days=60)
                     if not spot_prices or len(spot_prices) < 20:
                         continue
+                    # [FORENSIC] providers devolvem list[dict] com chave close; extrair floats
+                    if spot_prices and isinstance(spot_prices[0], dict):
+                        spot_prices = [float(p.get("close") or p.get("c") or 0) for p in spot_prices]
+                        spot_prices = [p for p in spot_prices if p > 0]
+                        if len(spot_prices) < 20:
+                            continue
 
                     # Calculate 20-day and 60-day realized vol
                     returns_20 = [

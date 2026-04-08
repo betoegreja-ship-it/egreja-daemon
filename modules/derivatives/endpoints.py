@@ -737,7 +737,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             strategy = request.args.get('strategy', '')
 
             query = """
-                SELECT DATE_FORMAT(closed_at, '%%Y-%%m') as year_month,
+                SELECT DATE_FORMAT(closed_at, '%%Y-%%m') as `year_month`,
                        strategy_type,
                        COUNT(*) as trade_count,
                        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
@@ -759,7 +759,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                 query += " AND strategy_type = %s"
                 params.append(strategy)
 
-            query += " GROUP BY year_month, strategy_type ORDER BY year_month DESC"
+            query += " GROUP BY `year_month`, strategy_type ORDER BY `year_month` DESC"
             rows = _safe_query(query, params)
 
             for row in rows:
@@ -931,7 +931,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             if not exec_engine:
                 return jsonify({'error': 'Execution engine not initialized'}), 503
 
-            trades = exec_engine.get_active_trades(strategy or None)
+            trades = exec_engine.get_active_trades(strategy or None) if hasattr(exec_engine, 'get_active_trades') else []
             positions = []
 
             for trade in trades:

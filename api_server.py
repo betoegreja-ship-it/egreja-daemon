@@ -85,6 +85,8 @@ try:
         RatesCurveService, GreeksCalculator, CalibrationService, StrategyScorecard, StructuredOrderExecutor,
         NAVCalculatorService, ImpliedVolEngine)
     from modules.derivatives.liquidity import LiquidityScoreEngine, PromotionEngine, ActiveStatusRegistry
+    from modules.derivatives.capital import DerivativesCapitalManager
+    from modules.derivatives.learning import DerivativesLearningEngine
     from modules.derivatives.strategies import (pcp_scan_loop, fst_scan_loop, roll_arb_scan_loop,
         etf_basket_scan_loop, skew_arb_scan_loop, interlisted_scan_loop, dividend_arb_scan_loop, vol_arb_scan_loop)
     from modules.derivatives.endpoints import create_strategies_blueprint
@@ -312,6 +314,22 @@ try:
             log.info(f'[FORENSIC-SEED] active_status_registry seeded {len(_seed_universe)} assets x 2 strategies @ {_seed_tier_str}')
     except Exception as _e:
         log.warning(f'[FORENSIC-SEED] seed failed: {_e}')
+    # [FIX] Init capital manager + learning engine (antes ficavam None e quebravam trade opening + learning endpoint)
+    _deriv_cfg = None
+    try:
+        _deriv_cfg = get_deriv_config()
+    except Exception as _cfg_err:
+        log.warning(f'[FIX] get_deriv_config failed: {_cfg_err}')
+    try:
+        _deriv_services['capital_manager'] = DerivativesCapitalManager(_deriv_cfg, get_db_fn=get_db) if _deriv_cfg else None
+    except Exception as _cm_err:
+        log.warning(f'[FIX] capital_manager init failed: {_cm_err}')
+        _deriv_services['capital_manager'] = None
+    try:
+        _deriv_services['deriv_learner'] = DerivativesLearningEngine(_deriv_cfg, get_db_fn=get_db) if _deriv_cfg else None
+    except Exception as _dl_err:
+        log.warning(f'[FIX] deriv_learner init failed: {_dl_err}')
+        _deriv_services['deriv_learner'] = None
     log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')

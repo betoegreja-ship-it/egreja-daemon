@@ -293,6 +293,8 @@ try:
     _deriv_services['dividend_service']       = _deriv_services.get('dividend_svc')
     _deriv_services['deriv_execution']        = _deriv_services.get('order_executor')
     _deriv_services['nav_calculator']         = _deriv_services.get('nav_calc')
+    # [FORENSIC-FIX] Getter de heartbeat real pras threads, pra /strategies/health nao depender de log de oportunidades
+    _deriv_services['thread_heartbeat_getter'] = lambda name: thread_heartbeat.get(name)
 
     # [FORENSIC-SEED] Registry vazio → tier=None → OBSERVE → nada executa.
     # Semear universo Tier-A em PAPER_SMALL para PCP/FST para destravar execução.

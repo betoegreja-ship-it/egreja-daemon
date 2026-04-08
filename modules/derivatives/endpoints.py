@@ -410,10 +410,22 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             health_status = {}
             now = datetime.utcnow()
 
+            # [FORENSIC-FIX] Fonte de verdade = thread_heartbeat real injetado via services_dict.
+            hb_getter = services_dict.get('thread_heartbeat_getter') if services_dict else None
+            import time as _t
+            now_ts = _t.time()
             for strat, db_type in strategies.items():
+                thread_hb_ts = hb_getter(strat) if hb_getter else None
+                is_healthy = False
+                last_hb_str = None
+                if thread_hb_ts:
+                    age = now_ts - thread_hb_ts
+                    last_hb_str = datetime.utcfromtimestamp(thread_hb_ts).isoformat()
+                    if age < 600:
+                        is_healthy = True
                 row = _safe_query(
                     """
-                    SELECT MAX(timestamp) as last_heartbeat, COUNT(*) as opp_count
+                    SELECT COUNT(*) as opp_count
                     FROM strategy_opportunities_log
                     WHERE strategy_type = %s
                     AND timestamp > NOW() - INTERVAL 1 HOUR
@@ -421,22 +433,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                     (db_type,),
                     fetch='one'
                 )
-
-                last_hb = row.get('last_heartbeat') if row else None
                 opp_count = row.get('opp_count', 0) if row else 0
-
-                is_healthy = True
-                last_hb_str = None
-                if not last_hb:
-                    is_healthy = False
-                else:
-                    if isinstance(last_hb, str):
-                        last_hb_time = datetime.fromisoformat(last_hb)
-                    else:
-                        last_hb_time = last_hb  # already datetime from MySQL
-                    last_hb_str = last_hb_time.isoformat()
-                    if (now - last_hb_time).total_seconds() > 300:
-                        is_healthy = False
 
                 health_status[strat] = {
                     'healthy': is_healthy,

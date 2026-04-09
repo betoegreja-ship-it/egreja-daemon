@@ -280,6 +280,24 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
 
     # ── Health ─────────────────────────────────────────────
 
+    @bp.route('/debug-review/<int:pos_id>', methods=['POST'])
+    def debug_review(pos_id):
+        try:
+            lc = _get_lifecycle()
+            positions = lc.repo.get_open_positions()
+            pos = None
+            for p in positions:
+                if p['position_id'] == pos_id:
+                    pos = p
+                    break
+            if not pos:
+                return jsonify({'error': 'position not found', 'pos_id': pos_id}), 404
+            result = lc.review_engine.review_position(pos)
+            return jsonify({'status': 'ok', 'result': result}), 200
+        except Exception as e:
+            import traceback
+            return jsonify({'status': 'error', 'message': str(e), 'traceback': traceback.format_exc()}), 500
+
     @bp.route('/debug-prices', methods=['GET'])
     def debug_prices():
         import sys as _sys

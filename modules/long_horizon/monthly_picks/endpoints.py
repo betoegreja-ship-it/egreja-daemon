@@ -80,10 +80,29 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
     def run_scan():
         try:
             lc = _get_lifecycle()
-            result = lc.run_monthly_scan()
+            force = request.args.get('force', '').lower() in ('1', 'true', 'yes')
+            result = lc.run_monthly_scan(force=force)
             return jsonify(result), 200
         except Exception as e:
             log.error(f'[MP API] /scan error: {e}')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    @bp.route('/reset-month', methods=['POST'])
+    def reset_month():
+        try:
+            lc = _get_lifecycle()
+            conn = db_fn()
+            cur = conn.cursor()
+            cur.execute('DELETE FROM mp_actions')
+            cur.execute('DELETE FROM mp_reviews')
+            cur.execute('DELETE FROM mp_positions')
+            cur.execute('DELETE FROM mp_candidates')
+            cur.execute('DELETE FROM mp_scan_runs')
+            conn.commit()
+            conn.close()
+            return jsonify({'status': 'ok', 'message': 'All MP data cleared for re-scan'}), 200
+        except Exception as e:
+            log.error(f'[MP API] /reset-month error: {e}')
             return jsonify({'status': 'error', 'message': str(e)}), 500
 
     # ── Weekly Review ──────────────────────────────────────

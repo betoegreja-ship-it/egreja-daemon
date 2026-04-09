@@ -48,7 +48,7 @@ class MonthlyPicksLifecycle:
 
     # ── MONTHLY SCAN ───────────────────────────────────────
 
-    def run_monthly_scan(self) -> Dict:
+    def run_monthly_scan(self, force: bool = False) -> Dict:
         """
         Full monthly scan pipeline:
           1. Check sleeve status
@@ -69,7 +69,7 @@ class MonthlyPicksLifecycle:
 
         # Check if already ran this month
         existing = self.repo.get_scan_run(scan_month)
-        if existing and existing.get('picks_made', 0) > 0:
+        if not force and existing and existing.get('picks_made', 0) > 0:
             self.log.info(f'[MP Lifecycle] Scan already done for {scan_month}')
             return {'status': 'already_done', 'scan_month': scan_month}
 

@@ -88,13 +88,14 @@ class PortfolioGovernance:
         if any(s['ticker'] == ticker for s in already_selected):
             return f'duplicate_batch:{ticker}'
 
-        # Rule 3: Sector concentration limit
-        open_in_sector = self.repo.count_open_by_sector(sector)
-        batch_in_sector = sum(1 for s in already_selected
-                              if s.get('sector') == sector)
-        total_sector = open_in_sector + batch_in_sector
-        if total_sector >= cfg.max_sector_concentration:
-            return f'sector_limit:{sector}({total_sector})'
+        # Rule 3: Sector concentration limit (skip if sector unknown)
+        if sector and sector != 'Unknown':
+            open_in_sector = self.repo.count_open_by_sector(sector)
+            batch_in_sector = sum(1 for s in already_selected
+                                  if s.get('sector') == sector)
+            total_sector = open_in_sector + batch_in_sector
+            if total_sector >= cfg.max_sector_concentration:
+                return f'sector_limit:{sector}({total_sector})'
 
         # Rule 4: Score minimum
         score = float(candidate.get('analysis_score',

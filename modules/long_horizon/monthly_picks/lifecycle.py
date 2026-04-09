@@ -126,6 +126,35 @@ class MonthlyPicksLifecycle:
                 self.repo.mark_candidate_rejected(
                     cid, r.get('rejection_reason', 'filtered'))
 
+        # 5b. [v10.27f] Fetch current prices for selected picks
+        for s in selected:
+            if not s.get('price_at_scan'):
+                try:
+                    import requests as _req
+                    ticker = s['ticker']
+                    # Try BRAPI for B3 stocks
+                    if ticker.endswith(('3','4','6','11')):
+                        _r = _req.get(f'https://brapi.dev/api/quote/{ticker}',
+                                      params={'token': __import__('os').environ.get('BRAPI_TOKEN','')},
+                                      timeout=5)
+                        if _r.ok:
+                            _data = _r.json().get('results', [{}])[0]
+                            s['price_at_scan'] = _data.get('regularMarketPrice')
+                    # Try Polygon for US stocks
+                    else:
+                        _pk = __import__('os').environ.get('POLYGON_API_KEY','')
+                        if _pk:
+                            _r = _req.get(f'https://api.polygon.io/v2/aggs/ticker/{ticker}/prev',
+                                          params={'apiKey': _pk}, timeout=5)
+                            if _r.ok:
+                                _results = _r.json().get('results', [{}])
+                                if _results:
+                                    s['price_at_scan'] = _results[0].get('c')  # close price
+                    if s.get('price_at_scan'):
+                        self.log.info(f'[MP Lifecycle] Fetched price for {ticker}: {s["price_at_scan"]}')
+                except Exception as _pe:
+                    self.log.debug(f'[MP Lifecycle] Price fetch for {s["ticker"]}: {_pe}')
+
         # 6. Open positions for selected picks
         positions_opened = []
         for s in selected:

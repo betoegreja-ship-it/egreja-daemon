@@ -133,7 +133,7 @@ class MonthlyPicksLifecycle:
                 try:
                     # Access the global stock_prices dict from api_server
                     import sys
-                    _api = sys.modules.get('api_server')
+                    _api = sys.modules.get('__main__')
                     if _api and hasattr(_api, 'stock_prices'):
                         _sp = _api.stock_prices
                         # Try ticker directly, then with .SA suffix

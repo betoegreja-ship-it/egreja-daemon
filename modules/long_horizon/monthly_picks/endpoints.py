@@ -481,7 +481,7 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
             for ticker, data in scores.items():
                 total = data.get('total_score', 0)
                 conv = data.get('conviction', 'Neutral')
-                dims = data.get('dimension_scores', {})
+                dims = data  # dimensions are at top level in generate_demo_scores output
 
                 cursor.execute(
                     "INSERT INTO lh_assets (ticker, name, sector, market, active) "
@@ -517,13 +517,13 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
                         model_version=VALUES(model_version)
                 """, (
                     aid, today, total, conv,
-                    dims.get('business_quality', 50),
-                    dims.get('valuation', 50),
-                    dims.get('market_strength', 50),
-                    dims.get('macro_factors', 50),
-                    dims.get('options_signal', 50),
-                    dims.get('structural_risk', 50),
-                    dims.get('data_reliability', 50),
+                    dims.get('business_quality', 50.0),
+                    dims.get('valuation', 50.0),
+                    dims.get('market_strength', 50.0),
+                    dims.get('macro_factors', 50.0),
+                    dims.get('options_signal', 50.0),
+                    dims.get('structural_risk', 50.0),
+                    dims.get('data_reliability', 85.0),  # default high for demo scores
                     'v2.0-demo-seeded',
                 ))
                 n += 1

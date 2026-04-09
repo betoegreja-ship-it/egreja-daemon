@@ -22,8 +22,6 @@ Endpoints sob /monthly-picks/:
 """
 
 import logging
-import threading
-import time as _time
 from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger('egreja.monthly_picks.endpoints')
@@ -98,6 +96,30 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
             return jsonify(result), 200
         except Exception as e:
             log.error(f'[MP API] /review error: {e}')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    # ── Daily Check [v10.27i] ─────────────────────────────
+
+    @bp.route('/daily-check', methods=['POST'])
+    def daily_check():
+        try:
+            lc = _get_lifecycle()
+            result = lc.run_daily_check()
+            return jsonify(result), 200
+        except Exception as e:
+            log.error(f'[MP API] /daily-check error: {e}')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
+    # ── Rescore Universe [v10.27i] ────────────────────────
+
+    @bp.route('/rescore', methods=['POST'])
+    def rescore():
+        try:
+            from .scheduler_hooks import rescore_universe_hook
+            result = rescore_universe_hook(db_fn, log)
+            return jsonify(result), 200
+        except Exception as e:
+            log.error(f'[MP API] /rescore error: {e}')
             return jsonify({'status': 'error', 'message': str(e)}), 500
 
     # ── Positions ──────────────────────────────────────────
@@ -279,363 +301,5 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
             log.warning(f'[MP API] /discovery/status error: {e}')
             return jsonify({'status': 'ok', 'discovery': 'error',
                             'message': str(e)}), 200
-
-    # ── [v10.27] Data Ingestion (background) ─────────────
-    _ingest_state = {'running': False, 'progress': 0, 'total': 0,
-                     'scored': 0, 'failed': 0, 'last_ticker': '',
-                     'started_at': None, 'completed_at': None, 'error': None}
-
-    def _run_ingest_background():
-        """Collect real data from providers, score, persist to lh_scores."""
-        import datetime as _dt
-        _ingest_state.update({
-            'running': True, 'progress': 0, 'scored': 0, 'failed': 0,
-            'error': None, 'started_at': _dt.datetime.now().isoformat(),
-            'completed_at': None,
-        })
-        try:
-            from modules.long_horizon.data_ingestion import LongHorizonDataCollector
-            from modules.long_horizon.scoring_engine import score_from_real_data
-
-            collector = LongHorizonDataCollector()
-            universe = collector.UNIVERSE
-            _ingest_state['total'] = len(universe)
-            log.info(f'[MP Ingest] Starting data collection for {len(universe)} tickers')
-
-            scored_list = []
-
-            for i, ticker in enumerate(universe):
-                _ingest_state['progress'] = i + 1
-                _ingest_state['last_ticker'] = ticker
-                try:
-                    profile = collector.collect_all(ticker)
-                    if not profile:
-                        _ingest_state['failed'] += 1
-                        continue
-
-                    scored = score_from_real_data(profile)
-                    if scored and scored.get('total_score', 0) > 20:
-                        scored['sector'] = profile.get('sector', 'Unknown')
-                        scored['market'] = profile.get('market', 'Unknown')
-                        scored['name'] = profile.get('name', ticker)
-                        scored_list.append(scored)
-                        _ingest_state['scored'] += 1
-                except Exception as e:
-                    _ingest_state['failed'] += 1
-                    log.debug(f'[MP Ingest] {ticker}: {e}')
-
-            # Persist all scores to DB
-            if scored_list:
-                _persist_all_scores(scored_list)
-
-            _ingest_state['completed_at'] = _dt.datetime.now().isoformat()
-            log.info(f'[MP Ingest] Done: {len(scored_list)} scored, '
-                     f'{_ingest_state["failed"]} failed')
-
-        except Exception as e:
-            _ingest_state['error'] = str(e)
-            log.error(f'[MP Ingest] Fatal error: {e}')
-        finally:
-            _ingest_state['running'] = False
-
-    def _persist_all_scores(scored_list):
-        """Write scored data to lh_assets + lh_scores tables."""
-        import datetime as _dt
-        conn = None
-        try:
-            conn = db_fn()
-            cursor = conn.cursor()
-            today = _dt.date.today().isoformat()
-
-            for s in scored_list:
-                ticker = s['ticker']
-                # Upsert asset
-                cursor.execute(
-                    "INSERT INTO lh_assets (ticker, name, sector, market, active) "
-                    "VALUES (%s, %s, %s, %s, TRUE) "
-                    "ON DUPLICATE KEY UPDATE name=VALUES(name), sector=VALUES(sector), "
-                    "market=VALUES(market), active=TRUE",
-                    (ticker, s.get('name', ticker),
-                     s.get('sector', 'Unknown'),
-                     s.get('market', 'Unknown'))
-                )
-                cursor.execute("SELECT asset_id FROM lh_assets WHERE ticker=%s", (ticker,))
-                asset_id = cursor.fetchone()[0]
-
-                # Upsert score
-                cursor.execute("""
-                    INSERT INTO lh_scores
-                        (asset_id, score_date, total_score, conviction,
-                         business_quality, valuation, market_strength,
-                         macro_factors, options_signal, structural_risk,
-                         data_reliability, model_version)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON DUPLICATE KEY UPDATE
-                        total_score=VALUES(total_score), conviction=VALUES(conviction),
-                        business_quality=VALUES(business_quality), valuation=VALUES(valuation),
-                        market_strength=VALUES(market_strength), macro_factors=VALUES(macro_factors),
-                        options_signal=VALUES(options_signal), structural_risk=VALUES(structural_risk),
-                        data_reliability=VALUES(data_reliability), model_version=VALUES(model_version)
-                """, (
-                    asset_id, today,
-                    s.get('total_score', 0), s.get('conviction', 'Neutral'),
-                    s.get('business_quality', 0), s.get('valuation', 0),
-                    s.get('market_strength', 0), s.get('macro_factors', 0),
-                    s.get('options_signal', 0), s.get('structural_risk', 0),
-                    s.get('data_reliability', 0), 'v2.0-realdata',
-                ))
-
-            conn.commit()
-            log.info(f'[MP Ingest] Persisted {len(scored_list)} scores to lh_scores')
-        except Exception as e:
-            log.error(f'[MP Ingest] DB persist error: {e}')
-        finally:
-            if conn:
-                try: conn.close()
-                except: pass
-
-    @bp.route('/ingest', methods=['POST'])
-    def start_ingest():
-        """Start background data ingestion from all providers."""
-        if _ingest_state['running']:
-            return jsonify({
-                'status': 'already_running',
-                'progress': _ingest_state['progress'],
-                'total': _ingest_state['total'],
-                'last_ticker': _ingest_state['last_ticker'],
-            }), 200
-
-        t = threading.Thread(target=_run_ingest_background, daemon=True)
-        t.start()
-        return jsonify({'status': 'started', 'total': 109}), 202
-
-    @bp.route('/ingest/status', methods=['GET'])
-    def ingest_status():
-        """Check data ingestion progress."""
-        return jsonify({
-            'status': 'ok',
-            **_ingest_state,
-        }), 200
-
-    # ── [v10.27] Async Scan ───────────────────────────────
-
-    _scan_state = {'running': False, 'result': None, 'error': None,
-                   'started_at': None, 'completed_at': None}
-
-    def _run_scan_background():
-        """Run monthly scan in background thread."""
-        import datetime as _dt
-        _scan_state.update({
-            'running': True, 'result': None, 'error': None,
-            'started_at': _dt.datetime.now().isoformat(),
-            'completed_at': None,
-        })
-        try:
-            lc = _get_lifecycle()
-            result = lc.run_monthly_scan()
-            _scan_state['result'] = result
-            _scan_state['completed_at'] = _dt.datetime.now().isoformat()
-            log.info(f'[MP Scan Async] Done: {result}')
-        except Exception as e:
-            _scan_state['error'] = str(e)
-            log.error(f'[MP Scan Async] Error: {e}')
-        finally:
-            _scan_state['running'] = False
-
-    @bp.route('/scan-async', methods=['POST'])
-    def run_scan_async():
-        """Start scan in background thread (returns immediately)."""
-        if _scan_state['running']:
-            return jsonify({'status': 'already_running'}), 200
-
-        t = threading.Thread(target=_run_scan_background, daemon=True)
-        t.start()
-        return jsonify({'status': 'scan_started'}), 202
-
-    @bp.route('/scan/status', methods=['GET'])
-    def scan_status():
-        """Check async scan progress."""
-        return jsonify({
-            'status': 'ok',
-            **_scan_state,
-        }), 200
-
-
-    # ── [v10.27c] Seed Scores from Demo ───────────────────
-
-    @bp.route('/seed-scores', methods=['POST'])
-    def seed_scores():
-        """Seed lh_assets + lh_scores from scoring engine demo scores."""
-        import datetime as _dt
-        try:
-            from modules.long_horizon.scoring_engine import generate_demo_scores
-            scores = generate_demo_scores()
-            if not scores:
-                return jsonify({'status': 'error', 'message': 'No scores generated'}), 500
-
-            conn = db_fn()
-            cursor = conn.cursor()
-            today = _dt.date.today().isoformat()
-            n = 0
-
-            for ticker, data in scores.items():
-                total = data.get('total_score', 0)
-                conv = data.get('conviction', 'Neutral')
-                dims = data  # dimensions are at top level in generate_demo_scores output
-
-                cursor.execute(
-                    "INSERT INTO lh_assets (ticker, name, sector, market, active) "
-                    "VALUES (%s,%s,%s,%s,TRUE) "
-                    "ON DUPLICATE KEY UPDATE name=VALUES(name), "
-                    "sector=VALUES(sector), market=VALUES(market), active=TRUE",
-                    (ticker, data.get('name', ticker),
-                     data.get('sector', 'Unknown'),
-                     data.get('market', 'Unknown'))
-                )
-                cursor.execute(
-                    "SELECT asset_id FROM lh_assets WHERE ticker=%s", (ticker,)
-                )
-                aid = cursor.fetchone()[0]
-
-                cursor.execute("""
-                    INSERT INTO lh_scores
-                        (asset_id, score_date, total_score, conviction,
-                         business_quality, valuation, market_strength,
-                         macro_factors, options_signal, structural_risk,
-                         data_reliability, model_version)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON DUPLICATE KEY UPDATE
-                        total_score=VALUES(total_score),
-                        conviction=VALUES(conviction),
-                        business_quality=VALUES(business_quality),
-                        valuation=VALUES(valuation),
-                        market_strength=VALUES(market_strength),
-                        macro_factors=VALUES(macro_factors),
-                        options_signal=VALUES(options_signal),
-                        structural_risk=VALUES(structural_risk),
-                        data_reliability=VALUES(data_reliability),
-                        model_version=VALUES(model_version)
-                """, (
-                    aid, today, total, conv,
-                    dims.get('business_quality', 50.0),
-                    dims.get('valuation', 50.0),
-                    dims.get('market_strength', 50.0),
-                    dims.get('macro_factors', 50.0),
-                    dims.get('options_signal', 50.0),
-                    dims.get('structural_risk', 50.0),
-                    dims.get('data_reliability', 85.0),  # default high for demo scores
-                    'v2.0-demo-seeded',
-                ))
-                n += 1
-
-            conn.commit()
-            cursor.close()
-            conn.close()
-
-            log.info(f'[MP API] Seeded {n} assets + scores to lh_assets/lh_scores')
-            return jsonify({
-                'status': 'ok',
-                'seeded': n,
-                'score_date': today,
-            }), 200
-
-        except Exception as e:
-            log.error(f'[MP API] /seed-scores error: {e}')
-            return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-    # ── [v10.27d] Debug selector ──────────────────────────
-
-    @bp.route('/debug-selector', methods=['GET'])
-    def debug_selector():
-        """Debug: test each selector path and show what it finds."""
-        import traceback
-        results = {}
-
-        # Test 1: Direct DB query
-        try:
-            conn = db_fn()
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("""
-                SELECT s.*, a.ticker, a.name, a.sector, a.market, a.asset_type
-                FROM lh_scores s
-                JOIN lh_assets a ON s.asset_id = a.asset_id
-                WHERE a.active = TRUE
-                AND s.score_date = (
-                    SELECT MAX(score_date) FROM lh_scores
-                    WHERE asset_id = s.asset_id
-                )
-                ORDER BY s.total_score DESC
-                LIMIT 5
-            """)
-            rows = cursor.fetchall()
-            # Convert Decimal to float for JSON
-            clean_rows = []
-            for r in rows:
-                clean = {}
-                for k, v in r.items():
-                    if hasattr(v, 'is_integer'):  # Decimal
-                        clean[k] = float(v)
-                    elif hasattr(v, 'isoformat'):  # date/datetime
-                        clean[k] = v.isoformat()
-                    else:
-                        clean[k] = v
-                clean_rows.append(clean)
-            results['direct_db_query'] = {
-                'count': len(rows),
-                'top5': clean_rows,
-            }
-            cursor.close()
-            conn.close()
-        except Exception as e:
-            results['direct_db_query'] = {'error': str(e), 'tb': traceback.format_exc()[-500:]}
-
-        # Test 2: Selector._fetch_latest_scores
-        try:
-            lc = _get_lifecycle()
-            scores = lc.selector._fetch_latest_scores()
-            results['fetch_latest_scores'] = {
-                'count': len(scores),
-                'top3': [{'ticker': s.get('ticker'), 'score': s.get('total_score')} for s in scores[:3]] if scores else [],
-            }
-        except Exception as e:
-            results['fetch_latest_scores'] = {'error': str(e), 'tb': traceback.format_exc()[-500:]}
-
-        # Test 3: Selector._fetch_from_expansion_layer
-        try:
-            lc = _get_lifecycle()
-            expanded = lc.selector._fetch_from_expansion_layer(20)
-            results['expansion_layer'] = {
-                'count': len(expanded) if expanded else 0,
-                'type': type(expanded).__name__,
-            }
-        except Exception as e:
-            results['expansion_layer'] = {'error': str(e)}
-
-        # Test 4: Full select_candidates
-        try:
-            lc = _get_lifecycle()
-            candidates = lc.selector.select_candidates(n=20)
-            results['select_candidates'] = {
-                'count': len(candidates),
-                'top3': [{'ticker': c.get('ticker'), 'score': c.get('total_score')} for c in candidates[:3]] if candidates else [],
-            }
-        except Exception as e:
-            results['select_candidates'] = {'error': str(e), 'tb': traceback.format_exc()[-500:]}
-
-        # Test 5: Config values
-        try:
-            from .config import get_config
-            cfg = get_config()
-            results['config'] = {
-                'min_score_entry': cfg.min_score_entry,
-                'min_data_quality': cfg.min_data_quality,
-                'candidates_per_scan': cfg.candidates_per_scan,
-                'picks_per_month': cfg.picks_per_month,
-            }
-        except Exception as e:
-            results['config'] = {'error': str(e)}
-
-        return jsonify(results), 200
 
     return bp

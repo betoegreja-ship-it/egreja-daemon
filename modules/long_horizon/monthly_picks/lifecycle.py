@@ -126,29 +126,29 @@ class MonthlyPicksLifecycle:
                 self.repo.mark_candidate_rejected(
                     cid, r.get('rejection_reason', 'filtered'))
 
-        # 5b. [v10.27g] Get prices from api_server global cache
+        # 5b. [v10.27h] Get prices from api_server global cache
         for s in selected:
             if not s.get('price_at_scan'):
                 ticker = s['ticker']
                 try:
-                    # Access the global stock_prices dict from api_server
-                    import sys
-                    _api = sys.modules.get('__main__')
-                    if _api and hasattr(_api, 'stock_prices'):
-                        _sp = _api.stock_prices
-                        # Try ticker directly, then with .SA suffix
+                    import sys as _sys
+                    _main = _sys.modules.get('__main__')
+                    if _main and hasattr(_main, 'stock_prices'):
+                        _sp = _main.stock_prices
+                        # Try ticker directly, then with .SA suffix for B3
                         _pd = _sp.get(ticker) or _sp.get(ticker + '.SA') or {}
-                        _price = _pd.get('regularMarketPrice') or _pd.get('price') or _pd.get('c')
-                        if isinstance(_pd, dict) and _price:
-                            s['price_at_scan'] = float(_price)
+                        if isinstance(_pd, dict):
+                            _price = _pd.get('regularMarketPrice') or _pd.get('price') or _pd.get('c')
+                            if _price:
+                                s['price_at_scan'] = float(_price)
                         elif isinstance(_pd, (int, float)):
                             s['price_at_scan'] = float(_pd)
-                    # Fallback: try crypto_prices for crypto tickers
-                    if not s.get('price_at_scan') and _api and hasattr(_api, 'crypto_prices'):
-                        _cp = _api.crypto_prices
+                    # Fallback: try crypto_prices
+                    if not s.get('price_at_scan') and _main and hasattr(_main, 'crypto_prices'):
+                        _cp = _main.crypto_prices
                         _cpd = _cp.get(ticker) or {}
-                        if isinstance(_cpd, dict):
-                            s['price_at_scan'] = float(_cpd.get('price', 0)) or None
+                        if isinstance(_cpd, dict) and _cpd.get('price'):
+                            s['price_at_scan'] = float(_cpd['price'])
                     if s.get('price_at_scan'):
                         self.log.info(f'[MP Lifecycle] Price for {ticker}: {s["price_at_scan"]}')
                     else:
@@ -470,6 +470,89 @@ class MonthlyPicksLifecycle:
         }
 
         self.repo.upsert_performance(cohort_month, metrics)
+
+    # ── DAILY POSITION CHECK ──────────────────────────────
+
+    def run_daily_check(self) -> Dict:
+        """
+        [v10.27i] Lightweight daily position monitor.
+        Updates prices from live cache, checks exit triggers, closes if needed.
+        Does NOT do deep analysis or re-scoring (that's the weekly review).
+        """
+        self.log.info('[MP Lifecycle] Starting daily position check')
+        start = time.time()
+
+        # Get open positions
+        open_positions = self.repo.get_open_positions()
+        if not open_positions:
+            return {'status': 'ok', 'positions_checked': 0, 'closed': []}
+
+        closed = []
+        updated = 0
+
+        for pos in open_positions:
+            try:
+                result = self.review_engine.review_position(pos)
+
+                if result.get('action') == 'close' and result.get('exit_reason'):
+                    # Close the position
+                    self.repo.close_position(
+                        position_id=pos['position_id'],
+                        close_price=result['current_price'],
+                        close_reason=result['exit_reason'],
+                    )
+
+                    # Record SELL action
+                    self.repo.insert_action(
+                        position_id=pos['position_id'],
+                        action_type='sell',
+                        ticker=pos['ticker'],
+                        quantity=float(pos.get('quantity', 0)),
+                        price=result['current_price'],
+                        trigger_type='daily_monitor',
+                        trigger_detail=result.get('reason', ''),
+                        sleeve_status=pos.get('sleeve_status', 'paper_full'),
+                    )
+
+                    closed.append({
+                        'ticker': pos['ticker'],
+                        'exit_reason': result['exit_reason'],
+                        'pnl_pct': result.get('pnl_pct', 0),
+                        'reason': result.get('reason', ''),
+                    })
+
+                    # Notify brain
+                    if self.learning_bridge:
+                        try:
+                            self.learning_bridge.on_position_closed(
+                                pos, result['current_price'],
+                                result['exit_reason'],
+                                result.get('pnl_pct', 0),
+                            )
+                        except Exception:
+                            pass
+
+                    self.log.info(f'[MP Daily] CLOSED {pos["ticker"]}: '
+                                 f'{result["exit_reason"]} '
+                                 f'(PnL={result.get("pnl_pct", 0):+.2f}%)')
+                else:
+                    updated += 1
+
+            except Exception as e:
+                self.log.warning(f'[MP Daily] Error checking {pos["ticker"]}: {e}')
+
+        duration = time.time() - start
+        self.log.info(f'[MP Daily] Check done: {len(open_positions)} checked, '
+                      f'{updated} updated, {len(closed)} closed '
+                      f'({duration:.1f}s)')
+
+        return {
+            'status': 'ok',
+            'positions_checked': len(open_positions),
+            'updated': updated,
+            'closed': closed,
+            'duration_sec': round(duration, 2),
+        }
 
     # ── DASHBOARD ──────────────────────────────────────────
 

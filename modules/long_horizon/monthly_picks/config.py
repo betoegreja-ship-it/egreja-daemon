@@ -111,12 +111,12 @@ class MonthlyPicksConfig:
     initial_status: str = "paper_full"   # [v10.26] go live immediately (paper mode)
 
     # ── Selection rules ────────────────────────────────────
-    picks_per_month: int = 7              # [v10.26] 5-8 concentrated positions
-    candidates_per_scan: int = 20         # [v10.26] wider funnel
+    picks_per_month: int = 8              # [v10.26] 5-8 concentrated positions
+    candidates_per_scan: int = 25         # [v10.26] wider funnel
     min_score_entry: float = 65.0
     min_data_quality: float = 60.0
     min_liquidity_score: float = 50.0
-    max_sector_concentration: int = 2   # max N picks per sector
+    max_sector_concentration: int = 3   # max N picks per sector
     max_correlation: float = 0.75       # max pairwise correlation
     avoid_open_risk_triggers: bool = True
 

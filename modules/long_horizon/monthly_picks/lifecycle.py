@@ -172,7 +172,7 @@ class MonthlyPicksLifecycle:
                 ticker=s['ticker'],
                 sector=s.get('sector', 'Unknown'),
                 entry_price=sizing['entry_price'],
-                entry_score=float(s.get('analysis_score', s.get('total_score', 0))),
+                entry_score=float(s.get('analysis_score') or s.get('total_score') or 0),
                 entry_conviction=s.get('conviction', 'Neutral'),
                 target_price=sizing['target_price'],
                 stop_price=sizing['stop_price'],
@@ -284,12 +284,12 @@ class MonthlyPicksLifecycle:
         """Close a position based on review/trigger."""
         pos_id = position['position_id']
         ticker = position['ticker']
-        close_price = float(review_result.get('current_price', 0))
-        entry_price = float(position.get('entry_price', 0))
+        close_price = float(review_result.get('current_price') or 0)
+        entry_price = float(position.get('entry_price') or 0)
 
         if entry_price > 0 and close_price > 0:
             pnl_pct = round((close_price - entry_price) / entry_price * 100, 4)
-            quantity = float(position.get('quantity', 0))
+            quantity = float(position.get('quantity') or 0)
             pnl_value = round((close_price - entry_price) * quantity, 2)
         else:
             pnl_pct = 0
@@ -316,7 +316,7 @@ class MonthlyPicksLifecycle:
             position_id=pos_id,
             action_type='close',
             ticker=ticker,
-            quantity=float(position.get('quantity', 0)),
+            quantity=float(position.get('quantity') or 0),
             price=close_price,
             trigger_type=close_reason,
             trigger_detail=review_result.get('reason', ''),
@@ -343,10 +343,10 @@ class MonthlyPicksLifecycle:
         if pos['status'] == 'closed':
             return {'error': 'already_closed'}
 
-        price = close_price or float(pos.get('current_price', 0))
-        entry_price = float(pos.get('entry_price', 0))
+        price = close_price or float(pos.get('current_price') or 0)
+        entry_price = float(pos.get('entry_price') or 0)
         pnl_pct = round((price - entry_price) / entry_price * 100, 4) if entry_price > 0 else 0
-        quantity = float(pos.get('quantity', 0))
+        quantity = float(pos.get('quantity') or 0)
         pnl_value = round((price - entry_price) * quantity, 2)
 
         self.repo.close_position(
@@ -414,8 +414,8 @@ class MonthlyPicksLifecycle:
         closed = [p for p in positions if p['status'] == 'closed']
         opens = [p for p in positions if p['status'] != 'closed']
 
-        wins = [p for p in closed if float(p.get('pnl_pct', 0)) > 0]
-        losses = [p for p in closed if float(p.get('pnl_pct', 0)) <= 0]
+        wins = [p for p in closed if float(p.get('pnl_pct') or 0) > 0]
+        losses = [p for p in closed if float(p.get('pnl_pct') or 0) <= 0]
 
         # Exit reason counts
         exit_counts = {}
@@ -424,9 +424,9 @@ class MonthlyPicksLifecycle:
             exit_counts[reason] = exit_counts.get(reason, 0) + 1
 
         # Average metrics
-        returns = [float(p.get('pnl_pct', 0)) for p in closed] if closed else [0]
-        entry_scores = [float(p.get('entry_score', 0)) for p in positions if p.get('entry_score')]
-        exit_scores = [float(p.get('current_score', 0)) for p in closed if p.get('current_score')]
+        returns = [float(p.get('pnl_pct') or 0) for p in closed] if closed else [0]
+        entry_scores = [float(p.get('entry_score') or 0) for p in positions if p.get('entry_score')]
+        exit_scores = [float(p.get('current_score') or 0) for p in closed if p.get('current_score')]
 
         # Hold days
         hold_days = []
@@ -521,7 +521,7 @@ class MonthlyPicksLifecycle:
                         position_id=pos['position_id'],
                         action_type='sell',
                         ticker=pos['ticker'],
-                        quantity=float(pos.get('quantity', 0)),
+                        quantity=float(pos.get('quantity') or 0),
                         price=result['current_price'],
                         trigger_type='daily_monitor',
                         trigger_detail=result.get('reason', ''),
@@ -578,9 +578,9 @@ class MonthlyPicksLifecycle:
         sleeve_status = self.repo.get_sleeve_status()
 
         # Summary stats
-        total_allocated = sum(float(p.get('capital_allocated', 0))
+        total_allocated = sum(float(p.get('capital_allocated') or 0)
                               for p in open_positions)
-        total_pnl = sum(float(p.get('pnl_value', 0))
+        total_pnl = sum(float(p.get('pnl_value') or 0)
                         for p in open_positions)
 
         return {

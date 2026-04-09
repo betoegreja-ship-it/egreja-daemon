@@ -315,8 +315,8 @@ class CandidateSelector:
         filtered = []
 
         for c in candidates:
-            score = float(c.get('total_score', 0))
-            quality = float(c.get('data_reliability', 0))
+            score = float(c.get('total_score') or 0)
+            quality = float(c.get('data_reliability') or 0)
 
             # Min score for entry
             if score < cfg.min_score_entry:
@@ -345,7 +345,7 @@ class CandidateSelector:
         cfg = self.config
 
         for c in candidates:
-            score = float(c.get('total_score', 0))
+            score = float(c.get('total_score') or 0)
             risk = float(c.get('structural_risk', 50))
             # Normalize risk to 0-1 (higher = riskier)
             risk_norm = min(max(risk / 100.0, 0), 1)
@@ -365,14 +365,14 @@ class CandidateSelector:
             'ticker': row.get('ticker', ''),
             'asset_id': row.get('asset_id'),
             'name': row.get('name', ''),
-            'total_score': float(row.get('total_score', 0)),
-            'business_quality': float(row.get('business_quality', 0)),
-            'valuation': float(row.get('valuation', 0)),
-            'market_strength': float(row.get('market_strength', 0)),
-            'macro_factors': float(row.get('macro_factors', 0)),
-            'options_signal': float(row.get('options_signal', 0)),
-            'structural_risk': float(row.get('structural_risk', 0)),
-            'data_reliability': float(row.get('data_reliability', 0)),
+            'total_score': float(row.get('total_score') or 0),
+            'business_quality': float(row.get('business_quality') or 0),
+            'valuation': float(row.get('valuation') or 0),
+            'market_strength': float(row.get('market_strength') or 0),
+            'macro_factors': float(row.get('macro_factors') or 0),
+            'options_signal': float(row.get('options_signal') or 0),
+            'structural_risk': float(row.get('structural_risk') or 0),
+            'data_reliability': float(row.get('data_reliability') or 0),
             'conviction': row.get('conviction', 'Neutral'),
             'sector': row.get('sector', 'Unknown'),
             'market': row.get('market', 'Unknown'),

@@ -126,34 +126,35 @@ class MonthlyPicksLifecycle:
                 self.repo.mark_candidate_rejected(
                     cid, r.get('rejection_reason', 'filtered'))
 
-        # 5b. [v10.27f] Fetch current prices for selected picks
+        # 5b. [v10.27g] Get prices from api_server global cache
         for s in selected:
             if not s.get('price_at_scan'):
+                ticker = s['ticker']
                 try:
-                    import requests as _req
-                    ticker = s['ticker']
-                    # Try BRAPI for B3 stocks
-                    if ticker.endswith(('3','4','6','11')):
-                        _r = _req.get(f'https://brapi.dev/api/quote/{ticker}',
-                                      params={'token': __import__('os').environ.get('BRAPI_TOKEN','')},
-                                      timeout=5)
-                        if _r.ok:
-                            _data = _r.json().get('results', [{}])[0]
-                            s['price_at_scan'] = _data.get('regularMarketPrice')
-                    # Try Polygon for US stocks
-                    else:
-                        _pk = __import__('os').environ.get('POLYGON_API_KEY','')
-                        if _pk:
-                            _r = _req.get(f'https://api.polygon.io/v2/aggs/ticker/{ticker}/prev',
-                                          params={'apiKey': _pk}, timeout=5)
-                            if _r.ok:
-                                _results = _r.json().get('results', [{}])
-                                if _results:
-                                    s['price_at_scan'] = _results[0].get('c')  # close price
+                    # Access the global stock_prices dict from api_server
+                    import sys
+                    _api = sys.modules.get('api_server')
+                    if _api and hasattr(_api, 'stock_prices'):
+                        _sp = _api.stock_prices
+                        # Try ticker directly, then with .SA suffix
+                        _pd = _sp.get(ticker) or _sp.get(ticker + '.SA') or {}
+                        _price = _pd.get('regularMarketPrice') or _pd.get('price') or _pd.get('c')
+                        if isinstance(_pd, dict) and _price:
+                            s['price_at_scan'] = float(_price)
+                        elif isinstance(_pd, (int, float)):
+                            s['price_at_scan'] = float(_pd)
+                    # Fallback: try crypto_prices for crypto tickers
+                    if not s.get('price_at_scan') and _api and hasattr(_api, 'crypto_prices'):
+                        _cp = _api.crypto_prices
+                        _cpd = _cp.get(ticker) or {}
+                        if isinstance(_cpd, dict):
+                            s['price_at_scan'] = float(_cpd.get('price', 0)) or None
                     if s.get('price_at_scan'):
-                        self.log.info(f'[MP Lifecycle] Fetched price for {ticker}: {s["price_at_scan"]}')
+                        self.log.info(f'[MP Lifecycle] Price for {ticker}: {s["price_at_scan"]}')
+                    else:
+                        self.log.warning(f'[MP Lifecycle] No price for {ticker} in cache')
                 except Exception as _pe:
-                    self.log.debug(f'[MP Lifecycle] Price fetch for {s["ticker"]}: {_pe}')
+                    self.log.debug(f'[MP Lifecycle] Price fetch for {ticker}: {_pe}')
 
         # 6. Open positions for selected picks
         positions_opened = []

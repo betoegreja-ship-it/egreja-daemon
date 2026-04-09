@@ -387,6 +387,9 @@ def build_execution_ctx(g):
         'ALERT_MIN_SCORE':         g.get('ALERT_MIN_SCORE'),
         'MAX_PROCESSED_SIGNALS_CACHE': g.get('MAX_PROCESSED_SIGNALS_CACHE'),
 
+        # [v10.26] Monthly Picks owns all LONG capital
+        'MONTHLY_PICKS_OWNS_LONG':       g.get('MONTHLY_PICKS_OWNS_LONG', True),
+
         # [v10.26] New constants
         'MAX_ENTRIES_PER_MINUTE_STOCKS':  g.get('MAX_ENTRIES_PER_MINUTE_STOCKS', 5),
         'MAX_ENTRIES_PER_MINUTE_CRYPTO':  g.get('MAX_ENTRIES_PER_MINUTE_CRYPTO', 3),
@@ -743,6 +746,9 @@ def stock_execution_worker(ctx):
                         elif _pat_wr >= 0.70: _eff_min = ctx['MIN_SCORE_AUTO']
                 is_long=score>=_eff_min and signal_val=='COMPRA'
                 is_short=score<=(100-_eff_min) and signal_val=='VENDA'
+                # [v10.26] LONG capital goes to Monthly Picks — block auto LONG stocks
+                if is_long and ctx.get('MONTHLY_PICKS_OWNS_LONG', True):
+                    continue
                 if is_short:
                     ctx['log'].info(f'[SHORT-DBG] {sym} score={score} _eff_min={_eff_min} is_short={is_short} signal_val={signal_val}')
                 if not (is_long or is_short): continue

@@ -108,11 +108,11 @@ class MonthlyPicksConfig:
 
     # ── Sleeve control ─────────────────────────────────────
     enabled: bool = True
-    initial_status: str = "observe"     # start conservatively
+    initial_status: str = "paper_full"   # [v10.26] go live immediately (paper mode)
 
     # ── Selection rules ────────────────────────────────────
-    picks_per_month: int = 3
-    candidates_per_scan: int = 10
+    picks_per_month: int = 7              # [v10.26] 5-8 concentrated positions
+    candidates_per_scan: int = 20         # [v10.26] wider funnel
     min_score_entry: float = 65.0
     min_data_quality: float = 60.0
     min_liquidity_score: float = 50.0
@@ -121,21 +121,21 @@ class MonthlyPicksConfig:
     avoid_open_risk_triggers: bool = True
 
     # ── Exit triggers ──────────────────────────────────────
-    target_gain_pct: float = 15.0
-    stop_loss_pct: float = -8.0
-    trailing_stop_pct: float = 5.0      # from peak
-    max_hold_months: int = 9
+    target_gain_pct: float = 25.0         # [v10.26] 3-month horizon allows bigger targets
+    stop_loss_pct: float = -10.0          # [v10.26] wider stops for swing positions
+    trailing_stop_pct: float = 8.0        # [v10.26] wider trailing for multi-month holds
+    max_hold_months: int = 3              # [v10.26] max 3 months per pick
     min_score_keep: float = 50.0
     score_drop_threshold: float = 15.0
 
     # ── Capital ────────────────────────────────────────────
-    capital_per_pick: float = 100_000.0
-    max_total_allocated: float = 2_000_000.0
-    max_daily_loss: float = 40_000.0
+    capital_per_pick: float = 1_000_000.0 # [v10.26] R$7M / 7 picks = ~R$1M each
+    max_total_allocated: float = 7_000_000.0 # [v10.26] full LONG capital
+    max_daily_loss: float = 200_000.0     # [v10.26] proportional to R$7M
 
     # ── Scheduling ─────────────────────────────────────────
-    scan_day_of_month: int = 1          # 1st business day
-    review_day_of_week: str = 'monday'
+    scan_day_of_month: int = 1            # 1st business day + daily review
+    review_day_of_week: str = 'daily'     # [v10.26] daily monitoring, not just weekly
     review_hour: int = 9                # 09:00 local
 
     # ── Conviction weighting for final pick selection ──────

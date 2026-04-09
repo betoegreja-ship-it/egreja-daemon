@@ -364,3 +364,12 @@ OPLAB_CONFIRM_ENABLED        = os.environ.get('OPLAB_CONFIRM_ENABLED', 'true').l
 BRAPI_CONFIRM_ENABLED        = os.environ.get('BRAPI_CONFIRM_ENABLED', 'true').lower() != 'false'
 CONFIRM_TIMEOUT_S            = float(os.environ.get('CONFIRM_TIMEOUT_S', 3.0))  # max wait for API response
 CONFIRM_MIN_AGREEMENT        = int(os.environ.get('CONFIRM_MIN_AGREEMENT', 1))   # 1 source agrees = pass
+
+# ═══════════════════════════════════════════════════════════════
+# [v10.26] MONTHLY PICKS — LONG CAPITAL ALLOCATION
+# ═══════════════════════════════════════════════════════════════
+# When True: all LONG stock capital (R$7M) is managed by Monthly Picks.
+# Auto stock_execution_worker will only open SHORT positions.
+MONTHLY_PICKS_OWNS_LONG = os.environ.get('MONTHLY_PICKS_OWNS_LONG', 'true').lower() != 'false'
+MONTHLY_PICKS_CAPITAL   = float(os.environ.get('MONTHLY_PICKS_CAPITAL', 7_000_000))
+MONTHLY_PICKS_MAX_PICKS = int(os.environ.get('MONTHLY_PICKS_MAX_PICKS', 8))

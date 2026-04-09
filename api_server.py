@@ -641,6 +641,9 @@ POLYGON_CONFIRM_ENABLED       = _TC_POLYGON_CONFIRM_ENABLED if '_TC_POLYGON_CONF
 BRAPI_CONFIRM_ENABLED         = _TC_BRAPI_CONFIRM_ENABLED if '_TC_BRAPI_CONFIRM_ENABLED' in dir() else True
 CONFIRM_TIMEOUT_S             = _TC_CONFIRM_TIMEOUT_S if '_TC_CONFIRM_TIMEOUT_S' in dir() else 3.0
 CONFIRM_MIN_AGREEMENT         = _TC_CONFIRM_MIN_AGREEMENT if '_TC_CONFIRM_MIN_AGREEMENT' in dir() else 1
+
+# [v10.26] Monthly Picks LONG allocation
+MONTHLY_PICKS_OWNS_LONG = os.environ.get('MONTHLY_PICKS_OWNS_LONG', 'true').lower() != 'false'
 CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15))          # hold mínimo (min) para flat exit
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 

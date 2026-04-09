@@ -87,6 +87,7 @@ try:
     from modules.derivatives.liquidity import LiquidityScoreEngine, PromotionEngine, ActiveStatusRegistry
     from modules.derivatives.capital import DerivativesCapitalManager
     from modules.derivatives.learning import DerivativesLearningEngine
+    from modules.derivatives.position_sizing import DerivativesPositionSizer
     from modules.derivatives.strategies import (pcp_scan_loop, fst_scan_loop, roll_arb_scan_loop,
         etf_basket_scan_loop, skew_arb_scan_loop, interlisted_scan_loop, dividend_arb_scan_loop, vol_arb_scan_loop)
     from modules.derivatives.endpoints import create_strategies_blueprint
@@ -345,6 +346,16 @@ try:
     except Exception as _dl_err:
         log.warning(f'[FIX] deriv_learner init failed: {_dl_err}')
         _deriv_services['deriv_learner'] = None
+    # [v10.29] CRITICAL FIX: deriv_sizer was NEVER initialized — strategies.py line 113-117
+    # checks (execution_engine AND sizer AND capital_mgr) and returns False if any is None.
+    # This caused PCP to find 11K+ opportunities but never execute ANY trade.
+    try:
+        _deriv_services['deriv_sizer'] = DerivativesPositionSizer(_deriv_cfg) if _deriv_cfg else None
+        if _deriv_services['deriv_sizer']:
+            log.info('[v10.29] deriv_sizer initialized — derivatives can now execute trades')
+    except Exception as _ds_err:
+        log.warning(f'[v10.29] deriv_sizer init failed: {_ds_err}')
+        _deriv_services['deriv_sizer'] = None
     log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')

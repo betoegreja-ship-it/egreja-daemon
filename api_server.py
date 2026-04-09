@@ -328,6 +328,34 @@ try:
                     if _reg.get_status(_sym, _strat) is None:
                         _reg.set_status(_sym, _strat, _seed_tier, reason='startup_seed')
             log.info(f'[FORENSIC-SEED] active_status_registry seeded {len(_seed_universe)} assets x 2 strategies @ {_seed_tier_str}')
+            # [v10.29c] Persist seed to DB so /strategies/status endpoint returns data
+            try:
+                _db_conn = get_db()
+                if _db_conn:
+                    _db_cur = _db_conn.cursor()
+                    _status_int = {
+                        'OBSERVE': 0, 'SHADOW_EXEC': 1, 'PAPER_SMALL': 2, 'PAPER_FULL': 3
+                    }.get(_seed_tier_str, 2)
+                    _all_strats = ['PCP', 'FST', 'ROLL_ARB', 'ETF_BASKET', 'SKEW_ARB', 'INTERLISTED', 'DIVIDEND_ARB', 'VOL_ARB']
+                    _seeded_db = 0
+                    for _sym in _seed_universe:
+                        for _strat in _all_strats:
+                            try:
+                                _db_cur.execute(
+                                    """INSERT INTO active_status_registry (symbol, strategy_type, active_status, updated_at)
+                                    VALUES (%s, %s, %s, %s)
+                                    ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)""",
+                                    (_sym, _strat, _status_int, datetime.utcnow())
+                                )
+                                _seeded_db += 1
+                            except Exception:
+                                pass
+                    _db_conn.commit()
+                    _db_cur.close()
+                    _db_conn.close()
+                    log.info(f'[v10.29c] active_status_registry DB seeded: {_seeded_db} rows')
+            except Exception as _db_seed_err:
+                log.warning(f'[v10.29c] DB seed failed (table may not exist yet): {_db_seed_err}')
     except Exception as _e:
         log.warning(f'[FORENSIC-SEED] seed failed: {_e}')
     # [FIX] Init capital manager + learning engine (antes ficavam None e quebravam trade opening + learning endpoint)
@@ -464,11 +492,22 @@ MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 350_000))  
 MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 500_000))  # [v10.25] máximo global
 # [v10.14] Posição máxima por símbolo — BTC e ETH são as âncoras de capital
 CRYPTO_MAX_POSITION_BY_SYM = {
-    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  500_000)),  # [v10.24.4] 33% — melhor histórico WR 55%
-    'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  300_000)),  # 20% — referência de mercado
-    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',  200_000)),  # [v10.24.4] 13% — segundo melhor P&L
-    'NEARUSDT': float(os.environ.get('MAX_POS_NEAR', 200_000)),  # 13% — terceiro WR 55%
-    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',  200_000)),  # [v10.24.4] 13% — exchange coin estável
+    # [v10.29c] Tier 1 — top performers get larger allocation
+    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  500_000)),  # WR 55% — best, max allocation
+    'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  400_000)),  # WR 53% — market reference
+    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',  350_000)),  # WR 54% — second best P&L
+    'NEARUSDT': float(os.environ.get('MAX_POS_NEAR', 350_000)),  # WR 55% — third
+    # Tier 2 — neutral, moderate allocation
+    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',  250_000)),  # WR 50% — stable
+    'SOLUSDT':  float(os.environ.get('MAX_POS_SOL',  200_000)),  # WR 47% — high vol
+    'XRPUSDT':  float(os.environ.get('MAX_POS_XRP',  200_000)),  # WR 49% — liquid
+    'ADAUSDT':  float(os.environ.get('MAX_POS_ADA',  200_000)),  # WR 48% — large cap
+    'AVAXUSDT': float(os.environ.get('MAX_POS_AVAX', 200_000)),  # WR 49% — L1
+    # Tier 3 — monitored, smaller allocation
+    'DOTUSDT':  float(os.environ.get('MAX_POS_DOT',  150_000)),  # WR 46%
+    'TRXUSDT':  float(os.environ.get('MAX_POS_TRX',  150_000)),  # WR 47%
+    'APTUSDT':  float(os.environ.get('MAX_POS_APT',  150_000)),  # WR 46%
+    'ATOMUSDT': float(os.environ.get('MAX_POS_ATOM', 150_000)),  # WR 47%
 }
 
 FMP_API_KEY      = os.environ.get('FMP_API_KEY', '')        # mantido como fallback terciário
@@ -513,7 +552,7 @@ ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.24.4] 5 símbolos — usar todo o capital nas 5 moedas
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 8))  # [v10.29c] 13 ativos, max 8 simultâneos
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
 # Settings ajustaveis em runtime (via /settings POST)
@@ -542,7 +581,7 @@ ARBI_MAX_DAILY_LOSS  = float(os.environ.get('ARBI_MAX_DAILY_LOSS_PCT', 1.5))
 ARBI_KILL_SWITCH     = False
 
 # Risco global
-MAX_OPEN_POSITIONS      = 65  # [v10.14] 60 stocks + 5 crypto (hardcoded)
+MAX_OPEN_POSITIONS      = 68  # [v10.29c] 60 stocks + 8 crypto
 MAX_DAILY_DRAWDOWN_PCT  = float(os.environ.get('MAX_DAILY_DRAWDOWN_PCT', 2.0))
 MAX_WEEKLY_DRAWDOWN_PCT = float(os.environ.get('MAX_WEEKLY_DRAWDOWN_PCT', 5.0))
 MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 10))
@@ -621,8 +660,8 @@ FLAT_EXIT_MAX_VARIATION   = float(os.environ.get('FLAT_EXIT_MAX_VARIATION', 0.30
 # ── [v10.17] Trailing stop triggers (mais baixos) ────────────────────────
 TRAILING_PEAK_STOCKS      = float(os.environ.get('TRAILING_PEAK_STOCKS', 1.0))     # era 1.5% — ativa trailing mais cedo
 TRAILING_DROP_STOCKS      = float(os.environ.get('TRAILING_DROP_STOCKS', 0.4))     # era 0.5% — retração menor
-TRAILING_PEAK_CRYPTO      = float(os.environ.get('TRAILING_PEAK_CRYPTO', 1.5))     # era 2.0% — ativa trailing mais cedo
-TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 0.7))     # era 1.0% — retração menor
+TRAILING_PEAK_CRYPTO      = float(os.environ.get('TRAILING_PEAK_CRYPTO', 2.2))     # [v10.29c] mais espaço para winners (Manus TP/SL 0.86)
+TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 1.0))     # [v10.29c] menos cortes prematuros
 # ── [v10.17] Directional exposure limit ───────────────────────────────────
 MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))       # max 70% das posições na mesma direção (stocks)
 MAX_DIRECTIONAL_PCT_CRYPTO = float(os.environ.get('MAX_DIRECTIONAL_PCT_CRYPTO', 100))  # [v10.24.4] crypto: 100% — mercado correlacionado, diversificação é entre moedas
@@ -659,17 +698,23 @@ CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15)) 
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [v10.14] Corte cirúrgico para 5 melhores por P&L real (análise 30/03/2026)
-    # REMOVIDOS por P&L negativo acumulado:
-    # ADAUSDT  -$5.515 (WR 48%), AVAXUSDT -$3.885 (WR 49%), SOLUSDT -$3.583 (WR 47%)
-    # DOGEUSDT -$3.037 (WR 54%!), XRPUSDT -$1.243, DOTUSDT -$5.897, UNIUSDT -$427
-    # LTCUSDT -$240, APTUSDT -$297, MATICUSDT -N/A, TRXUSDT -$1.372
-    # MANTIDOS (únicos lucrativos + neutros):
-    'ETHUSDT',   # +$5.723  WR 55% — melhor de todos
-    'ARBUSDT',   # +$2.455  WR 54% — segundo melhor
-    'NEARUSDT',  # +$964    WR 55% — terceiro
-    'BTCUSDT',   # +$242    WR 53% — quase neutro, referência de mercado
-    'BNBUSDT',   # +$191    WR 50% — quase neutro, exchange coin estável
+    # [v10.29c] 13 ativos — Manus 15 minus 2 toxic (DOGEUSDT 0% WR, LINKUSDT 33% WR)
+    # Tier 1 — Top performers (WR > 53%)
+    'ETHUSDT',    # +$5.723  WR 55% — best overall
+    'ARBUSDT',    # +$2.455  WR 54% — second best P&L
+    'NEARUSDT',   # +$964    WR 55% — third
+    'BTCUSDT',    # +$242    WR 53% — market reference
+    # Tier 2 — Neutral/recovery potential (WR 48-52%)
+    'BNBUSDT',    # +$191    WR 50% — exchange coin, stable
+    'SOLUSDT',    # WR 47% recovering — high volume, Manus includes
+    'XRPUSDT',    # WR 49% — high liquidity, Manus includes
+    'ADAUSDT',    # WR 48% — Manus includes, large cap
+    'AVAXUSDT',   # WR 49% — Manus includes, L1 ecosystem
+    # Tier 3 — Monitored (WR 45-48%, lower allocation)
+    'DOTUSDT',    # WR 46% — Manus includes, cross-chain
+    'TRXUSDT',    # WR 47% — Manus includes, stablecoin ecosystem
+    'APTUSDT',    # WR 46% — Manus includes, Move ecosystem
+    'ATOMUSDT',   # WR 47% — Manus includes, IBC hub
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',
@@ -1318,6 +1363,7 @@ def _trigger_kill_switch(dd_pct, period):
     global RISK_KILL_SWITCH
     RISK_KILL_SWITCH = True
     audit('KILL_SWITCH_ACTIVATED',{'drawdown_pct':round(dd_pct,2),'period':period})
+    send_whatsapp(f'KILL SWITCH ATIVADO — drawdown {period}: {dd_pct:.2f}%')
 
 def _auto_reset_kill_switch_if_safe():
     """[v10.14] Auto-reset do kill_switch no início de um novo dia se drawdown < limite."""
@@ -1341,7 +1387,6 @@ def _auto_reset_kill_switch_if_safe():
             audit('KILL_SWITCH_AUTO_RESET', {'dd_today': round(dd_today,2), 'threshold': MAX_DAILY_DRAWDOWN_PCT})
     except Exception as e:
         log.warning(f'auto_reset_ks: {e}')
-    send_whatsapp(f'KILL SWITCH ATIVADO — drawdown {period}: {dd_pct:.2f}%')
 
 def _second_validation(symbol, market_type, strategy):
     """Segunda validação leve DENTRO do state_lock"""
@@ -4412,6 +4457,19 @@ def init_all_tables():
         except Exception as e:
             if 'Duplicate key name' not in str(e) and 'already exists' not in str(e).lower():
                 log.debug(f'Migration uq_origin: {e}')
+        # [v10.29c] active_status_registry table — was missing, endpoint returned 0 rows
+        try:
+            cursor.execute("""CREATE TABLE IF NOT EXISTS active_status_registry (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                strategy_type VARCHAR(30) NOT NULL,
+                active_status INT DEFAULT 0,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_sym_strat (symbol, strategy_type)
+            )""")
+            log.info('[v10.29c] active_status_registry table created/verified')
+        except Exception as e:
+            log.warning(f'[v10.29c] active_status_registry table: {e}')
         # [v10.25] Derivatives tables
         try:
             create_derivatives_tables(conn)
@@ -8008,13 +8066,32 @@ def ticker_tape_js():
 @app.route('/api/info')
 def api_info():
     """API service info (previously served at /)."""
+    # [v10.29c] Provider diagnostics
+    _prov_info = {}
+    try:
+        _pm = _deriv_provider_mgr
+        if _pm:
+            for _pname, _pprov in getattr(_pm, '_providers', {}).items():
+                _prov_info[_pname] = {
+                    'registered': True,
+                    'active': getattr(_pprov, '_token', None) is not None or getattr(_pprov, '_authenticated', False),
+                    'type': type(_pprov).__name__,
+                }
+    except Exception:
+        pass
     return jsonify({
-        'service':'Egreja Investment AI','version':'10.26.0','status':'online',
+        'service':'Egreja Investment AI','version':'10.29c','status':'online',
         'kill_switch':RISK_KILL_SWITCH,'arbi_kill_switch':ARBI_KILL_SWITCH,
         'market_regime':market_regime.get('mode','UNKNOWN'),
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'lse':is_lse_open(),'hkex':is_hkex_open(),'crypto':True},
         'deploy_mode':'single-process',
-        'degraded': _read_degraded()['active'],   # [V91-5] flag rápida
+        'degraded': _read_degraded()['active'],
+        'crypto_symbols_count': len(CRYPTO_SYMBOLS),
+        'crypto_prices_cached': len(crypto_prices),
+        'deriv_providers': _prov_info,
+        'deriv_sizer_active': _deriv_services.get('deriv_sizer') is not None,
+        'oplab_token_set': bool(os.environ.get('OPLAB_ACCESS_TOKEN', '').strip()),
+        'brapi_token_set': bool(BRAPI_TOKEN),
     })
 
 @app.route('/api/modules-debug')

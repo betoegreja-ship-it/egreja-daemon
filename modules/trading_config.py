@@ -1,5 +1,5 @@
 """
-[v10.26] Trading Configuration Module
+[v10.29] Trading Configuration Module
 Extracts pure constants and configuration from api_server.py.
 No mutable state, no Flask app references.
 """
@@ -15,19 +15,30 @@ INITIAL_CAPITAL_CRYPTO = float(os.environ.get('INITIAL_CAPITAL_CRYPTO', 1_000_00
 MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 350_000))  # [v10.14] proporcional ao capital atual
 MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 500_000))  # [v10.25] máximo global
 
-# [v10.14] Posição máxima por símbolo — BTC e ETH são as âncoras de capital
+# [v10.29] Posição máxima por símbolo — Tier 1/2/3 baseado em WR comprovado
 CRYPTO_MAX_POSITION_BY_SYM = {
-    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  500_000)),  # [v10.24.4] 33% — melhor histórico WR 55%
-    'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  300_000)),  # 20% — referência de mercado
-    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',  200_000)),  # [v10.24.4] 13% — segundo melhor P&L
-    'NEARUSDT': float(os.environ.get('MAX_POS_NEAR', 200_000)),  # 13% — terceiro WR 55%
-    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',  200_000)),  # [v10.24.4] 13% — exchange coin estável
+    # Tier 1: comprovados com WR > 53%
+    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  400_000)),  # [v10.29] reduzido — mais capital distribuído
+    'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  250_000)),  # [v10.29] referência
+    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',  200_000)),  # mantido
+    'NEARUSDT': float(os.environ.get('MAX_POS_NEAR', 200_000)),  # mantido
+    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',  150_000)),  # [v10.29] WR 50% borderline
+    # Tier 2: promissores (Manus report)
+    'ATOMUSDT': float(os.environ.get('MAX_POS_ATOM', 150_000)),  # [v10.29] Manus: 75% WR
+    'SOLUSDT':  float(os.environ.get('MAX_POS_SOL',  150_000)),  # alta liquidez
+    'XRPUSDT':  float(os.environ.get('MAX_POS_XRP',  120_000)),  # volume consistente
+    # Tier 3: novos — limits conservadores
+    'AVAXUSDT': float(os.environ.get('MAX_POS_AVAX', 100_000)),
+    'ADAUSDT':  float(os.environ.get('MAX_POS_ADA',  100_000)),
+    'DOTUSDT':  float(os.environ.get('MAX_POS_DOT',  100_000)),
+    'TRXUSDT':  float(os.environ.get('MAX_POS_TRX',  100_000)),
+    'APTUSDT':  float(os.environ.get('MAX_POS_APT',  100_000)),
 }
 
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 15))  # [v10.26] expanded universe
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 8))   # [v10.29] 13 ativos, max 8 simultâneos
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
 # ═══════════════════════════════════════════════════════════════
@@ -63,7 +74,7 @@ B3_ADR_SYMBOLS = set(B3_TO_ADR.values())
 # ═══════════════════════════════════════════════════════════════
 PUBLIC_ROUTES = {'/', '/health', '/degraded', '/sync/export', '/sync/import'}
 
-MAX_OPEN_POSITIONS      = 75  # [v10.26] 60 stocks + 15 crypto
+MAX_OPEN_POSITIONS      = 68  # [v10.29] 60 stocks + 8 crypto
 MAX_DAILY_DRAWDOWN_PCT  = float(os.environ.get('MAX_DAILY_DRAWDOWN_PCT', 2.0))
 MAX_WEEKLY_DRAWDOWN_PCT = float(os.environ.get('MAX_WEEKLY_DRAWDOWN_PCT', 5.0))
 MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 10))
@@ -122,9 +133,9 @@ DAILY_DD_STOCKS_PCT   = float(os.environ.get('DAILY_DD_STOCKS_PCT', 1.5))
 DAILY_DD_CRYPTO_PCT   = float(os.environ.get('DAILY_DD_CRYPTO_PCT', 2.0))
 
 # ── [v10.16] Auto-blacklist ──────────────────────────────────
-BLACKLIST_MIN_TRADES    = int(os.environ.get('BLACKLIST_MIN_TRADES', 20))
-BLACKLIST_MAX_AVG_PNL   = float(os.environ.get('BLACKLIST_MAX_AVG_PNL', -40))
-BLACKLIST_MAX_WR        = float(os.environ.get('BLACKLIST_MAX_WR', 42))
+BLACKLIST_MIN_TRADES    = int(os.environ.get('BLACKLIST_MIN_TRADES', 15))      # [v10.29] detecção mais rápida (Manus: DOGE 0% WR em 12 trades)
+BLACKLIST_MAX_AVG_PNL   = float(os.environ.get('BLACKLIST_MAX_AVG_PNL', -30))  # [v10.29] mais agressivo
+BLACKLIST_MAX_WR        = float(os.environ.get('BLACKLIST_MAX_WR', 45))        # [v10.29] Manus suspende abaixo de 45%
 BLACKLIST_REVIEW_H      = float(os.environ.get('BLACKLIST_REVIEW_H', 24))
 
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
@@ -144,8 +155,8 @@ FLAT_EXIT_MAX_VARIATION   = float(os.environ.get('FLAT_EXIT_MAX_VARIATION', 0.30
 # ── [v10.17] Trailing stop triggers ────────────────────────
 TRAILING_PEAK_STOCKS      = float(os.environ.get('TRAILING_PEAK_STOCKS', 1.0))
 TRAILING_DROP_STOCKS      = float(os.environ.get('TRAILING_DROP_STOCKS', 0.4))
-TRAILING_PEAK_CRYPTO      = float(os.environ.get('TRAILING_PEAK_CRYPTO', 1.5))
-TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 0.7))
+TRAILING_PEAK_CRYPTO      = float(os.environ.get('TRAILING_PEAK_CRYPTO', 2.2))   # [v10.29] era 1.5 — Manus TP/SL ratio 0.86, mais espaço para winners
+TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 1.0))   # [v10.29] era 0.7 — menos cortes prematuros
 
 # ── [v10.17] Directional exposure limit ───────────────────────────────────
 MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))
@@ -174,27 +185,25 @@ LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != '
 # CRYPTO SYMBOLS
 # ═══════════════════════════════════════════════════════════════
 CRYPTO_SYMBOLS = [
-    # [v10.26] Reativado universo completo — agora protegido por min_score=75, conviction=70,
-    #          ATR SL 3.0x, max_directional 70%, e detecção de inversão de mercado
-    'BTCUSDT',   # referência de mercado
-    'ETHUSDT',   # melhor histórico
-    'BNBUSDT',   # exchange coin estável
-    'SOLUSDT',   # alta liquidez
-    'XRPUSDT',   # alta liquidez
-    'ADAUSDT',   # top 10
-    'DOGEUSDT',  # meme coin, alta vol
+    # [v10.29] Curado para 13 ativos baseado no Manus report
+    # Removidos: DOGEUSDT (Manus 0% WR, -$10K), LINKUSDT (33% WR, -$7.6K)
+    # Removidos: MATICUSDT, LTCUSDT, UNIUSDT, XLMUSDT (baixa performance relativa)
+    # Tier 1: comprovados
+    'ETHUSDT',   # Egreja: +$5.7K WR 55% | Manus: +$12K WR 68.8%
+    'ARBUSDT',   # Egreja: +$2.5K WR 54%
+    'NEARUSDT',  # Egreja: +$964  WR 55%
+    'BTCUSDT',   # Referência de mercado
+    'BNBUSDT',   # Exchange coin estável
+    # Tier 2: promissores (Manus data)
+    'ATOMUSDT',  # Manus: 75% WR, +$5.4K — melhor WR do Manus
+    'SOLUSDT',   # Top 5 market cap, alta liquidez
+    'XRPUSDT',   # Boa liquidez, volume consistente
+    # Tier 3: Manus assets sob teste
     'AVAXUSDT',  # L1
+    'ADAUSDT',   # Alta liquidez
     'DOTUSDT',   # L0
-    'LINKUSDT',  # oracle líder
-    'MATICUSDT', # L2
-    'LTCUSDT',   # legacy
-    'UNIUSDT',   # DeFi líder
-    'ATOMUSDT',  # interchain
-    'XLMUSDT',   # payments
-    'NEARUSDT',  # bom histórico
-    'APTUSDT',   # L1 novo
-    'ARBUSDT',   # bom histórico
-    'TRXUSDT',   # stablecoin chain
+    'TRXUSDT',   # Stablecoin chain, volume alto
+    'APTUSDT',   # L1 novo promissor
 ]
 
 CRYPTO_NAMES = {

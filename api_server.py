@@ -1575,14 +1575,15 @@ CRYPTO_HOUR_SCORE = {
 }
 
 # Score por dia da semana para crypto (0=Seg, 6=Dom)
+# [v10.29] Score por dia — Manus data: Quarta 0% WR, Sexta 8.7% WR, Domingo 100% WR
 CRYPTO_DOW_SCORE = {
-    0: +4,   # Segunda: 53.7% WR
-    1: -10,  # Terça:   43.9% WR — pior dia, -$37.9K total
-    2: -8,   # Quarta:  40.3% WR
+    0: +8,   # Segunda: 53.7% WR Egreja | Manus: gap opportunities → reforçado
+    1: -10,  # Terça:   43.9% WR — pior dia Egreja
+    2: -25,  # [v10.29] Quarta: 40.3% WR Egreja | Manus: 0% WR → hard penalty
     3: +2,   # Quinta:  48.7% WR — neutro-positivo
-    4: -8,   # Sexta:   42.0% WR
+    4: -20,  # [v10.29] Sexta: 42.0% WR Egreja | Manus: 8.7% WR → heavy penalty
     5: -6,   # Sábado:  43.3% WR
-    6: +15,  # Domingo: 64.7% WR — melhor dia, +$12.7K total
+    6: +20,  # [v10.29] Domingo: 64.7% WR Egreja | Manus: 100% WR → max boost
 }
 
 # [v10.15] CRYPTO_BLOCKED_WINDOWS agora é DINÂMICO — calculado a partir do factor_stats real.
@@ -1731,12 +1732,15 @@ def get_cross_market_crypto_adj() -> int:
     if usdbrl_chg > 1.5:   adj += 4  # dólar forte → cripto pode subir
     elif usdbrl_chg < -1.5: adj -= 3  # dólar fraco → menos fluxo para cripto
     
-    # BTC sentimento (proxy geral de mercado cripto)
+    # [v10.29] BTC sentimento reforçado (Manus usa BTC como proxy cross-market)
     btc_chg = s.get('btc_change_24h', 0.0)
-    if btc_chg > 3.0:   adj += 5   # BTC em alta → mercado bullish
-    elif btc_chg < -3.0: adj -= 8  # BTC em queda → mercado bearish (penaliza mais)
-    
-    return max(-20, min(+15, adj))  # cap ±20 pts
+    if btc_chg > 5.0:    adj += 8   # BTC em forte alta → muito bullish
+    elif btc_chg > 3.0:  adj += 5   # BTC em alta → mercado bullish
+    elif btc_chg < -5.0: adj -= 15  # [v10.29] BTC queda forte → altcoins em perigo severo
+    elif btc_chg < -3.0: adj -= 10  # [v10.29] BTC queda → bearish
+    elif btc_chg < -1.5: adj -= 4   # [v10.29] BTC levemente negativo → cautela
+
+    return max(-25, min(+20, adj))  # [v10.29] cap expandido
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2709,6 +2713,28 @@ def is_symbol_blacklisted(symbol: str) -> tuple:
         return True, f'SYMBOL_BLACKLISTED ({info["reason"]})'
     return False, 'OK'
 
+
+def get_symbol_wr_sizing_mult(symbol: str, asset_type: str = 'crypto') -> float:
+    """[v10.29] Dynamic position sizing multiplier based on per-symbol WR.
+    Inspired by Manus report: allocate more to high-WR assets, less to low-WR.
+    Returns multiplier: 0.6x to 1.3x (default 1.0 if insufficient data).
+    """
+    with state_lock:
+        closed_list = list(crypto_closed) if asset_type == 'crypto' else list(stocks_closed)
+    n = 0; wins = 0
+    for t in closed_list:
+        if t.get('symbol', '') == symbol:
+            n += 1
+            if float(t.get('pnl', 0) or 0) > 0:
+                wins += 1
+    if n < 10:
+        return 1.0  # insufficient data
+    wr = wins / n * 100
+    if wr > 58:   return 1.30
+    if wr > 53:   return 1.15
+    if wr >= 48:  return 1.00
+    if wr >= 45:  return 0.80
+    return 0.60
 
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
 def get_adaptive_sl_pct(trade: dict) -> float:
@@ -6211,18 +6237,17 @@ def auto_trade_crypto():
                     continue
                 _cm_adj = get_cross_market_crypto_adj()
                 _score_before = score
-                # [v10.14-FIX] Limitar penalidade temporal para sinais fortes
-                # Se crypto se move >4%, o mercado está em tendência — não bloquear com viés histórico
+                # [v10.29] Limitar penalidade temporal — caps ajustados para Quarta/Sexta
                 _raw_change = float(ticker_data.get('change_pct', 0))
-                _strong_signal = abs(_raw_change) > 2.0  # [v10.14-FIX] 2% suficiente para override temporal
+                _strong_signal = abs(_raw_change) > 3.0  # [v10.29] era 2.0 — mais restritivo
                 if _strong_signal and (_t_adj + _cm_adj) < 0:
-                    # Sinal forte: penalidade máxima -8
-                    _capped_t = max(_t_adj + _cm_adj, -8)
+                    # Sinal forte: penalidade máxima -12 (era -8)
+                    _capped_t = max(_t_adj + _cm_adj, -12)
                     score = max(0, min(100, score + _capped_t))
                 else:
-                    # Sinal normal: penalidade máxima -12 (crypto 24/7 — não penalizar tanto)
+                    # [v10.29] Sinal normal: penalidade máxima -20 (era -12)
                     _total_t = _t_adj + _cm_adj
-                    _capped_t = max(_total_t, -12) if _total_t < 0 else _total_t
+                    _capped_t = max(_total_t, -20) if _total_t < 0 else _total_t
                     score = max(0, min(100, score + _capped_t))
                 # [v10.13] Padrões compostos
                 _rsi_c = float(ticker_data.get('rsi',50) or 50)
@@ -6341,23 +6366,21 @@ def auto_trade_crypto():
                     with learning_lock: processed_signal_ids[ms_key_c] = {'sig_id': _csig_id, 'reason': 'learning_dead_zone'}
                     continue
 
-                # [v10.28] Crypto sizing — capital distribuído entre MAX_POSITIONS_CRYPTO slots
+                # [v10.29] Crypto sizing — capital distribuído + WR-based dynamic sizing
                 _sym_max = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)
-                # [v10.14] Posição baseada no portfolio TOTAL de crypto
                 _crypto_port_total = max(
                     crypto_capital + sum(t.get('position_value',0) for t in crypto_open),
                     INITIAL_CAPITAL_CRYPTO)
-                _regime_csize_m, _regime_csl_tmp, _regime_cinfo = get_regime_multiplier()  # [v10.17]
-                # [v10.28] Crypto regime floor: crypto é naturalmente volátil, regime
-                # HIGH_VOL não deve penalizar tanto — floor 0.75x (era 0.6x sem floor)
+                _regime_csize_m, _regime_csl_tmp, _regime_cinfo = get_regime_multiplier()
                 _regime_csize_m = max(_regime_csize_m, 0.75)
-                # [v10.28] Score factor mais agressivo para crypto: 0.80 base (era 0.70)
                 _crypto_pos_target = _crypto_port_total / MAX_POSITIONS_CRYPTO * (0.80 + score_factor * 0.20)
-                # [v10.28] Risk mult floor para crypto: mínimo 0.6 (era 0.3 global)
                 _risk_mult_crypto = max(risk_mult_c, 0.6)
-                # [v10.28] Mínimo por posição: 15% do slot (era 50K fixo)
-                _min_crypto_pos = max(100_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.15)
-                desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m, _min_crypto_pos), _sym_max)
+                # [v10.29] Dynamic WR-based sizing: allocate more to proven winners
+                _wr_sizing_mult = get_symbol_wr_sizing_mult(display, 'crypto')
+                _min_crypto_pos = max(80_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.12)
+                desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m * _wr_sizing_mult, _min_crypto_pos), _sym_max)
+                if _wr_sizing_mult != 1.0:
+                    log.info(f'[CRYPTO-WR-SIZE] {display}: wr_mult={_wr_sizing_mult:.2f} desired={desired_pos:,.0f}')
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:

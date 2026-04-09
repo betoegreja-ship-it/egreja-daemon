@@ -328,44 +328,7 @@ try:
                     if _reg.get_status(_sym, _strat) is None:
                         _reg.set_status(_sym, _strat, _seed_tier, reason='startup_seed')
             log.info(f'[FORENSIC-SEED] active_status_registry seeded {len(_seed_universe)} assets x 2 strategies @ {_seed_tier_str}')
-            # [v10.29c] Persist seed to DB so /strategies/status endpoint returns data
-            try:
-                _db_conn = get_db()
-                if _db_conn:
-                    _db_cur = _db_conn.cursor()
-                    # Ensure table exists before INSERT (init_all_tables runs later)
-                    _db_cur.execute("""CREATE TABLE IF NOT EXISTS active_status_registry (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        symbol VARCHAR(20) NOT NULL,
-                        strategy_type VARCHAR(30) NOT NULL,
-                        active_status INT DEFAULT 0,
-                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        UNIQUE KEY uq_sym_strat (symbol, strategy_type)
-                    )""")
-                    _db_conn.commit()
-                    _status_int = {
-                        'OBSERVE': 0, 'SHADOW_EXEC': 1, 'PAPER_SMALL': 2, 'PAPER_FULL': 3
-                    }.get(_seed_tier_str, 2)
-                    _all_strats = ['PCP', 'FST', 'ROLL_ARB', 'ETF_BASKET', 'SKEW_ARB', 'INTERLISTED', 'DIVIDEND_ARB', 'VOL_ARB']
-                    _seeded_db = 0
-                    for _sym in _seed_universe:
-                        for _strat in _all_strats:
-                            try:
-                                _db_cur.execute(
-                                    """INSERT INTO active_status_registry (symbol, strategy_type, active_status, updated_at)
-                                    VALUES (%s, %s, %s, %s)
-                                    ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)""",
-                                    (_sym, _strat, _status_int, datetime.utcnow())
-                                )
-                                _seeded_db += 1
-                            except Exception:
-                                pass
-                    _db_conn.commit()
-                    _db_cur.close()
-                    _db_conn.close()
-                    log.info(f'[v10.29c] active_status_registry DB seeded: {_seeded_db} rows')
-            except Exception as _db_seed_err:
-                log.warning(f'[v10.29c] DB seed failed (table may not exist yet): {_db_seed_err}')
+            # [v10.29c] DB seed moved to _seed_active_status_db() — runs after init_all_tables()
     except Exception as _e:
         log.warning(f'[FORENSIC-SEED] seed failed: {_e}')
     # [FIX] Init capital manager + learning engine (antes ficavam None e quebravam trade opening + learning endpoint)
@@ -10392,6 +10355,34 @@ if __name__ == '__main__':
     except Exception as _e:
         log.warning(f'Pre-init cleanup error: {_e}')
     init_all_tables()
+
+    # [v10.29c] Seed active_status_registry DB table after tables are created
+    try:
+        _seed_conn = get_db()
+        if _seed_conn:
+            _seed_cur = _seed_conn.cursor()
+            _seed_assets = ['PETR4','VALE3','BOVA11','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3']
+            _seed_strats = ['PCP','FST','ROLL_ARB','ETF_BASKET','SKEW_ARB','INTERLISTED','DIVIDEND_ARB','VOL_ARB']
+            _seed_tier_int = {'OBSERVE':0,'SHADOW_EXEC':1,'PAPER_SMALL':2,'PAPER_FULL':3}.get(
+                os.environ.get('DERIV_SEED_TIER','PAPER_SMALL'), 2)
+            _seed_n = 0
+            for _sym in _seed_assets:
+                for _strat in _seed_strats:
+                    try:
+                        _seed_cur.execute(
+                            """INSERT INTO active_status_registry (symbol, strategy_type, active_status, updated_at)
+                            VALUES (%s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)""",
+                            (_sym, _strat, _seed_tier_int, datetime.utcnow()))
+                        _seed_n += 1
+                    except Exception:
+                        pass
+            _seed_conn.commit()
+            _seed_cur.close()
+            _seed_conn.close()
+            log.info(f'[v10.29c] active_status_registry DB seeded: {_seed_n} rows')
+    except Exception as _e:
+        log.warning(f'[v10.29c] DB seed after init_all_tables failed: {_e}')
 
     # [v3.0] Create unified brain tables (persistent memory — the brain never forgets)
     try:

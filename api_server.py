@@ -8081,6 +8081,73 @@ def modules_debug():
         'brain_error': _brain_load_error,
     })
 
+@app.route('/api/seed-status-debug')
+def seed_status_debug():
+    """[v10.29c] Debug: check active_status_registry table and seed it if empty."""
+    results = {}
+    try:
+        conn = get_db()
+        if not conn:
+            return jsonify({'error': 'no db connection'}), 500
+        cur = conn.cursor(dictionary=True)
+        # Check if table exists
+        try:
+            cur.execute("SHOW TABLES LIKE 'active_status_registry'")
+            table_exists = cur.fetchone() is not None
+            results['table_exists'] = table_exists
+        except Exception as e:
+            results['table_check_error'] = str(e)
+            table_exists = False
+        # If table doesn't exist, create it
+        if not table_exists:
+            try:
+                cur.execute("""CREATE TABLE IF NOT EXISTS active_status_registry (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    symbol VARCHAR(20) NOT NULL,
+                    strategy_type VARCHAR(30) NOT NULL,
+                    active_status INT DEFAULT 0,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_sym_strat (symbol, strategy_type)
+                )""")
+                conn.commit()
+                results['table_created'] = True
+            except Exception as e:
+                results['create_error'] = str(e)
+        # Count rows
+        try:
+            cur.execute("SELECT COUNT(*) as cnt FROM active_status_registry")
+            row = cur.fetchone()
+            results['row_count'] = row['cnt'] if row else 0
+        except Exception as e:
+            results['count_error'] = str(e)
+        # If empty, seed
+        if results.get('row_count', 0) == 0:
+            assets = ['PETR4','VALE3','BOVA11','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3']
+            strats = ['PCP','FST','ROLL_ARB','ETF_BASKET','SKEW_ARB','INTERLISTED','DIVIDEND_ARB','VOL_ARB']
+            seeded = 0
+            for sym in assets:
+                for strat in strats:
+                    try:
+                        cur.execute(
+                            """INSERT INTO active_status_registry (symbol, strategy_type, active_status, updated_at)
+                            VALUES (%s, %s, %s, NOW())
+                            ON DUPLICATE KEY UPDATE updated_at = NOW()""",
+                            (sym, strat, 2))
+                        seeded += 1
+                    except Exception as ie:
+                        results.setdefault('insert_errors', []).append(str(ie))
+            conn.commit()
+            results['seeded'] = seeded
+            # Verify
+            cur.execute("SELECT COUNT(*) as cnt FROM active_status_registry")
+            row = cur.fetchone()
+            results['final_count'] = row['cnt'] if row else 0
+        cur.close()
+        conn.close()
+    except Exception as e:
+        results['error'] = str(e)
+    return jsonify(results)
+
 @app.route('/api/ticker-tape')
 def ticker_tape():
     """Public endpoint: all stock + crypto prices for real-time ticker tape display."""

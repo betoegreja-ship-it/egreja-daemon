@@ -333,6 +333,16 @@ try:
                 _db_conn = get_db()
                 if _db_conn:
                     _db_cur = _db_conn.cursor()
+                    # Ensure table exists before INSERT (init_all_tables runs later)
+                    _db_cur.execute("""CREATE TABLE IF NOT EXISTS active_status_registry (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        symbol VARCHAR(20) NOT NULL,
+                        strategy_type VARCHAR(30) NOT NULL,
+                        active_status INT DEFAULT 0,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        UNIQUE KEY uq_sym_strat (symbol, strategy_type)
+                    )""")
+                    _db_conn.commit()
                     _status_int = {
                         'OBSERVE': 0, 'SHADOW_EXEC': 1, 'PAPER_SMALL': 2, 'PAPER_FULL': 3
                     }.get(_seed_tier_str, 2)

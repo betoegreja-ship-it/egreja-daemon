@@ -137,7 +137,7 @@ def rescore_universe_hook(db_fn: Callable, log=None):
         from modules.long_horizon.data_ingestion import LongHorizonDataCollector
         from modules.long_horizon.scoring_engine import score_from_real_data
 
-        collector = LongHorizonDataCollector(max_workers=5, timeout=20)
+        collector = LongHorizonDataCollector(max_workers=8, timeout=45)
         profiles = collector.collect_universe()
 
         scored = 0

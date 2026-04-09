@@ -224,7 +224,7 @@ class LongHorizonDataCollector:
                 for ticker in self.UNIVERSE
             }
 
-            for future in as_completed(futures, timeout=self.timeout * 3):
+            for future in as_completed(futures, timeout=self.timeout * 5):
                 ticker = futures[future]
                 try:
                     profile = future.result(timeout=self.timeout)

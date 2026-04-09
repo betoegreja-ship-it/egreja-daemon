@@ -280,6 +280,35 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
 
     # ── Health ─────────────────────────────────────────────
 
+    @bp.route('/debug-prices', methods=['GET'])
+    def debug_prices():
+        import sys as _sys
+        tickers = request.args.get('tickers', '').split(',')
+        if not tickers or not tickers[0]:
+            tickers = ['NVDA','LLY','ITUB4','ABEV3','UNH','ADBE','BBDC4','AVGO']
+        result = {}
+        _main = _sys.modules.get('__main__')
+        sp = getattr(_main, 'stock_prices', {}) if _main else {}
+        for t in tickers:
+            t = t.strip()
+            direct = sp.get(t)
+            with_sa = sp.get(t + '.SA')
+            if direct:
+                if isinstance(direct, dict):
+                    result[t] = {'source': 'direct', 'price': direct.get('regularMarketPrice') or direct.get('price') or direct.get('c'), 'keys': list(direct.keys())[:10]}
+                else:
+                    result[t] = {'source': 'direct', 'value': direct}
+            elif with_sa:
+                if isinstance(with_sa, dict):
+                    result[t] = {'source': t+'.SA', 'price': with_sa.get('regularMarketPrice') or with_sa.get('price') or with_sa.get('c'), 'keys': list(with_sa.keys())[:10]}
+                else:
+                    result[t] = {'source': t+'.SA', 'value': with_sa}
+            else:
+                result[t] = {'source': 'NOT_FOUND', 'tried': [t, t+'.SA']}
+        result['_cache_size'] = len(sp)
+        result['_sample_keys'] = list(sp.keys())[:20]
+        return jsonify(result), 200
+
     @bp.route('/health', methods=['GET'])
     def health():
         try:

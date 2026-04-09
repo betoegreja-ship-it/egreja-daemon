@@ -280,6 +280,45 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
 
     # ── Health ─────────────────────────────────────────────
 
+    @bp.route('/debug-price-trace/<ticker>', methods=['GET'])
+    def debug_price_trace(ticker):
+        import sys as _sys
+        trace = []
+        # Step 0: Global cache
+        _main = _sys.modules.get('__main__')
+        sp = getattr(_main, 'stock_prices', {}) if _main else {}
+        direct = sp.get(ticker)
+        with_sa = sp.get(ticker + '.SA')
+        if direct:
+            if isinstance(direct, dict):
+                p = direct.get('regularMarketPrice') or direct.get('price') or direct.get('c')
+                trace.append({'step': 'global_cache_direct', 'found': True, 'price': p, 'type': type(p).__name__ if p else 'None'})
+            else:
+                trace.append({'step': 'global_cache_direct', 'found': True, 'price': direct, 'type': type(direct).__name__})
+        elif with_sa:
+            if isinstance(with_sa, dict):
+                p = with_sa.get('regularMarketPrice') or with_sa.get('price') or with_sa.get('c')
+                trace.append({'step': 'global_cache_sa', 'found': True, 'price': p})
+            else:
+                trace.append({'step': 'global_cache_sa', 'found': True, 'price': with_sa})
+        else:
+            trace.append({'step': 'global_cache', 'found': False})
+        # Step 1: BRAPI
+        try:
+            from modules.long_horizon.brapi_provider import BRAPIProvider
+            q = BRAPIProvider().get_quote(ticker)
+            trace.append({'step': 'brapi', 'found': bool(q), 'price': q.get('price') if q else None})
+        except Exception as e:
+            trace.append({'step': 'brapi', 'error': str(e)})
+        # Step 2: Polygon
+        try:
+            from modules.long_horizon.polygon_provider import PolygonProvider
+            q = PolygonProvider().get_quote(ticker)
+            trace.append({'step': 'polygon', 'found': bool(q), 'price': q.get('price') if q else None})
+        except Exception as e:
+            trace.append({'step': 'polygon', 'error': str(e)})
+        return jsonify({'ticker': ticker, 'trace': trace}), 200
+
     @bp.route('/debug-review/<int:pos_id>', methods=['POST'])
     def debug_review(pos_id):
         try:

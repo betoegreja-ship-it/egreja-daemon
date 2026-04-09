@@ -4430,19 +4430,7 @@ def init_all_tables():
         except Exception as e:
             if 'Duplicate key name' not in str(e) and 'already exists' not in str(e).lower():
                 log.debug(f'Migration uq_origin: {e}')
-        # [v10.29c] active_status_registry table — was missing, endpoint returned 0 rows
-        try:
-            cursor.execute("""CREATE TABLE IF NOT EXISTS active_status_registry (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                symbol VARCHAR(20) NOT NULL,
-                strategy_type VARCHAR(30) NOT NULL,
-                active_status INT DEFAULT 0,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                UNIQUE KEY uq_sym_strat (symbol, strategy_type)
-            )""")
-            log.info('[v10.29c] active_status_registry table created/verified')
-        except Exception as e:
-            log.warning(f'[v10.29c] active_status_registry table: {e}')
+        # [v10.29c] active_status_registry — created by create_derivatives_tables() via schema.py
         # [v10.25] Derivatives tables
         try:
             create_derivatives_tables(conn)
@@ -8129,10 +8117,10 @@ def seed_status_debug():
                 for strat in strats:
                     try:
                         cur.execute(
-                            """INSERT INTO active_status_registry (symbol, strategy_type, active_status, updated_at)
+                            """INSERT INTO active_status_registry (symbol, strategy_type, current_status, updated_at)
                             VALUES (%s, %s, %s, NOW())
                             ON DUPLICATE KEY UPDATE updated_at = NOW()""",
-                            (sym, strat, 2))
+                            (sym, strat, 'PAPER_SMALL'))
                         seeded += 1
                     except Exception as ie:
                         results.setdefault('insert_errors', []).append(str(ie))
@@ -10430,17 +10418,16 @@ if __name__ == '__main__':
             _seed_cur = _seed_conn.cursor()
             _seed_assets = ['PETR4','VALE3','BOVA11','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3']
             _seed_strats = ['PCP','FST','ROLL_ARB','ETF_BASKET','SKEW_ARB','INTERLISTED','DIVIDEND_ARB','VOL_ARB']
-            _seed_tier_int = {'OBSERVE':0,'SHADOW_EXEC':1,'PAPER_SMALL':2,'PAPER_FULL':3}.get(
-                os.environ.get('DERIV_SEED_TIER','PAPER_SMALL'), 2)
+            _seed_tier_str_val = os.environ.get('DERIV_SEED_TIER','PAPER_SMALL')
             _seed_n = 0
             for _sym in _seed_assets:
                 for _strat in _seed_strats:
                     try:
                         _seed_cur.execute(
-                            """INSERT INTO active_status_registry (symbol, strategy_type, active_status, updated_at)
-                            VALUES (%s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)""",
-                            (_sym, _strat, _seed_tier_int, datetime.utcnow()))
+                            """INSERT INTO active_status_registry (symbol, strategy_type, current_status, updated_at)
+                            VALUES (%s, %s, %s, NOW())
+                            ON DUPLICATE KEY UPDATE updated_at = NOW()""",
+                            (_sym, _strat, _seed_tier_str_val))
                         _seed_n += 1
                     except Exception:
                         pass

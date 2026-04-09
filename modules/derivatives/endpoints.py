@@ -544,37 +544,39 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
 
             # Get current status
             row = _safe_query(
-                "SELECT active_status FROM active_status_registry WHERE symbol = %s AND strategy_type = %s",
+                "SELECT current_status FROM active_status_registry WHERE symbol = %s AND strategy_type = %s",
                 (symbol, strategy),
                 fetch='one'
             )
-            current_status = row.get('active_status', 0) if row else 0
+            current_status_str = row.get('current_status', 'OBSERVE') if row else 'OBSERVE'
 
-            # Adjust status
+            # Status ladder (VARCHAR-based)
+            _ladder = ['OBSERVE', 'SHADOW_EXEC', 'PAPER_SMALL', 'PAPER_FULL']
+            _cur_idx = _ladder.index(current_status_str) if current_status_str in _ladder else 0
+
             if action == 'promote':
-                new_status = min(current_status + 1, 3)  # Max PAPER_FULL = 3
+                _new_idx = min(_cur_idx + 1, len(_ladder) - 1)
             else:
-                new_status = max(current_status - 1, 0)  # Min OBSERVE = 0
+                _new_idx = max(_cur_idx - 1, 0)
+            new_status_str = _ladder[_new_idx]
 
             # Upsert
             _safe_write(
                 """
-                INSERT INTO active_status_registry (symbol, strategy_type, active_status, updated_at)
+                INSERT INTO active_status_registry (symbol, strategy_type, current_status, updated_at)
                 VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE active_status = VALUES(active_status), updated_at = VALUES(updated_at)
+                ON DUPLICATE KEY UPDATE current_status = VALUES(current_status), updated_at = VALUES(updated_at)
                 """,
-                (symbol, strategy, new_status, datetime.utcnow())
+                (symbol, strategy, new_status_str, datetime.utcnow())
             )
 
-            status_labels = {0: 'OBSERVE', 1: 'SHADOW_EXEC', 2: 'PAPER_SMALL', 3: 'PAPER_FULL'}
-
-            log.info(f"Promotion: {symbol}/{strategy} {status_labels.get(current_status)} -> {status_labels.get(new_status)}")
+            log.info(f"Promotion: {symbol}/{strategy} {current_status_str} -> {new_status_str}")
 
             return jsonify({
                 'symbol': symbol,
                 'strategy': strategy,
-                'previous_status': status_labels.get(current_status),
-                'new_status': status_labels.get(new_status),
+                'previous_status': current_status_str,
+                'new_status': new_status_str,
                 'action': action
             }), 200
         except Exception as e:

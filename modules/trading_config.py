@@ -1,5 +1,5 @@
 """
-[v10.24] Trading Configuration Module
+[v10.26] Trading Configuration Module
 Extracts pure constants and configuration from api_server.py.
 No mutable state, no Flask app references.
 """
@@ -27,7 +27,7 @@ CRYPTO_MAX_POSITION_BY_SYM = {
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.24.4] 5 símbolos
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 15))  # [v10.26] expanded universe
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
 # ═══════════════════════════════════════════════════════════════
@@ -63,7 +63,7 @@ B3_ADR_SYMBOLS = set(B3_TO_ADR.values())
 # ═══════════════════════════════════════════════════════════════
 PUBLIC_ROUTES = {'/', '/health', '/degraded', '/sync/export', '/sync/import'}
 
-MAX_OPEN_POSITIONS      = 65  # [v10.14] 60 stocks + 5 crypto (hardcoded)
+MAX_OPEN_POSITIONS      = 75  # [v10.26] 60 stocks + 15 crypto
 MAX_DAILY_DRAWDOWN_PCT  = float(os.environ.get('MAX_DAILY_DRAWDOWN_PCT', 2.0))
 MAX_WEEKLY_DRAWDOWN_PCT = float(os.environ.get('MAX_WEEKLY_DRAWDOWN_PCT', 5.0))
 MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 10))
@@ -77,11 +77,11 @@ STOCK_TP_PCT             = float(os.environ.get('STOCK_TP_PCT', 2.0))
 STOCK_SL_PCT             = float(os.environ.get('STOCK_SL_PCT', 2.0))
 TRAILING_FLOOR_PCT       = float(os.environ.get('TRAILING_FLOOR_PCT', 0.3))
 TRAILING_TRIGGER_PCT     = float(os.environ.get('TRAILING_TRIGGER_PCT', 1.5))
-TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
+TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 48))    # [v10.26] increased from 5h
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
-TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
+TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 48))   # [v10.26] increased from 7h
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
-MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.15] reduced from 48
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 75))  # [v10.26] raised from 55 — crypto entries need higher quality
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 SIGNAL_MAX_AGE_MIN  = int(os.environ.get('SIGNAL_MAX_AGE_MIN', 30))
@@ -129,9 +129,9 @@ BLACKLIST_REVIEW_H      = float(os.environ.get('BLACKLIST_REVIEW_H', 24))
 
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
 ATR_SL_MULTIPLIER_STOCK  = float(os.environ.get('ATR_SL_MULTIPLIER_STOCK', 2.5))
-ATR_SL_MULTIPLIER_CRYPTO = float(os.environ.get('ATR_SL_MULTIPLIER_CRYPTO', 2.0))
+ATR_SL_MULTIPLIER_CRYPTO = float(os.environ.get('ATR_SL_MULTIPLIER_CRYPTO', 3.0))  # [v10.26] wider stops for crypto volatility
 ATR_SL_MIN_PCT           = float(os.environ.get('ATR_SL_MIN_PCT', 0.8))
-ATR_SL_MAX_PCT           = float(os.environ.get('ATR_SL_MAX_PCT', 4.0))
+ATR_SL_MAX_PCT           = float(os.environ.get('ATR_SL_MAX_PCT', 5.5))  # [v10.26] allow wider crypto stops
 
 # ── [v10.16] Inactivity alert ─────────────────────────────────────────────
 INACTIVITY_ALERT_H_STOCKS = float(os.environ.get('INACTIVITY_ALERT_H_STOCKS', 4))
@@ -149,13 +149,13 @@ TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 0.7))
 
 # ── [v10.17] Directional exposure limit ───────────────────────────────────
 MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))
-MAX_DIRECTIONAL_PCT_CRYPTO = float(os.environ.get('MAX_DIRECTIONAL_PCT_CRYPTO', 100))  # [v10.24.4]
+MAX_DIRECTIONAL_PCT_CRYPTO = float(os.environ.get('MAX_DIRECTIONAL_PCT_CRYPTO', 70))   # [v10.26] force diversification
 
 # ── [v10.17] Dynamic timeout ─────────────────────────────────────────────
 DYNAMIC_TIMEOUT_ENABLED   = os.environ.get('DYNAMIC_TIMEOUT_ENABLED', 'true').lower() != 'false'
 DYNAMIC_TIMEOUT_MULT      = float(os.environ.get('DYNAMIC_TIMEOUT_MULT', 1.3))
 DYNAMIC_TIMEOUT_MIN_H     = float(os.environ.get('DYNAMIC_TIMEOUT_MIN_H', 1.5))
-DYNAMIC_TIMEOUT_MAX_H     = float(os.environ.get('DYNAMIC_TIMEOUT_MAX_H', 6.0))
+DYNAMIC_TIMEOUT_MAX_H     = float(os.environ.get('DYNAMIC_TIMEOUT_MAX_H', 48.0))  # [v10.26] no more early timeout kills
 
 # ── [v10.18] Calibration persistence ─────────────────────────────────────
 CALIBRATION_PERSIST_INTERVAL = int(os.environ.get('CALIBRATION_PERSIST_INTERVAL', 300))
@@ -165,7 +165,7 @@ RECONCILIATION_INTERVAL_S    = int(os.environ.get('RECONCILIATION_INTERVAL_S', 6
 RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))
 
 # ── [v10.18] Crypto conviction filter ───────────────────────────────────
-CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 52))
+CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 70))  # [v10.26] raised from 52
 CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15))
 
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
@@ -174,12 +174,27 @@ LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != '
 # CRYPTO SYMBOLS
 # ═══════════════════════════════════════════════════════════════
 CRYPTO_SYMBOLS = [
-    # [v10.14] Corte cirúrgico para 5 melhores por P&L real (análise 30/03/2026)
-    'ETHUSDT',   # +$5.723  WR 55% — melhor de todos
-    'ARBUSDT',   # +$2.455  WR 54% — segundo melhor
-    'NEARUSDT',  # +$964    WR 55% — terceiro
-    'BTCUSDT',   # +$242    WR 53% — quase neutro, referência de mercado
-    'BNBUSDT',   # +$191    WR 50% — quase neutro, exchange coin estável
+    # [v10.26] Reativado universo completo — agora protegido por min_score=75, conviction=70,
+    #          ATR SL 3.0x, max_directional 70%, e detecção de inversão de mercado
+    'BTCUSDT',   # referência de mercado
+    'ETHUSDT',   # melhor histórico
+    'BNBUSDT',   # exchange coin estável
+    'SOLUSDT',   # alta liquidez
+    'XRPUSDT',   # alta liquidez
+    'ADAUSDT',   # top 10
+    'DOGEUSDT',  # meme coin, alta vol
+    'AVAXUSDT',  # L1
+    'DOTUSDT',   # L0
+    'LINKUSDT',  # oracle líder
+    'MATICUSDT', # L2
+    'LTCUSDT',   # legacy
+    'UNIUSDT',   # DeFi líder
+    'ATOMUSDT',  # interchain
+    'XLMUSDT',   # payments
+    'NEARUSDT',  # bom histórico
+    'APTUSDT',   # L1 novo
+    'ARBUSDT',   # bom histórico
+    'TRXUSDT',   # stablecoin chain
 ]
 
 CRYPTO_NAMES = {
@@ -308,3 +323,44 @@ def apply_fee_to_trade(trade: dict) -> dict:
     trade['pnl_net_pct']   = net_pct
     trade['_fee_applied']  = True
     return trade
+
+# ═══════════════════════════════════════════════════════════════
+# [v10.26] BATCH ENTRY LIMITER
+# ═══════════════════════════════════════════════════════════════
+MAX_ENTRIES_PER_MINUTE_STOCKS  = int(os.environ.get('MAX_ENTRIES_PER_MINUTE_STOCKS', 5))
+MAX_ENTRIES_PER_MINUTE_CRYPTO  = int(os.environ.get('MAX_ENTRIES_PER_MINUTE_CRYPTO', 3))
+
+# ═══════════════════════════════════════════════════════════════
+# [v10.26] MARKET REVERSAL DETECTION
+# ═══════════════════════════════════════════════════════════════
+# RSI + EMA reversal
+REVERSAL_RSI_OB              = float(os.environ.get('REVERSAL_RSI_OB', 72))       # overbought threshold
+REVERSAL_RSI_OS              = float(os.environ.get('REVERSAL_RSI_OS', 28))       # oversold threshold
+REVERSAL_EMA_FAST            = int(os.environ.get('REVERSAL_EMA_FAST', 9))
+REVERSAL_EMA_SLOW            = int(os.environ.get('REVERSAL_EMA_SLOW', 21))
+
+# MACD divergence
+REVERSAL_MACD_FAST           = int(os.environ.get('REVERSAL_MACD_FAST', 12))
+REVERSAL_MACD_SLOW           = int(os.environ.get('REVERSAL_MACD_SLOW', 26))
+REVERSAL_MACD_SIGNAL         = int(os.environ.get('REVERSAL_MACD_SIGNAL', 9))
+
+# Volume spike
+REVERSAL_VOLUME_SPIKE_MULT   = float(os.environ.get('REVERSAL_VOLUME_SPIKE_MULT', 2.0))  # 2x avg volume = spike
+REVERSAL_VOLUME_LOOKBACK     = int(os.environ.get('REVERSAL_VOLUME_LOOKBACK', 20))
+
+# Regime change sensitivity
+REVERSAL_REGIME_WINDOW       = int(os.environ.get('REVERSAL_REGIME_WINDOW', 14))
+REVERSAL_MIN_SIGNALS         = int(os.environ.get('REVERSAL_MIN_SIGNALS', 2))  # need 2+ indicators agreeing
+
+# Action on reversal detection
+REVERSAL_BLOCK_COUNTER_TREND = os.environ.get('REVERSAL_BLOCK_COUNTER_TREND', 'true').lower() != 'false'
+REVERSAL_CLOSE_LOSING        = os.environ.get('REVERSAL_CLOSE_LOSING', 'true').lower() != 'false'
+
+# ═══════════════════════════════════════════════════════════════
+# [v10.26] POLYGON/OPLAB/BRAPI CONFIRMATION FILTER
+# ═══════════════════════════════════════════════════════════════
+POLYGON_CONFIRM_ENABLED      = os.environ.get('POLYGON_CONFIRM_ENABLED', 'true').lower() != 'false'
+OPLAB_CONFIRM_ENABLED        = os.environ.get('OPLAB_CONFIRM_ENABLED', 'true').lower() != 'false'
+BRAPI_CONFIRM_ENABLED        = os.environ.get('BRAPI_CONFIRM_ENABLED', 'true').lower() != 'false'
+CONFIRM_TIMEOUT_S            = float(os.environ.get('CONFIRM_TIMEOUT_S', 3.0))  # max wait for API response
+CONFIRM_MIN_AGREEMENT        = int(os.environ.get('CONFIRM_MIN_AGREEMENT', 1))   # 1 source agrees = pass

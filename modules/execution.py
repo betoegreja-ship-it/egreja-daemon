@@ -1,6 +1,6 @@
 """
 =============================================================================
-PHASE 4a: EXECUTION MODULE — Trade Monitoring & Execution Workers
+PHASE 4a: EXECUTION MODULE [v10.26] — Trade Monitoring & Execution Workers
 =============================================================================
 
 This module contains the core trading execution logic extracted from api_server.py:
@@ -26,7 +26,237 @@ Version: Phase 4a
 import time
 import threading
 import requests
+import collections
 from datetime import datetime, timedelta
+
+# ── [v10.26] Batch entry limiter ──────────────────────────────
+_entry_timestamps = {'stocks': collections.deque(maxlen=200), 'crypto': collections.deque(maxlen=200)}
+_entry_lock = threading.Lock()
+
+def _check_batch_limit(asset_type, max_per_min):
+    """[v10.26] Returns True if within batch limit, False if throttled."""
+    now = time.time()
+    with _entry_lock:
+        dq = _entry_timestamps[asset_type]
+        # Remove entries older than 60s
+        while dq and dq[0] < now - 60:
+            dq.popleft()
+        if len(dq) >= max_per_min:
+            return False
+        dq.append(now)
+        return True
+
+# ── [v10.26] Market reversal detection ────────────────────────
+_reversal_cache = {}
+_reversal_cache_ts = {}
+
+def detect_market_reversal(ctx, symbol, price_data, asset_type='stock'):
+    """
+    [v10.26] Multi-indicator reversal detection:
+    - RSI exiting overbought/oversold
+    - EMA fast/slow crossover
+    - MACD histogram divergence
+    - Volume spike
+    Returns: (is_reversal, direction_hint, signals_count, detail)
+      direction_hint: 'BULLISH_REVERSAL' or 'BEARISH_REVERSAL' or None
+    """
+    global _reversal_cache, _reversal_cache_ts
+    cache_key = f"{symbol}:{asset_type}"
+    now = time.time()
+    # Cache 30s to avoid recomputing every tick
+    if cache_key in _reversal_cache and now - _reversal_cache_ts.get(cache_key, 0) < 30:
+        return _reversal_cache[cache_key]
+
+    signals_bull = 0
+    signals_bear = 0
+    detail = []
+
+    rsi = price_data.get('rsi', 50) or 50
+    ema9 = price_data.get('ema9', 0) or 0
+    ema21 = price_data.get('ema21', 0) or 0
+    ema50 = price_data.get('ema50', 0) or 0
+    vol_ratio = price_data.get('volume_ratio', 0) or 0
+    price_hist = price_data.get('price_history', []) or []
+
+    # 1) RSI reversal
+    RSI_OB = ctx.get('REVERSAL_RSI_OB', 72)
+    RSI_OS = ctx.get('REVERSAL_RSI_OS', 28)
+    if rsi > RSI_OB:
+        signals_bear += 1
+        detail.append(f'RSI_OB={rsi:.0f}')
+    elif rsi < RSI_OS:
+        signals_bull += 1
+        detail.append(f'RSI_OS={rsi:.0f}')
+
+    # 2) EMA crossover (detect fresh cross using price vs EMAs)
+    if ema9 > 0 and ema21 > 0:
+        cross_pct = (ema9 - ema21) / ema21 * 100 if ema21 > 0 else 0
+        if 0 < cross_pct < 0.3:  # just crossed bullish (within 0.3%)
+            signals_bull += 1
+            detail.append(f'EMA_BULL_CROSS={cross_pct:.2f}%')
+        elif -0.3 < cross_pct < 0:  # just crossed bearish
+            signals_bear += 1
+            detail.append(f'EMA_BEAR_CROSS={cross_pct:.2f}%')
+
+    # 3) Price momentum divergence (proxy for MACD)
+    if len(price_hist) >= 5:
+        recent = price_hist[-3:]
+        older = price_hist[-5:-3]
+        if recent and older:
+            recent_avg = sum(recent) / len(recent)
+            older_avg = sum(older) / len(older)
+            if older_avg > 0:
+                mom_change = (recent_avg - older_avg) / older_avg * 100
+                if mom_change > 0.5 and rsi < 45:  # price rising but RSI low = bullish divergence
+                    signals_bull += 1
+                    detail.append(f'MACD_DIV_BULL={mom_change:.2f}%')
+                elif mom_change < -0.5 and rsi > 55:  # price falling but RSI high = bearish divergence
+                    signals_bear += 1
+                    detail.append(f'MACD_DIV_BEAR={mom_change:.2f}%')
+
+    # 4) Volume spike
+    SPIKE_MULT = ctx.get('REVERSAL_VOLUME_SPIKE_MULT', 2.0)
+    if vol_ratio >= SPIKE_MULT:
+        # Volume spike: amplifies existing signal direction
+        if signals_bull > signals_bear:
+            signals_bull += 1
+            detail.append(f'VOL_SPIKE_BULL={vol_ratio:.1f}x')
+        elif signals_bear > signals_bull:
+            signals_bear += 1
+            detail.append(f'VOL_SPIKE_BEAR={vol_ratio:.1f}x')
+        else:
+            detail.append(f'VOL_SPIKE_NEUTRAL={vol_ratio:.1f}x')
+
+    # 5) Regime check (trend exhaustion)
+    if ema9 > 0 and ema50 > 0:
+        trend_stretch = abs(ema9 - ema50) / ema50 * 100 if ema50 > 0 else 0
+        if trend_stretch > 5.0:  # EMA9 stretched >5% from EMA50 = exhaustion risk
+            if ema9 > ema50:
+                signals_bear += 1
+                detail.append(f'TREND_EXHAUST_BEAR={trend_stretch:.1f}%')
+            else:
+                signals_bull += 1
+                detail.append(f'TREND_EXHAUST_BULL={trend_stretch:.1f}%')
+
+    MIN_SIGNALS = ctx.get('REVERSAL_MIN_SIGNALS', 2)
+    is_reversal = False
+    direction_hint = None
+    total_signals = max(signals_bull, signals_bear)
+
+    if signals_bull >= MIN_SIGNALS and signals_bull > signals_bear:
+        is_reversal = True
+        direction_hint = 'BULLISH_REVERSAL'
+    elif signals_bear >= MIN_SIGNALS and signals_bear > signals_bull:
+        is_reversal = True
+        direction_hint = 'BEARISH_REVERSAL'
+
+    result = (is_reversal, direction_hint, total_signals, '|'.join(detail))
+    _reversal_cache[cache_key] = result
+    _reversal_cache_ts[cache_key] = now
+    return result
+
+
+# ── [v10.26] External data confirmation ───────────────────────
+_confirm_cache = {}
+_confirm_cache_ts = {}
+
+def _polygon_confirm(ctx, symbol, direction):
+    """[v10.26] Check Polygon snapshot for direction confirmation."""
+    try:
+        api_key = ctx.get('POLYGON_API_KEY', '')
+        if not api_key:
+            return True, 'no_key'  # pass-through if no key
+        cache_key = f"poly:{symbol}"
+        now = time.time()
+        if cache_key in _confirm_cache and now - _confirm_cache_ts.get(cache_key, 0) < 120:
+            cached = _confirm_cache[cache_key]
+        else:
+            url = f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}?apiKey={api_key}"
+            r = requests.get(url, timeout=ctx.get('CONFIRM_TIMEOUT_S', 3.0))
+            if r.status_code != 200:
+                return True, f'api_err_{r.status_code}'
+            data = r.json()
+            ticker = data.get('ticker', {})
+            day = ticker.get('day', {})
+            cached = {
+                'change_pct': day.get('todaysChangePerc', 0),
+                'volume': day.get('volume', 0),
+                'vwap': day.get('vwap', 0),
+                'close': day.get('close', 0),
+            }
+            _confirm_cache[cache_key] = cached
+            _confirm_cache_ts[cache_key] = now
+
+        change = cached.get('change_pct', 0) or 0
+        # Confirm: LONG needs positive or neutral momentum, SHORT needs negative or neutral
+        if direction == 'LONG' and change < -3.0:
+            return False, f'polygon_against_long(chg={change:.1f}%)'
+        if direction == 'SHORT' and change > 3.0:
+            return False, f'polygon_against_short(chg={change:.1f}%)'
+        return True, f'polygon_ok(chg={change:.1f}%)'
+    except Exception as e:
+        return True, f'polygon_err({str(e)[:40]})'
+
+
+def _brapi_confirm(ctx, symbol, direction):
+    """[v10.26] Check BRAPI for B3 stock confirmation."""
+    try:
+        token = ctx.get('BRAPI_TOKEN', '')
+        if not token:
+            return True, 'no_key'
+        cache_key = f"brapi:{symbol}"
+        now = time.time()
+        if cache_key in _confirm_cache and now - _confirm_cache_ts.get(cache_key, 0) < 120:
+            cached = _confirm_cache[cache_key]
+        else:
+            url = f"https://brapi.dev/api/quote/{symbol}?token={token}"
+            r = requests.get(url, timeout=ctx.get('CONFIRM_TIMEOUT_S', 3.0))
+            if r.status_code != 200:
+                return True, f'api_err_{r.status_code}'
+            data = r.json()
+            results = data.get('results', [{}])
+            if not results:
+                return True, 'no_data'
+            cached = results[0]
+            _confirm_cache[cache_key] = cached
+            _confirm_cache_ts[cache_key] = now
+
+        change = cached.get('regularMarketChangePercent', 0) or 0
+        if direction == 'LONG' and change < -3.0:
+            return False, f'brapi_against_long(chg={change:.1f}%)'
+        if direction == 'SHORT' and change > 3.0:
+            return False, f'brapi_against_short(chg={change:.1f}%)'
+        return True, f'brapi_ok(chg={change:.1f}%)'
+    except Exception as e:
+        return True, f'brapi_err({str(e)[:40]})'
+
+
+def check_external_confirmation(ctx, symbol, direction, market_type):
+    """[v10.26] Run external confirmation filter. Returns (ok, reason)."""
+    if not ctx.get('POLYGON_CONFIRM_ENABLED') and not ctx.get('BRAPI_CONFIRM_ENABLED'):
+        return True, 'disabled'
+
+    confirmations = 0
+    rejections = 0
+    details = []
+
+    if market_type == 'NYSE' and ctx.get('POLYGON_CONFIRM_ENABLED'):
+        ok, reason = _polygon_confirm(ctx, symbol, direction)
+        details.append(reason)
+        if ok: confirmations += 1
+        else: rejections += 1
+
+    if market_type == 'B3' and ctx.get('BRAPI_CONFIRM_ENABLED'):
+        ok, reason = _brapi_confirm(ctx, symbol, direction)
+        details.append(reason)
+        if ok: confirmations += 1
+        else: rejections += 1
+
+    min_agree = ctx.get('CONFIRM_MIN_AGREEMENT', 1)
+    if rejections > 0 and confirmations < min_agree:
+        return False, f'REJECTED({"|".join(details)})'
+    return True, f'CONFIRMED({"|".join(details)})'
+
 
 
 def build_execution_ctx(g):
@@ -156,6 +386,23 @@ def build_execution_ctx(g):
         'LEARNING_VERSION':        g.get('LEARNING_VERSION'),
         'ALERT_MIN_SCORE':         g.get('ALERT_MIN_SCORE'),
         'MAX_PROCESSED_SIGNALS_CACHE': g.get('MAX_PROCESSED_SIGNALS_CACHE'),
+
+        # [v10.26] New constants
+        'MAX_ENTRIES_PER_MINUTE_STOCKS':  g.get('MAX_ENTRIES_PER_MINUTE_STOCKS', 5),
+        'MAX_ENTRIES_PER_MINUTE_CRYPTO':  g.get('MAX_ENTRIES_PER_MINUTE_CRYPTO', 3),
+        'REVERSAL_RSI_OB':               g.get('REVERSAL_RSI_OB', 72),
+        'REVERSAL_RSI_OS':               g.get('REVERSAL_RSI_OS', 28),
+        'REVERSAL_VOLUME_SPIKE_MULT':    g.get('REVERSAL_VOLUME_SPIKE_MULT', 2.0),
+        'REVERSAL_MIN_SIGNALS':          g.get('REVERSAL_MIN_SIGNALS', 2),
+        'REVERSAL_BLOCK_COUNTER_TREND':  g.get('REVERSAL_BLOCK_COUNTER_TREND', True),
+        'REVERSAL_CLOSE_LOSING':         g.get('REVERSAL_CLOSE_LOSING', True),
+        'POLYGON_API_KEY':               g.get('POLYGON_API_KEY', ''),
+        'BRAPI_TOKEN':                   g.get('BRAPI_TOKEN', ''),
+        'POLYGON_CONFIRM_ENABLED':       g.get('POLYGON_CONFIRM_ENABLED', True),
+        'OPLAB_CONFIRM_ENABLED':         g.get('OPLAB_CONFIRM_ENABLED', True),
+        'BRAPI_CONFIRM_ENABLED':         g.get('BRAPI_CONFIRM_ENABLED', True),
+        'CONFIRM_TIMEOUT_S':             g.get('CONFIRM_TIMEOUT_S', 3.0),
+        'CONFIRM_MIN_AGREEMENT':         g.get('CONFIRM_MIN_AGREEMENT', 1),
     }
     return ctx
 
@@ -509,6 +756,24 @@ def stock_execution_worker(ctx):
                             ctx['log'].debug(f'TREND_FILTER: {sym} LONG bloqueado — queda {(_p_now-_p_5ago)/_p_5ago*100:.1f}% em 5 períodos')
                             continue
 
+                # [v10.26] Market reversal detection
+                _pd_for_rev = sp_snap.get(sym, {})
+                _is_rev, _rev_dir, _rev_count, _rev_detail = detect_market_reversal(ctx, sym, _pd_for_rev, 'stock')
+                if _is_rev and ctx.get('REVERSAL_BLOCK_COUNTER_TREND', True):
+                    if _rev_dir == 'BEARISH_REVERSAL' and is_long:
+                        ctx['log'].info(f'[REVERSAL-BLOCK] {sym} LONG blocked: {_rev_detail} ({_rev_count} signals)')
+                        continue
+                    if _rev_dir == 'BULLISH_REVERSAL' and is_short:
+                        ctx['log'].info(f'[REVERSAL-BLOCK] {sym} SHORT blocked: {_rev_detail} ({_rev_count} signals)')
+                        continue
+
+                # [v10.26] External confirmation (Polygon / BRAPI)
+                direction = 'LONG' if is_long else 'SHORT'
+                _ext_ok, _ext_reason = check_external_confirmation(ctx, sym, direction, mkt)
+                if not _ext_ok:
+                    ctx['log'].info(f'[CONFIRM-BLOCK] {sym} {direction}: {_ext_reason}')
+                    continue
+
                 PERMANENT_REASONS = {'kill_switch', 'symbol_duplicate', 'executed'}
                 _sig_time_window = int(time.time() / 60)
                 ms_key = str(sig.get('id') or f"{sym}:{score}:{_sig_time_window}")
@@ -693,6 +958,10 @@ def stock_execution_worker(ctx):
                         ctx['log'].warning(f'[RISK-BLOCK] Stock {sym}: {risk_reason}')
                         continue
 
+                    # [v10.26] Batch entry limiter
+                    if not _check_batch_limit('stocks', ctx.get('MAX_ENTRIES_PER_MINUTE_STOCKS', 5)):
+                        ctx['log'].info(f'[BATCH-LIMIT] stock {sym}: throttled (max {ctx.get("MAX_ENTRIES_PER_MINUTE_STOCKS", 5)}/min)')
+                        continue
                     ok2,reason2=ctx['_second_validation'](sym,mkt,'stocks')
                     if ok2 and ctx['stocks_capital']>=price*qty:
                         ctx['stocks_capital'] -= price*qty
@@ -850,6 +1119,18 @@ def auto_trade_crypto(ctx):
                     ctx['log'].info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={ctx["MIN_SCORE_AUTO_CRYPTO"]} -> BLOCKED')
                     continue
 
+                # [v10.26] Market reversal detection for crypto
+                _cpd = {'rsi': 50, 'ema9': 0, 'ema21': 0, 'ema50': 0,
+                         'volume_ratio': vol_ratio_c, 'price_history': []}
+                _crev, _crev_dir, _crev_cnt, _crev_det = detect_market_reversal(ctx, display, _cpd, 'crypto')
+                if _crev and ctx.get('REVERSAL_BLOCK_COUNTER_TREND', True):
+                    if _crev_dir == 'BEARISH_REVERSAL' and direction == 'LONG':
+                        ctx['log'].info(f'[REVERSAL-BLOCK] crypto {display} LONG blocked: {_crev_det}')
+                        continue
+                    if _crev_dir == 'BULLISH_REVERSAL' and direction == 'SHORT':
+                        ctx['log'].info(f'[REVERSAL-BLOCK] crypto {display} SHORT blocked: {_crev_det}')
+                        continue
+
                 score_factor=min(abs(score-50)/50.0,1.0)
 
                 time_window = int(time.time() / 90)
@@ -969,6 +1250,10 @@ def auto_trade_crypto(ctx):
                         ctx['log'].warning(f'[RISK-BLOCK] Crypto {display}: {risk_reason_pre}')
                         continue
 
+                    # [v10.26] Batch entry limiter
+                    if not _check_batch_limit('crypto', ctx.get('MAX_ENTRIES_PER_MINUTE_CRYPTO', 3)):
+                        ctx['log'].info(f'[BATCH-LIMIT] crypto {display}: throttled (max {ctx.get("MAX_ENTRIES_PER_MINUTE_CRYPTO", 3)}/min)')
+                        continue
                     ok2,reason2=ctx['_second_validation'](display,'CRYPTO','crypto')
                     if ok2 and ctx['crypto_capital']>=approved_size:
                         qty=approved_size/price; ctx['crypto_capital']-=approved_size

@@ -515,7 +515,7 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
-MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 75))  # [v10.26]  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
@@ -627,6 +627,20 @@ RECONCILIATION_INTERVAL_S    = int(os.environ.get('RECONCILIATION_INTERVAL_S', 6
 RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))    # alertar se >2% desvio
 # ── [v10.18] Crypto conviction filter ───────────────────────────────────
 CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 52))        # [v10.24] era 58 — muito restritivo, bloqueava quase tudo em mercado lateral
+
+# [v10.26] New execution constants
+MAX_ENTRIES_PER_MINUTE_STOCKS  = _TC_MAX_ENTRIES_PER_MINUTE_STOCKS if '_TC_MAX_ENTRIES_PER_MINUTE_STOCKS' in dir() else 5
+MAX_ENTRIES_PER_MINUTE_CRYPTO  = _TC_MAX_ENTRIES_PER_MINUTE_CRYPTO if '_TC_MAX_ENTRIES_PER_MINUTE_CRYPTO' in dir() else 3
+REVERSAL_RSI_OB               = _TC_REVERSAL_RSI_OB if '_TC_REVERSAL_RSI_OB' in dir() else 72
+REVERSAL_RSI_OS               = _TC_REVERSAL_RSI_OS if '_TC_REVERSAL_RSI_OS' in dir() else 28
+REVERSAL_VOLUME_SPIKE_MULT    = _TC_REVERSAL_VOLUME_SPIKE_MULT if '_TC_REVERSAL_VOLUME_SPIKE_MULT' in dir() else 2.0
+REVERSAL_MIN_SIGNALS          = _TC_REVERSAL_MIN_SIGNALS if '_TC_REVERSAL_MIN_SIGNALS' in dir() else 2
+REVERSAL_BLOCK_COUNTER_TREND  = _TC_REVERSAL_BLOCK_COUNTER_TREND if '_TC_REVERSAL_BLOCK_COUNTER_TREND' in dir() else True
+REVERSAL_CLOSE_LOSING         = _TC_REVERSAL_CLOSE_LOSING if '_TC_REVERSAL_CLOSE_LOSING' in dir() else True
+POLYGON_CONFIRM_ENABLED       = _TC_POLYGON_CONFIRM_ENABLED if '_TC_POLYGON_CONFIRM_ENABLED' in dir() else True
+BRAPI_CONFIRM_ENABLED         = _TC_BRAPI_CONFIRM_ENABLED if '_TC_BRAPI_CONFIRM_ENABLED' in dir() else True
+CONFIRM_TIMEOUT_S             = _TC_CONFIRM_TIMEOUT_S if '_TC_CONFIRM_TIMEOUT_S' in dir() else 3.0
+CONFIRM_MIN_AGREEMENT         = _TC_CONFIRM_MIN_AGREEMENT if '_TC_CONFIRM_MIN_AGREEMENT' in dir() else 1
 CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15))          # hold mínimo (min) para flat exit
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
@@ -2896,7 +2910,7 @@ def validate_settings_on_boot():
         errors.append(f'MAX_POSITIONS_STOCKS={MAX_POSITIONS_STOCKS} fora de range [1,100]')
     if MIN_SCORE_AUTO < 50 or MIN_SCORE_AUTO > 95:
         errors.append(f'MIN_SCORE_AUTO={MIN_SCORE_AUTO} fora de range [50,95]')
-    if MIN_SCORE_AUTO_CRYPTO < 40 or MIN_SCORE_AUTO_CRYPTO > 90:
+    if MIN_SCORE_AUTO_CRYPTO < 40 or MIN_SCORE_AUTO_CRYPTO > 95:
         errors.append(f'MIN_SCORE_AUTO_CRYPTO={MIN_SCORE_AUTO_CRYPTO} fora de range [40,90]')
     if RISK_MULT_MIN >= RISK_MULT_MAX:
         errors.append(f'RISK_MULT_MIN={RISK_MULT_MIN} >= RISK_MULT_MAX={RISK_MULT_MAX}')

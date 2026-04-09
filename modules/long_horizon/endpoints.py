@@ -43,6 +43,33 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
 
     # ============== HELPER FUNCTIONS ==============
 
+
+    def _get_mp_portfolio_data():
+        try:
+            if not _mp_repo_available: return None
+            repo = MonthlyPicksRepository(db_fn, log)
+            positions = repo.get_open_positions()
+            if not positions: return None
+            sp = {}
+            mm = __import__('sys').modules.get('__main__')
+            if mm and hasattr(mm, 'stock_prices'): sp = mm.stock_prices
+            ta, tp, pl = 0, 0, []
+            for p in positions:
+                tk = p.get('ticker','?')
+                ep = float(p.get('entry_price') or 0)
+                qt = float(p.get('quantity') or 0)
+                cap = float(p.get('capital_allocated') or 0)
+                cached = sp.get(tk) or sp.get(tk+'.SA') or {}
+                cp = float(cached.get('price') or ep)
+                cv = cp * qt; pv = cv - cap
+                pp = (pv/cap*100) if cap>0 else 0
+                ta += cap; tp += pv
+                pl.append({'ticker':tk,'entry_price':ep,'current_price':cp,'quantity':qt,'weight':cap/7e6 if cap>0 else 0,'position_value':cv,'capital_allocated':cap,'pnl_value':round(pv,2),'pnl_pct':round(pp,2),'sector':p.get('sector','Unknown'),'score':float(p.get('entry_score') or 0)})
+            return {'positions':pl,'total_allocated':ta,'total_value':sum(x['position_value'] for x in pl),'total_pnl':round(tp,2),'total_pnl_pct':round(tp/ta*100,2) if ta>0 else 0,'position_count':len(pl)}
+        except Exception as e:
+            if log: log.error(f"_get_mp_portfolio_data error: {e}")
+            return None
+
     def get_db():
         return db_fn()
 
@@ -221,7 +248,7 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
     @lh_bp.route('/portfolios', methods=['GET'])
     def get_portfolios_summary():
         try:
-            mp = _get_mp_portfolio_data(db_fn, log)
+            mp = _get_mp_portfolio_data()
             if mp and mp['position_count']>0:
                 s=[{'name':'Monthly Picks','description':'AI scoring engine positions','risk_level':'Moderate-Aggressive','target_return':25.0,'total_value':round(mp['total_value'],2),'total_pnl':mp['total_pnl'],'total_pnl_pct':mp['total_pnl_pct'],'position_count':mp['position_count'],'investment_ratio':round(mp['total_allocated']/7e6*100,2)}]
                 return jsonify({'status':'success','portfolios':s,'initial_capital':7_000_000,'total_invested':round(mp['total_allocated'],2),'total_pnl':mp['total_pnl'],'as_of_date':date.today().isoformat()}),200
@@ -233,7 +260,7 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
     @lh_bp.route('/portfolio/<name>', methods=['GET'])
     def get_portfolio_detail(name):
         try:
-            mp = _get_mp_portfolio_data(db_fn, log)
+            mp = _get_mp_portfolio_data()
             if not mp: return jsonify({'error':'No data'}),404
             return jsonify({'status':'success','portfolio_name':'Monthly Picks','description':'AI scoring engine','risk_level':'Moderate-Aggressive','target_return':25.0,'total_capital':7_000_000,'total_value':round(mp['total_value'],2),'cash_reserve':round(7e6-mp['total_allocated'],2),'investment_ratio':round(mp['total_allocated']/7e6*100,2),'total_pnl':mp['total_pnl'],'total_pnl_pct':mp['total_pnl_pct'],'positions':mp['positions'],'as_of_date':date.today().isoformat()}),200
         except Exception as e:
@@ -245,7 +272,7 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
     @lh_bp.route('/capital', methods=['GET'])
     def get_capital_summary():
         try:
-            mp = _get_mp_portfolio_data(db_fn, log)
+            mp = _get_mp_portfolio_data()
             ic=7_000_000; tv=mp['total_value'] if mp else ic; tp=mp['total_pnl'] if mp else 0; al=mp['total_allocated'] if mp else 0
             return jsonify({'status':'success','capital_inicial':ic,'valor_atual':round(tv,2),'initial_capital':ic,'current_value':round(tv,2),'daily_pnl':round(tp,2),'monthly_pnl':round(tp,2),'annual_pnl':round(tp,2),'total_return_pct':round(tp/ic*100,2) if ic>0 else 0,'allocated':round(al,2),'reserve':round(ic-al,2),'allocation_ratio':round((al/ic)*100,2) if ic>0 else 0,'as_of_date':date.today().isoformat()}),200
         except Exception as e:
@@ -255,7 +282,7 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
     @lh_bp.route('/pnl', methods=['GET'])
     def get_pnl():
         try:
-            mp = _get_mp_portfolio_data(db_fn, log)
+            mp = _get_mp_portfolio_data()
             tp=mp['total_pnl'] if mp else 0
             return jsonify({'status':'success','total_pnl':round(tp,2),'pnl_hoje':round(tp,2),'pnl_mes':round(tp,2),'pnl_ano':round(tp,2),'daily_pnl':[{'date':date.today().isoformat(),'pnl':round(tp,2)}],'monthly_pnl':[{'month':date.today().strftime('%Y-%m'),'pnl':round(tp,2)}],'as_of_date':date.today().isoformat()}),200
         except Exception as e:
@@ -265,7 +292,7 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
     @lh_bp.route('/win-rate', methods=['GET'])
     def get_win_rate():
         try:
-            mp = _get_mp_portfolio_data(db_fn, log)
+            mp = _get_mp_portfolio_data()
             if mp:
                 ps=mp['positions'];t=len(ps);w=sum(1 for p in ps if p['pnl_pct']>0);wr=(w/t*100) if t>0 else 0
             else: t=w=0;wr=0

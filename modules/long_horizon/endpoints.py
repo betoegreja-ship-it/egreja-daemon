@@ -220,165 +220,59 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
 
     @lh_bp.route('/portfolios', methods=['GET'])
     def get_portfolios_summary():
-        """GET /long-horizon/portfolios - All portfolios summary"""
         try:
-            all_portfolios = get_all_portfolios_summary()
-
-            summary = []
-            for pname, pdata in all_portfolios.items():
-                if pdata:
-                    summary.append({
-                        'name': pname,
-                        'description': pdata['description'],
-                        'risk_level': pdata['risk_level'],
-                        'target_return': pdata['target_return'],
-                        'total_value': pdata['total_position_value'],
-                        'total_pnl': pdata['total_pnl'],
-                        'total_pnl_pct': pdata['total_pnl_pct'],
-                        'position_count': pdata['position_count'],
-                        'investment_ratio': pdata['investment_ratio'],
-                    })
-
-            return jsonify({
-                'status': 'success',
-                'portfolios': summary,
-                'initial_capital': 7_000_000,
-                'total_invested': sum(p['total_value'] for p in summary),
-                'total_pnl': sum(p['total_pnl'] for p in summary),
-                'as_of_date': date.today().isoformat(),
-            }), 200
-
+            mp = _get_mp_portfolio_data(db_fn, log)
+            if mp and mp['position_count']>0:
+                s=[{'name':'Monthly Picks','description':'AI scoring engine positions','risk_level':'Moderate-Aggressive','target_return':25.0,'total_value':round(mp['total_value'],2),'total_pnl':mp['total_pnl'],'total_pnl_pct':mp['total_pnl_pct'],'position_count':mp['position_count'],'investment_ratio':round(mp['total_allocated']/7e6*100,2)}]
+                return jsonify({'status':'success','portfolios':s,'initial_capital':7_000_000,'total_invested':round(mp['total_allocated'],2),'total_pnl':mp['total_pnl'],'as_of_date':date.today().isoformat()}),200
+            return jsonify({'status':'success','portfolios':[],'initial_capital':7_000_000,'total_invested':0,'total_pnl':0,'as_of_date':date.today().isoformat()}),200
         except Exception as e:
-            log.error(f"GET /portfolios error: {e}\n{traceback.format_exc()}")
-            return jsonify({'error': str(e)}), 500
+            log.error(f'GET /portfolios error: {e}')
+            return jsonify({'error':str(e)}),500
 
     @lh_bp.route('/portfolio/<name>', methods=['GET'])
     def get_portfolio_detail(name):
-        """GET /long-horizon/portfolio/<name> - Detailed portfolio"""
         try:
-            portfolios = get_model_portfolios()
-
-            if name not in portfolios:
-                return jsonify({'error': f'Portfolio {name} not found'}), 404
-
-            pdata = get_all_portfolios_summary()[name]
-
-            return jsonify({
-                'status': 'success',
-                'portfolio_name': pdata['portfolio_name'],
-                'description': pdata['description'],
-                'risk_level': pdata['risk_level'],
-                'target_return': pdata['target_return'],
-                'total_capital': pdata['total_capital'],
-                'total_value': pdata['total_position_value'],
-                'cash_reserve': pdata['cash_reserve'],
-                'investment_ratio': pdata['investment_ratio'],
-                'total_pnl': pdata['total_pnl'],
-                'total_pnl_pct': pdata['total_pnl_pct'],
-                'positions': pdata['positions'],
-                'as_of_date': pdata['as_of_date'],
-            }), 200
-
+            mp = _get_mp_portfolio_data(db_fn, log)
+            if not mp: return jsonify({'error':'No data'}),404
+            return jsonify({'status':'success','portfolio_name':'Monthly Picks','description':'AI scoring engine','risk_level':'Moderate-Aggressive','target_return':25.0,'total_capital':7_000_000,'total_value':round(mp['total_value'],2),'cash_reserve':round(7e6-mp['total_allocated'],2),'investment_ratio':round(mp['total_allocated']/7e6*100,2),'total_pnl':mp['total_pnl'],'total_pnl_pct':mp['total_pnl_pct'],'positions':mp['positions'],'as_of_date':date.today().isoformat()}),200
         except Exception as e:
-            log.error(f"GET /portfolio/{name} error: {e}\n{traceback.format_exc()}")
-            return jsonify({'error': str(e)}), 500
+            log.error(f'GET /portfolio error: {e}')
+            return jsonify({'error':str(e)}),500
 
     # ============== CAPITAL & P&L ENDPOINTS ==============
 
     @lh_bp.route('/capital', methods=['GET'])
     def get_capital_summary():
-        """GET /long-horizon/capital - Capital summary"""
         try:
-            all_portfolios = get_all_portfolios_summary()
-
-            total_value = sum(p['total_position_value'] for p in all_portfolios.values() if p)
-            total_pnl = sum(p['total_pnl'] for p in all_portfolios.values() if p)
-            initial_capital = 7_000_000
-            total_pnl_pct = (total_pnl / initial_capital) * 100 if initial_capital > 0 else 0
-
-            return jsonify({
-                'status': 'success',
-                'initial_capital': initial_capital,
-                'current_value': round(total_value, 2),
-                'daily_pnl': round(total_pnl / 20, 2),  # Estimate based on 20 trading days
-                'monthly_pnl': round(total_pnl / 4, 2),  # Estimate
-                'annual_pnl': round(total_pnl, 2),
-                'total_return_pct': round(total_pnl_pct, 2),
-                'allocated': round(total_value, 2),
-                'reserve': round(initial_capital - total_value, 2),
-                'allocation_ratio': round((total_value / initial_capital) * 100, 2),
-                'as_of_date': date.today().isoformat(),
-            }), 200
-
+            mp = _get_mp_portfolio_data(db_fn, log)
+            ic=7_000_000; tv=mp['total_value'] if mp else ic; tp=mp['total_pnl'] if mp else 0; al=mp['total_allocated'] if mp else 0
+            return jsonify({'status':'success','capital_inicial':ic,'valor_atual':round(tv,2),'initial_capital':ic,'current_value':round(tv,2),'daily_pnl':round(tp,2),'monthly_pnl':round(tp,2),'annual_pnl':round(tp,2),'total_return_pct':round(tp/ic*100,2) if ic>0 else 0,'allocated':round(al,2),'reserve':round(ic-al,2),'allocation_ratio':round((al/ic)*100,2) if ic>0 else 0,'as_of_date':date.today().isoformat()}),200
         except Exception as e:
-            log.error(f"GET /capital error: {e}\n{traceback.format_exc()}")
-            return jsonify({'error': str(e)}), 500
+            log.error(f'GET /capital error: {e}')
+            return jsonify({'error':str(e)}),500
 
     @lh_bp.route('/pnl', methods=['GET'])
     def get_pnl():
-        """GET /long-horizon/pnl - P&L daily/monthly/annual"""
         try:
-            all_portfolios = get_all_portfolios_summary()
-            total_pnl = sum(p['total_pnl'] for p in all_portfolios.values() if p)
-
-            # Generate mock daily P&L (20 trading days)
-            daily_pnl = []
-            daily_value = total_pnl / 20
-            for i in range(20):
-                daily_pnl.append({
-                    'date': (date.today() - timedelta(days=20-i)).isoformat(),
-                    'pnl': round(daily_value * (1 + (i * 0.05)), 2),
-                })
-
-            # Monthly P&L (last 12 months)
-            monthly_pnl = []
-            for m in range(12):
-                d = date.today() - timedelta(days=30*m)
-                monthly_pnl.append({
-                    'month': d.strftime('%Y-%m'),
-                    'pnl': round(total_pnl * (0.7 + m * 0.02), 2),
-                })
-
-            return jsonify({
-                'status': 'success',
-                'total_pnl': round(total_pnl, 2),
-                'daily_pnl': daily_pnl[-10:],  # Last 10 days
-                'monthly_pnl': monthly_pnl[-12:],
-                'as_of_date': date.today().isoformat(),
-            }), 200
-
+            mp = _get_mp_portfolio_data(db_fn, log)
+            tp=mp['total_pnl'] if mp else 0
+            return jsonify({'status':'success','total_pnl':round(tp,2),'pnl_hoje':round(tp,2),'pnl_mes':round(tp,2),'pnl_ano':round(tp,2),'daily_pnl':[{'date':date.today().isoformat(),'pnl':round(tp,2)}],'monthly_pnl':[{'month':date.today().strftime('%Y-%m'),'pnl':round(tp,2)}],'as_of_date':date.today().isoformat()}),200
         except Exception as e:
-            log.error(f"GET /pnl error: {e}\n{traceback.format_exc()}")
-            return jsonify({'error': str(e)}), 500
+            log.error(f'GET /pnl error: {e}')
+            return jsonify({'error':str(e)}),500
 
     @lh_bp.route('/win-rate', methods=['GET'])
     def get_win_rate():
-        """GET /long-horizon/win-rate - Win rate statistics"""
         try:
-            all_portfolios = get_all_portfolios_summary()
-
-            total_positions = sum(len(p['positions']) for p in all_portfolios.values() if p)
-            winning_positions = sum(
-                sum(1 for pos in p['positions'] if pos['pnl_pct'] > 0)
-                for p in all_portfolios.values() if p
-            )
-            win_rate = (winning_positions / total_positions * 100) if total_positions > 0 else 0
-
-            return jsonify({
-                'status': 'success',
-                'total_positions': total_positions,
-                'winning_positions': winning_positions,
-                'losing_positions': total_positions - winning_positions,
-                'win_rate_pct': round(win_rate, 2),
-                'avg_win': round(2.5, 2),  # Demo value
-                'avg_loss': round(-1.8, 2),
-                'profit_factor': round(2.5 / 1.8, 2),
-                'as_of_date': date.today().isoformat(),
-            }), 200
-
+            mp = _get_mp_portfolio_data(db_fn, log)
+            if mp:
+                ps=mp['positions'];t=len(ps);w=sum(1 for p in ps if p['pnl_pct']>0);wr=(w/t*100) if t>0 else 0
+            else: t=w=0;wr=0
+            return jsonify({'status':'success','total_positions':t,'winning_positions':w,'losing_positions':t-w,'win_rate_pct':round(wr,2),'avg_win':0,'avg_loss':0,'profit_factor':0,'as_of_date':date.today().isoformat()}),200
         except Exception as e:
-            log.error(f"GET /win-rate error: {e}\n{traceback.format_exc()}")
-            return jsonify({'error': str(e)}), 500
+            log.error(f'GET /win-rate error: {e}')
+            return jsonify({'error':str(e)}),500
 
     @lh_bp.route('/backtest', methods=['GET'])
     def get_backtest_results():

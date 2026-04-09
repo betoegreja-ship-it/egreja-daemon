@@ -10282,17 +10282,43 @@ if __name__ == '__main__':
     except Exception as _be:
         log.warning(f'[v3.0] Brain tables creation warning: {_be}')
 
-    # [v3.2] Monthly Picks tables (8 tables — modular sleeve)
+    # [v3.2] Long Horizon + Monthly Picks tables
+    try:
+        _lh_conn = get_db()
+        if _lh_conn:
+            from modules.long_horizon.schema import create_long_horizon_tables
+            create_long_horizon_tables(_lh_conn)
+            _lh_conn.close()
+            log.info('[v3.2] Long Horizon tables created/verified (10 tables)')
+    except Exception as _lhe:
+        log.warning(f'[v3.2] Long Horizon tables warning: {_lhe}')
+
     try:
         _mp_conn = get_db()
         if _mp_conn:
-            from modules.long_horizon.monthly_picks.repositories import MonthlyPicksRepository
-            _mp_repo = MonthlyPicksRepository(_mp_conn)
-            _mp_repo.create_tables()
+            from modules.long_horizon.monthly_picks.repositories import create_monthly_picks_tables
+            create_monthly_picks_tables(_mp_conn)
             _mp_conn.close()
-            log.info('[v3.2] Monthly Picks tables created/verified (8 tables — modular sleeve)')
+            log.info('[v3.2] Monthly Picks tables created/verified (8 tables)')
     except Exception as _mpe:
         log.warning(f'[v3.2] Monthly Picks tables warning: {_mpe}')
+
+    # [v10.27] Seed sleeve_status = paper_full in mp_config
+    try:
+        _cfg_conn = get_db()
+        if _cfg_conn:
+            _cfg_cur = _cfg_conn.cursor()
+            _cfg_cur.execute("""
+                INSERT INTO mp_config (config_key, config_value)
+                VALUES ('sleeve_status', 'paper_full')
+                ON DUPLICATE KEY UPDATE config_value = 'paper_full'
+            """)
+            _cfg_conn.commit()
+            _cfg_cur.close()
+            _cfg_conn.close()
+            log.info('[v10.27] mp_config sleeve_status seeded to paper_full')
+    except Exception as _cfe:
+        log.warning(f'[v10.27] mp_config seed warning: {_cfe}')
 
     fetch_fx_rates()          # [v10.6-P1-4] FX carregado ANTES de stock — ADR usa USDBRL
     fetch_crypto_prices()

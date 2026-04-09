@@ -147,7 +147,67 @@ class CandidateSelector:
                     pass
 
     def _fetch_from_scoring_engine(self) -> List[Dict]:
-        """Fallback: use scoring_engine.generate_demo_scores() directly."""
+        """
+        [v10.27] Collect REAL data from Polygon/BRAPI/Oplab, score, return candidates.
+        Falls back to demo scores only if all providers fail.
+        """
+        # Try real data first
+        try:
+            from modules.long_horizon.data_ingestion import LongHorizonDataCollector
+            from modules.long_horizon.scoring_engine import score_from_real_data
+
+            collector = LongHorizonDataCollector()
+            self.log.info('[MP Selector] Collecting real data from providers...')
+
+            candidates = []
+            failed = 0
+            universe = collector.UNIVERSE
+
+            # Collect and score each ticker
+            for ticker in universe:
+                try:
+                    profile = collector.collect_all(ticker)
+                    if not profile:
+                        failed += 1
+                        continue
+
+                    scored = score_from_real_data(profile)
+                    if not scored or scored.get('total_score', 0) < 30:
+                        continue
+
+                    candidates.append({
+                        'ticker': scored['ticker'],
+                        'total_score': scored.get('total_score', 0),
+                        'business_quality': scored.get('business_quality', 0),
+                        'valuation': scored.get('valuation', 0),
+                        'market_strength': scored.get('market_strength', 0),
+                        'macro_factors': scored.get('macro_factors', 0),
+                        'options_signal': scored.get('options_signal', 0),
+                        'structural_risk': scored.get('structural_risk', 0),
+                        'data_reliability': scored.get('data_reliability', 0),
+                        'conviction': scored.get('conviction', 'Neutral'),
+                        'sector': profile.get('sector', 'Unknown'),
+                        'market': profile.get('market', 'Unknown'),
+                        'name': profile.get('name', ticker),
+                        'source': 'real_data',
+                    })
+                except Exception as e:
+                    self.log.debug(f'[MP Selector] {ticker} real data error: {e}')
+                    failed += 1
+
+            self.log.info(f'[MP Selector] Real data: {len(candidates)} scored, '
+                          f'{failed} failed out of {len(universe)}')
+
+            if candidates:
+                # Also persist scores to lh_scores for future use
+                self._persist_scores(candidates)
+                return candidates
+
+        except Exception as e:
+            self.log.warning(f'[MP Selector] Real data collection error: {e}')
+
+        # Fallback to demo scores
+        self.log.warning('[MP Selector] Falling back to demo scores')
         try:
             from modules.long_horizon.scoring_engine import (
                 generate_demo_scores, rank_assets
@@ -172,11 +232,79 @@ class CandidateSelector:
                     'sector': data.get('sector', 'Unknown'),
                     'market': data.get('market', 'Unknown'),
                     'name': data.get('name', ticker),
+                    'source': 'demo',
                 })
             return candidates
         except Exception as e:
-            self.log.warning(f'[MP Selector] scoring_engine fallback error: {e}')
+            self.log.warning(f'[MP Selector] demo fallback error: {e}')
             return []
+
+    def _persist_scores(self, candidates: List[Dict]):
+        """[v10.27] Persist real scores to lh_scores table for future scans."""
+        conn = None
+        try:
+            conn = self.db_fn()
+            cursor = conn.cursor()
+            today = __import__('datetime').date.today().isoformat()
+
+            for c in candidates:
+                ticker = c['ticker']
+                # Get or create asset_id
+                cursor.execute(
+                    "SELECT asset_id FROM lh_assets WHERE ticker = %s",
+                    (ticker,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    asset_id = row[0]
+                else:
+                    cursor.execute(
+                        "INSERT INTO lh_assets (ticker, name, sector, market, active) "
+                        "VALUES (%s, %s, %s, %s, TRUE)",
+                        (ticker, c.get('name', ticker),
+                         c.get('sector', 'Unknown'),
+                         c.get('market', 'Unknown'))
+                    )
+                    asset_id = cursor.lastrowid
+
+                # Upsert score
+                cursor.execute("""
+                    INSERT INTO lh_scores
+                        (asset_id, score_date, total_score, conviction,
+                         business_quality, valuation, market_strength,
+                         macro_factors, options_signal, structural_risk,
+                         data_reliability, model_version)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        total_score = VALUES(total_score),
+                        conviction = VALUES(conviction),
+                        business_quality = VALUES(business_quality),
+                        valuation = VALUES(valuation),
+                        market_strength = VALUES(market_strength),
+                        macro_factors = VALUES(macro_factors),
+                        options_signal = VALUES(options_signal),
+                        structural_risk = VALUES(structural_risk),
+                        data_reliability = VALUES(data_reliability),
+                        model_version = VALUES(model_version)
+                """, (
+                    asset_id, today,
+                    c.get('total_score', 0), c.get('conviction', 'Neutral'),
+                    c.get('business_quality', 0), c.get('valuation', 0),
+                    c.get('market_strength', 0), c.get('macro_factors', 0),
+                    c.get('options_signal', 0), c.get('structural_risk', 0),
+                    c.get('data_reliability', 0), 'v2.0-realdata',
+                ))
+
+            conn.commit()
+            self.log.info(f'[MP Selector] Persisted {len(candidates)} scores to lh_scores')
+        except Exception as e:
+            self.log.warning(f'[MP Selector] Score persistence error: {e}')
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     # ── Filters ────────────────────────────────────────────
 

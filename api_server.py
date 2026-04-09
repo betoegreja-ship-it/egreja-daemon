@@ -8081,7 +8081,7 @@ def modules_debug():
         'brain_error': _brain_load_error,
     })
 
-@app.route('/health/seed-debug')
+@app.route('/stats/seed-debug')
 def seed_status_debug():
     """[v10.29c] Debug: check active_status_registry table and seed it if empty."""
     results = {}

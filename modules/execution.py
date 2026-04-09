@@ -958,10 +958,6 @@ def stock_execution_worker(ctx):
                         ctx['log'].warning(f'[RISK-BLOCK] Stock {sym}: {risk_reason}')
                         continue
 
-                    # [v10.26] Batch entry limiter
-                    if not _check_batch_limit('stocks', ctx.get('MAX_ENTRIES_PER_MINUTE_STOCKS', 5)):
-                        ctx['log'].info(f'[BATCH-LIMIT] stock {sym}: throttled (max {ctx.get("MAX_ENTRIES_PER_MINUTE_STOCKS", 5)}/min)')
-                        continue
                     ok2,reason2=ctx['_second_validation'](sym,mkt,'stocks')
                     if ok2 and ctx['stocks_capital']>=price*qty:
                         ctx['stocks_capital'] -= price*qty
@@ -1250,10 +1246,6 @@ def auto_trade_crypto(ctx):
                         ctx['log'].warning(f'[RISK-BLOCK] Crypto {display}: {risk_reason_pre}')
                         continue
 
-                    # [v10.26] Batch entry limiter
-                    if not _check_batch_limit('crypto', ctx.get('MAX_ENTRIES_PER_MINUTE_CRYPTO', 3)):
-                        ctx['log'].info(f'[BATCH-LIMIT] crypto {display}: throttled (max {ctx.get("MAX_ENTRIES_PER_MINUTE_CRYPTO", 3)}/min)')
-                        continue
                     ok2,reason2=ctx['_second_validation'](display,'CRYPTO','crypto')
                     if ok2 and ctx['crypto_capital']>=approved_size:
                         qty=approved_size/price; ctx['crypto_capital']-=approved_size

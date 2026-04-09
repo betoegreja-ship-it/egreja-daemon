@@ -22,6 +22,7 @@ Endpoints sob /monthly-picks/:
 """
 
 import logging
+import datetime
 from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger('egreja.monthly_picks.endpoints')
@@ -131,15 +132,37 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
 
     # ── Rescore Universe [v10.27i] ────────────────────────
 
+    # [v10.27n] Async rescore with status tracking
+    _rescore_state = {'running': False, 'result': None, 'started': None}
+
     @bp.route('/rescore', methods=['POST'])
     def rescore():
-        try:
-            from .scheduler_hooks import rescore_universe_hook
-            result = rescore_universe_hook(db_fn, log)
-            return jsonify(result), 200
-        except Exception as e:
-            log.error(f'[MP API] /rescore error: {e}')
-            return jsonify({'status': 'error', 'message': str(e)}), 500
+        import threading
+        if _rescore_state['running']:
+            return jsonify({'status': 'already_running', 'started': _rescore_state['started']}), 200
+        def _run():
+            _rescore_state['running'] = True
+            _rescore_state['started'] = str(datetime.datetime.now())
+            _rescore_state['result'] = None
+            try:
+                from .scheduler_hooks import rescore_universe_hook
+                result = rescore_universe_hook(db_fn, log)
+                _rescore_state['result'] = result
+            except Exception as e:
+                _rescore_state['result'] = {'status': 'error', 'message': str(e)}
+            finally:
+                _rescore_state['running'] = False
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return jsonify({'status': 'started', 'message': 'Rescore running in background. GET /rescore/status to check.'}), 202
+
+    @bp.route('/rescore/status', methods=['GET'])
+    def rescore_status():
+        return jsonify({
+            'running': _rescore_state['running'],
+            'started': _rescore_state['started'],
+            'result': _rescore_state['result'],
+        }), 200
 
     # ── Positions ──────────────────────────────────────────
 

@@ -22,6 +22,8 @@ Endpoints sob /monthly-picks/:
 """
 
 import logging
+import threading
+import time as _time
 from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger('egreja.monthly_picks.endpoints')
@@ -277,5 +279,185 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
             log.warning(f'[MP API] /discovery/status error: {e}')
             return jsonify({'status': 'ok', 'discovery': 'error',
                             'message': str(e)}), 200
+
+    # ── [v10.27] Data Ingestion (background) ─────────────
+    _ingest_state = {'running': False, 'progress': 0, 'total': 0,
+                     'scored': 0, 'failed': 0, 'last_ticker': '',
+                     'started_at': None, 'completed_at': None, 'error': None}
+
+    def _run_ingest_background():
+        """Collect real data from providers, score, persist to lh_scores."""
+        import datetime as _dt
+        _ingest_state.update({
+            'running': True, 'progress': 0, 'scored': 0, 'failed': 0,
+            'error': None, 'started_at': _dt.datetime.now().isoformat(),
+            'completed_at': None,
+        })
+        try:
+            from modules.long_horizon.data_ingestion import LongHorizonDataCollector
+            from modules.long_horizon.scoring_engine import score_from_real_data
+
+            collector = LongHorizonDataCollector()
+            universe = collector.UNIVERSE
+            _ingest_state['total'] = len(universe)
+            log.info(f'[MP Ingest] Starting data collection for {len(universe)} tickers')
+
+            scored_list = []
+
+            for i, ticker in enumerate(universe):
+                _ingest_state['progress'] = i + 1
+                _ingest_state['last_ticker'] = ticker
+                try:
+                    profile = collector.collect_all(ticker)
+                    if not profile:
+                        _ingest_state['failed'] += 1
+                        continue
+
+                    scored = score_from_real_data(profile)
+                    if scored and scored.get('total_score', 0) > 20:
+                        scored['sector'] = profile.get('sector', 'Unknown')
+                        scored['market'] = profile.get('market', 'Unknown')
+                        scored['name'] = profile.get('name', ticker)
+                        scored_list.append(scored)
+                        _ingest_state['scored'] += 1
+                except Exception as e:
+                    _ingest_state['failed'] += 1
+                    log.debug(f'[MP Ingest] {ticker}: {e}')
+
+            # Persist all scores to DB
+            if scored_list:
+                _persist_all_scores(scored_list)
+
+            _ingest_state['completed_at'] = _dt.datetime.now().isoformat()
+            log.info(f'[MP Ingest] Done: {len(scored_list)} scored, '
+                     f'{_ingest_state["failed"]} failed')
+
+        except Exception as e:
+            _ingest_state['error'] = str(e)
+            log.error(f'[MP Ingest] Fatal error: {e}')
+        finally:
+            _ingest_state['running'] = False
+
+    def _persist_all_scores(scored_list):
+        """Write scored data to lh_assets + lh_scores tables."""
+        import datetime as _dt
+        conn = None
+        try:
+            conn = db_fn()
+            cursor = conn.cursor()
+            today = _dt.date.today().isoformat()
+
+            for s in scored_list:
+                ticker = s['ticker']
+                # Upsert asset
+                cursor.execute(
+                    "INSERT INTO lh_assets (ticker, name, sector, market, active) "
+                    "VALUES (%s, %s, %s, %s, TRUE) "
+                    "ON DUPLICATE KEY UPDATE name=VALUES(name), sector=VALUES(sector), "
+                    "market=VALUES(market), active=TRUE",
+                    (ticker, s.get('name', ticker),
+                     s.get('sector', 'Unknown'),
+                     s.get('market', 'Unknown'))
+                )
+                cursor.execute("SELECT asset_id FROM lh_assets WHERE ticker=%s", (ticker,))
+                asset_id = cursor.fetchone()[0]
+
+                # Upsert score
+                cursor.execute("""
+                    INSERT INTO lh_scores
+                        (asset_id, score_date, total_score, conviction,
+                         business_quality, valuation, market_strength,
+                         macro_factors, options_signal, structural_risk,
+                         data_reliability, model_version)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE
+                        total_score=VALUES(total_score), conviction=VALUES(conviction),
+                        business_quality=VALUES(business_quality), valuation=VALUES(valuation),
+                        market_strength=VALUES(market_strength), macro_factors=VALUES(macro_factors),
+                        options_signal=VALUES(options_signal), structural_risk=VALUES(structural_risk),
+                        data_reliability=VALUES(data_reliability), model_version=VALUES(model_version)
+                """, (
+                    asset_id, today,
+                    s.get('total_score', 0), s.get('conviction', 'Neutral'),
+                    s.get('business_quality', 0), s.get('valuation', 0),
+                    s.get('market_strength', 0), s.get('macro_factors', 0),
+                    s.get('options_signal', 0), s.get('structural_risk', 0),
+                    s.get('data_reliability', 0), 'v2.0-realdata',
+                ))
+
+            conn.commit()
+            log.info(f'[MP Ingest] Persisted {len(scored_list)} scores to lh_scores')
+        except Exception as e:
+            log.error(f'[MP Ingest] DB persist error: {e}')
+        finally:
+            if conn:
+                try: conn.close()
+                except: pass
+
+    @bp.route('/ingest', methods=['POST'])
+    def start_ingest():
+        """Start background data ingestion from all providers."""
+        if _ingest_state['running']:
+            return jsonify({
+                'status': 'already_running',
+                'progress': _ingest_state['progress'],
+                'total': _ingest_state['total'],
+                'last_ticker': _ingest_state['last_ticker'],
+            }), 200
+
+        t = threading.Thread(target=_run_ingest_background, daemon=True)
+        t.start()
+        return jsonify({'status': 'started', 'total': 109}), 202
+
+    @bp.route('/ingest/status', methods=['GET'])
+    def ingest_status():
+        """Check data ingestion progress."""
+        return jsonify({
+            'status': 'ok',
+            **_ingest_state,
+        }), 200
+
+    # ── [v10.27] Async Scan ───────────────────────────────
+
+    _scan_state = {'running': False, 'result': None, 'error': None,
+                   'started_at': None, 'completed_at': None}
+
+    def _run_scan_background():
+        """Run monthly scan in background thread."""
+        import datetime as _dt
+        _scan_state.update({
+            'running': True, 'result': None, 'error': None,
+            'started_at': _dt.datetime.now().isoformat(),
+            'completed_at': None,
+        })
+        try:
+            lc = _get_lifecycle()
+            result = lc.run_monthly_scan()
+            _scan_state['result'] = result
+            _scan_state['completed_at'] = _dt.datetime.now().isoformat()
+            log.info(f'[MP Scan Async] Done: {result}')
+        except Exception as e:
+            _scan_state['error'] = str(e)
+            log.error(f'[MP Scan Async] Error: {e}')
+        finally:
+            _scan_state['running'] = False
+
+    @bp.route('/scan-async', methods=['POST'])
+    def run_scan_async():
+        """Start scan in background thread (returns immediately)."""
+        if _scan_state['running']:
+            return jsonify({'status': 'already_running'}), 200
+
+        t = threading.Thread(target=_run_scan_background, daemon=True)
+        t.start()
+        return jsonify({'status': 'scan_started'}), 202
+
+    @bp.route('/scan/status', methods=['GET'])
+    def scan_status():
+        """Check async scan progress."""
+        return jsonify({
+            'status': 'ok',
+            **_scan_state,
+        }), 200
 
     return bp

@@ -161,7 +161,8 @@ class CandidateSelector:
 
             candidates = []
             failed = 0
-            universe = collector.UNIVERSE
+            # [v10.27b] Limit to top 30 B3 + top 20 US for sync speed
+            universe = collector.B3_TICKERS[:30] + collector.US_TICKERS[:20]
 
             # Collect and score each ticker
             for ticker in universe:

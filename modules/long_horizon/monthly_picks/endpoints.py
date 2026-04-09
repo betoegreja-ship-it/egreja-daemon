@@ -460,4 +460,87 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
             **_scan_state,
         }), 200
 
+
+    # ── [v10.27c] Seed Scores from Demo ───────────────────
+
+    @bp.route('/seed-scores', methods=['POST'])
+    def seed_scores():
+        """Seed lh_assets + lh_scores from scoring engine demo scores."""
+        import datetime as _dt
+        try:
+            from modules.long_horizon.scoring_engine import generate_demo_scores
+            scores = generate_demo_scores()
+            if not scores:
+                return jsonify({'status': 'error', 'message': 'No scores generated'}), 500
+
+            conn = db_fn()
+            cursor = conn.cursor()
+            today = _dt.date.today().isoformat()
+            n = 0
+
+            for ticker, data in scores.items():
+                total = data.get('total_score', 0)
+                conv = data.get('conviction', 'Neutral')
+                dims = data.get('dimension_scores', {})
+
+                cursor.execute(
+                    "INSERT INTO lh_assets (ticker, name, sector, market, active) "
+                    "VALUES (%s,%s,%s,%s,TRUE) "
+                    "ON DUPLICATE KEY UPDATE name=VALUES(name), "
+                    "sector=VALUES(sector), market=VALUES(market), active=TRUE",
+                    (ticker, data.get('name', ticker),
+                     data.get('sector', 'Unknown'),
+                     data.get('market', 'Unknown'))
+                )
+                cursor.execute(
+                    "SELECT asset_id FROM lh_assets WHERE ticker=%s", (ticker,)
+                )
+                aid = cursor.fetchone()[0]
+
+                cursor.execute("""
+                    INSERT INTO lh_scores
+                        (asset_id, score_date, total_score, conviction,
+                         business_quality, valuation, market_strength,
+                         macro_factors, options_signal, structural_risk,
+                         data_reliability, model_version)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE
+                        total_score=VALUES(total_score),
+                        conviction=VALUES(conviction),
+                        business_quality=VALUES(business_quality),
+                        valuation=VALUES(valuation),
+                        market_strength=VALUES(market_strength),
+                        macro_factors=VALUES(macro_factors),
+                        options_signal=VALUES(options_signal),
+                        structural_risk=VALUES(structural_risk),
+                        data_reliability=VALUES(data_reliability),
+                        model_version=VALUES(model_version)
+                """, (
+                    aid, today, total, conv,
+                    dims.get('business_quality', 50),
+                    dims.get('valuation', 50),
+                    dims.get('market_strength', 50),
+                    dims.get('macro_factors', 50),
+                    dims.get('options_signal', 50),
+                    dims.get('structural_risk', 50),
+                    dims.get('data_reliability', 50),
+                    'v2.0-demo-seeded',
+                ))
+                n += 1
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            log.info(f'[MP API] Seeded {n} assets + scores to lh_assets/lh_scores')
+            return jsonify({
+                'status': 'ok',
+                'seeded': n,
+                'score_date': today,
+            }), 200
+
+        except Exception as e:
+            log.error(f'[MP API] /seed-scores error: {e}')
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+
     return bp

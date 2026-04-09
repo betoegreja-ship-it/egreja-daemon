@@ -67,8 +67,9 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
                 pl.append({'ticker':tk,'entry_price':ep,'current_price':cp,'quantity':qt,'weight':cap/7e6 if cap>0 else 0,'position_value':cv,'capital_allocated':cap,'pnl_value':round(pv,2),'pnl_pct':round(pp,2),'sector':p.get('sector','Unknown'),'score':float(p.get('entry_score') or 0)})
             return {'positions':pl,'total_allocated':ta,'total_value':sum(x['position_value'] for x in pl),'total_pnl':round(tp,2),'total_pnl_pct':round(tp/ta*100,2) if ta>0 else 0,'position_count':len(pl)}
         except Exception as e:
-            if log: log.error(f"_get_mp_portfolio_data error: {e}")
-            return None
+            import traceback as _tb
+            if log: log.error(f"_get_mp_portfolio_data error: {e}\n{_tb.format_exc()}")
+            return {'_error': str(e), '_tb': _tb.format_exc()}
 
     def get_db():
         return db_fn()
@@ -249,7 +250,8 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
     def get_portfolios_summary():
         try:
             mp = _get_mp_portfolio_data()
-            if mp and mp['position_count']>0:
+            if mp and mp.get('_error'): return jsonify({'debug_error': mp}), 200
+            if mp and mp.get('position_count',0)>0:
                 s=[{'name':'Monthly Picks','description':'AI scoring engine positions','risk_level':'Moderate-Aggressive','target_return':25.0,'total_value':round(mp['total_value'],2),'total_pnl':mp['total_pnl'],'total_pnl_pct':mp['total_pnl_pct'],'position_count':mp['position_count'],'investment_ratio':round(mp['total_allocated']/7e6*100,2)}]
                 return jsonify({'status':'success','portfolios':s,'initial_capital':7_000_000,'total_invested':round(mp['total_allocated'],2),'total_pnl':mp['total_pnl'],'as_of_date':date.today().isoformat()}),200
             return jsonify({'status':'success','portfolios':[],'initial_capital':7_000_000,'total_invested':0,'total_pnl':0,'as_of_date':date.today().isoformat()}),200

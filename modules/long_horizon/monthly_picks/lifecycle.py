@@ -492,6 +492,20 @@ class MonthlyPicksLifecycle:
 
         for pos in open_positions:
             try:
+                # [v10.27m] Force price from global cache before review
+                try:
+                    import sys as _sys
+                    _main = _sys.modules.get('__main__')
+                    if _main and hasattr(_main, 'stock_prices'):
+                        _sp = _main.stock_prices
+                        _t = pos['ticker']
+                        _pd = _sp.get(_t) or _sp.get(_t + '.SA') or {}
+                        if isinstance(_pd, dict):
+                            _cp = _pd.get('regularMarketPrice') or _pd.get('price') or _pd.get('c')
+                            if _cp and float(_cp) > 0:
+                                pos['_override_price'] = float(_cp)
+                except Exception:
+                    pass
                 result = self.review_engine.review_position(pos)
 
                 if result.get('action') == 'close' and result.get('exit_reason'):

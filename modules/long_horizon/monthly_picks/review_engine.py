@@ -38,7 +38,11 @@ class ReviewEngine:
         entry_score = float(position.get('entry_score', 0))
 
         # 1. Get current price & score
-        current_price = self._get_current_price(ticker, entry_price)
+        # [v10.27m] Check for override price from daily_check (bypasses all providers)
+        if '_override_price' in position and position['_override_price'] > 0:
+            current_price = float(position['_override_price'])
+        else:
+            current_price = self._get_current_price(ticker, entry_price)
         current_score = self._get_current_score(ticker, entry_score)
         prev_score = float(position.get('current_score', entry_score))
 
@@ -205,20 +209,33 @@ class ReviewEngine:
     # ── HELPERS ─────────────────────────────────────────────
 
     def _get_current_price(self, ticker: str, fallback: float) -> float:
-        """Get latest price from live providers (BRAPI for BR, Polygon for US).
-        Falls back to lh_assets last_price, then to the hardcoded estimate map,
-        then to the provided fallback.
+        """Get latest price - priority: global cache > BRAPI > Polygon > DB > fallback.
+        [v10.27i] Global stock_prices cache is the most reliable real-time source.
         """
-        # 1) BRAPI live quote (covers BR + US via Brapi's multi-market endpoint)
+        # 0) [v10.27i] Global stock_prices cache (updated every ~60s by api_server)
+        try:
+            import sys as _sys
+            _main = _sys.modules.get('__main__')
+            if _main and hasattr(_main, 'stock_prices'):
+                _sp = _main.stock_prices
+                _pd = _sp.get(ticker) or _sp.get(ticker + '.SA') or {}
+                if isinstance(_pd, dict):
+                    _price = _pd.get('regularMarketPrice') or _pd.get('price') or _pd.get('c')
+                    if _price and float(_price) > 0:
+                        return float(_price)
+                elif isinstance(_pd, (int, float)) and float(_pd) > 0:
+                    return float(_pd)
+        except Exception:
+            pass
+        # 1) BRAPI live quote
         try:
             from modules.long_horizon.brapi_provider import BRAPIProvider
             q = BRAPIProvider().get_quote(ticker)
             if q and float(q.get('price', 0) or 0) > 0:
                 return float(q['price'])
-        except Exception as e:
-            try: self.log.debug(f'[MP Review] BRAPI price miss {ticker}: {e}')
-            except Exception: pass
-        # 2) Polygon (US ADRs)
+        except Exception:
+            pass
+        # 2) Polygon (US)
         try:
             from modules.long_horizon.polygon_provider import PolygonProvider
             q = PolygonProvider().get_quote(ticker)
@@ -237,14 +254,7 @@ class ReviewEngine:
                 return float(row['last_price'])
         except Exception:
             pass
-        # 4) Static estimate map (legacy) — only as last resort
-        try:
-            from modules.long_horizon.portfolio_engine import get_realistic_asset_prices
-            prices = get_realistic_asset_prices()
-            if ticker in prices and float(prices[ticker].get('price', 0) or 0) > 0:
-                return float(prices[ticker]['price'])
-        except Exception:
-            pass
+        self.log.warning(f'[MP Review] No real price for {ticker}, fallback={fallback}')
         return fallback
 
     def _get_current_score(self, ticker: str, fallback: float) -> float:

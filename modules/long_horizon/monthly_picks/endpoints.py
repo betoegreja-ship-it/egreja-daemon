@@ -543,4 +543,99 @@ def create_monthly_picks_blueprint(db_fn, log=None, **kwargs) -> Blueprint:
             log.error(f'[MP API] /seed-scores error: {e}')
             return jsonify({'status': 'error', 'message': str(e)}), 500
 
+
+    # ── [v10.27d] Debug selector ──────────────────────────
+
+    @bp.route('/debug-selector', methods=['GET'])
+    def debug_selector():
+        """Debug: test each selector path and show what it finds."""
+        import traceback
+        results = {}
+
+        # Test 1: Direct DB query
+        try:
+            conn = db_fn()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT s.*, a.ticker, a.name, a.sector, a.market, a.asset_type
+                FROM lh_scores s
+                JOIN lh_assets a ON s.asset_id = a.asset_id
+                WHERE a.active = TRUE
+                AND s.score_date = (
+                    SELECT MAX(score_date) FROM lh_scores
+                    WHERE asset_id = s.asset_id
+                )
+                ORDER BY s.total_score DESC
+                LIMIT 5
+            """)
+            rows = cursor.fetchall()
+            # Convert Decimal to float for JSON
+            clean_rows = []
+            for r in rows:
+                clean = {}
+                for k, v in r.items():
+                    if hasattr(v, 'is_integer'):  # Decimal
+                        clean[k] = float(v)
+                    elif hasattr(v, 'isoformat'):  # date/datetime
+                        clean[k] = v.isoformat()
+                    else:
+                        clean[k] = v
+                clean_rows.append(clean)
+            results['direct_db_query'] = {
+                'count': len(rows),
+                'top5': clean_rows,
+            }
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            results['direct_db_query'] = {'error': str(e), 'tb': traceback.format_exc()[-500:]}
+
+        # Test 2: Selector._fetch_latest_scores
+        try:
+            lc = _get_lifecycle()
+            scores = lc.selector._fetch_latest_scores()
+            results['fetch_latest_scores'] = {
+                'count': len(scores),
+                'top3': [{'ticker': s.get('ticker'), 'score': s.get('total_score')} for s in scores[:3]] if scores else [],
+            }
+        except Exception as e:
+            results['fetch_latest_scores'] = {'error': str(e), 'tb': traceback.format_exc()[-500:]}
+
+        # Test 3: Selector._fetch_from_expansion_layer
+        try:
+            lc = _get_lifecycle()
+            expanded = lc.selector._fetch_from_expansion_layer(20)
+            results['expansion_layer'] = {
+                'count': len(expanded) if expanded else 0,
+                'type': type(expanded).__name__,
+            }
+        except Exception as e:
+            results['expansion_layer'] = {'error': str(e)}
+
+        # Test 4: Full select_candidates
+        try:
+            lc = _get_lifecycle()
+            candidates = lc.selector.select_candidates(n=20)
+            results['select_candidates'] = {
+                'count': len(candidates),
+                'top3': [{'ticker': c.get('ticker'), 'score': c.get('total_score')} for c in candidates[:3]] if candidates else [],
+            }
+        except Exception as e:
+            results['select_candidates'] = {'error': str(e), 'tb': traceback.format_exc()[-500:]}
+
+        # Test 5: Config values
+        try:
+            from .config import get_config
+            cfg = get_config()
+            results['config'] = {
+                'min_score_entry': cfg.min_score_entry,
+                'min_data_quality': cfg.min_data_quality,
+                'candidates_per_scan': cfg.candidates_per_scan,
+                'picks_per_month': cfg.picks_per_month,
+            }
+        except Exception as e:
+            results['config'] = {'error': str(e)}
+
+        return jsonify(results), 200
+
     return bp

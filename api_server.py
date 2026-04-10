@@ -495,6 +495,14 @@ CRYPTO_MAX_POSITION_BY_SYM = {
     'TRXUSDT':  float(os.environ.get('MAX_POS_TRX',  150_000)),  # WR 47%
     'APTUSDT':  float(os.environ.get('MAX_POS_APT',  150_000)),  # WR 46%
     'ATOMUSDT': float(os.environ.get('MAX_POS_ATOM', 150_000)),  # WR 47%
+    # Tier 4 — new additions, conservative allocation until data builds
+    'SUIUSDT':  float(os.environ.get('MAX_POS_SUI',  150_000)),
+    'LTCUSDT':  float(os.environ.get('MAX_POS_LTC',  150_000)),
+    'TONUSDT':  float(os.environ.get('MAX_POS_TON',  150_000)),
+    'FETUSDT':  float(os.environ.get('MAX_POS_FET',  120_000)),
+    'ENAUSDT':  float(os.environ.get('MAX_POS_ENA',  120_000)),
+    'ZECUSDT':  float(os.environ.get('MAX_POS_ZEC',  120_000)),
+    'TAOUSDT':  float(os.environ.get('MAX_POS_TAO',  120_000)),
 }
 
 FMP_API_KEY      = os.environ.get('FMP_API_KEY', '')        # mantido como fallback terciário
@@ -539,7 +547,7 @@ ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 8))  # [v10.29c] 13 ativos, max 8 simultâneos
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 10))  # [v10.29d] 20 ativos, max 10 simultâneos
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
 # Settings ajustaveis em runtime (via /settings POST)
@@ -568,7 +576,7 @@ ARBI_MAX_DAILY_LOSS  = float(os.environ.get('ARBI_MAX_DAILY_LOSS_PCT', 1.5))
 ARBI_KILL_SWITCH     = False
 
 # Risco global
-MAX_OPEN_POSITIONS      = 68  # [v10.29c] 60 stocks + 8 crypto
+MAX_OPEN_POSITIONS      = 70  # [v10.29d] 60 stocks + 10 crypto
 MAX_DAILY_DRAWDOWN_PCT  = float(os.environ.get('MAX_DAILY_DRAWDOWN_PCT', 2.0))
 MAX_WEEKLY_DRAWDOWN_PCT = float(os.environ.get('MAX_WEEKLY_DRAWDOWN_PCT', 5.0))
 MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 10))
@@ -685,7 +693,7 @@ CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15)) 
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [v10.29c] 13 ativos — Manus 15 minus 2 toxic (DOGEUSDT 0% WR, LINKUSDT 33% WR)
+    # [v10.29d] 20 ativos — expandido de 13 para diversificação
     # Tier 1 — Top performers (WR > 53%)
     'ETHUSDT',    # +$5.723  WR 55% — best overall
     'ARBUSDT',    # +$2.455  WR 54% — second best P&L
@@ -693,22 +701,32 @@ CRYPTO_SYMBOLS = [
     'BTCUSDT',    # +$242    WR 53% — market reference
     # Tier 2 — Neutral/recovery potential (WR 48-52%)
     'BNBUSDT',    # +$191    WR 50% — exchange coin, stable
-    'SOLUSDT',    # WR 47% recovering — high volume, Manus includes
-    'XRPUSDT',    # WR 49% — high liquidity, Manus includes
-    'ADAUSDT',    # WR 48% — Manus includes, large cap
-    'AVAXUSDT',   # WR 49% — Manus includes, L1 ecosystem
-    # Tier 3 — Monitored (WR 45-48%, lower allocation)
-    'DOTUSDT',    # WR 46% — Manus includes, cross-chain
-    'TRXUSDT',    # WR 47% — Manus includes, stablecoin ecosystem
-    'APTUSDT',    # WR 46% — Manus includes, Move ecosystem
-    'ATOMUSDT',   # WR 47% — Manus includes, IBC hub
+    'SOLUSDT',    # WR 47% recovering — high volume
+    'XRPUSDT',    # WR 49% — high liquidity
+    'ADAUSDT',    # WR 48% — large cap
+    'AVAXUSDT',   # WR 49% — L1 ecosystem
+    # Tier 3 — Monitored (WR 45-48%)
+    'DOTUSDT',    # WR 46% — cross-chain
+    'TRXUSDT',    # WR 47% — stablecoin ecosystem
+    'APTUSDT',    # WR 46% — Move ecosystem
+    'ATOMUSDT',   # WR 47% — IBC hub
+    # Tier 4 — New additions (high liquidity, established projects)
+    'SUIUSDT',    # L1, $28M+ daily vol, Move ecosystem
+    'LTCUSDT',    # Established, $14M vol, digital silver
+    'TONUSDT',    # TON/Telegram, $13M vol, mass adoption
+    'FETUSDT',    # AI/ML narrative, $20M vol
+    'ENAUSDT',    # Ethena DeFi, $24M vol
+    'ZECUSDT',    # Privacy, $210M vol, high liquidity
+    'TAOUSDT',    # AI/decentralized compute, $420M vol
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',
     'XRPUSDT':'XRP','ADAUSDT':'Cardano','DOGEUSDT':'Dogecoin','AVAXUSDT':'Avalanche',
     'TRXUSDT':'TRON','DOTUSDT':'Polkadot','LINKUSDT':'Chainlink','MATICUSDT':'Polygon',
     'LTCUSDT':'Litecoin','UNIUSDT':'Uniswap','ATOMUSDT':'Cosmos','XLMUSDT':'Stellar',
-    'BCHUSDT':'Bitcoin Cash','NEARUSDT':'NEAR','APTUSDT':'Aptos','ARBUSDT':'Arbitrum'
+    'BCHUSDT':'Bitcoin Cash','NEARUSDT':'NEAR','APTUSDT':'Aptos','ARBUSDT':'Arbitrum',
+    'SUIUSDT':'Sui','TONUSDT':'Toncoin','FETUSDT':'Fetch.ai','ENAUSDT':'Ethena',
+    'ZECUSDT':'Zcash','TAOUSDT':'Bittensor',
 }
 
 # ═══════════════════════════════════════════════════════════════

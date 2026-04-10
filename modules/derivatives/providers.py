@@ -1274,7 +1274,71 @@ class OpLabMarketDataProvider(MarketDataProviderBase):
                 except (ValueError, TypeError):
                     continue
 
+            if results:
+                return results
+
+            # ── Fallback: BRAPI historical ──────────────────────────
+            return self._get_price_history_brapi(symbol, lookback_days)
+
+    def _get_price_history_brapi(self, symbol: str, lookback_days: int = 60) -> Optional[list]:
+        """Fallback: fetch historical prices from BRAPI when OpLab returns nothing."""
+        if not self._brapi_token:
+            return None
+        try:
+            # Map lookback to BRAPI range string
+            if lookback_days <= 30:
+                brapi_range = '1mo'
+            elif lookback_days <= 90:
+                brapi_range = '3mo'
+            elif lookback_days <= 180:
+                brapi_range = '6mo'
+            else:
+                brapi_range = '1y'
+
+            url = f"https://brapi.dev/api/quote/{symbol}"
+            r = _requests_lib.get(url, params={
+                'token': self._brapi_token,
+                'range': brapi_range,
+                'interval': '1d',
+                'fundamental': 'false',
+            }, timeout=12)
+
+            if r.status_code != 200:
+                return None
+
+            data = r.json()
+            results_list = data.get('results', [])
+            if not results_list:
+                return None
+
+            hist = results_list[0].get('historicalDataPrice', [])
+            if not hist:
+                return None
+
+            results = []
+            for item in hist:
+                try:
+                    close_val = float(item.get('close', 0) or 0)
+                    if close_val <= 0:
+                        continue
+                    ts = item.get('date', 0)
+                    date_str = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d') if isinstance(ts, (int, float)) and ts > 0 else '?'
+                    results.append({
+                        'date': date_str,
+                        'open': float(item.get('open', 0) or 0),
+                        'high': float(item.get('high', 0) or 0),
+                        'low': float(item.get('low', 0) or 0),
+                        'close': close_val,
+                        'volume': int(item.get('volume', 0) or 0),
+                    })
+                except (ValueError, TypeError):
+                    continue
+
+            self.logger.info(f"OpLab.get_price_history: BRAPI fallback returned {len(results)} candles for {symbol}")
             return results if results else None
+        except Exception as e:
+            self.logger.warning(f"OpLab._get_price_history_brapi error for {symbol}: {e}")
+            return None
 
     # ─── Health Check ─────────────────────────────────────────────
 
@@ -1654,7 +1718,72 @@ class ProviderManager:
 
     def get_spot(self, symbol: str) -> Optional[SpotQuote]:
         p = self._resolve()
-        return p.get_spot(symbol) if p else None
+        result = p.get_spot(symbol) if p else None
+        if result:
+            return result
+
+        # ── Fallback for special symbols not on B3/OpLab ────────────
+        return self._get_spot_fallback(symbol)
+
+    def _get_spot_fallback(self, symbol: str) -> Optional[SpotQuote]:
+        """Fallback spot quotes for FX and ADR symbols via BRAPI/Polygon."""
+        import logging
+        _log = logging.getLogger('providers.fallback')
+
+        # FX: USDBRL via BRAPI currency endpoint
+        if symbol.upper() in ('USDBRL', 'USD/BRL', 'BRL=X'):
+            brapi_token = os.environ.get('BRAPI_TOKEN', '').strip()
+            if not brapi_token:
+                return None
+            try:
+                r = _requests_lib.get(
+                    'https://brapi.dev/api/v2/currency',
+                    params={'currency': 'USD-BRL', 'token': brapi_token},
+                    timeout=8,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    currencies = data.get('currency', [])
+                    if currencies:
+                        c = currencies[0]
+                        bid = float(c.get('bidPrice', 0) or 0)
+                        ask = float(c.get('askPrice', 0) or 0)
+                        if bid > 0 and ask > 0:
+                            _log.info(f"BRAPI FX fallback: USDBRL bid={bid} ask={ask}")
+                            return SpotQuote(
+                                symbol='USDBRL', bid=bid, ask=ask,
+                                last=(bid + ask) / 2, volume=0,
+                                timestamp=datetime.utcnow(),
+                            )
+            except Exception as e:
+                _log.debug(f"BRAPI FX fallback error: {e}")
+            return None
+
+        # ADR: NYSE stocks via Polygon.io
+        polygon_key = os.environ.get('POLYGON_API_KEY', '').strip()
+        # Known ADR tickers (not on B3)
+        _adr_tickers = {'PBR', 'PBR-A', 'VALE', 'ITUB', 'BBD', 'ABEV', 'ERJ', 'EWZ'}
+        if symbol.upper() in _adr_tickers and polygon_key:
+            try:
+                url = f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{symbol.upper()}"
+                r = _requests_lib.get(url, params={'apiKey': polygon_key}, timeout=8)
+                if r.status_code == 200:
+                    data = r.json()
+                    ticker_data = data.get('ticker', {})
+                    day = ticker_data.get('day', {})
+                    last_price = float(day.get('c', day.get('vw', 0)) or 0)
+                    if last_price > 0:
+                        _log.info(f"Polygon ADR fallback: {symbol} price={last_price}")
+                        return SpotQuote(
+                            symbol=symbol.upper(), bid=last_price, ask=last_price,
+                            last=last_price, volume=int(day.get('v', 0) or 0),
+                            timestamp=datetime.utcnow(),
+                        )
+            except Exception as e:
+                _log.debug(f"Polygon ADR fallback error for {symbol}: {e}")
+            return None
+
+        return None
 
     def get_option_chain(self, underlying: str, option_type: str = None, expiry=None, min_dte: int = 0) -> Optional[dict]:
         """Get option chain keyed by strike for the NEAREST valid expiry (or a specific one).

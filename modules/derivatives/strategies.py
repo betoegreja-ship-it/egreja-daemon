@@ -116,7 +116,6 @@ def _try_autonomous_execution(
 
         if not execution_engine or not sizer or not capital_mgr:
             # Modules not yet initialized — fall back to logging only
-            log.debug(f"[EXEC-SKIP] {strategy}/{symbol}: engine={bool(execution_engine)} sizer={bool(sizer)} cap={bool(capital_mgr)}")
             return False
 
         # Get capital snapshot
@@ -148,7 +147,7 @@ def _try_autonomous_execution(
         )
 
         if sizing.notional <= 0:
-            log.info(f"[EXEC-SIZING-REJECT] {strategy}/{symbol}: {sizing.reason} edge_bps={edge_bps:.4f} conf={confidence:.2f}")
+            log.debug(f"Sizing rejected {strategy}/{symbol}: {sizing.reason}")
             return False
 
         # Build legs if not provided

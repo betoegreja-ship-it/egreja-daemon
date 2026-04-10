@@ -84,6 +84,7 @@ try:
     from modules.derivatives.services import (OptionsChainCache, FuturesChainCache, DividendEventService,
         RatesCurveService, GreeksCalculator, CalibrationService, StrategyScorecard, StructuredOrderExecutor,
         NAVCalculatorService, ImpliedVolEngine)
+    from modules.derivatives.deriv_execution import DerivativesExecutionEngine
     from modules.derivatives.liquidity import LiquidityScoreEngine, PromotionEngine, ActiveStatusRegistry
     from modules.derivatives.capital import DerivativesCapitalManager
     from modules.derivatives.learning import DerivativesLearningEngine
@@ -132,6 +133,7 @@ except Exception as _mod_err:
     class ActiveStatusRegistry: pass
     OptionsChainCache = FuturesChainCache = DividendEventService = RatesCurveService = None
     GreeksCalculator = CalibrationService = StrategyScorecard = StructuredOrderExecutor = None
+    DerivativesExecutionEngine = None
     NAVCalculatorService = ImpliedVolEngine = None
     def create_strategies_blueprint(**kw):
         from flask import Blueprint; return Blueprint('strategies', __name__)
@@ -309,7 +311,8 @@ try:
     _deriv_services['greeks_calculator']      = _deriv_services.get('greeks_calc')
     _deriv_services['rates_curve']            = _deriv_services.get('rates_svc')
     _deriv_services['dividend_service']       = _deriv_services.get('dividend_svc')
-    _deriv_services['deriv_execution']        = _deriv_services.get('order_executor')
+    # [v10.29d] deriv_execution set after capital_manager init (needs DerivativesExecutionEngine)
+    # _deriv_services['deriv_execution'] = _deriv_services.get('order_executor')  # OLD
     _deriv_services['nav_calculator']         = _deriv_services.get('nav_calc')
     # [FORENSIC-FIX] Getter de heartbeat real pras threads, pra /strategies/health nao depender de log de oportunidades
     _deriv_services['thread_heartbeat_getter'] = lambda name: thread_heartbeat.get(name)
@@ -357,6 +360,17 @@ try:
     except Exception as _ds_err:
         log.warning(f'[v10.29] deriv_sizer init failed: {_ds_err}')
         _deriv_services['deriv_sizer'] = None
+    # [v10.29d] Init DerivativesExecutionEngine (has execute_trade method that strategies.py expects)
+    # StructuredOrderExecutor only has submit_multi_leg_order → AttributeError → 0 trades
+    try:
+        _cap_mgr = _deriv_services.get('capital_manager')
+        if DerivativesExecutionEngine and _deriv_cfg and _cap_mgr:
+            _deriv_services['deriv_execution'] = DerivativesExecutionEngine(_deriv_cfg, _cap_mgr, get_db_fn=get_db)
+            log.info('[v10.29d] DerivativesExecutionEngine initialized')
+        else:
+            log.warning('[v10.29d] DerivativesExecutionEngine skipped: missing deps')
+    except Exception as _dee_err:
+        log.warning(f'[v10.29d] DerivativesExecutionEngine init failed: {_dee_err}')
     log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')
@@ -538,7 +552,7 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
-MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 60))  # [v10.26b]  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 59))  # [v10.26b]  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
@@ -2719,7 +2733,8 @@ def evaluate_symbol_blacklist():
             _symbol_blacklist[sym] = {
                 'reason': f'avg_pnl=${avg_pnl:.0f} wr={wr:.0f}% n={stats["n"]}',
                 'until': now + BLACKLIST_REVIEW_H * 3600,
-                'stats': {'avg_pnl': round(avg_pnl, 2), 'wr': round(wr, 1), 'n': stats['n']},
+                'stats': {'avg_pnl': round(avg_pnl, 2), 'wr': round(wr, 1), 'n': stats['n'],
+                           'asset_type': stats.get('asset_type', '')},  # [v10.29d] track source
             }
         elif sym in _symbol_blacklist:
             # Símbolo melhorou — desbloquear
@@ -6306,10 +6321,19 @@ def auto_trade_crypto():
                     log.info(f'[CRYPTO-DD-BLOCK] {display}: {_dd_reason_c}')
                     break
                 # [v10.16] Auto-blacklist check
+                # [v10.29d] Check blacklist with BOTH display name and full symbol.
+                # Crypto symbols (e.g. ATOM from ATOMUSDT) can collide with stock tickers.
+                # Only block if the blacklist entry came from crypto trades (check full sym too).
                 _bl_blocked_c, _bl_reason_c = is_symbol_blacklisted(display)
                 if _bl_blocked_c:
-                    log.info(f'[CRYPTO-BL-BLOCK] {display}: {_bl_reason_c}')
-                    continue
+                    # Verify it's actually a crypto blacklist, not a stock ticker collision
+                    _bl_info = _symbol_blacklist.get(display, {})
+                    _bl_asset = _bl_info.get('stats', {}).get('asset_type', '')
+                    if _bl_asset == 'crypto' or is_symbol_blacklisted(sym)[0]:
+                        log.info(f'[CRYPTO-BL-BLOCK] {display}: {_bl_reason_c}')
+                        continue
+                    else:
+                        log.info(f'[CRYPTO-BL-SKIP] {display}: blacklist is for stocks, not crypto — allowing')
                 # [v10.17] Directional exposure check
                 _dir_blocked_c, _dir_reason_c, _dir_stats_c = check_directional_exposure(direction, 'crypto')
                 if _dir_blocked_c:

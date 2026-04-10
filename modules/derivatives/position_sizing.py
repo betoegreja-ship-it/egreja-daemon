@@ -69,6 +69,10 @@ class DerivativesPositionSizer:
     # Maximum Kelly fraction (safety cap)
     MAX_KELLY = 0.04  # 4% of capital per trade
 
+    # [v10.29d] Arb strategies have tiny edge_bps by nature (convergence, not direction)
+    ARBITRAGE_STRATEGIES = {'pcp', 'fst', 'roll_arb', 'skew_arb', 'vol_arb', 'etf_basket', 'dividend_arb', 'interlisted'}
+    PAPER_ARB_MIN_FRACTION = 0.25  # Paper mode: use at least 25% of tier-scaled base
+
     def __init__(self, config):
         """
         Args:
@@ -141,6 +145,13 @@ class DerivativesPositionSizer:
 
             # Take the minimum of Kelly-sized and strategy-base-sized
             notional = min(scaled_notional, kelly_notional)
+
+            # [v10.29d] Paper mode: arb edges are 0.01-0.5 bps → Kelly gives ~R$50 → always rejected.
+            # Floor at 25% of tier-scaled base for arb strategies in paper mode.
+            if (strategy.lower() in self.ARBITRAGE_STRATEGIES
+                    and liquidity_tier.startswith('PAPER')
+                    and notional < scaled_notional * self.PAPER_ARB_MIN_FRACTION):
+                notional = scaled_notional * self.PAPER_ARB_MIN_FRACTION
 
             # Step 4: Cap by available capital (margin) and daily loss headroom
             safety_factor = strat_cfg.get('safety_factor', 1.75)

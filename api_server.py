@@ -6247,6 +6247,9 @@ def stock_execution_worker():
 # ═══════════════════════════════════════════════════════════════
 # [V9-1] CRYPTO AUTO-TRADE — create_order FORA do state_lock
 # ═══════════════════════════════════════════════════════════════
+# [v10.30] Crypto trade diagnostics — captures per-coin blocking reason each loop
+_crypto_diag = {'last_run': None, 'coins': {}, 'loop_count': 0, 'open_count': 0}
+
 def auto_trade_crypto():
     global crypto_capital
     while True:
@@ -6257,11 +6260,16 @@ def auto_trade_crypto():
             if market_regime.get('mode')=='HIGH_VOL':
                 log.info('[CRYPTO] HIGH_VOL regime — sizing reduced 0.6x via get_regime_multiplier')  # [v10.24.1] não bloquear mais — sizing já é reduzido
             log.info(f'[CRYPTO-LOOP] precos={len(crypto_prices)} momentum={len(crypto_momentum)} regime={market_regime.get("mode")}')
+            _crypto_diag['last_run'] = datetime.utcnow().isoformat()
+            _crypto_diag['loop_count'] += 1
+            _crypto_diag['open_count'] = len(crypto_open)
+            _diag_coins = {}
             for sym in CRYPTO_SYMBOLS:
                 display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)
                 change_24h=crypto_momentum.get(sym,0)
                 if price<=0 or abs(change_24h)<0.3:  # [v10.24] era 0.5 — muito restritivo para mercado lateral
                     log.info(f'[CRYPTO-SKIP] {display}: price={price:.2f} change={change_24h:.2f}%')
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'momentum', 'detail': f'price={price:.2f} change_24h={change_24h:.2f}% (min 0.3%)', 'score': None}
                     continue
                 direction='LONG' if change_24h>0 else 'SHORT'
 
@@ -6297,6 +6305,7 @@ def auto_trade_crypto():
                 _t_adj, _t_blocked, _t_reason = get_temporal_crypto_score(_now_c.hour, _now_c.weekday())
                 if _t_blocked:
                     log.info(f"[CRYPTO-TBLOCK] {display}: {_t_reason}")
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'temporal', 'detail': _t_reason, 'score': score}
                     continue
                 _cm_adj = get_cross_market_crypto_adj()
                 _score_before = score
@@ -6327,6 +6336,7 @@ def auto_trade_crypto():
                     _disc_adj_c, _disc_blocked_c, _disc_key_c = 0, False, ''
                 if _disc_blocked_c:
                     log.info(f"[CRYPTO-CBLOCK] {display}: {_disc_key_c}")
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'composite_pattern', 'detail': _disc_key_c, 'score': score}
                     continue
                 if _disc_adj_c != 0:
                     score = max(0, min(100, score + _disc_adj_c))
@@ -6337,6 +6347,7 @@ def auto_trade_crypto():
                 _dd_blocked_c, _dd_reason_c = check_strategy_daily_dd('crypto')
                 if _dd_blocked_c:
                     log.info(f'[CRYPTO-DD-BLOCK] {display}: {_dd_reason_c}')
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'strategy_drawdown', 'detail': _dd_reason_c, 'score': score}
                     break
                 # [v10.16] Auto-blacklist check
                 # [v10.29d] Check blacklist with BOTH display name and full symbol.
@@ -6349,6 +6360,7 @@ def auto_trade_crypto():
                     _bl_asset = _bl_info.get('stats', {}).get('asset_type', '')
                     if _bl_asset == 'crypto' or is_symbol_blacklisted(sym)[0]:
                         log.info(f'[CRYPTO-BL-BLOCK] {display}: {_bl_reason_c}')
+                        _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'blacklist', 'detail': _bl_reason_c, 'score': score}
                         continue
                     else:
                         log.info(f'[CRYPTO-BL-SKIP] {display}: blacklist is for stocks, not crypto — allowing')
@@ -6356,6 +6368,7 @@ def auto_trade_crypto():
                 _dir_blocked_c, _dir_reason_c, _dir_stats_c = check_directional_exposure(direction, 'crypto')
                 if _dir_blocked_c:
                     log.info(f'[CRYPTO-DIR-BLOCK] {display}: {_dir_reason_c}')
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'directional_exposure', 'detail': _dir_reason_c, 'score': score}
                     continue
                 # [v10.24.2-FIX] _crypto_composite_score() já inverte o score para SHORT
                 # (linha 4650: composite = 100 - composite). Portanto score ALTO = sinal
@@ -6363,6 +6376,7 @@ def auto_trade_crypto():
                 _entry_ok = score >= MIN_SCORE_AUTO_CRYPTO
                 if not _entry_ok:
                     log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'score_threshold', 'detail': f'score={score} < {MIN_SCORE_AUTO_CRYPTO} dir={direction}', 'score': score}
                     continue
 
                 score_factor=min(abs(score-50)/50.0,1.0)
@@ -6375,6 +6389,7 @@ def auto_trade_crypto():
                     cached_c = processed_signal_ids.get(ms_key_c)
 
                 if cached_c and cached_c['reason'] in ('executed', 'kill_switch'):
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'dedup_cache', 'detail': f"reason={cached_c['reason']} sig={cached_c.get('sig_id','?')}", 'score': score}
                     continue
 
                 _sig_pre_id_c = cached_c['sig_id'] if cached_c else gen_id('SIG')
@@ -6406,6 +6421,7 @@ def auto_trade_crypto():
                 _conv_ok, _conv_reason = check_crypto_conviction(conf_c, change_24h, display)
                 if not _conv_ok:
                     log.info(f'[CRYPTO-CONV-BLOCK] {display}: {_conv_reason}')
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'conviction', 'detail': _conv_reason, 'score': score}
                     _csig_conv = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
                                         source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
                                         origin_signal_key=origin_key_c)
@@ -6418,6 +6434,7 @@ def auto_trade_crypto():
                     features_c, conf_c, asset_type='crypto')
                 if not _ml_ok:
                     log.info(f'[CRYPTO-ML-BLOCK] {display}: {_ml_reason} score={score}')
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'ml_gate', 'detail': f'{_ml_reason} ml_score={_ml_score}', 'score': score}
                     _csig_ml = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
                                         source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
                                         origin_signal_key=origin_key_c)
@@ -6431,6 +6448,7 @@ def auto_trade_crypto():
                 _skip_dz_c = abs(_raw_change_c) >= 2.5 or abs(change_24h) >= 2.5
                 if not _skip_dz_c and LEARNING_DEAD_ZONE_LOW <= _lc_c < LEARNING_DEAD_ZONE_HIGH:
                     log.info(f'[CRYPTO-DZ] {display}: conf={_lc_c:.1f} change={_raw_change_c:.1f}% → dead_zone BLOCK')
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'dead_zone', 'detail': f'confidence={_lc_c:.1f} change={_raw_change_c:.1f}% (zone {LEARNING_DEAD_ZONE_LOW}-{LEARNING_DEAD_ZONE_HIGH})', 'score': score}
                     _csig_id = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
                                         source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
                                         origin_signal_key=origin_key_c)
@@ -6456,6 +6474,7 @@ def auto_trade_crypto():
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'risk_check', 'detail': risk_reason, 'score': score}
                     # [v10.3.3-F3] Motivo real preservado
                     real_reason_c = risk_reason.split()[0] if risk_reason else 'risk_blocked'
                     is_perm_c = 'KILL_SWITCH' in risk_reason or 'DRAWDOWN' in risk_reason
@@ -6474,7 +6493,9 @@ def auto_trade_crypto():
                             'reason': 'kill_switch' if is_perm_c else real_reason_c}
                     if is_perm_c: break
                     continue
-                if approved_size<=0: continue
+                if approved_size<=0:
+                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'risk_zero_size', 'detail': f'approved_size={approved_size}', 'score': score}
+                    continue
 
                 # [V91-1] Gerar IDs ANTES do lock
                 pre_trade_id = gen_id('CRY'); pre_order_id = gen_id('ORD')
@@ -6531,6 +6552,7 @@ def auto_trade_crypto():
                         # impedindo reavaliação futura. Padrão simétrico ao bloco stocks (linhas 3285-3290).
                         _c_block2 = reason2 if not ok2 else 'capital'
                         log.info(f'Crypto Risk-2 {display}: {_c_block2}')
+                        _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'second_validation', 'detail': _c_block2, 'score': score}
                         record_shadow_decision(sig_id_c, sig_enriched_c, _c_block2)
                         is_perm_c = 'DUPLICATE' in (_c_block2 or '').upper()
                         with learning_lock:
@@ -6540,6 +6562,7 @@ def auto_trade_crypto():
                             }
 
                 if trade is None: continue
+                _diag_coins[display] = {'status': 'EXECUTED', 'filter': None, 'detail': f'trade_id={pre_trade_id} dir={direction} size={approved_size:.0f}', 'score': score}
 
                 # [FIX-2] Vincular trade_id e order_id ao signal_event imediatamente
                 update_signal_attribution(sig_id_c, pre_trade_id, pre_order_id)
@@ -6554,6 +6577,8 @@ def auto_trade_crypto():
                 _last_trade_opened['crypto'] = time.time()  # [v10.16] inactivity tracking
                 audit('TRADE_OPENED',{'id':pre_trade_id,'symbol':display,'direction':direction,'score':score})
                 enqueue_persist('trade',trade)
+            # [v10.30] Flush diagnostics after full coin loop
+            _crypto_diag['coins'] = _diag_coins
         except Exception as e:
             import traceback
             log.error(f'auto_trade_crypto: {e}\n{traceback.format_exc()}')
@@ -8934,6 +8959,30 @@ def performance_crypto():
             'initial_capital': INITIAL_CAPITAL_CRYPTO,
         })
     except Exception as e: return jsonify({'error':str(e)}), 500
+
+@app.route('/performance/crypto-diagnostics')
+def performance_crypto_diagnostics():
+    """[v10.30] Per-coin diagnostics: which filter blocked each crypto coin in the last loop."""
+    diag = dict(_crypto_diag)
+    coins = diag.get('coins', {})
+    # Summary by filter
+    filter_counts = {}
+    scored_blocked = []
+    for sym, info in coins.items():
+        f = info.get('filter', 'unknown')
+        filter_counts[f] = filter_counts.get(f, 0) + 1
+        if info.get('score') is not None and info['score'] >= MIN_SCORE_AUTO_CRYPTO and info.get('status') == 'BLOCKED':
+            scored_blocked.append({'symbol': sym, **info})
+    return jsonify({
+        'last_run': diag.get('last_run'),
+        'loop_count': diag.get('loop_count', 0),
+        'open_trades': diag.get('open_count', 0),
+        'total_coins': len(coins),
+        'filter_summary': filter_counts,
+        'high_score_blocked': sorted(scored_blocked, key=lambda x: x.get('score', 0), reverse=True),
+        'all_coins': {k: v for k, v in sorted(coins.items(), key=lambda x: x[1].get('score') or 0, reverse=True)},
+        'min_score_threshold': MIN_SCORE_AUTO_CRYPTO,
+    })
 
 @app.route('/risk/reset_arbi_kill_switch', methods=['POST'])
 def reset_arbi_kill_switch():

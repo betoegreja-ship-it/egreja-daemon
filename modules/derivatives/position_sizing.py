@@ -147,11 +147,11 @@ class DerivativesPositionSizer:
             notional = min(scaled_notional, kelly_notional)
 
             # [v10.29d] Paper mode: arb edges are 0.01-0.5 bps → Kelly gives ~R$50 → always rejected.
-            # Floor at 25% of tier-scaled base for arb strategies in paper mode.
+            # Floor at MIN_NOTIONAL for arb strategies in paper mode so trades actually execute.
             if (strategy.lower() in self.ARBITRAGE_STRATEGIES
                     and liquidity_tier.startswith('PAPER')
-                    and notional < scaled_notional * self.PAPER_ARB_MIN_FRACTION):
-                notional = scaled_notional * self.PAPER_ARB_MIN_FRACTION
+                    and notional < self.MIN_NOTIONAL):
+                notional = max(self.MIN_NOTIONAL, scaled_notional * self.PAPER_ARB_MIN_FRACTION)
 
             # Step 4: Cap by available capital (margin) and daily loss headroom
             safety_factor = strat_cfg.get('safety_factor', 1.75)

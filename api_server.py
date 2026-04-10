@@ -7393,6 +7393,7 @@ def arbi_monitor_loop():
 # [C-1] WATCHDOG — timeout por thread + [V9-3] _check_degraded
 # ═══════════════════════════════════════════════════════════════
 def watchdog():
+    global RISK_KILL_SWITCH, _queue_alert_last
     while True:
         beat('watchdog')
         # [v10.16] Periodic checks
@@ -7401,6 +7402,31 @@ def watchdog():
             check_inactivity_alert()
             persist_calibration()    # [v10.18] salvar calibração a cada 5min
             run_reconciliation()     # [v10.18] reconciliar capital a cada 10min
+
+            # [v10.29d] Auto-reset RISK_KILL_SWITCH in watchdog (doesn't depend on check_risk being called)
+            if RISK_KILL_SWITCH:
+                try:
+                    _auto_reset_kill_switch_if_safe()
+                    if not RISK_KILL_SWITCH:
+                        log.info('[v10.29d] WATCHDOG: RISK_KILL_SWITCH auto-reset to False')
+                except Exception as _ar_e:
+                    log.warning(f'[v10.29d] watchdog auto-reset: {_ar_e}')
+
+            # [v10.29d] Auto-deactivate ExternalKillSwitch if auto_resume_at has passed
+            try:
+                _all_ks = ext_kill_switch.check_all(get_db)
+                for _scope_name, _scope_info in _all_ks.items():
+                    if _scope_info.get('active') and _scope_info.get('auto_resume_at'):
+                        _resume_at_str = _scope_info['auto_resume_at']
+                        try:
+                            _resume_at = datetime.fromisoformat(str(_resume_at_str).replace('Z',''))
+                            if datetime.utcnow() > _resume_at:
+                                ext_kill_switch.deactivate(_scope_name, 'SYSTEM_AUTO_RESUME', get_db)
+                                log.info(f'[v10.29d] ExternalKillSwitch {_scope_name} auto-resumed (was due at {_resume_at_str})')
+                        except Exception:
+                            pass
+            except Exception as _eks_e:
+                log.debug(f'watchdog ext_ks check: {_eks_e}')
 
             # [v10.22] Institutional risk check
             try:
@@ -7434,7 +7460,6 @@ def watchdog():
         # [V91-3] Alerta de fila crítica direto no watchdog — não depende do persistence_worker
         qsize = urgent_queue.qsize()
         if qsize >= URGENT_QUEUE_CRIT:
-            global _queue_alert_last
             if now - _queue_alert_last > 300:
                 _queue_alert_last = now
                 log.critical(f'[V91-3] WATCHDOG: urgent_queue CRÍTICA {qsize} itens — DB pode estar travado')
@@ -7461,7 +7486,6 @@ def watchdog():
 
             if count>=5:  # [v10.9] era 3x — aumentado para reduzir falsos positivos
                 log.critical(f'WATCHDOG: {name} failed 5x — activating kill switch')
-                global RISK_KILL_SWITCH
                 RISK_KILL_SWITCH=True
                 send_whatsapp(f'CRITICO: thread {name} falhou 3x ({problem}). Kill switch ativado.')
                 thread_restart_count[name]=0
@@ -7765,6 +7789,49 @@ def health():
         'learning_degraded': LEARNING_DEGRADED,   # [L-10]
         'threads':hb_status,'timestamp':datetime.utcnow().isoformat()
     })
+
+@app.route('/health/kill-switch')
+def health_kill_switch():
+    """[v10.29d] Public kill switch diagnostics."""
+    result = {
+        'risk_kill_switch': RISK_KILL_SWITCH,
+        'arbi_kill_switch': ARBI_KILL_SWITCH,
+    }
+    # Check ExternalKillSwitch from DB
+    try:
+        result['external'] = ext_kill_switch.check_all(get_db)
+    except Exception as e:
+        result['external_error'] = str(e)
+    # Drawdown info
+    try:
+        with state_lock:
+            s_closed = list(stocks_closed); c_closed = list(crypto_closed)
+        cutoff = (datetime.utcnow()-timedelta(days=1)).isoformat()
+        daily_net = sum(t.get('pnl',0) for t in s_closed+c_closed if t.get('closed_at','')>=cutoff)
+        total_cap = INITIAL_CAPITAL_STOCKS + INITIAL_CAPITAL_CRYPTO
+        dd = abs(min(daily_net,0))/total_cap*100 if total_cap>0 else 0
+        result['daily_net_24h'] = round(daily_net,2)
+        result['drawdown_pct'] = round(dd,4)
+        result['max_daily_dd_pct'] = MAX_DAILY_DRAWDOWN_PCT
+        result['auto_reset_threshold'] = MAX_DAILY_DRAWDOWN_PCT * 0.5
+        result['should_auto_reset'] = dd < MAX_DAILY_DRAWDOWN_PCT * 0.5
+        result['closed_24h_count'] = len([t for t in s_closed+c_closed if t.get('closed_at','')>=cutoff])
+    except Exception as e:
+        result['drawdown_error'] = str(e)
+    return jsonify(result)
+
+@app.route('/health/kill-switch/reset', methods=['POST'])
+def health_kill_switch_reset():
+    """[v10.29d] Force-reset both kill switches."""
+    global RISK_KILL_SWITCH
+    RISK_KILL_SWITCH = False
+    try:
+        for scope in ['global', 'stocks', 'crypto', 'arbi']:
+            ext_kill_switch.deactivate(scope, 'MANUAL_RESET', get_db)
+    except Exception as e:
+        return jsonify({'reset': 'partial', 'risk_ks': False, 'ext_error': str(e)})
+    log.info('[v10.29d] Both kill switches force-reset via /health/kill-switch/reset')
+    return jsonify({'reset': 'ok', 'risk_kill_switch': False, 'external': 'all_deactivated'})
 
 @app.route('/ops')
 @require_auth

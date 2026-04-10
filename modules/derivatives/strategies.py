@@ -621,6 +621,18 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                                 tier_obj = active_status_reg.get_status(asset, 'PCP')
                                 tier_str = tier_obj.value if tier_obj else 'OBSERVE'
 
+                            # Per-asset cap: max 2 open PCP positions per underlying
+                            _MAX_PCP_PER_ASSET = 2
+                            _cap_mgr = services_dict.get('capital_manager')
+                            if _cap_mgr:
+                                _asset_count = sum(
+                                    1 for a in _cap_mgr.active_allocations.values()
+                                    if a.strategy == 'pcp' and a.symbol == asset
+                                )
+                                if _asset_count >= _MAX_PCP_PER_ASSET:
+                                    log.debug(f"PCP {asset}: per-asset cap reached ({_asset_count}/{_MAX_PCP_PER_ASSET})")
+                                    continue
+
                             if tier_str in ('PAPER_FULL', 'PAPER_SMALL'):
                                 # Build multi-leg order
                                 expiry_str = _expiry_str(call_quote.expiry)
@@ -697,6 +709,7 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     # Get spot price
                     spot_quote = provider_mgr.get_spot(asset)
                     if not spot_quote:
+                        _scan_loop_diag.setdefault('fst_data', {})[asset] = 'no_spot'
                         continue
 
                     spot_price = spot_quote.mid
@@ -707,7 +720,9 @@ def fst_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                     put_chain = provider_mgr.get_option_chain(asset, option_type='PUT')
 
                     if not future_quote or not call_chain or not put_chain:
+                        _scan_loop_diag.setdefault('fst_data', {})[asset] = f'missing: fut={bool(future_quote)} calls={bool(call_chain)} puts={bool(put_chain)}'
                         continue
+                    _scan_loop_diag.setdefault('fst_data', {})[asset] = f'ok: fut={future_quote.symbol} calls={len(call_chain)} puts={len(put_chain)}'
 
                     # Calculate synthetic future for nearest maturity
                     future_expiry = future_quote.expiry
@@ -865,7 +880,9 @@ def roll_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
                     future_2 = provider_mgr.get_future(asset, tenor_offset=1)
 
                     if not future_1 or not future_2:
+                        _scan_loop_diag.setdefault('roll_data', {})[asset] = f'missing: f1={bool(future_1)} f2={bool(future_2)}'
                         continue
+                    _scan_loop_diag.setdefault('roll_data', {})[asset] = f'ok: f1={future_1.symbol} f2={future_2.symbol}'
 
                     # Calculate roll cost
                     roll_cost_realized = future_2.mid - future_1.mid
@@ -950,6 +967,8 @@ def etf_basket_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, r
 
                 # Calculate NAV from components
                 nav_calc = services_dict.get('nav_calculator')
+                _scan_loop_diag.setdefault('etf_data', {})['nav_calc'] = bool(nav_calc)
+                _scan_loop_diag['etf_data']['etf_price'] = etf_price
                 if nav_calc:
                     # [FORENSIC] calculate_nav exige component_prices; sem basket registrado, skip silencioso
                     try:
@@ -1062,6 +1081,7 @@ def skew_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, ris
 
                     # Extract IV
                     greeks_calc = services_dict.get('greeks_calculator')
+                    _scan_loop_diag.setdefault('skew_data', {})[asset] = f'chains_ok, greeks_calc={bool(greeks_calc)}'
                     if greeks_calc:
                         _call_dte = _days_to_expiry(call_quote.expiry)
                         _put_dte = _days_to_expiry(put_quote.expiry)
@@ -1166,8 +1186,10 @@ def interlisted_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, 
                     usdbrl_quote = provider_mgr.get_spot('USDBRL')
 
                     if not b3_quote or not adr_quote or not usdbrl_quote:
+                        _scan_loop_diag.setdefault('inter_data', {})[b3_ticker] = f'missing: b3={bool(b3_quote)} adr={bool(adr_quote)} fx={bool(usdbrl_quote)}'
                         continue
 
+                    _scan_loop_diag.setdefault('inter_data', {})[b3_ticker] = f'ok: b3={b3_quote.mid:.2f} adr={adr_quote.mid:.2f} fx={usdbrl_quote.mid:.4f}'
                     # Calculate basis
                     adr_in_brl = adr_quote.mid * usdbrl_quote.mid
                     basis = b3_quote.mid - adr_in_brl
@@ -1233,8 +1255,10 @@ def dividend_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict,
             cfg = _get_config()
             fees = _b3_fees()
             dividend_service = services_dict.get('dividend_service')
+            _scan_loop_diag.setdefault('div_data', {})['dividend_service'] = bool(dividend_service)
 
             if not dividend_service:
+                _scan_loop_diag['div_data']['blocked'] = 'no_dividend_service'
                 time.sleep(60)
                 continue
 
@@ -1346,6 +1370,7 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
                     # Get price history for realized vol
                     spot_prices = provider_mgr.get_price_history(asset, lookback_days=60)
                     if not spot_prices or len(spot_prices) < 20:
+                        _scan_loop_diag.setdefault('vol_data', {})[asset] = f'no_history: got={len(spot_prices) if spot_prices else 0}'
                         continue
                     # [FORENSIC] providers devolvem list[dict] com chave close; extrair floats
                     if spot_prices and isinstance(spot_prices[0], dict):

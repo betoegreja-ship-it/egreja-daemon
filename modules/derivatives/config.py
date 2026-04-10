@@ -37,7 +37,7 @@ class PCPConfig:
     enabled: bool = True
     max_notional: float = 600_000.0
     max_daily_loss: float = 12_000.0
-    max_positions: int = 50
+    max_positions: int = 12
     safety_factor: float = 1.75
     min_edge_bps: float = 5.0
     

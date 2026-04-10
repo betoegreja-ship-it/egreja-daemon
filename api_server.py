@@ -84,6 +84,7 @@ try:
     from modules.derivatives.services import (OptionsChainCache, FuturesChainCache, DividendEventService,
         RatesCurveService, GreeksCalculator, CalibrationService, StrategyScorecard, StructuredOrderExecutor,
         NAVCalculatorService, ImpliedVolEngine)
+    from modules.derivatives.deriv_execution import DerivativesExecutionEngine
     from modules.derivatives.liquidity import LiquidityScoreEngine, PromotionEngine, ActiveStatusRegistry
     from modules.derivatives.capital import DerivativesCapitalManager
     from modules.derivatives.learning import DerivativesLearningEngine
@@ -132,6 +133,7 @@ except Exception as _mod_err:
     class ActiveStatusRegistry: pass
     OptionsChainCache = FuturesChainCache = DividendEventService = RatesCurveService = None
     GreeksCalculator = CalibrationService = StrategyScorecard = StructuredOrderExecutor = None
+    DerivativesExecutionEngine = None
     NAVCalculatorService = ImpliedVolEngine = None
     def create_strategies_blueprint(**kw):
         from flask import Blueprint; return Blueprint('strategies', __name__)
@@ -282,7 +284,7 @@ try:
     _deriv_services['greeks_calc'] = GreeksCalculator(_rates_svc) if GreeksCalculator and _rates_svc else None
     _deriv_services['calibration_svc'] = CalibrationService() if CalibrationService else None
     _deriv_services['scorecard_svc'] = StrategyScorecard() if StrategyScorecard else None
-    _deriv_services['order_executor'] = StructuredOrderExecutor() if StructuredOrderExecutor else None
+    _deriv_services['order_executor'] = StructuredOrderExecutor() if StructuredOrderExecutor else None  # legacy — kept for backward compat
     _deriv_services['nav_calc'] = NAVCalculatorService() if NAVCalculatorService else None
     _greeks = _deriv_services.get('greeks_calc')
     _deriv_services['iv_engine'] = ImpliedVolEngine(_greeks) if ImpliedVolEngine and _greeks else None
@@ -309,7 +311,8 @@ try:
     _deriv_services['greeks_calculator']      = _deriv_services.get('greeks_calc')
     _deriv_services['rates_curve']            = _deriv_services.get('rates_svc')
     _deriv_services['dividend_service']       = _deriv_services.get('dividend_svc')
-    _deriv_services['deriv_execution']        = _deriv_services.get('order_executor')
+    # [v10.29d] deriv_execution is now set AFTER capital_manager init (DerivativesExecutionEngine needs it)
+    # _deriv_services['deriv_execution']        = _deriv_services.get('order_executor')  # OLD — StructuredOrderExecutor has no execute_trade()
     _deriv_services['nav_calculator']         = _deriv_services.get('nav_calc')
     # [FORENSIC-FIX] Getter de heartbeat real pras threads, pra /strategies/health nao depender de log de oportunidades
     _deriv_services['thread_heartbeat_getter'] = lambda name: thread_heartbeat.get(name)
@@ -357,6 +360,18 @@ try:
     except Exception as _ds_err:
         log.warning(f'[v10.29] deriv_sizer init failed: {_ds_err}')
         _deriv_services['deriv_sizer'] = None
+    # [v10.29d] CRITICAL FIX: Replace StructuredOrderExecutor (has no execute_trade method)
+    # with DerivativesExecutionEngine (has execute_trade that strategies.py expects).
+    # Without this, _try_autonomous_execution silently fails with AttributeError → 0 trades.
+    try:
+        _cap_mgr = _deriv_services.get('capital_manager')
+        if DerivativesExecutionEngine and _deriv_cfg and _cap_mgr:
+            _deriv_services['deriv_execution'] = DerivativesExecutionEngine(_deriv_cfg, _cap_mgr, get_db_fn=get_db)
+            log.info('[v10.29d] DerivativesExecutionEngine initialized — derivatives can now execute trades')
+        else:
+            log.warning('[v10.29d] DerivativesExecutionEngine skipped: missing cfg or capital_mgr')
+    except Exception as _dee_err:
+        log.warning(f'[v10.29d] DerivativesExecutionEngine init failed: {_dee_err}')
     log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')
@@ -538,7 +553,7 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
-MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 60))  # [v10.26b]  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 59))  # [v10.26b]  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado

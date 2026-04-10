@@ -1685,4 +1685,48 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
+    @strategies_bp.route('/data-test', methods=['GET'])
+    def data_test():
+        """Test data availability for all strategy data sources.
+        Shows exactly what each provider returns for futures, FX, ADR, history."""
+        try:
+            results = {}
+            # Futures
+            for sym in ['BOVA11', 'WIN', 'IND']:
+                try:
+                    fq = provider_mgr.get_future(sym)
+                    results[f'future_{sym}'] = {
+                        'symbol': fq.symbol, 'price': fq.last, 'bid': fq.bid,
+                        'ask': fq.ask, 'expiry': str(fq.expiry), 'volume': fq.volume,
+                    } if fq else None
+                except Exception as e:
+                    results[f'future_{sym}'] = f'error: {e}'
+
+            # FX
+            try:
+                fx = provider_mgr.get_spot('USDBRL')
+                results['fx_usdbrl'] = {'bid': fx.bid, 'ask': fx.ask, 'mid': fx.mid} if fx else None
+            except Exception as e:
+                results['fx_usdbrl'] = f'error: {e}'
+
+            # ADR
+            for adr in ['PBR', 'VALE']:
+                try:
+                    aq = provider_mgr.get_spot(adr)
+                    results[f'adr_{adr}'] = {'price': aq.last, 'bid': aq.bid, 'ask': aq.ask} if aq else None
+                except Exception as e:
+                    results[f'adr_{adr}'] = f'error: {e}'
+
+            # Price history
+            for sym in ['PETR4', 'BOVA11']:
+                try:
+                    hist = provider_mgr.get_price_history(sym, lookback_days=60)
+                    results[f'history_{sym}'] = f'{len(hist)} candles' if hist else None
+                except Exception as e:
+                    results[f'history_{sym}'] = f'error: {e}'
+
+            return jsonify(results), 200
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
     return strategies_bp

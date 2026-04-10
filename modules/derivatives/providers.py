@@ -1025,7 +1025,107 @@ class OpLabMarketDataProvider(MarketDataProviderBase):
                         self.logger.debug(f"OpLab futures parse error for {prefix}: {e}")
                         continue
 
-            return results
+            if results:
+                return results
+
+            # ── Fallback: BRAPI futures (WINFUT, INDFUT, DOLFUT, WDOFUT) ──
+            return self._get_futures_brapi(underlying, prefixes)
+
+    def _get_futures_brapi(self, underlying: str, oplab_prefixes: list) -> List[FutureQuote]:
+        """Fallback: try BRAPI for B3 futures tickers like WINFUT, INDFUT."""
+        if not self._brapi_token:
+            return []
+
+        # Map underlying/prefix to BRAPI futures ticker(s)
+        _brapi_futures_map = {
+            'WIN': ['WINFUT'],
+            'IND': ['INDFUT'],
+            'DOL': ['DOLFUT'],
+            'WDO': ['WDOFUT'],
+            'BOVA11': ['WINFUT', 'INDFUT'],
+            'IBOV': ['WINFUT', 'INDFUT'],
+        }
+
+        brapi_tickers = set()
+        for prefix in oplab_prefixes:
+            for t in _brapi_futures_map.get(prefix, []):
+                brapi_tickers.add(t)
+        # Also try direct underlying mapping
+        for t in _brapi_futures_map.get(underlying.upper(), []):
+            brapi_tickers.add(t)
+
+        if not brapi_tickers:
+            self.logger.debug(f"BRAPI futures: no mapping for {underlying} / prefixes={oplab_prefixes}")
+            return []
+
+        results = []
+        ticker_str = ','.join(sorted(brapi_tickers))
+
+        try:
+            url = f"https://brapi.dev/api/quote/{ticker_str}"
+            r = _requests_lib.get(url, params={
+                'token': self._brapi_token,
+            }, timeout=10)
+
+            if r.status_code != 200:
+                self.logger.debug(f"BRAPI futures: status {r.status_code} for {ticker_str}")
+                return []
+
+            data = r.json()
+            if data.get('error'):
+                self.logger.debug(f"BRAPI futures error for {ticker_str}: {data.get('message','?')[:80]}")
+                return []
+
+            spot_quote = self.get_spot(underlying)
+            spot_price = spot_quote.mid if spot_quote else 0
+
+            for q in data.get('results', []):
+                try:
+                    sym = str(q.get('symbol', ''))
+                    price = float(q.get('regularMarketPrice', 0) or 0)
+                    if price <= 0:
+                        continue
+
+                    bid = float(q.get('regularMarketDayLow', price) or price)
+                    ask = float(q.get('regularMarketDayHigh', price) or price)
+
+                    # Estimate expiry: B3 index futures expire 3rd Wed of even months
+                    import calendar
+                    now = datetime.utcnow()
+                    month = now.month
+                    year = now.year
+                    if month % 2 != 0:
+                        month += 1
+                    if month > 12:
+                        month = 2
+                        year += 1
+                    cal = calendar.Calendar()
+                    wednesdays = [d for d in cal.itermonthdays2(year, month) if d[0] > 0 and d[1] == 2]
+                    expiry_day = wednesdays[2][0] if len(wednesdays) >= 3 else 15
+                    expiry_str = f"{year}-{month:02d}-{expiry_day:02d}"
+
+                    results.append(FutureQuote(
+                        symbol=sym,
+                        underlying=underlying.upper(),
+                        expiry=expiry_str,
+                        bid=bid,
+                        ask=ask,
+                        last=price,
+                        volume=int(q.get('regularMarketVolume', 0) or 0),
+                        oi=0,
+                        basis=price - spot_price if spot_price else 0,
+                        timestamp=datetime.utcnow(),
+                    ))
+                    self.logger.info(f"BRAPI futures fallback: {sym} price={price} for {underlying}")
+
+                except (ValueError, TypeError) as e:
+                    self.logger.debug(f"BRAPI futures parse error: {e}")
+                    continue
+
+        except Exception as e:
+            self.logger.warning(f"BRAPI futures fallback error for {underlying}: {e}")
+
+        return results
 
     # ─── Rates ────────────────────────────────────────────────────
 

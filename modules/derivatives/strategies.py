@@ -52,6 +52,19 @@ def _expiry_date_str(expiry_val):
 _scan_loop_diag = {}
 _pcp_calibration = {}
 
+# Exec diagnostic ring buffer — read by /strategies/exec-diagnostics
+from collections import deque
+_exec_diag_buffer = deque(maxlen=50)
+
+def _exec_diag(entry: dict):
+    """Append a timestamped diagnostic entry to the ring buffer."""
+    entry['ts'] = datetime.now().isoformat()
+    _exec_diag_buffer.append(entry)
+
+def get_exec_diagnostics():
+    """Return the last N exec diagnostic entries (newest first)."""
+    return list(reversed(_exec_diag_buffer))
+
 
 def _pick_nearest_strike(chain, target):
     """Return the quote in chain whose strike is closest to target. chain is {strike: quote}."""
@@ -108,33 +121,56 @@ def _try_autonomous_execution(
     Returns:
         True if execution attempted, False otherwise
     """
+    diag = {'strategy': strategy, 'symbol': symbol, 'structure': structure_type, 'steps': []}
     try:
         execution_engine = services_dict.get('deriv_execution')
         sizer = services_dict.get('deriv_sizer')
         capital_mgr = services_dict.get('capital_manager')
         learner = services_dict.get('deriv_learner')
 
+        eng_type = type(execution_engine).__name__ if execution_engine else None
+        has_execute = hasattr(execution_engine, 'execute_trade') if execution_engine else False
+        diag['steps'].append(f"INIT: engine={eng_type}(has_execute_trade={has_execute}) sizer={bool(sizer)} cap={bool(capital_mgr)}")
+
         if not execution_engine or not sizer or not capital_mgr:
-            log.debug(f"[EXEC-SKIP] {strategy}/{symbol}: engine={bool(execution_engine)} sizer={bool(sizer)} cap={bool(capital_mgr)}")
+            log.info(f"[EXEC-SKIP] {strategy}/{symbol}: engine={eng_type} sizer={bool(sizer)} cap={bool(capital_mgr)}")
+            diag['result'] = 'SKIP_MISSING_DEPS'
+            _exec_diag(diag)
+            return False
+
+        if not has_execute:
+            log.error(f"[EXEC-SKIP] {strategy}/{symbol}: engine {eng_type} has NO execute_trade method!")
+            diag['result'] = f'SKIP_NO_EXECUTE_METHOD_ON_{eng_type}'
+            _exec_diag(diag)
             return False
 
         # Get capital snapshot
         cap_snap = capital_mgr.get_snapshot()
+        diag['steps'].append(f"EXEC-1: cap_avail=R${cap_snap.available:,.0f} daily_loss_rem=R${cap_snap.daily_loss_remaining:,.0f}")
+        log.info(f"[EXEC-1] {strategy}/{symbol}: cap_avail=R${cap_snap.available:,.0f} daily_loss_rem=R${cap_snap.daily_loss_remaining:,.0f}")
 
         # Check if trading is allowed
         allowed, reason = capital_mgr.is_trading_allowed(strategy)
         if not allowed:
-            log.info(f"Trading blocked for {strategy}: {reason}")
+            log.info(f"[EXEC-2-BLOCKED] {strategy}/{symbol}: {reason}")
+            diag['result'] = f'BLOCKED_TRADING_NOT_ALLOWED: {reason}'
+            _exec_diag(diag)
             return False
+        diag['steps'].append('EXEC-2: trading_allowed=True')
 
         # Get confidence adjustment from learning engine
         confidence = 0.65  # base confidence
         if learner:
-            adj = learner.get_confidence_adjustment(strategy, symbol)
-            confidence *= adj
+            try:
+                adj = learner.get_confidence_adjustment(strategy, symbol)
+                confidence *= adj
+            except Exception as _le:
+                log.debug(f"[EXEC] learner adj error: {_le}")
 
         # Compute position size
         edge_bps = (edge_magnitude / notional_estimate * 10_000) if notional_estimate > 0 else 0
+        diag['steps'].append(f"EXEC-3: edge_mag={edge_magnitude:.6f} notional_est={notional_estimate:.0f} edge_bps={edge_bps:.4f} conf={confidence:.3f} tier={active_status_str}")
+        log.info(f"[EXEC-3] {strategy}/{symbol}: edge_mag={edge_magnitude:.6f} notional_est={notional_estimate:.0f} edge_bps={edge_bps:.4f} conf={confidence:.3f} tier={active_status_str}")
         sizing = sizer.compute_size(
             strategy=strategy,
             symbol=symbol,
@@ -145,9 +181,12 @@ def _try_autonomous_execution(
             daily_loss_remaining=cap_snap.daily_loss_remaining,
             spot_price=spot_price,
         )
+        diag['steps'].append(f"EXEC-4: sizing.notional=R${sizing.notional:,.0f} contracts={sizing.contracts} reason={sizing.reason}")
+        log.info(f"[EXEC-4] {strategy}/{symbol}: sizing.notional=R${sizing.notional:,.0f} contracts={sizing.contracts} reason={sizing.reason}")
 
         if sizing.notional <= 0:
-            log.info(f"[EXEC-SIZING-REJECT] {strategy}/{symbol}: {sizing.reason} edge_bps={edge_bps:.4f}")
+            diag['result'] = f'REJECTED_ZERO_NOTIONAL: reason={sizing.reason}'
+            _exec_diag(diag)
             return False
 
         # Build legs if not provided
@@ -166,6 +205,9 @@ def _try_autonomous_execution(
                 if leg.get('qty', 0) == 0:
                     leg['qty'] = sizing.contracts
 
+        diag['steps'].append(f"EXEC-5: {len(legs)} legs, notional=R${sizing.notional:,.0f}")
+        log.info(f"[EXEC-5] {strategy}/{symbol}: calling execute_trade with {len(legs)} legs, notional=R${sizing.notional:,.0f}")
+
         # Execute
         trade = execution_engine.execute_trade(
             strategy=strategy,
@@ -180,15 +222,23 @@ def _try_autonomous_execution(
             active_status=active_status_str,
         )
 
+        diag['steps'].append(f"EXEC-6: trade_id={trade.trade_id} status={trade.status.value} notional=R${sizing.notional:,.0f}")
+        diag['result'] = f'EXECUTED: {trade.trade_id} / {trade.status.value}'
+        _exec_diag(diag)
         log.info(
-            f"Autonomous execution {strategy}/{symbol}: "
+            f"[EXEC-6-DONE] {strategy}/{symbol}: "
             f"trade_id={trade.trade_id}, status={trade.status.value}, "
             f"notional=R${sizing.notional:,.0f}"
         )
         return True
 
     except Exception as e:
-        log.warning(f"Autonomous execution error {strategy}/{symbol}: {e}")
+        import traceback
+        tb = traceback.format_exc()
+        diag['result'] = f'EXCEPTION: {e}'
+        diag['traceback'] = tb
+        _exec_diag(diag)
+        log.error(f"[EXEC-ERROR] {strategy}/{symbol}: {e}\n{tb}")
         return False
 
 

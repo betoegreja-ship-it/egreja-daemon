@@ -1664,5 +1664,25 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
+    @strategies_bp.route('/exec-diagnostics', methods=['GET'])
+    def exec_diagnostics():
+        """Return the last 50 execution attempt diagnostics (newest first).
+        Shows step-by-step pipeline results for _try_autonomous_execution calls."""
+        try:
+            from modules.derivatives.strategies import get_exec_diagnostics
+            entries = get_exec_diagnostics()
+            # Summary counts
+            results = [e.get('result', '?') for e in entries]
+            summary = {}
+            for r in results:
+                key = r.split(':')[0] if ':' in r else r
+                summary[key] = summary.get(key, 0) + 1
+            return jsonify({
+                'total_entries': len(entries),
+                'result_summary': summary,
+                'entries': entries,
+            }), 200
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
 
     return strategies_bp

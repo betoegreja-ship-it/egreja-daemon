@@ -8309,6 +8309,22 @@ def api_info():
         'deriv_sizer_active': _deriv_services.get('deriv_sizer') is not None,
         'oplab_token_set': bool(os.environ.get('OPLAB_ACCESS_TOKEN', '').strip()),
         'brapi_token_set': bool(BRAPI_TOKEN),
+        'cedro_socket': (lambda: {
+            'enabled': bool(_cedro_socket and _cedro_socket.enabled),
+            'connected': bool(_cedro_socket and _cedro_socket.enabled and getattr(_cedro_socket, 'healthcheck', lambda: {})().get('connected')),
+            'subscriptions': (_cedro_socket.healthcheck().get('subscriptions') if _cedro_socket and _cedro_socket.enabled else 0),
+            'cached_symbols': (_cedro_socket.healthcheck().get('cached_symbols') if _cedro_socket and _cedro_socket.enabled else 0),
+            'last_msg_age_s': (_cedro_socket.healthcheck().get('last_msg_age_s') if _cedro_socket and _cedro_socket.enabled else None),
+            'msg_count': (_cedro_socket.healthcheck().get('msg_count') if _cedro_socket and _cedro_socket.enabled else 0),
+            'is_realtime': bool(_cedro_socket and _cedro_socket.enabled and (_cedro_socket.healthcheck().get('last_msg_age_s') or 999) < 30),
+            'host': (_cedro_socket.healthcheck().get('host') if _cedro_socket and _cedro_socket.enabled else None),
+        })() if _cedro_socket is not None else {'enabled': False, 'connected': False, 'is_realtime': False},
+        'quote_providers': {
+            'b3_primary': 'cedro-socket' if (_cedro_socket and _cedro_socket.enabled and _cedro_socket.healthcheck().get('connected')) else 'brapi',
+            'b3_fallback': 'brapi',
+            'crypto_primary': 'binance',
+            'us_primary': 'polygon',
+        },
     })
 
 @app.route('/api/modules-debug')
@@ -8334,12 +8350,14 @@ def ticker_tape():
         if not isinstance(data, dict):
             continue
         ticker = sym.replace('.SA', '')
+        src = data.get('source', '')
         items.append({
             't': ticker,
             'p': round(data.get('price', 0), 2),
             'c': round(data.get('change_pct', 0), 2),
             'm': data.get('market', 'B3'),
             'cur': 'BRL' if data.get('market') == 'B3' else 'USD',
+            'src': 'cedro' if 'cedro' in src else ('brapi' if 'brapi' in src else src or 'unknown'),
         })
     # Crypto
     for sym, price in dict(crypto_prices).items():

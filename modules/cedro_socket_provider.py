@@ -270,8 +270,17 @@ class CedroSocketProvider:
         if not root:
             return []
 
-        # ─── Symbol discovery via BRAPI (fast; cached 60s per underlying) ──
-        syms = self._discover_option_symbols(root)
+        # [v10.34c] Pass live spot so synthetic discovery centers the strike
+        # band around current price instead of the 50.0 default fallback.
+        _spot = 0.0
+        try:
+            _sq = self._get_cached(underlying.strip().upper())
+            if _sq and _sq.get('price'):
+                _spot = float(_sq['price'])
+        except Exception:
+            pass
+
+        syms = self._discover_option_symbols(root, spot=_spot)
         if not syms:
             return []
         if len(syms) > max_symbols:
@@ -340,99 +349,121 @@ class CedroSocketProvider:
     _opt_disc_cache: dict = {}   # root → (ts, symbols_list)
     _opt_disc_ttl: int = 600     # [v10.34] 10-min cache (DB queries are cheap but limit noise)
 
-    def _discover_option_symbols(self, root: str) -> list:
+    def _discover_option_symbols(self, root: str, spot: float = 0.0) -> list:
         """
-        [v10.34] Discover live B3 option tickers for a given root. Multi-source:
-          1) DB: strategy_trade_legs + strategy_opportunities_log (last 90 days)
-             — BRAPI free plan blocks derivatives module, so DB history is our
-             primary source. Filtered by B3 option-naming regex ^{root}[A-X]\\d{{1,4}}$.
-          2) BRAPI /api/available?search={root} (kept as best-effort fallback
-             in case the plan ever exposes options).
-          3) Merge, dedup, sort. Cached 10 min per root.
+        [v10.34c] Generate B3 option tickers synthetically per B3 convention.
 
-        B3 series letters: A-L = call months Jan-Dec, M-X = put months Jan-Dec.
+        B3 series letters:  A-L = call months Jan-Dec,  M-X = put months Jan-Dec.
+        Ticker format:       {ROOT4}{LETTER}{STRIKE_CODE}
+                             e.g. PETRD48 = PETR4 April call strike 48
+                                  PETRP48 = PETR4 April put  strike 48
+
+        We fan out 3 nearest monthly expiries × {call, put} × 13 strikes
+        (spot ± ~30% in integer steps). Cedro's socket will silently return
+        no data for tickers that don't exist, while real listings populate
+        the cache within ~3s. Cached 10 min per root.
+
+        Strike step heuristic:
+          - spot < 10  → step 0.50 (converted to code as int(strike*10))
+          - 10 ≤ spot < 30 → step 1
+          - spot ≥ 30 → step 2
+
+        DB + BRAPI are merged as a secondary source to catch any exotic
+        listings (e.g. weekly series, non-standard strikes).
         """
-        import time as _t, re as _re
+        import time as _t, re as _re, datetime as _dt
         now = _t.time()
         hit = self._opt_disc_cache.get(root)
         if hit and now - hit[0] < self._opt_disc_ttl:
             return hit[1]
 
-        pattern = _re.compile(rf'^{root}[A-X]\d{{1,4}}$')
+        # B3 truncates root to 4 chars (PETR4 → PETR, VALE3 → VALE, BOVA11 → BOVA).
+        root4 = root.strip().upper()[:4]
+        pattern = _re.compile(rf'^{root4}[A-X]\d{{1,4}}$')
         symbols: set = set()
 
-        # ── (1) DB-seeded discovery from strategy trade legs + opportunities log
+        # ── (1) Synthetic generator — PRIMARY source
+        #        Use current date to pick next 3 monthly series.
+        call_letters = 'ABCDEFGHIJKL'   # Jan–Dec
+        put_letters  = 'MNOPQRSTUVWX'   # Jan–Dec
+        today = _dt.date.today()
+        months_to_scan = []
+        for delta in range(0, 3):
+            m = today.month + delta
+            y = today.year + (m - 1) // 12
+            m = ((m - 1) % 12) + 1
+            months_to_scan.append((y, m))
+
+        # Determine strike step / strike code encoding.
+        # Fall back to coarse step if spot is unknown.
+        if spot <= 0:
+            try:
+                sq = self._get_cached(f'{root4}4') or self._get_cached(f'{root4}3') or self._get_cached(f'{root4}11')
+                if sq and sq.get('price'):
+                    spot = float(sq['price'])
+            except Exception:
+                pass
+        if spot <= 0:
+            spot = 50.0  # neutral default — produces wide band; harmless misses
+        if spot < 10:
+            step = 0.5
+            code = lambda s: str(int(round(s * 10)))   # 5.00 → "50"
+        elif spot < 30:
+            step = 1.0
+            code = lambda s: str(int(round(s)))
+        else:
+            step = 2.0
+            code = lambda s: str(int(round(s)))
+
+        lo = max(step, spot * 0.7)
+        hi = spot * 1.3
+        # Snap to step grid
+        k = lo - (lo % step)
+        strikes = []
+        while k <= hi + 1e-9:
+            if k > 0:
+                strikes.append(round(k, 2))
+            k += step
+
+        for (y, m) in months_to_scan:
+            cl = call_letters[m - 1]
+            pl = put_letters[m - 1]
+            for k in strikes:
+                symbols.add(f'{root4}{cl}{code(k)}')
+                symbols.add(f'{root4}{pl}{code(k)}')
+
+        # ── (2) DB supplement — pick up any non-standard listings seen historically
         try:
             from modules.database import get_db as _get_db
             _conn = _get_db()
             if _conn is not None:
-                try:
-                    _cur = _conn.cursor()
-                    # 90-day window: captures current-month + next-month + last rolled
-                    _cur.execute(
-                        "SELECT DISTINCT symbol FROM strategy_trade_legs "
-                        "WHERE symbol REGEXP %s "
-                        "AND timestamp >= DATE_SUB(NOW(), INTERVAL 90 DAY) "
-                        "LIMIT 500",
-                        (rf'^{root}[A-X][0-9]{{1,4}}$',)
-                    )
-                    for (sym,) in _cur.fetchall():
-                        if sym and pattern.match(str(sym).upper()):
-                            symbols.add(str(sym).upper())
-                    _cur.close()
-                except Exception as _sql_e:
-                    log.debug(f'[cedro-socket] legs query failed for {root}: {_sql_e}')
-                try:
-                    _cur = _conn.cursor()
-                    _cur.execute(
-                        "SELECT DISTINCT symbol FROM strategy_opportunities_log "
-                        "WHERE symbol REGEXP %s "
-                        "AND timestamp >= DATE_SUB(NOW(), INTERVAL 90 DAY) "
-                        "LIMIT 1000",
-                        (rf'^{root}[A-X][0-9]{{1,4}}$',)
-                    )
-                    for (sym,) in _cur.fetchall():
-                        if sym and pattern.match(str(sym).upper()):
-                            symbols.add(str(sym).upper())
-                    _cur.close()
-                except Exception as _sql_e:
-                    log.debug(f'[cedro-socket] opp-log query failed for {root}: {_sql_e}')
+                for _tbl in ('strategy_trade_legs', 'strategy_opportunities_log'):
+                    try:
+                        _cur = _conn.cursor()
+                        _cur.execute(
+                            f"SELECT DISTINCT symbol FROM {_tbl} "
+                            f"WHERE symbol REGEXP %s "
+                            f"AND timestamp >= DATE_SUB(NOW(), INTERVAL 90 DAY) "
+                            f"LIMIT 500",
+                            (rf'^{root4}[A-X][0-9]{{1,4}}$',)
+                        )
+                        for (sym,) in _cur.fetchall():
+                            su = str(sym).upper()
+                            if pattern.match(su):
+                                symbols.add(su)
+                        _cur.close()
+                    except Exception as _sql_e:
+                        log.debug(f'[cedro-socket] {_tbl} query failed for {root4}: {_sql_e}')
                 try:
                     _conn.close()
                 except Exception:
                     pass
         except Exception as _db_e:
-            log.debug(f'[cedro-socket] DB discovery unavailable for {root}: {_db_e}')
-
-        # ── (2) BRAPI fallback (currently blocks derivatives on free plan, but
-        #        leave hook so paid plans just work). Only hit when DB found <5.
-        if len(symbols) < 5:
-            try:
-                import requests as _rq
-                _brapi_token = os.environ.get('BRAPI_TOKEN', '').strip()
-                params = {'search': root}
-                if _brapi_token:
-                    params['token'] = _brapi_token
-                r = _rq.get('https://brapi.dev/api/available',
-                            params=params, timeout=5)
-                if r.status_code == 200:
-                    data = r.json() or {}
-                    stocks = data.get('stocks') or data.get('indexes') or []
-                    for s in stocks:
-                        su = str(s).upper()
-                        if pattern.match(su):
-                            symbols.add(su)
-                else:
-                    log.debug(f'[cedro-socket] BRAPI available {root} HTTP {r.status_code}')
-            except Exception as _br_e:
-                log.debug(f'[cedro-socket] BRAPI fallback failed for {root}: {_br_e}')
+            log.debug(f'[cedro-socket] DB supplement unavailable for {root4}: {_db_e}')
 
         opts = sorted(symbols)
-        if opts:
-            log.info(f'[cedro-socket] discovered {len(opts)} option symbols for {root} '
-                     f'(sources: DB+BRAPI, first={opts[:3]})')
-        else:
-            log.warning(f'[cedro-socket] no option symbols discovered for {root}')
+        log.info(f'[cedro-socket] generated {len(opts)} option symbols for {root4} '
+                 f'(spot={spot:.2f}, step={step}, months={months_to_scan}, first={opts[:3]})')
         self._opt_disc_cache[root] = (now, opts)
         return opts
 

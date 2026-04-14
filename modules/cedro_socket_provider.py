@@ -331,6 +331,38 @@ class CedroSocketProvider:
                     exp_s = str(expiry).strip()
                     if len(exp_s) == 8 and exp_s.isdigit():
                         exp_iso = f'{exp_s[:4]}-{exp_s[4:6]}-{exp_s[6:8]}'
+
+                # [v10.34d] Infer missing strike/expiry from B3 ticker convention.
+                # Cedro SQT sometimes doesn't echo fields 64/85 for low-liquidity
+                # series, but the ticker itself encodes both.
+                try:
+                    if (not strike or float(strike) <= 0) and len(s) >= 6:
+                        _code = ''.join(ch for ch in s[5:] if ch.isdigit())
+                        if _code:
+                            _k = int(_code)
+                            # Heuristic: codes 10-999 in "reais" for most stocks;
+                            # for penny stocks we store as int*0.1. Keep 1:1 for now.
+                            strike = float(_k)
+                    if not exp_iso and len(s) >= 5:
+                        _letter = s[4].upper()
+                        _month_map = {
+                            'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5, 'F': 6,
+                            'G': 7, 'H': 8, 'I': 9, 'J': 10, 'K': 11, 'L': 12,
+                            'M': 1, 'N': 2, 'O': 3, 'P': 4, 'Q': 5, 'R': 6,
+                            'S': 7, 'T': 8, 'U': 9, 'V': 10, 'W': 11, 'X': 12,
+                        }
+                        _m = _month_map.get(_letter)
+                        if _m:
+                            import datetime as _dtm
+                            _today = _dtm.date.today()
+                            _y = _today.year if _m >= _today.month else _today.year + 1
+                            # 3rd Monday of month = monthly expiry
+                            _first = _dtm.date(_y, _m, 1)
+                            _offset = (0 - _first.weekday()) % 7  # days to first Mon
+                            _third_mon = _first + _dtm.timedelta(days=_offset + 14)
+                            exp_iso = _third_mon.isoformat()
+                except Exception:
+                    pass
                 chain.append({
                     'symbol': s,
                     'underlying': underlying.upper(),

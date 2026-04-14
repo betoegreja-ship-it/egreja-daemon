@@ -338,40 +338,103 @@ class CedroSocketProvider:
 
     # ─── Options discovery cache ───────────────────────────────────────────
     _opt_disc_cache: dict = {}   # root → (ts, symbols_list)
-    _opt_disc_ttl: int = 60
+    _opt_disc_ttl: int = 600     # [v10.34] 10-min cache (DB queries are cheap but limit noise)
 
     def _discover_option_symbols(self, root: str) -> list:
         """
-        Discover live B3 option tickers for a given root (e.g. 'PETR') via
-        BRAPI's /api/available?search={root}. Filters to option-naming pattern
-        ^{root}[A-X]\\d{1,4}$ (B3 series letters A-L call, M-X put).
-        Cached 60s per root to avoid hammering BRAPI.
+        [v10.34] Discover live B3 option tickers for a given root. Multi-source:
+          1) DB: strategy_trade_legs + strategy_opportunities_log (last 90 days)
+             — BRAPI free plan blocks derivatives module, so DB history is our
+             primary source. Filtered by B3 option-naming regex ^{root}[A-X]\\d{{1,4}}$.
+          2) BRAPI /api/available?search={root} (kept as best-effort fallback
+             in case the plan ever exposes options).
+          3) Merge, dedup, sort. Cached 10 min per root.
+
+        B3 series letters: A-L = call months Jan-Dec, M-X = put months Jan-Dec.
         """
         import time as _t, re as _re
         now = _t.time()
         hit = self._opt_disc_cache.get(root)
         if hit and now - hit[0] < self._opt_disc_ttl:
             return hit[1]
+
+        pattern = _re.compile(rf'^{root}[A-X]\d{{1,4}}$')
+        symbols: set = set()
+
+        # ── (1) DB-seeded discovery from strategy trade legs + opportunities log
         try:
-            import requests as _rq
-            _brapi_token = os.environ.get('BRAPI_TOKEN', '').strip()
-            params = {'search': root}
-            if _brapi_token:
-                params['token'] = _brapi_token
-            r = _rq.get('https://brapi.dev/api/available',
-                        params=params, timeout=5)
-            if r.status_code != 200:
-                log.warning(f'[cedro-socket] BRAPI available {root} HTTP {r.status_code}')
-                return []
-            data = r.json() or {}
-            stocks = data.get('stocks') or data.get('indexes') or []
-            pattern = _re.compile(rf'^{root}[A-X]\d{{1,4}}$')
-            opts = [s.upper() for s in stocks if pattern.match(s.upper())]
-            self._opt_disc_cache[root] = (now, opts)
-            return opts
-        except Exception as e:
-            log.warning(f'[cedro-socket] option discovery failed for {root}: {e}')
-            return []
+            from modules.database import get_db as _get_db
+            _conn = _get_db()
+            if _conn is not None:
+                try:
+                    _cur = _conn.cursor()
+                    # 90-day window: captures current-month + next-month + last rolled
+                    _cur.execute(
+                        "SELECT DISTINCT symbol FROM strategy_trade_legs "
+                        "WHERE symbol REGEXP %s "
+                        "AND timestamp >= DATE_SUB(NOW(), INTERVAL 90 DAY) "
+                        "LIMIT 500",
+                        (rf'^{root}[A-X][0-9]{{1,4}}$',)
+                    )
+                    for (sym,) in _cur.fetchall():
+                        if sym and pattern.match(str(sym).upper()):
+                            symbols.add(str(sym).upper())
+                    _cur.close()
+                except Exception as _sql_e:
+                    log.debug(f'[cedro-socket] legs query failed for {root}: {_sql_e}')
+                try:
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        "SELECT DISTINCT symbol FROM strategy_opportunities_log "
+                        "WHERE symbol REGEXP %s "
+                        "AND timestamp >= DATE_SUB(NOW(), INTERVAL 90 DAY) "
+                        "LIMIT 1000",
+                        (rf'^{root}[A-X][0-9]{{1,4}}$',)
+                    )
+                    for (sym,) in _cur.fetchall():
+                        if sym and pattern.match(str(sym).upper()):
+                            symbols.add(str(sym).upper())
+                    _cur.close()
+                except Exception as _sql_e:
+                    log.debug(f'[cedro-socket] opp-log query failed for {root}: {_sql_e}')
+                try:
+                    _conn.close()
+                except Exception:
+                    pass
+        except Exception as _db_e:
+            log.debug(f'[cedro-socket] DB discovery unavailable for {root}: {_db_e}')
+
+        # ── (2) BRAPI fallback (currently blocks derivatives on free plan, but
+        #        leave hook so paid plans just work). Only hit when DB found <5.
+        if len(symbols) < 5:
+            try:
+                import requests as _rq
+                _brapi_token = os.environ.get('BRAPI_TOKEN', '').strip()
+                params = {'search': root}
+                if _brapi_token:
+                    params['token'] = _brapi_token
+                r = _rq.get('https://brapi.dev/api/available',
+                            params=params, timeout=5)
+                if r.status_code == 200:
+                    data = r.json() or {}
+                    stocks = data.get('stocks') or data.get('indexes') or []
+                    for s in stocks:
+                        su = str(s).upper()
+                        if pattern.match(su):
+                            symbols.add(su)
+                else:
+                    log.debug(f'[cedro-socket] BRAPI available {root} HTTP {r.status_code}')
+            except Exception as _br_e:
+                log.debug(f'[cedro-socket] BRAPI fallback failed for {root}: {_br_e}')
+
+        opts = sorted(symbols)
+        if opts:
+            log.info(f'[cedro-socket] discovered {len(opts)} option symbols for {root} '
+                     f'(sources: DB+BRAPI, first={opts[:3]})')
+        else:
+            log.warning(f'[cedro-socket] no option symbols discovered for {root}')
+        self._opt_disc_cache[root] = (now, opts)
+        return opts
 
     def get_quote(self, symbol: str, wait_ms: int = 1500) -> Optional[dict]:
         """Return full cached quote dict for symbol. Auto-subscribes if missing, waits briefly."""

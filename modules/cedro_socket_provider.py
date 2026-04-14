@@ -447,18 +447,21 @@ class CedroSocketProvider:
                 pass
         if spot <= 0:
             spot = 50.0  # neutral default — produces wide band; harmless misses
+        # [v10.34f] Finer grid so skew/fst/roll strategies get 3+ matching
+        # strikes per expiry. B3 lists strikes at step 1 for most blue chips.
         if spot < 10:
             step = 0.5
             code = lambda s: str(int(round(s * 10)))   # 5.00 → "50"
-        elif spot < 30:
+        elif spot < 150:
             step = 1.0
             code = lambda s: str(int(round(s)))
         else:
             step = 2.0
             code = lambda s: str(int(round(s)))
 
-        lo = max(step, spot * 0.7)
-        hi = spot * 1.3
+        # Narrower band (±20%) to stay well inside 300-ticker cap with step 1.
+        lo = max(step, spot * 0.8)
+        hi = spot * 1.2
         # Snap to step grid
         k = lo - (lo % step)
         strikes = []

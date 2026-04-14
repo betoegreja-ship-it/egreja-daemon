@@ -261,7 +261,8 @@ class CedroMarketDataProvider(MarketDataProviderBase):
         self._session = _req.Session()
         self._session.headers.update({'Accept': 'application/json'})
 
-        self.login    = os.environ.get('CEDRO_LOGIN', '').strip()
+        # Accept CEDRO_USER as alias for CEDRO_LOGIN (socket creds use CEDRO_USER)
+        self.login    = (os.environ.get('CEDRO_LOGIN', '') or os.environ.get('CEDRO_USER', '')).strip()
         self.password = os.environ.get('CEDRO_PASSWORD', '').strip()
         self.api_url  = os.environ.get('CEDRO_API_URL',
                                        'http://webfeeder.cedrofinances.com.br').rstrip('/')
@@ -271,10 +272,22 @@ class CedroMarketDataProvider(MarketDataProviderBase):
         self._cache: Dict[str, Any] = {}
         self._cache_ttl = 5  # seconds
 
+        # Wire to live Cedro Crystal socket if available — gives real-time spot/quote data
+        # without relying on WebFeeder REST (which uses a different auth scope).
+        self._socket = None
+        try:
+            from modules.cedro_socket_provider import get_cedro as _get_cedro
+            self._socket = _get_cedro()
+            if self._socket is not None:
+                self._is_healthy = True
+                self.logger.info("Cedro: bound to live Crystal socket — provider healthy via socket")
+        except Exception as _e:
+            self.logger.warning(f"Cedro: socket binding failed — {_e}")
+
         if self.login and self.password:
             self._authenticate()
-        else:
-            self.logger.warning("Cedro: CEDRO_LOGIN / CEDRO_PASSWORD not set — provider disabled")
+        elif self._socket is None:
+            self.logger.warning("Cedro: CEDRO_LOGIN / CEDRO_PASSWORD not set and socket unavailable — provider disabled")
 
     # ─── Authentication ───────────────────────────────────────────
 
@@ -345,7 +358,25 @@ class CedroMarketDataProvider(MarketDataProviderBase):
     # ─── Spot Quote ───────────────────────────────────────────────
 
     def get_spot(self, symbol: str) -> Optional[SpotQuote]:
-        """Fetch spot price from Cedro WebFeeder."""
+        """Fetch spot price — prefer live Crystal socket, fallback to WebFeeder REST."""
+        # ─── Socket-first path (real-time, no auth latency) ─────────
+        if self._socket is not None:
+            try:
+                self._socket.subscribe([symbol])
+                q = self._socket.get_quote(symbol, wait_ms=300)
+                if q and (q.get('price') or q.get('last')):
+                    return SpotQuote(
+                        symbol=symbol.upper(),
+                        bid=float(q.get('best_bid') or q.get('bid') or 0),
+                        ask=float(q.get('best_ask') or q.get('ask') or 0),
+                        last=float(q.get('price') or q.get('last') or 0),
+                        volume=int(q.get('volume') or 0),
+                        timestamp=datetime.utcnow(),
+                    )
+            except Exception as _e:
+                self.logger.debug(f"Cedro socket get_spot({symbol}) failed: {_e}")
+
+        # ─── REST fallback ──────────────────────────────────────────
         with self._lock:
             data = self._cached_get(f'spot:{symbol}',
                                     f'/services/quotes/quote/{symbol}')
@@ -695,7 +726,23 @@ class CedroMarketDataProvider(MarketDataProviderBase):
     # ─── Health Check ─────────────────────────────────────────────
 
     def health_check(self) -> bool:
-        """Check Cedro connectivity by querying a known liquid asset."""
+        """Check Cedro connectivity — socket-first, then REST WebFeeder."""
+        # ─── Socket-first: if Crystal socket is live, we are healthy ─
+        if self._socket is not None:
+            try:
+                stats = getattr(self._socket, 'stats', lambda: {})() or {}
+                connected = bool(stats.get('connected', True))
+                if connected:
+                    self._is_healthy = True
+                    self._last_health_check = datetime.utcnow()
+                    return True
+            except Exception:
+                # Socket exists but stats failed — still consider healthy since we bound successfully
+                self._is_healthy = True
+                self._last_health_check = datetime.utcnow()
+                return True
+
+        # ─── REST fallback ──────────────────────────────────────────
         with self._lock:
             if not self.login or not self.password:
                 self._is_healthy = False
@@ -804,6 +851,12 @@ class OpLabMarketDataProvider(MarketDataProviderBase):
                 return r.json()
             if r.status_code == 401:
                 self.logger.error("OpLab: 401 Unauthorized — check OPLAB_ACCESS_TOKEN")
+                self._is_healthy = False
+            elif r.status_code == 403:
+                self.logger.error(
+                    f"OpLab: 403 FORBIDDEN on {path} — token recognized but account lacks access. "
+                    "Likely expired plan or disabled account. Renew at https://oplab.com.br"
+                )
                 self._is_healthy = False
             elif r.status_code == 429:
                 self.logger.warning("OpLab: rate limited (429) — backing off")

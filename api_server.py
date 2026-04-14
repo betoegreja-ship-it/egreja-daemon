@@ -485,6 +485,86 @@ try:
             log.warning('[v10.29d] DerivativesExecutionEngine skipped: missing deps')
     except Exception as _dee_err:
         log.warning(f'[v10.29d] DerivativesExecutionEngine init failed: {_dee_err}')
+
+    # ═════════════════════════════════════════════════════════════
+    # [v10.32] Reconcile in-memory active_allocations from DB on boot
+    # Prevents caps saturating forever after a restart while positions are OPEN.
+    # ═════════════════════════════════════════════════════════════
+    try:
+        _cap_mgr = _deriv_services.get('capital_manager')
+        if _cap_mgr is not None:
+            from modules.derivatives.capital import AllocationRecord as _AllocRec
+            from datetime import datetime as _dt
+            _conn = get_db()
+            _cur = _conn.cursor(dictionary=True)
+            _cur.execute(
+                "SELECT trade_id, strategy, symbol, notional, created_at "
+                "FROM strategy_master_trades WHERE status = 'OPEN'"
+            )
+            _rows = _cur.fetchall() or []
+            _cur.close()
+            try: _conn.close()
+            except Exception: pass
+            _restored = 0
+            for _r in _rows:
+                _tid  = str(_r.get('trade_id') or '')
+                _strat = str(_r.get('strategy') or '')
+                _sym   = str(_r.get('symbol') or '')
+                _not   = float(_r.get('notional') or 0.0)
+                if not _tid or not _strat:
+                    continue
+                if _tid in _cap_mgr.active_allocations:
+                    continue
+                _cap_mgr.active_allocations[_tid] = _AllocRec(
+                    trade_id=_tid,
+                    strategy=_strat,
+                    symbol=_sym,
+                    amount=_not,
+                    direction='ALLOCATE',
+                    timestamp=_r.get('created_at') or _dt.utcnow(),
+                )
+                _cap_mgr.allocated += _not
+                _cap_mgr.strategy_allocated[_strat] += _not
+                _restored += 1
+            log.info(f'[v10.32] active_allocations reconciled from DB: restored={_restored} open positions')
+    except Exception as _rec_err:
+        log.warning(f'[v10.32] active_allocations reconcile failed: {_rec_err}')
+
+    # ═════════════════════════════════════════════════════════════
+    # [v10.32] Start DerivativesMonitor background thread
+    # Evaluates exits every cycle so positions actually close (SL/TP/trailing/max_hours).
+    # Without this, vol_arb/interlisted caps saturate and no new trades open.
+    # ═════════════════════════════════════════════════════════════
+    try:
+        _deriv_exec = _deriv_services.get('deriv_execution')
+        _greeks     = _deriv_services.get('greeks_calc')
+        _learner    = _deriv_services.get('deriv_learner')
+        if _deriv_exec is not None and _greeks is not None:
+            from modules.derivatives.monitoring import DerivativesMonitor as _DervMon
+            _deriv_monitor = _DervMon(
+                execution_engine=_deriv_exec,
+                greeks_calculator=_greeks,
+                provider_mgr=_deriv_provider_mgr,
+                learning_engine=_learner,
+                get_db_fn=get_db,
+            )
+            _deriv_services['deriv_monitor'] = _deriv_monitor
+
+            import threading as _th
+            def _deriv_monitor_runner():
+                try:
+                    _deriv_monitor.monitoring_loop(beat, log)
+                except Exception as _mloop_err:
+                    log.error(f'[v10.32] deriv_monitor_loop crashed: {_mloop_err}')
+
+            _mthr = _th.Thread(target=_deriv_monitor_runner, name='deriv_monitor_loop', daemon=True)
+            _mthr.start()
+            log.info('[v10.32] DerivativesMonitor thread started — positions will now evaluate exits')
+        else:
+            log.warning('[v10.32] DerivativesMonitor NOT started: missing deriv_execution or greeks_calc')
+    except Exception as _mon_err:
+        log.warning(f'[v10.32] DerivativesMonitor start failed: {_mon_err}')
+
     log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')

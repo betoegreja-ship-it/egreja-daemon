@@ -302,6 +302,49 @@ def _fetch_cedro_stock(display: str) -> tuple:
         pass
     return entry, lat
 
+def _overlay_cedro_on_batch(symbols):
+    """[v10.31] For each B3 symbol with fresh Cedro data, overwrite the BRAPI batch result
+    in stock_prices with Cedro real-time price/high/low/volume, preserving EMAs/RSI/ATR."""
+    if not (_cedro_socket and _cedro_socket.enabled):
+        return 0
+    n = 0
+    for sym in symbols:
+        try:
+            q = _cedro_socket.get_quote(sym, wait_ms=0)  # non-blocking read
+            if not q or not q.get('price'):
+                continue
+            price = float(q.get('price') or 0)
+            if price <= 0:
+                continue
+            with state_lock:
+                cur = stock_prices.get(sym)
+                if not isinstance(cur, dict):
+                    cur = {'market': 'B3'}
+                prev = float(q.get('prev_close') or cur.get('prev') or 0) or price
+                cur['price'] = price
+                cur['prev'] = prev
+                cur['change_pct'] = q.get('variation_pct') if q.get('variation_pct') is not None else (round((price/prev-1)*100, 2) if prev > 0 else 0)
+                cur['day_high'] = q.get('day_high')
+                cur['day_low'] = q.get('day_low')
+                cur['year_high'] = q.get('year_high')
+                cur['year_low'] = q.get('year_low')
+                cur['best_bid'] = q.get('best_bid')
+                cur['best_ask'] = q.get('best_ask')
+                cur['volume_financial'] = q.get('volume_financial')
+                cur['market_cap'] = q.get('market_cap')
+                cur['sector_code'] = q.get('sector_code')
+                # Tag source so ticker-tape/UI can show the right provider
+                prior_src = cur.get('source', '')
+                if 'cedro' not in prior_src:
+                    cur['source'] = 'cedro-socket+brapi-candles' if ('brapi' in prior_src or cur.get('ema9_real')) else 'cedro-socket'
+                cur['updated_at'] = datetime.utcnow().isoformat()
+                stock_prices[sym] = cur
+                n += 1
+        except Exception:
+            continue
+    return n
+
+
 # ═══ [v10.27] DERIVATIVES MODULE INITIALIZATION ═══
 # Provider chain: OpLab (primary) → Cedro (backup) → Simulated (fallback)
 _deriv_config = get_deriv_config()
@@ -5247,6 +5290,7 @@ def fetch_stock_prices():
             with state_lock:
                 for sym, data in batch_result.items():
                     stock_prices[sym] = data
+            _overlay_cedro_on_batch(b3_open_positions)
 
         if b3_watchlist:
             last_wl_ts = getattr(fetch_stock_prices, '_last_b3_watchlist_ts', 0)
@@ -5261,6 +5305,7 @@ def fetch_stock_prices():
                 with state_lock:
                     for sym, data in batch_result.items():
                         stock_prices[sym] = data
+                _overlay_cedro_on_batch(b3_watchlist)
                 fetch_stock_prices._last_b3_watchlist_ts = now_ts
 
         # Posições abertas B3 fora do pregão: 1x/30min para monitorar gap de abertura

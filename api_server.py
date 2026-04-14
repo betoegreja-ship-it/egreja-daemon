@@ -388,6 +388,25 @@ try:
 except Exception as e:
     log.warning(f'[v10.27] Simulated provider init: {e}')
 
+# [v10.33] Promote Cedro to primary when OpLab account is 403'd.
+# Cedro Crystal socket carries real-time spot + options chain (BRAPI-discovered
+# tickers SQT'd through the persistent socket). Greeks computed locally via
+# Black-Scholes. Falls back to OpLab / Simulated if Cedro somehow fails.
+try:
+    _oplab_healthy = False
+    try:
+        _oplab_healthy = bool(_oplab_provider and _oplab_provider.health_check())
+    except Exception:
+        _oplab_healthy = False
+    if not _oplab_healthy:
+        try:
+            _deriv_provider_mgr.set_primary_provider('cedro')
+            log.info('[v10.33] OpLab unhealthy — Cedro promoted to primary derivatives provider')
+        except Exception as _sp_err:
+            log.warning(f'[v10.33] Cedro primary promotion failed: {_sp_err}')
+except Exception as _pe:
+    log.warning(f'[v10.33] provider primary selection failed: {_pe}')
+
 _deriv_services = {}
 try:
     _deriv_services['options_cache'] = OptionsChainCache() if OptionsChainCache else None

@@ -253,6 +253,126 @@ class CedroSocketProvider:
             for k in gone:
                 self._send_command(f'USQ {k.lower()}')
 
+    def get_options_chain(self, underlying: str, max_wait_ms: int = 3000,
+                          max_symbols: int = 120) -> list:
+        """
+        Resolve and subscribe the live B3 option chain for `underlying` via
+        Cedro Crystal socket. Since Crystal has no GOP-style list command,
+        we discover option tickers via BRAPI's `available` endpoint and bulk
+        SQT them through the already-open socket.
+
+        Returns a list of dicts with: symbol, underlying, strike, expiry,
+        option_type ('C'/'P'), bid, ask, last, volume, oi.
+        """
+        if not self.enabled:
+            return []
+        root = underlying.strip().upper()[:4]  # PETR4 → PETR
+        if not root:
+            return []
+
+        # ─── Symbol discovery via BRAPI (fast; cached 60s per underlying) ──
+        syms = self._discover_option_symbols(root)
+        if not syms:
+            return []
+        if len(syms) > max_symbols:
+            # Keep nearest expiries / near-money strikes: sort by string
+            syms = sorted(syms)[:max_symbols]
+
+        # ─── Bulk SQT via persistent socket ────────────────────────────────
+        self.subscribe(syms)
+
+        # ─── Wait briefly for quotes to populate ───────────────────────────
+        import time as _t
+        deadline = _t.time() + (max_wait_ms / 1000.0)
+        while _t.time() < deadline:
+            with self._cache_lock:
+                populated = sum(
+                    1 for s in syms
+                    if self._cache.get(s) and self._cache[s].get('price') is not None
+                )
+            if populated >= len(syms) * 0.5:
+                break
+            _t.sleep(0.05)
+
+        # ─── Build chain from cache ────────────────────────────────────────
+        chain = []
+        with self._cache_lock:
+            for s in syms:
+                q = self._cache.get(s)
+                if not q:
+                    continue
+                if q.get('asset_type') not in (2, 16, 17, None):
+                    # 2=Opção, 16=Opção sobre à vista, 17=Opção sobre futuro
+                    # Skip if explicitly non-option
+                    if q.get('asset_type') is not None:
+                        continue
+                direction = q.get('option_direction')  # 'C' or 'P'
+                if direction not in ('C', 'P'):
+                    # Infer from B3 naming: letter 5 of symbol
+                    if len(s) >= 5 and s[4] in 'ABCDEFGHIJKL':
+                        direction = 'C'
+                    elif len(s) >= 5 and s[4] in 'MNOPQRSTUVWX':
+                        direction = 'P'
+                    else:
+                        continue
+                strike = q.get('strike_price') or q.get('strike_price_2') or 0.0
+                expiry = q.get('expiry_date')
+                exp_iso = None
+                if expiry:
+                    exp_s = str(expiry).strip()
+                    if len(exp_s) == 8 and exp_s.isdigit():
+                        exp_iso = f'{exp_s[:4]}-{exp_s[4:6]}-{exp_s[6:8]}'
+                chain.append({
+                    'symbol': s,
+                    'underlying': underlying.upper(),
+                    'strike': float(strike or 0.0),
+                    'expiry': exp_iso,
+                    'option_type': direction,
+                    'bid': float(q.get('best_bid') or 0.0),
+                    'ask': float(q.get('best_ask') or 0.0),
+                    'last': float(q.get('price') or 0.0),
+                    'volume': int(q.get('volume_qty') or 0),
+                    'oi': int(q.get('open_contracts') or 0),
+                })
+        return chain
+
+    # ─── Options discovery cache ───────────────────────────────────────────
+    _opt_disc_cache: dict = {}   # root → (ts, symbols_list)
+    _opt_disc_ttl: int = 60
+
+    def _discover_option_symbols(self, root: str) -> list:
+        """
+        Discover live B3 option tickers for a given root (e.g. 'PETR') via
+        BRAPI's /api/available?search={root}. Filters to option-naming pattern
+        ^{root}[A-X]\\d{1,4}$ (B3 series letters A-L call, M-X put).
+        Cached 60s per root to avoid hammering BRAPI.
+        """
+        import time as _t, re as _re
+        now = _t.time()
+        hit = self._opt_disc_cache.get(root)
+        if hit and now - hit[0] < self._opt_disc_ttl:
+            return hit[1]
+        try:
+            import requests as _rq
+            _brapi_token = os.environ.get('BRAPI_TOKEN', '').strip()
+            params = {'search': root}
+            if _brapi_token:
+                params['token'] = _brapi_token
+            r = _rq.get('https://brapi.dev/api/available',
+                        params=params, timeout=5)
+            if r.status_code != 200:
+                log.warning(f'[cedro-socket] BRAPI available {root} HTTP {r.status_code}')
+                return []
+            data = r.json() or {}
+            stocks = data.get('stocks') or data.get('indexes') or []
+            pattern = _re.compile(rf'^{root}[A-X]\d{{1,4}}$')
+            opts = [s.upper() for s in stocks if pattern.match(s.upper())]
+            self._opt_disc_cache[root] = (now, opts)
+            return opts
+        except Exception as e:
+            log.warning(f'[cedro-socket] option discovery failed for {root}: {e}')
+            return []
+
     def get_quote(self, symbol: str, wait_ms: int = 1500) -> Optional[dict]:
         """Return full cached quote dict for symbol. Auto-subscribes if missing, waits briefly."""
         if not self.enabled:

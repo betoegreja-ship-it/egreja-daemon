@@ -422,16 +422,36 @@ class CedroMarketDataProvider(MarketDataProviderBase):
 
     def get_options_chain(self, underlying: str) -> List[OptionQuote]:
         """
-        Fetch options chain from Cedro.
-
-        Strategy: query /services/quotes/quote/{option_symbol} for each
-        candidate option series, then aggregate into OptionQuote list.
-
-        Note: Cedro's WebFeeder returns option data within the same
-        quote endpoint — the option ticker is treated like any asset.
+        Fetch options chain via Cedro Crystal socket (real-time) with Greeks
+        computed locally from Black-Scholes. Falls back to WebFeeder REST only
+        if socket is unavailable.
         """
+        # ─── Socket-first path ──────────────────────────────────────
+        if self._socket is not None:
+            try:
+                raw = self._socket.get_options_chain(underlying, max_wait_ms=3000)
+                if raw:
+                    # Get spot for greeks
+                    sp = self.get_spot(underlying)
+                    spot_px = sp.last if sp else 0.0
+                    rate = float(os.environ.get('DERIV_RISK_FREE_RATE', '0.105'))  # CDI ~10.5%
+                    results: List[OptionQuote] = []
+                    for q in raw:
+                        try:
+                            opt = self._build_option_quote_with_greeks(
+                                q, underlying=underlying, spot=spot_px, rate=rate
+                            )
+                            if opt:
+                                results.append(opt)
+                        except Exception as _op_err:
+                            self.logger.debug(f"Cedro socket option build failed: {_op_err}")
+                    if results:
+                        return results
+            except Exception as _sc_err:
+                self.logger.debug(f"Cedro socket get_options_chain failed: {_sc_err}")
+
+        # ─── REST fallback (unlikely to work without WebFeeder auth) ─
         with self._lock:
-            # Try the dedicated option chain endpoint first
             chain_data = self._cached_get(
                 f'chain:{underlying}',
                 f'/services/quotes/options/{underlying}'
@@ -440,7 +460,6 @@ class CedroMarketDataProvider(MarketDataProviderBase):
             if chain_data and isinstance(chain_data, list):
                 return self._parse_options_list(underlying, chain_data)
 
-            # Fallback: query individual option series
             results = []
             for series_prefix in self._guess_option_symbols(underlying):
                 data = self._get(f'/services/quotes/quote/{series_prefix}')
@@ -455,6 +474,142 @@ class CedroMarketDataProvider(MarketDataProviderBase):
                             results.append(opt)
 
             return results
+
+    # ─── Black-Scholes helpers ────────────────────────────────────
+
+    def _build_option_quote_with_greeks(
+        self, q: dict, underlying: str, spot: float, rate: float
+    ) -> Optional[OptionQuote]:
+        """Build OptionQuote from socket raw dict + compute IV/greeks inline."""
+        from math import log, sqrt, exp
+        from datetime import date as _date
+
+        symbol = q.get('symbol') or ''
+        strike = float(q.get('strike') or 0.0)
+        bid = float(q.get('bid') or 0.0)
+        ask = float(q.get('ask') or 0.0)
+        last = float(q.get('last') or 0.0)
+        opt_type = q.get('option_type') or 'C'
+        expiry = q.get('expiry') or ''
+
+        if strike <= 0 or spot <= 0:
+            return None
+
+        # Days to expiry
+        T = 30.0 / 365.0  # default ~1 month if no expiry data
+        if expiry:
+            try:
+                exp_d = datetime.strptime(expiry[:10], '%Y-%m-%d').date()
+                dte_days = (exp_d - _date.today()).days
+                if dte_days <= 0:
+                    return None  # skip expired
+                T = dte_days / 365.0
+            except Exception:
+                pass
+
+        # Mid price for IV extraction
+        mid = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else last
+        iv = 0.30  # default 30% if we can't solve
+        if mid > 0:
+            iv_solved = self._implied_vol_newton(
+                price=mid, S=spot, K=strike, T=T, r=rate, opt_type=opt_type
+            )
+            if iv_solved is not None and 0.01 < iv_solved < 5.0:
+                iv = iv_solved
+
+        # Greeks from Black-Scholes
+        delta, gamma, theta, vega = self._bs_greeks(
+            S=spot, K=strike, T=T, r=rate, vol=iv, opt_type=opt_type
+        )
+
+        return OptionQuote(
+            symbol=symbol,
+            underlying=underlying.upper(),
+            strike=strike,
+            expiry=expiry,
+            option_type=opt_type,
+            bid=bid, ask=ask, last=last,
+            volume=int(q.get('volume') or 0),
+            oi=int(q.get('oi') or 0),
+            iv=float(iv),
+            delta=float(delta),
+            gamma=float(gamma),
+            theta=float(theta),
+            vega=float(vega),
+            timestamp=datetime.utcnow(),
+        )
+
+    @staticmethod
+    def _norm_cdf(x: float) -> float:
+        from math import erf, sqrt
+        return 0.5 * (1.0 + erf(x / sqrt(2.0)))
+
+    @staticmethod
+    def _norm_pdf(x: float) -> float:
+        from math import exp, sqrt, pi
+        return exp(-0.5 * x * x) / sqrt(2.0 * pi)
+
+    def _bs_price(self, S, K, T, r, vol, opt_type):
+        from math import log, sqrt, exp
+        if vol <= 0 or T <= 0:
+            return max(0.0, (S - K) if opt_type == 'C' else (K - S))
+        d1 = (log(S / K) + (r + 0.5 * vol * vol) * T) / (vol * sqrt(T))
+        d2 = d1 - vol * sqrt(T)
+        if opt_type == 'C':
+            return S * self._norm_cdf(d1) - K * exp(-r * T) * self._norm_cdf(d2)
+        else:
+            return K * exp(-r * T) * self._norm_cdf(-d2) - S * self._norm_cdf(-d1)
+
+    def _bs_greeks(self, S, K, T, r, vol, opt_type):
+        from math import log, sqrt, exp
+        if vol <= 0 or T <= 0 or S <= 0 or K <= 0:
+            return (0.0, 0.0, 0.0, 0.0)
+        d1 = (log(S / K) + (r + 0.5 * vol * vol) * T) / (vol * sqrt(T))
+        d2 = d1 - vol * sqrt(T)
+        pdf_d1 = self._norm_pdf(d1)
+        if opt_type == 'C':
+            delta = self._norm_cdf(d1)
+            theta = (-(S * pdf_d1 * vol) / (2 * sqrt(T))
+                     - r * K * exp(-r * T) * self._norm_cdf(d2)) / 365.0
+        else:
+            delta = self._norm_cdf(d1) - 1.0
+            theta = (-(S * pdf_d1 * vol) / (2 * sqrt(T))
+                     + r * K * exp(-r * T) * self._norm_cdf(-d2)) / 365.0
+        gamma = pdf_d1 / (S * vol * sqrt(T))
+        vega  = S * pdf_d1 * sqrt(T) / 100.0  # per 1% vol move
+        return (delta, gamma, theta, vega)
+
+    def _implied_vol_newton(self, price, S, K, T, r, opt_type,
+                            max_iter=50, tol=1e-4) -> Optional[float]:
+        """Newton-Raphson IV solver from option price + spot + strike + T + r."""
+        from math import sqrt
+        if price <= 0 or S <= 0 or K <= 0 or T <= 0:
+            return None
+        # Initial guess: Brenner-Subrahmanyam approximation
+        try:
+            vol = sqrt(2.0 * 3.14159265 / T) * (price / S)
+            vol = max(0.05, min(vol, 3.0))
+        except Exception:
+            vol = 0.30
+        for _ in range(max_iter):
+            try:
+                p = self._bs_price(S, K, T, r, vol, opt_type)
+                diff = p - price
+                if abs(diff) < tol:
+                    return vol
+                # Vega for Newton step (note: our vega is per 1% vol, so ×100 here)
+                _, _, _, vega = self._bs_greeks(S, K, T, r, vol, opt_type)
+                vega_abs = vega * 100.0
+                if vega_abs < 1e-8:
+                    return None
+                vol = vol - diff / vega_abs
+                if vol <= 0:
+                    vol = 0.01
+                if vol > 5.0:
+                    vol = 5.0
+            except Exception:
+                return None
+        return vol
 
     def _parse_options_list(self, underlying: str, data_list: list) -> List[OptionQuote]:
         """Parse a list of option quotes from Cedro."""

@@ -254,7 +254,7 @@ class CedroSocketProvider:
                 self._send_command(f'USQ {k.lower()}')
 
     def get_options_chain(self, underlying: str, max_wait_ms: int = 3000,
-                          max_symbols: int = 120) -> list:
+                          max_symbols: int = 300) -> list:
         """
         Resolve and subscribe the live B3 option chain for `underlying` via
         Cedro Crystal socket. Since Crystal has no GOP-style list command,
@@ -284,8 +284,18 @@ class CedroSocketProvider:
         if not syms:
             return []
         if len(syms) > max_symbols:
-            # Keep nearest expiries / near-money strikes: sort by string
-            syms = sorted(syms)[:max_symbols]
+            # [v10.34e] Sort by proximity to spot so calls AND puts survive
+            # truncation (alphabetical sort used to drop M-X puts entirely).
+            import re as _re2
+            def _dist(sym: str) -> float:
+                m = _re2.match(rf'^{root}[A-X](\d+)$', sym)
+                if not m or _spot <= 0:
+                    return 0.0
+                try:
+                    return abs(float(int(m.group(1))) - _spot)
+                except Exception:
+                    return 0.0
+            syms = sorted(syms, key=_dist)[:max_symbols]
 
         # ─── Bulk SQT via persistent socket ────────────────────────────────
         self.subscribe(syms)

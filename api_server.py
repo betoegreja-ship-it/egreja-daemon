@@ -237,6 +237,71 @@ log = logging.getLogger('egreja')
 
 app = Flask(__name__)
 
+# ═══ [v10.31] CEDRO SOCKET PROVIDER ─ real-time streaming quotes ═══
+# Primary source for B3 quotes (stocks + indices + futures). BRAPI/OpLab used as fallback.
+_cedro_socket = None
+try:
+    from modules.cedro_socket_provider import get_cedro as _get_cedro_socket, is_enabled as _cedro_enabled
+    if _cedro_enabled():
+        _cedro_socket = _get_cedro_socket()
+        log.info('[v10.31] CedroSocketProvider STARTED (primary for B3 real-time quotes)')
+    else:
+        log.info('[v10.31] CedroSocketProvider dormant (CEDRO_USER/CEDRO_PASSWORD not set)')
+except Exception as _cedro_e:
+    log.warning(f'[v10.31] CedroSocketProvider init failed: {_cedro_e}')
+    _cedro_socket = None
+
+def _fetch_cedro_stock(display: str) -> tuple:
+    """[v10.31] Cedro socket primary for B3 stocks/indices.
+    Merges real-time price/high/low/volume/fundamentals with cached candle-based EMAs/RSI/ATR.
+    Returns (result_dict | None, latency_ms)."""
+    if not _cedro_socket or not _cedro_socket.enabled:
+        return None, 0.0
+    t0 = time.time()
+    q = _cedro_socket.get_quote(display, wait_ms=1200)
+    lat = (time.time() - t0) * 1000
+    if not q or not q.get('price'):
+        return None, lat
+    price = float(q.get('price') or 0)
+    prev = float(q.get('prev_close') or 0) or price
+    cached = _get_cached_candles(f'brapi:{display}') if '_get_cached_candles' in globals() else None
+    if cached:
+        entry = dict(cached)
+        entry['price'] = price
+        entry['prev'] = prev
+        entry['change_pct'] = q.get('variation_pct') if q.get('variation_pct') is not None else (round((price/prev-1)*100, 2) if prev > 0 else 0)
+        entry['source'] = 'cedro-socket+brapi-candles'
+    else:
+        entry = {
+            'price': price, 'prev': prev,
+            'change_pct': q.get('variation_pct') if q.get('variation_pct') is not None else (round((price/prev-1)*100, 2) if prev > 0 else 0),
+            'ema9': price, 'ema21': price, 'ema50': price,
+            'rsi': 50.0, 'atr_pct': 0.0, 'volume_ratio': 0.0,
+            'ema9_real': False, 'ema21_real': False, 'ema50_real': False, 'rsi_real': False,
+            'candles_available': 0, 'market': 'B3',
+            'source': 'cedro-socket',
+        }
+    entry.update({
+        'day_high': q.get('day_high'), 'day_low': q.get('day_low'), 'day_open': q.get('day_open'),
+        'week_high': q.get('week_high'), 'week_low': q.get('week_low'),
+        'month_high': q.get('month_high'), 'month_low': q.get('month_low'),
+        'year_high': q.get('year_high'), 'year_low': q.get('year_low'),
+        'var_week_pct': q.get('var_week_pct'), 'var_month_pct': q.get('var_month_pct'),
+        'var_year_pct': q.get('var_year_pct'),
+        'volume_financial': q.get('volume_financial'),
+        'best_bid': q.get('best_bid'), 'best_ask': q.get('best_ask'),
+        'market_cap': q.get('market_cap'),
+        'sector_code': q.get('sector_code'), 'subsector_code': q.get('subsector_code'),
+        'segment_code': q.get('segment_code'),
+        'trading_phase': q.get('trading_phase'),
+        'updated_at': datetime.utcnow().isoformat(),
+    })
+    try:
+        record_data_quality(display, 'cedro-socket', lat, True)
+    except Exception:
+        pass
+    return entry, lat
+
 # ═══ [v10.27] DERIVATIVES MODULE INITIALIZATION ═══
 # Provider chain: OpLab (primary) → Cedro (backup) → Simulated (fallback)
 _deriv_config = get_deriv_config()
@@ -4782,6 +4847,16 @@ STOCK_SYMBOLS_US = [
 ]
 ALL_STOCK_SYMBOLS = STOCK_SYMBOLS_B3 + STOCK_SYMBOLS_US
 
+# [v10.31] Warm Cedro socket cache ─ subscribe all B3 symbols + indices
+try:
+    if _cedro_socket and _cedro_socket.enabled:
+        _b3_clean = [s.replace('.SA', '') for s in STOCK_SYMBOLS_B3]
+        _extras = ['IBOV', 'WINFUT', 'INDFUT', 'DOLFUT', 'WDOFUT']
+        _cedro_socket.subscribe(_b3_clean + _extras)
+        log.info(f'[v10.31] Cedro socket pre-subscribed {len(_b3_clean)+len(_extras)} symbols')
+except Exception as _cedro_sub_err:
+    log.warning(f'[v10.31] Cedro pre-subscribe failed: {_cedro_sub_err}')
+
 # [v10.28] Phase 3: _ema and _rsi are pure math — use module versions when available
 if _PURE_MODULES_LOADED:
     _ema = _mod_ema
@@ -5019,6 +5094,12 @@ def _fetch_single_stock(sym: str) -> tuple:
     """
     is_b3 = sym.endswith('.SA') or any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3)
     display = sym.replace('.SA', '')
+
+    # 0. [v10.31] Cedro socket (real-time, primary for B3)
+    if is_b3 and _cedro_socket and _cedro_socket.enabled:
+        result, lat = _fetch_cedro_stock(display)
+        if result:
+            return result, lat
 
     # 1. brapi para B3
     if is_b3 and BRAPI_TOKEN:
@@ -6940,6 +7021,12 @@ def _fetch_arbi_price(symbol: str) -> float:
                 if p > 0: return p
         except: pass
 
+    # [v10.31] Cedro socket primário para B3 (real-time streaming)
+    if is_b3_sym and _cedro_socket and _cedro_socket.enabled:
+        p = _cedro_socket.get_price(display, wait_ms=800)
+        if p and p > 0:
+            return float(p)
+
     # brapi primário para B3 (snapshot, usa cache)
     if is_b3_sym and BRAPI_TOKEN:
         result, _ = _fetch_brapi_stock(display)
@@ -7831,6 +7918,41 @@ def fix_corrupted_arbi_trade():
 def derivatives_dashboard():
     """Serve the standalone derivatives trading dashboard."""
     return send_from_directory('static', 'derivatives.html')
+
+@app.route('/cedro/health')
+def cedro_health():
+    """[v10.31] Cedro socket provider status."""
+    if not _cedro_socket:
+        return jsonify({'enabled': False, 'reason': 'provider_not_loaded'}), 503
+    return jsonify(_cedro_socket.healthcheck())
+
+
+@app.route('/cedro/analysis/<symbol>')
+def cedro_analysis(symbol):
+    """[v10.31] Full Cedro real-time analysis for a symbol."""
+    if not _cedro_socket or not _cedro_socket.enabled:
+        return jsonify({'error': 'cedro_disabled'}), 503
+    data = _cedro_socket.get_analysis(symbol)
+    if not data.get('price'):
+        return jsonify({'error': 'no_data', 'symbol': symbol.upper()}), 404
+    return jsonify(data)
+
+
+@app.route('/cedro/quotes')
+def cedro_quotes():
+    """[v10.31] Bulk Cedro snapshots. Query: ?symbols=PETR4,VALE3,ITUB4"""
+    if not _cedro_socket or not _cedro_socket.enabled:
+        return jsonify({'error': 'cedro_disabled'}), 503
+    raw = request.args.get('symbols', '')
+    syms = [s.strip().upper() for s in raw.split(',') if s.strip()]
+    if not syms:
+        return jsonify({'error': 'no_symbols'}), 400
+    batch = _cedro_socket.get_batch(syms, wait_ms=2000)
+    return jsonify({
+        'count': len(batch),
+        'quotes': {k: _cedro_socket.get_analysis(k) for k in batch.keys()},
+    })
+
 
 @app.route('/health')
 def health():

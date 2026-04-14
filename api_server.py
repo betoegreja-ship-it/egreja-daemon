@@ -304,9 +304,15 @@ def _fetch_cedro_stock(display: str) -> tuple:
 
 def _overlay_cedro_on_batch(symbols):
     """[v10.31] For each B3 symbol with fresh Cedro data, overwrite the BRAPI batch result
-    in stock_prices with Cedro real-time price/high/low/volume, preserving EMAs/RSI/ATR."""
+    in stock_prices with Cedro real-time price/high/low/volume, preserving EMAs/RSI/ATR.
+    Auto-subscribes any missing symbols to Cedro on first sight."""
     if not (_cedro_socket and _cedro_socket.enabled):
         return 0
+    # Auto-subscribe missing symbols (fire once, cached internally)
+    try:
+        _cedro_socket.subscribe(symbols)  # idempotent (refcounts internally)
+    except Exception:
+        pass
     n = 0
     for sym in symbols:
         try:

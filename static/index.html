@@ -319,7 +319,7 @@
         const dbOk = h?.db==='connected'||h?.db_connected||ss?.overall?.db_healthy;
         const pricesCached = (h?.stock_prices_cached||0)+(h?.crypto_prices_cached||0);
         const killSwitch = h?.kill_switch||h?.arbi_kill_switch||ss?.overall?.kill_switch;
-        const regime = h?.market_regime || ss?.market?.phase || '—';
+        const _mr = h?.market_regime; const regime = (_mr && typeof _mr==='object') ? (_mr.mode||_mr.regime||'—') : (_mr || ss?.market?.phase || '—');
 
         let html = `
         <div class="section-title">Resumo Financeiro</div>
@@ -744,7 +744,7 @@
         html += `<div class="grid-3 section">
             ${kpi('Mercado', ss?.market?.phase||'—', `BRT ${ss?.market?.brt_time||'—'}`, ss?.market?.open?'var(--green-profit)':'var(--dim)')}
             ${kpi('Database', (h?.db==='connected'||ss?.overall?.db_healthy)?'CONECTADO':'ERRO', '', (h?.db==='connected'||ss?.overall?.db_healthy)?'var(--green-profit)':'var(--red-loss)')}
-            ${kpi('Modo', ss?.overall?.mode||h?.market_regime||'—', `Kill Switch: ${ss?.overall?.kill_switch?'ATIVADO':'Off'}`, 'var(--blue-accent)')}
+            ${kpi('Modo', ss?.overall?.mode||(typeof h?.market_regime==='object'?(h?.market_regime?.mode||'—'):h?.market_regime)||'—', `Kill Switch: ${ss?.overall?.kill_switch?'ATIVADO':'Off'}`, 'var(--blue-accent)')}
         </div>`;
 
         // Providers

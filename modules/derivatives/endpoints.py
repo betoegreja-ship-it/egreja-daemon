@@ -267,6 +267,61 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             log.error(f"GET /vol-arb error: {e}\n{traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
 
+    # [v10.38] New arbitrage strategies: IBOV_BASIS, DI_CALENDAR, INTERLISTED_HEDGED
+    @strategies_bp.route('/ibov-basis', methods=['GET'])
+    def get_ibov_basis():
+        """GET /strategies/ibov-basis - Ibovespa spot/future basis arbitrage."""
+        try:
+            limit = request.args.get('limit', 50, type=int)
+            offset = request.args.get('offset', 0, type=int)
+            symbol = request.args.get('symbol')
+            opps = query_opportunities('IBOV_BASIS', symbol, limit, offset)
+            return jsonify({
+                'strategy': 'IBOV_BASIS',
+                'opportunities_count': len(opps),
+                'opportunities': _serialize_rows(opps),
+                'pagination': {'limit': limit, 'offset': offset},
+            }), 200
+        except Exception as e:
+            log.error(f"GET /ibov-basis error: {e}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e)}), 500
+
+    @strategies_bp.route('/di-calendar', methods=['GET'])
+    def get_di_calendar():
+        """GET /strategies/di-calendar - DI1 calendar spread arbitrage."""
+        try:
+            limit = request.args.get('limit', 50, type=int)
+            offset = request.args.get('offset', 0, type=int)
+            symbol = request.args.get('symbol')
+            opps = query_opportunities('DI_CALENDAR', symbol, limit, offset)
+            return jsonify({
+                'strategy': 'DI_CALENDAR',
+                'opportunities_count': len(opps),
+                'opportunities': _serialize_rows(opps),
+                'pagination': {'limit': limit, 'offset': offset},
+            }), 200
+        except Exception as e:
+            log.error(f"GET /di-calendar error: {e}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e)}), 500
+
+    @strategies_bp.route('/interlisted-hedged', methods=['GET'])
+    def get_interlisted_hedged():
+        """GET /strategies/interlisted-hedged - ADR/B3 with FX hedge."""
+        try:
+            limit = request.args.get('limit', 50, type=int)
+            offset = request.args.get('offset', 0, type=int)
+            symbol = request.args.get('symbol')
+            opps = query_opportunities('INTERLISTED_HEDGED', symbol, limit, offset)
+            return jsonify({
+                'strategy': 'INTERLISTED_HEDGED',
+                'opportunities_count': len(opps),
+                'opportunities': _serialize_rows(opps),
+                'pagination': {'limit': limit, 'offset': offset},
+            }), 200
+        except Exception as e:
+            log.error(f"GET /interlisted-hedged error: {e}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e)}), 500
+
     # ============== AGGREGATE & MONITORING ENDPOINTS ==============
 
     @strategies_bp.route('/opportunities', methods=['GET'])
@@ -1108,12 +1163,18 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
                 market_phase = 'WEEKEND'
 
             # --- Per-strategy state ---
-            strategy_keys = ['PCP', 'FST', 'ROLL_ARB', 'ETF_BASKET', 'SKEW_ARB', 'INTERLISTED', 'DIVIDEND_ARB', 'VOL_ARB']
+            strategy_keys = [
+                'PCP', 'FST', 'ROLL_ARB', 'ETF_BASKET', 'SKEW_ARB',
+                'DIVIDEND_ARB', 'VOL_ARB',
+                'IBOV_BASIS', 'DI_CALENDAR', 'INTERLISTED_HEDGED',
+            ]
             scan_loop_map = {
                 'PCP': 'pcp_scan_loop', 'FST': 'fst_scan_loop', 'ROLL_ARB': 'roll_arb_scan_loop',
                 'ETF_BASKET': 'etf_basket_scan_loop', 'SKEW_ARB': 'skew_arb_scan_loop',
-                'INTERLISTED': 'interlisted_scan_loop', 'DIVIDEND_ARB': 'dividend_arb_scan_loop',
-                'VOL_ARB': 'vol_arb_scan_loop'
+                'DIVIDEND_ARB': 'dividend_arb_scan_loop', 'VOL_ARB': 'vol_arb_scan_loop',
+                'IBOV_BASIS': 'ibov_basis_scan_loop',
+                'DI_CALENDAR': 'di_calendar_scan_loop',
+                'INTERLISTED_HEDGED': 'interlisted_hedged_scan_loop',
             }
             strategies_state = {}
 

@@ -90,7 +90,8 @@ try:
     from modules.derivatives.learning import DerivativesLearningEngine
     from modules.derivatives.position_sizing import DerivativesPositionSizer
     from modules.derivatives.strategies import (pcp_scan_loop, fst_scan_loop, roll_arb_scan_loop,
-        etf_basket_scan_loop, skew_arb_scan_loop, interlisted_scan_loop, dividend_arb_scan_loop, vol_arb_scan_loop)
+        etf_basket_scan_loop, skew_arb_scan_loop, interlisted_scan_loop, dividend_arb_scan_loop, vol_arb_scan_loop,
+        ibov_basis_scan_loop, di_calendar_scan_loop, interlisted_hedged_scan_loop)
     from modules.derivatives.endpoints import create_strategies_blueprint
     _MODULES_LOADED = True
 except Exception as _mod_err:
@@ -677,6 +678,15 @@ try:
             log.warning('[v10.32] DerivativesMonitor NOT started: missing deriv_execution or greeks_calc')
     except Exception as _mon_err:
         log.warning(f'[v10.32] DerivativesMonitor start failed: {_mon_err}')
+
+    # [v10.38] Wire unified_brain into derivatives services for persist_decision
+    try:
+        from modules.unified_brain.learning_engine import LearningEngine as _UnifiedBrain
+        if 'unified_brain' not in _deriv_services:
+            _deriv_services['unified_brain'] = _UnifiedBrain(db_fn=get_db, log=log)
+            log.info('[v10.38] unified_brain wired into derivatives services')
+    except Exception as _brain_err:
+        log.debug(f'[v10.38] unified_brain not available: {_brain_err}')
 
     log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
@@ -4777,6 +4787,30 @@ def init_all_tables():
             log.info('[v10.25] Derivatives tables created/verified')
         except Exception as e:
             log.warning(f'[v10.25] Derivatives tables: {e}')
+        # [v10.38] Audit-trail columns on strategy_master_trades
+        try:
+            _audit_cur = conn.cursor()
+            _audit_alters = [
+                "ALTER TABLE strategy_master_trades ADD COLUMN instrument_type VARCHAR(16) NULL",
+                "ALTER TABLE strategy_master_trades ADD COLUMN theoretical_price DECIMAL(16, 6) NULL",
+                "ALTER TABLE strategy_master_trades ADD COLUMN deviation_bps DECIMAL(10, 2) NULL",
+                "ALTER TABLE strategy_master_trades ADD COLUMN brain_confidence DECIMAL(6, 4) NULL",
+                "ALTER TABLE strategy_master_trades ADD COLUMN brain_adjustment DECIMAL(6, 4) NULL",
+                "ALTER TABLE strategy_master_trades ADD COLUMN borrow_fee_estimate DECIMAL(8, 4) NULL",
+                "ALTER TABLE strategy_master_trades ADD COLUMN hedge_trade_id VARCHAR(64) NULL",
+                "ALTER TABLE strategy_master_trades ADD COLUMN fair_value_inputs TEXT NULL",
+                "ALTER TABLE strategy_master_trades ADD COLUMN audit_notes TEXT NULL",
+            ]
+            for _stmt in _audit_alters:
+                try:
+                    _audit_cur.execute(_stmt)
+                except Exception as _ae:
+                    if 'Duplicate column' not in str(_ae) and 'already exists' not in str(_ae).lower():
+                        log.debug(f'[v10.38] audit column: {_ae}')
+            _audit_cur.close()
+            log.info('[v10.38] strategy_master_trades audit columns verified')
+        except Exception as e:
+            log.warning(f'[v10.38] audit migration: {e}')
         conn.commit(); cursor.close(); conn.close()
         log.info('All tables created/verified')
     except Exception as e: log.error(f'init_all_tables: {e}')
@@ -8003,6 +8037,10 @@ def start_background_threads():
         'interlisted_scan_loop': interlisted_scan_loop,
         'dividend_arb_scan_loop': dividend_arb_scan_loop,
         'vol_arb_scan_loop': vol_arb_scan_loop,
+        # v10.38 — new arbitrage loops
+        'ibov_basis_scan_loop': ibov_basis_scan_loop,
+        'di_calendar_scan_loop': di_calendar_scan_loop,
+        'interlisted_hedged_scan_loop': interlisted_hedged_scan_loop,
     }
     for dname, dfn in _deriv_loops.items():
         if dfn is None:

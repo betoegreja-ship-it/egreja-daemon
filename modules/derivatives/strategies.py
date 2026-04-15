@@ -1,13 +1,19 @@
 """
 Derivatives Strategy Scan Loops
-8 derivative strategies: PCP, FST, Roll Arb, ETF Basket, Skew, InterListed, Dividend, Vol Arb
+11 derivative strategies:
+  Options: PCP, FST, Roll Arb, ETF Basket, Skew, Dividend, Vol Arb
+  Equity-pair: InterListed, InterListed Hedged (+FX)
+  Futures: IBOV Basis, DI Calendar
 MySQL-compatible: uses %s placeholders, cursor(dictionary=True), conn.close()
 """
 
+import json
 import time
 import traceback
 from datetime import datetime, timedelta
 import statistics
+
+from . import futures_adapter as fadapter
 
 
 def _parse_expiry(expiry_val):
@@ -92,10 +98,58 @@ def _get_config():
         return _FallbackCfg()
 
 
+def _persist_audit_fields(get_db_fn, log, trade_id, payload):
+    """Update strategy_master_trades with audit columns (v10.38).
+
+    payload keys (all optional): instrument_type, theoretical_price, deviation_bps,
+    brain_confidence, brain_adjustment, borrow_fee_estimate, hedge_trade_id,
+    fair_value_inputs (dict -> JSON), audit_notes.
+    """
+    if not trade_id or not payload:
+        return
+    conn = None
+    try:
+        conn = get_db_fn()
+        if conn is None:
+            return
+        cursor = conn.cursor()
+        cols, vals = [], []
+        _allowed = {
+            'instrument_type', 'theoretical_price', 'deviation_bps',
+            'brain_confidence', 'brain_adjustment', 'borrow_fee_estimate',
+            'hedge_trade_id', 'fair_value_inputs', 'audit_notes',
+        }
+        for k, v in payload.items():
+            if k not in _allowed or v is None:
+                continue
+            if k == 'fair_value_inputs' and isinstance(v, (dict, list)):
+                v = json.dumps(v, default=str)
+            cols.append(f"{k} = %s")
+            vals.append(v)
+        if not cols:
+            return
+        vals.append(trade_id)
+        cursor.execute(
+            f"UPDATE strategy_master_trades SET {', '.join(cols)} WHERE trade_id = %s",
+            tuple(vals),
+        )
+        conn.commit()
+        cursor.close()
+    except Exception as e:
+        log.warning(f"Audit persist error for {trade_id}: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _try_autonomous_execution(
     log, services_dict, strategy, symbol, structure_type,
     edge_magnitude, notional_estimate, strike=0.0, expiry='',
     legs=None, spot_price=0.0, liquidity_score=0.0, active_status_str='',
+    audit_payload=None, get_db_fn=None,
 ):
     """
     Unified autonomous execution pipeline for all derivatives strategies.
@@ -230,7 +284,44 @@ def _try_autonomous_execution(
             f"trade_id={trade.trade_id}, status={trade.status.value}, "
             f"notional=R${sizing.notional:,.0f}"
         )
-        return True
+
+        # v10.38 — persist audit fields (instrument_type, fair value, brain state)
+        if audit_payload and get_db_fn:
+            try:
+                ap = dict(audit_payload)
+                ap.setdefault('brain_confidence', round(confidence, 4))
+                _persist_audit_fields(get_db_fn, log, trade.trade_id, ap)
+            except Exception as _ae:
+                log.debug(f"[EXEC-AUDIT] {strategy}/{symbol}: {_ae}")
+
+        # v10.38 — feed decision to unified brain learning engine
+        brain = services_dict.get('unified_brain')
+        if brain and hasattr(brain, 'persist_decision'):
+            try:
+                brain.persist_decision(
+                    decision_type='EXECUTE_TRADE',
+                    module=f'derivatives.{strategy}',
+                    recommendation=f'{structure_type} on {symbol}',
+                    reasoning=(
+                        f'edge_bps={edge_bps:.1f}, confidence={confidence:.3f}, '
+                        f'notional=R${sizing.notional:,.0f}'
+                    ),
+                    confidence=min(100.0, max(0.0, confidence * 100.0)),
+                    factors={
+                        'trade_id': trade.trade_id,
+                        'strategy': strategy,
+                        'symbol': symbol,
+                        'structure_type': structure_type,
+                        'edge_bps': round(edge_bps, 2),
+                        'notional': float(sizing.notional),
+                        'liquidity_score': float(liquidity_score or 0),
+                        'active_status': active_status_str,
+                    },
+                )
+            except Exception as _be:
+                log.debug(f"[EXEC-BRAIN] {strategy}/{symbol}: {_be}")
+
+        return trade.trade_id if trade else True
 
     except Exception as e:
         import traceback
@@ -1497,3 +1588,558 @@ def vol_arb_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk
             _scan_loop_diag['vol_arb'] = {'ts': str(datetime.now()), 'error': str(e)[:120]}
 
         time.sleep(56)
+def ibov_basis_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_check_fn, audit_fn):
+    """IBOV_BASIS — spot-future arbitrage on Ibovespa.
+
+    Compares market WIN/IND futures price vs cost-of-carry fair value
+    derived from BOVA11 (or index proxy) spot, CDI rate and dividend yield.
+
+    Direction:
+      * BASIS_RICH  : market future > fair + threshold  → SELL future + BUY spot
+      * BASIS_CHEAP : market future < fair - threshold  → BUY  future + SELL (short) spot
+    """
+    loop_name = "ibov_basis_scan_loop"
+    strategy = 'ibov_basis'
+    strategy_upper = 'IBOV_BASIS'
+    proxy_spot_symbol = 'BOVA11'         # B3 Ibovespa ETF (liquid proxy)
+    future_underlying = 'IBOV'
+    _basis_window = {}                    # {ym: [bps residuals]} for calibration band
+
+    for _ in range(5):
+        beat_fn(loop_name); time.sleep(2)
+
+    while True:
+        try:
+            beat_fn(loop_name)
+            cfg = _get_config()
+            fees = _b3_fees()
+            cdi_rate = cfg.cdi_rate / 100.0 if cfg.cdi_rate > 1 else cfg.cdi_rate
+            threshold_bps = 15.0         # minimum deviation to flag an opportunity
+
+            _diag = {'ts': str(datetime.now()), 'checks': 0, 'opportunities': 0, 'errors': []}
+
+            try:
+                spot_quote = provider_mgr.get_spot(proxy_spot_symbol)
+            except Exception as e:
+                log.warning(f"IBOV_BASIS spot fetch error: {e}")
+                spot_quote = None
+
+            if not spot_quote or not spot_quote.bid:
+                _scan_loop_diag['ibov_basis'] = {**_diag, 'status': 'no_spot'}
+                time.sleep(60); continue
+
+            spot_price = spot_quote.mid
+            spot_ask = spot_quote.ask
+            spot_bid = spot_quote.bid
+
+            # Dividend yield — default table or from dividend service
+            dy = fadapter.default_div_yield(proxy_spot_symbol) if fadapter else 0.06
+            try:
+                dsvc = services_dict.get('dividend_service')
+                if dsvc and hasattr(dsvc, 'get_forward_yield'):
+                    dy_override = dsvc.get_forward_yield(proxy_spot_symbol)
+                    if dy_override is not None:
+                        dy = float(dy_override)
+            except Exception:
+                pass
+
+            # Iterate over nearest + next future tenors
+            for tenor_offset in (0, 1):
+                try:
+                    f_quote = provider_mgr.get_future(future_underlying, tenor_offset=tenor_offset)
+                except Exception:
+                    f_quote = None
+                if not f_quote or not f_quote.bid:
+                    continue
+
+                _diag['checks'] += 1
+                market_future = f_quote.mid
+                if market_future <= 0:
+                    continue
+
+                expiry_str = _expiry_str(f_quote.expiry)
+                du = fadapter.du_until(_parse_expiry(f_quote.expiry) or datetime.now()) if fadapter else 21
+                if du <= 0:
+                    continue
+
+                fair = fadapter.fair_future_price(spot_price, cdi_rate, du, dy) if fadapter \
+                       else spot_price * ((1 + (cdi_rate - dy)) ** (du / 252.0))
+                dev_bps = fadapter.basis_bps(market_future, fair) if fadapter else \
+                          (market_future - fair) / fair * 10_000.0
+
+                # Rolling calibration band
+                ym = expiry_str[:6] if expiry_str else 'nx'
+                _basis_window.setdefault(ym, []).append(dev_bps)
+                if len(_basis_window[ym]) > 120:
+                    _basis_window[ym] = _basis_window[ym][-120:]
+                if len(_basis_window[ym]) % 10 == 0:
+                    _upsert_calibration(get_db_fn, log, strategy_upper,
+                                        future_underlying, 'basis_bps',
+                                        _basis_window[ym], expiry=expiry_str)
+
+                # Cost estimate — round-trip on both legs
+                futures_fee_bps = 5.0      # B3 futures emoluments ~5 bps round-trip
+                etf_fee_bps = fees.get('stock_buy', 0.0005) * 2 * 10_000  # ~10 bps round-trip
+                slippage_bps = 8.0
+                total_cost_bps = futures_fee_bps + etf_fee_bps + slippage_bps
+
+                net_edge_bps = abs(dev_bps) - total_cost_bps
+                notional_estimate = spot_price * 100  # index points * basic multiplier
+
+                if abs(dev_bps) < threshold_bps:
+                    continue
+
+                direction = 'BASIS_RICH' if dev_bps > 0 else 'BASIS_CHEAP'
+                _diag['opportunities'] += 1
+
+                log.info(
+                    f"IBOV_BASIS {direction} tenor={tenor_offset} expiry={expiry_str} "
+                    f"fair={fair:.1f} mkt={market_future:.1f} dev={dev_bps:.1f}bps "
+                    f"net={net_edge_bps:.1f}bps cdi={cdi_rate:.4f} dy={dy:.3f} du={du}"
+                )
+
+                _safe_insert_opportunity(
+                    get_db_fn, log, strategy_upper, future_underlying,
+                    net_edge_bps,
+                    expiry=expiry_str,
+                    opportunity_type=direction,
+                    cost_estimate=total_cost_bps,
+                    decision='CANDIDATE' if net_edge_bps > 0 else 'REJECTED',
+                    rejection_reason=None if net_edge_bps > 0 else 'edge_below_cost',
+                )
+
+                if net_edge_bps <= 0:
+                    continue
+
+                # Tier gate
+                active_status_reg = services_dict.get('active_status_registry')
+                tier_str = 'OBSERVE'
+                if active_status_reg:
+                    tier_obj = active_status_reg.get_status(future_underlying, strategy_upper)
+                    tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+                if tier_str not in ('PAPER_FULL', 'PAPER_SMALL'):
+                    continue
+
+                # Confidence from learner
+                conf_adj = _get_confidence_adj(services_dict, strategy, future_underlying)
+
+                # Build legs — WIN contracts vs BOVA11 spot
+                if direction == 'BASIS_RICH':
+                    legs = [
+                        {'leg_type': 'FUTURE', 'symbol': f'WIN{expiry_str[:6]}',
+                         'qty': 1, 'side': 'SELL', 'intended_price': f_quote.bid},
+                        {'leg_type': 'STOCK', 'symbol': proxy_spot_symbol,
+                         'qty': 100, 'side': 'BUY', 'intended_price': spot_ask},
+                    ]
+                else:
+                    legs = [
+                        {'leg_type': 'FUTURE', 'symbol': f'WIN{expiry_str[:6]}',
+                         'qty': 1, 'side': 'BUY', 'intended_price': f_quote.ask},
+                        {'leg_type': 'STOCK', 'symbol': proxy_spot_symbol,
+                         'qty': 100, 'side': 'SELL', 'intended_price': spot_bid},
+                    ]
+
+                audit = {
+                    'instrument_type': 'future',
+                    'theoretical_price': round(fair, 4),
+                    'deviation_bps': round(dev_bps, 2),
+                    'fair_value_inputs': fadapter.fair_value_snapshot(
+                        spot=spot_price, cdi=cdi_rate, dy=dy, du=du,
+                        market_price=market_future,
+                    ) if fadapter else {
+                        'spot': spot_price, 'cdi': cdi_rate, 'dy': dy,
+                        'du': du, 'market_future': market_future, 'fair': fair,
+                    },
+                    'audit_notes': (
+                        f'IBOV_BASIS {direction}: mkt={market_future:.2f} fair={fair:.2f} '
+                        f'dev={dev_bps:.1f}bps net={net_edge_bps:.1f}bps'
+                    ),
+                }
+
+                _try_autonomous_execution(
+                    log, services_dict,
+                    strategy=strategy, symbol=future_underlying,
+                    structure_type=direction,
+                    edge_magnitude=abs(market_future - fair),
+                    notional_estimate=notional_estimate,
+                    strike=0.0, expiry=expiry_str,
+                    legs=legs, spot_price=spot_price,
+                    liquidity_score=0.0,
+                    active_status_str=tier_str,
+                    audit_payload=audit,
+                    get_db_fn=get_db_fn,
+                )
+
+            _scan_loop_diag['ibov_basis'] = {**_diag, 'status': 'ran'}
+
+        except Exception as e:
+            log.error(f"IBOV_BASIS loop error: {e}\n{traceback.format_exc()}")
+            _scan_loop_diag['ibov_basis'] = {'ts': str(datetime.now()), 'error': str(e)[:120]}
+
+        time.sleep(55)
+
+
+def di_calendar_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_check_fn, audit_fn):
+    """DI_CALENDAR — calendar spread between two DI1 vertices.
+
+    Compares short-tenor DI1 (t1) vs long-tenor DI1 (t2). The implied forward
+    rate between them is compared to the Anbima curve spot forward; when the
+    deviation exceeds a calibrated band, the loop opens a DV01-neutral spread.
+
+    Direction:
+      * FWD_HIGH : implied forward > fair + band  → RECEIVE t1, PAY t2
+      * FWD_LOW  : implied forward < fair - band  → PAY t1, RECEIVE t2
+    """
+    loop_name = "di_calendar_scan_loop"
+    strategy = 'di_calendar'
+    strategy_upper = 'DI_CALENDAR'
+    _di_cal_window = {}   # {pair_label: [fwd_dev_bps samples]}
+
+    for _ in range(5):
+        beat_fn(loop_name); time.sleep(2)
+
+    while True:
+        try:
+            beat_fn(loop_name)
+            _diag = {'ts': str(datetime.now()), 'pairs_checked': 0, 'opportunities': 0, 'errors': []}
+
+            # Fetch DI1 futures curve via provider manager
+            try:
+                p = provider_mgr._resolve() if hasattr(provider_mgr, '_resolve') else None
+                futures_list = p.get_futures('DI1') if p else []
+            except Exception as e:
+                log.warning(f"DI_CALENDAR get_futures error: {e}")
+                futures_list = []
+
+            if not futures_list or len(futures_list) < 2:
+                _scan_loop_diag['di_calendar'] = {**_diag, 'status': 'insufficient_curve'}
+                time.sleep(60); continue
+
+            today = datetime.now().date()
+
+            # Sort by expiry ascending, drop expired
+            valid = []
+            for fq in futures_list:
+                dt = _parse_expiry(fq.expiry)
+                if dt and dt.date() > today and (fq.mid or 0) > 0:
+                    valid.append((dt.date(), fq))
+            valid.sort(key=lambda t: t[0])
+            if len(valid) < 2:
+                _scan_loop_diag['di_calendar'] = {**_diag, 'status': 'insufficient_curve'}
+                time.sleep(60); continue
+
+            for i in range(len(valid) - 1):
+                try:
+                    d1, fq1 = valid[i]
+                    d2, fq2 = valid[i + 1]
+                    _diag['pairs_checked'] += 1
+
+                    # Convert PU to rate (fq.mid expected to already be a rate if provider gives it;
+                    # keep both paths to tolerate provider conventions).
+                    mid1 = float(fq1.mid)
+                    mid2 = float(fq2.mid)
+                    r1 = mid1 if mid1 < 1.0 else (mid1 / 100.0 if mid1 < 100.0 else
+                          (fadapter.di1_rate_from_pu(mid1, fadapter.du_until(d1)) if fadapter else 0.0))
+                    r2 = mid2 if mid2 < 1.0 else (mid2 / 100.0 if mid2 < 100.0 else
+                          (fadapter.di1_rate_from_pu(mid2, fadapter.du_until(d2)) if fadapter else 0.0))
+                    if r1 <= 0 or r2 <= 0:
+                        continue
+
+                    du1 = fadapter.du_until(d1) if fadapter else max(1, (d1 - today).days)
+                    du2 = fadapter.du_until(d2) if fadapter else max(2, (d2 - today).days)
+                    if du2 <= du1:
+                        continue
+
+                    # Implied forward rate between t1 and t2
+                    implied_fwd = ((1 + r2) ** (du2 / 252.0) /
+                                   (1 + r1) ** (du1 / 252.0)) ** (252.0 / (du2 - du1)) - 1.0
+
+                    # Fair forward = use rates-curve service if available, else r2 (rough anchor)
+                    rates_service = services_dict.get('rates_curve')
+                    fair_fwd = None
+                    if rates_service and hasattr(rates_service, 'forward_rate'):
+                        try:
+                            fair_fwd = float(rates_service.forward_rate(du1, du2))
+                        except Exception:
+                            fair_fwd = None
+                    if fair_fwd is None:
+                        # Naive anchor: midpoint interpolation of spot rates
+                        fair_fwd = (r1 * du1 + r2 * du2) / (du1 + du2)
+
+                    dev_bps = (implied_fwd - fair_fwd) * 10_000.0
+
+                    pair_label = f"{_expiry_str(d1)[:6]}_{_expiry_str(d2)[:6]}"
+                    _di_cal_window.setdefault(pair_label, []).append(dev_bps)
+                    if len(_di_cal_window[pair_label]) > 120:
+                        _di_cal_window[pair_label] = _di_cal_window[pair_label][-120:]
+                    if len(_di_cal_window[pair_label]) % 10 == 0:
+                        _upsert_calibration(get_db_fn, log, strategy_upper,
+                                            pair_label, 'fwd_dev_bps',
+                                            _di_cal_window[pair_label])
+
+                    # Band = max(20 bps, 1.5 * rolling std)
+                    samples = _di_cal_window[pair_label]
+                    std_bps = statistics.stdev(samples) if len(samples) > 5 else 20.0
+                    band_bps = max(20.0, 1.5 * std_bps)
+
+                    if abs(dev_bps) < band_bps:
+                        continue
+
+                    direction = 'FWD_HIGH' if dev_bps > 0 else 'FWD_LOW'
+                    _diag['opportunities'] += 1
+
+                    log.info(
+                        f"DI_CALENDAR {direction} pair={pair_label} "
+                        f"fwd={implied_fwd:.4%} fair={fair_fwd:.4%} dev={dev_bps:.1f}bps "
+                        f"band={band_bps:.1f}bps du1={du1} du2={du2}"
+                    )
+
+                    # Costs — DI1 exchange fee ~2 bps per leg + slippage ~4 bps
+                    total_cost_bps = 2 * (2.0 + 4.0)
+                    net_edge_bps = abs(dev_bps) - total_cost_bps
+                    notional_estimate = 100_000.0  # one DI1 PU ~R$100k per contract
+
+                    _safe_insert_opportunity(
+                        get_db_fn, log, strategy_upper, f'DI1_{pair_label}',
+                        net_edge_bps,
+                        expiry=_expiry_str(d2),
+                        opportunity_type=direction,
+                        cost_estimate=total_cost_bps,
+                        decision='CANDIDATE' if net_edge_bps > 0 else 'REJECTED',
+                        rejection_reason=None if net_edge_bps > 0 else 'edge_below_cost',
+                    )
+
+                    if net_edge_bps <= 0:
+                        continue
+
+                    # Tier check
+                    active_status_reg = services_dict.get('active_status_registry')
+                    tier_str = 'OBSERVE'
+                    if active_status_reg:
+                        tier_obj = active_status_reg.get_status(f'DI1_{pair_label}', strategy_upper)
+                        tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+                    if tier_str not in ('PAPER_FULL', 'PAPER_SMALL'):
+                        continue
+
+                    # DV01-neutral sizing: qty2 = qty1 * dv01_1 / dv01_2
+                    dv01_1 = fadapter.di1_dv01(mid1 if mid1 > 100 else fadapter.di1_pu_from_rate(r1, du1), du1) \
+                             if fadapter else 1.0
+                    dv01_2 = fadapter.di1_dv01(mid2 if mid2 > 100 else fadapter.di1_pu_from_rate(r2, du2), du2) \
+                             if fadapter else 1.0
+                    qty1 = 10
+                    qty2 = max(1, int(round(qty1 * dv01_1 / max(dv01_2, 1e-6))))
+
+                    if direction == 'FWD_HIGH':
+                        # Receive t1 (buy PU), pay t2 (sell PU)
+                        legs = [
+                            {'leg_type': 'FUTURE', 'symbol': f'DI1{_expiry_str(d1)[:6]}',
+                             'qty': qty1, 'side': 'BUY', 'intended_price': float(fq1.ask or fq1.mid)},
+                            {'leg_type': 'FUTURE', 'symbol': f'DI1{_expiry_str(d2)[:6]}',
+                             'qty': qty2, 'side': 'SELL', 'intended_price': float(fq2.bid or fq2.mid)},
+                        ]
+                    else:
+                        legs = [
+                            {'leg_type': 'FUTURE', 'symbol': f'DI1{_expiry_str(d1)[:6]}',
+                             'qty': qty1, 'side': 'SELL', 'intended_price': float(fq1.bid or fq1.mid)},
+                            {'leg_type': 'FUTURE', 'symbol': f'DI1{_expiry_str(d2)[:6]}',
+                             'qty': qty2, 'side': 'BUY', 'intended_price': float(fq2.ask or fq2.mid)},
+                        ]
+
+                    audit = {
+                        'instrument_type': 'future',
+                        'theoretical_price': round(fair_fwd * 100, 4),
+                        'deviation_bps': round(dev_bps, 2),
+                        'fair_value_inputs': {
+                            'r1_annual': round(r1, 6), 'r2_annual': round(r2, 6),
+                            'du1': du1, 'du2': du2,
+                            'implied_forward': round(implied_fwd, 6),
+                            'fair_forward': round(fair_fwd, 6),
+                            'band_bps': round(band_bps, 2),
+                            'dv01_1': round(dv01_1, 4), 'dv01_2': round(dv01_2, 4),
+                            'qty1': qty1, 'qty2': qty2,
+                            'generated_at': datetime.utcnow().isoformat(),
+                        },
+                        'audit_notes': (
+                            f'DI_CALENDAR {direction} pair={pair_label} '
+                            f'fwd={implied_fwd:.4%} fair={fair_fwd:.4%} '
+                            f'dev={dev_bps:.1f}bps net={net_edge_bps:.1f}bps'
+                        ),
+                    }
+
+                    _try_autonomous_execution(
+                        log, services_dict,
+                        strategy=strategy, symbol=f'DI1_{pair_label}',
+                        structure_type=direction,
+                        edge_magnitude=abs(dev_bps) * notional_estimate / 10_000.0,
+                        notional_estimate=notional_estimate * (qty1 + qty2),
+                        strike=0.0, expiry=_expiry_str(d2),
+                        legs=legs, spot_price=float(mid1),
+                        liquidity_score=0.0,
+                        active_status_str=tier_str,
+                        audit_payload=audit,
+                        get_db_fn=get_db_fn,
+                    )
+
+                except Exception as inner:
+                    _diag['errors'].append(str(inner)[:100])
+                    log.warning(f"DI_CALENDAR pair error: {inner}")
+
+            _scan_loop_diag['di_calendar'] = {**_diag, 'status': 'ran'}
+
+        except Exception as e:
+            log.error(f"DI_CALENDAR loop error: {e}\n{traceback.format_exc()}")
+            _scan_loop_diag['di_calendar'] = {'ts': str(datetime.now()), 'error': str(e)[:120]}
+
+        time.sleep(60)
+
+
+def interlisted_hedged_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_check_fn, audit_fn):
+    """INTERLISTED_HEDGED — ADR/B3 arbitrage with explicit FX hedge via WDO.
+
+    Extends the classic INTERLISTED logic by adding a WDO (mini dólar) hedge
+    leg sized to the USD notional exposure of the ADR leg. This removes the
+    FX P&L drift that the unhedged pair carries between legging and closeout.
+    """
+    loop_name = "interlisted_hedged_scan_loop"
+    strategy = 'interlisted_hedged'
+    strategy_upper = 'INTERLISTED_HEDGED'
+
+    for _ in range(5):
+        beat_fn(loop_name); time.sleep(2)
+
+    while True:
+        try:
+            beat_fn(loop_name)
+            fees = _b3_fees()
+            pairs = [('PETR4', 'PBR'), ('VALE3', 'VALE'), ('ITUB4', 'ITUB')]
+            _diag = {'ts': str(datetime.now()), 'pairs_checked': 0, 'opportunities': 0, 'errors': []}
+
+            usdbrl_quote = provider_mgr.get_spot('USDBRL')
+            if not usdbrl_quote or not usdbrl_quote.bid:
+                _scan_loop_diag['interlisted_hedged'] = {**_diag, 'status': 'no_fx'}
+                time.sleep(60); continue
+
+            fx_mid = usdbrl_quote.mid
+            fx_ask = usdbrl_quote.ask
+            fx_bid = usdbrl_quote.bid
+
+            # WDO for FX hedge sizing
+            wdo_future = None
+            try:
+                wdo_future = provider_mgr.get_future('USDBRL', tenor_offset=0) or \
+                             provider_mgr.get_future('USD', tenor_offset=0)
+            except Exception:
+                wdo_future = None
+
+            for b3_ticker, adr_ticker in pairs:
+                try:
+                    _diag['pairs_checked'] += 1
+                    b3_quote = provider_mgr.get_spot(b3_ticker)
+                    adr_quote = provider_mgr.get_spot(adr_ticker)
+                    if not b3_quote or not adr_quote:
+                        continue
+
+                    adr_in_brl = adr_quote.mid * fx_mid
+                    basis = b3_quote.mid - adr_in_brl
+                    basis_pct = basis / adr_in_brl if adr_in_brl > 0 else 0.0
+
+                    threshold = fees.get('interlisted', 0.005)
+                    if abs(basis_pct) < threshold:
+                        continue
+
+                    direction = 'B3_RICH' if basis > 0 else 'ADR_RICH'
+                    _diag['opportunities'] += 1
+
+                    log.info(
+                        f"INTERLISTED_HEDGED {b3_ticker}/{adr_ticker}: {direction} "
+                        f"basis={basis:.2f} ({basis_pct*100:.3f}%) fx={fx_mid:.4f}"
+                    )
+
+                    _safe_insert_opportunity(
+                        get_db_fn, log, strategy_upper,
+                        f"{b3_ticker}/{adr_ticker}", basis_pct * 10_000,
+                        opportunity_type=direction,
+                        cost_estimate=threshold * 10_000,
+                        decision='CANDIDATE',
+                    )
+
+                    active_status_reg = services_dict.get('active_status_registry')
+                    tier_str = 'OBSERVE'
+                    if active_status_reg:
+                        tier_obj = active_status_reg.get_status(b3_ticker, strategy_upper)
+                        tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+                    if tier_str not in ('PAPER_FULL', 'PAPER_SMALL'):
+                        continue
+
+                    # Sizing: main equity legs at 100 shares
+                    qty = 100
+                    usd_notional = adr_quote.mid * qty
+                    wdo_qty = fadapter.wdo_hedge_contracts(usd_notional) if fadapter else 1
+
+                    # Build 3-leg structure
+                    if direction == 'B3_RICH':
+                        # Sell B3, buy ADR → we are short BRL, long USD on the equity side.
+                        # Hedge: SELL WDO to neutralize USD long (convert USD→BRL forward).
+                        legs = [
+                            {'leg_type': 'STOCK', 'symbol': b3_ticker, 'qty': qty,
+                             'side': 'SELL', 'intended_price': b3_quote.bid},
+                            {'leg_type': 'STOCK', 'symbol': adr_ticker, 'qty': qty,
+                             'side': 'BUY', 'intended_price': adr_quote.ask},
+                            {'leg_type': 'FUTURE', 'symbol': 'WDO', 'qty': wdo_qty,
+                             'side': 'SELL',
+                             'intended_price': float(wdo_future.bid) if wdo_future and wdo_future.bid else fx_bid * 1000},
+                        ]
+                    else:  # ADR_RICH
+                        legs = [
+                            {'leg_type': 'STOCK', 'symbol': b3_ticker, 'qty': qty,
+                             'side': 'BUY', 'intended_price': b3_quote.ask},
+                            {'leg_type': 'STOCK', 'symbol': adr_ticker, 'qty': qty,
+                             'side': 'SELL', 'intended_price': adr_quote.bid},
+                            {'leg_type': 'FUTURE', 'symbol': 'WDO', 'qty': wdo_qty,
+                             'side': 'BUY',
+                             'intended_price': float(wdo_future.ask) if wdo_future and wdo_future.ask else fx_ask * 1000},
+                        ]
+
+                    fair_adr_in_brl = adr_quote.mid * fx_mid
+                    audit = {
+                        'instrument_type': 'spot',   # main legs are equity; FX leg flagged via notes
+                        'theoretical_price': round(fair_adr_in_brl, 4),
+                        'deviation_bps': round(basis_pct * 10_000, 2),
+                        'fair_value_inputs': {
+                            'b3_mid': b3_quote.mid, 'adr_mid': adr_quote.mid,
+                            'usdbrl': fx_mid, 'fair_brl': fair_adr_in_brl,
+                            'basis': round(basis, 4), 'basis_pct': round(basis_pct, 6),
+                            'qty': qty, 'wdo_qty': wdo_qty, 'usd_notional': usd_notional,
+                            'generated_at': datetime.utcnow().isoformat(),
+                        },
+                        'audit_notes': (
+                            f'INTERLISTED_HEDGED {direction} {b3_ticker}/{adr_ticker} '
+                            f'basis={basis_pct*100:.3f}% wdo_hedge={wdo_qty} qty={qty}'
+                        ),
+                    }
+
+                    _try_autonomous_execution(
+                        log, services_dict,
+                        strategy=strategy, symbol=b3_ticker,
+                        structure_type=direction,
+                        edge_magnitude=abs(basis),
+                        notional_estimate=b3_quote.mid * qty,
+                        strike=0.0, expiry='',
+                        legs=legs, spot_price=b3_quote.mid,
+                        liquidity_score=0.0,
+                        active_status_str=tier_str,
+                        audit_payload=audit,
+                        get_db_fn=get_db_fn,
+                    )
+
+                except Exception as e:
+                    _diag['errors'].append(f'{b3_ticker}:{str(e)[:80]}')
+                    log.warning(f"INTERLISTED_HEDGED scan error for {b3_ticker}/{adr_ticker}: {e}")
+
+            _scan_loop_diag['interlisted_hedged'] = {**_diag, 'status': 'ran'}
+
+        except Exception as e:
+            log.error(f"INTERLISTED_HEDGED loop error: {e}\n{traceback.format_exc()}")
+            _scan_loop_diag['interlisted_hedged'] = {'ts': str(datetime.now()), 'error': str(e)[:120]}
+
+        time.sleep(58)

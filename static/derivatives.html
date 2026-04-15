@@ -160,17 +160,22 @@ tr:hover{background:rgba(17,24,32,.5)}
 </div>
 
 <script>
-const RW = 'https://diligent-spirit-production.up.railway.app';
+// v10.38 — use canonical egreja.net endpoint (per CLAUDE.md)
+const RW = 'https://www.egreja.net';
 const API = RW + '/strategies';
+// instrument_type: 'option' | 'future' | 'spot' — used by dashboard filter chips
 const STRATEGIES = {
-  PCP:          { label:'Put-Call Parity',    color:'var(--accent)', icon:'🎯', desc:'Arbitragem de paridade put-call (B3: Calls AM, Puts EU)' },
-  FST:          { label:'Futuro Sintético',   color:'var(--purple)', icon:'🔗', desc:'Futuro Sintético Triangular com calibração Caso 0' },
-  ROLL_ARB:     { label:'Roll Arbitrage',     color:'var(--cyan)',   icon:'🔄', desc:'Spread entre futuros de vencimentos consecutivos' },
-  ETF_BASKET:   { label:'ETF vs Basket',      color:'var(--gold)',   icon:'📦', desc:'BOVA11 NAV vs preço (premium/discount)' },
-  SKEW_ARB:     { label:'Skew Arbitrage',     color:'var(--orange)', icon:'📈', desc:'Risk reversal IV skew z-score' },
-  INTERLISTED:  { label:'ADR Inter-Listed',   color:'var(--pink)',   icon:'🌎', desc:'PETR4/PBR e VALE3/VALE com hedge FX' },
-  DIVIDEND_ARB: { label:'Dividend Arbitrage', color:'var(--profit)', icon:'💰', desc:'Captura de dividendos com hedge de put' },
-  VOL_ARB:      { label:'Vol Arbitrage',      color:'var(--red)',    icon:'⚡', desc:'IV vs Realized Vol com delta-hedge' },
+  PCP:                { label:'Put-Call Parity',    color:'var(--accent)', icon:'🎯', desc:'Arbitragem de paridade put-call (B3: Calls AM, Puts EU)', instrument_type:'option' },
+  FST:                { label:'Futuro Sintético',   color:'var(--purple)', icon:'🔗', desc:'Futuro Sintético Triangular com calibração Caso 0', instrument_type:'option' },
+  ROLL_ARB:           { label:'Roll Arbitrage',     color:'var(--cyan)',   icon:'🔄', desc:'Spread entre futuros de vencimentos consecutivos', instrument_type:'future' },
+  ETF_BASKET:         { label:'ETF vs Basket',      color:'var(--gold)',   icon:'📦', desc:'BOVA11 NAV vs preço (premium/discount)', instrument_type:'spot' },
+  SKEW_ARB:           { label:'Skew Arbitrage',     color:'var(--orange)', icon:'📈', desc:'Risk reversal IV skew z-score', instrument_type:'option' },
+  DIVIDEND_ARB:       { label:'Dividend Arbitrage', color:'var(--profit)', icon:'💰', desc:'Captura de dividendos com hedge de put', instrument_type:'option' },
+  VOL_ARB:            { label:'Vol Arbitrage',      color:'var(--red)',    icon:'⚡', desc:'IV vs Realized Vol com delta-hedge', instrument_type:'option' },
+  // v10.38 — novas estratégias de futuros
+  IBOV_BASIS:         { label:'IBOV Spot-Future',   color:'var(--accent)', icon:'📊', desc:'Basis WIN/IND vs BOVA11 via cost-of-carry (CDI − DY)', instrument_type:'future' },
+  DI_CALENDAR:        { label:'DI Calendar',        color:'var(--cyan)',   icon:'📅', desc:'Spread DI1 entre vértices com sizing DV01-neutral', instrument_type:'future' },
+  INTERLISTED_HEDGED: { label:'ADR Hedged',         color:'var(--pink)',   icon:'🌎', desc:'Pares B3/ADR com hedge FX explícito via WDO', instrument_type:'spot' },
 };
 const STATUS_LABELS = {0:'OBSERVE',1:'SHADOW',2:'PAPER_SMALL',3:'PAPER_FULL','OBSERVE':'OBSERVE','SHADOW_EXEC':'SHADOW','PAPER_SMALL':'PAPER_SMALL','PAPER_FULL':'PAPER_FULL'};
 const STATUS_COLORS = {0:'var(--dim)',1:'var(--orange)',2:'var(--accent)',3:'var(--profit)','OBSERVE':'var(--dim)','SHADOW_EXEC':'var(--orange)','PAPER_SMALL':'var(--accent)','PAPER_FULL':'var(--profit)'};
@@ -185,7 +190,9 @@ let state = {
   systemState: null, health: null, opps: [], statuses: [], liquidity: {}, scorecards: [],
   calibration: [], learning: null, capital: null, positions: [],
   pnlDaily: [], pnlMonthly: [], pnlAnnual: [], winRate: [], capitalDetail: null, tradesClosed: [],
-  activeTab: 'overview', autoRefresh: true, loading: false
+  activeTab: 'overview', autoRefresh: true, loading: false,
+  // v10.38 — filter dashboard cards by derivative instrument type
+  instrumentFilter: 'all'   // 'all' | 'option' | 'future' | 'spot'
 };
 let autoInterval = null;
 
@@ -602,9 +609,88 @@ function renderWinRateSummary() {
     </tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
+function renderInstrumentFilter() {
+  // v10.38 — chips to filter cards by instrument type
+  const filters = [
+    { key:'all',    label:'Todas',   icon:'∗' },
+    { key:'option', label:'Opções',  icon:'🎯' },
+    { key:'future', label:'Futuros', icon:'📅' },
+    { key:'spot',   label:'Spot/FX', icon:'💱' },
+  ];
+  const cur = state.instrumentFilter || 'all';
+  const chips = filters.map(f => {
+    const on = cur === f.key;
+    const bg = on ? 'var(--accent)' : 'transparent';
+    const fg = on ? '#000' : 'var(--dim)';
+    const bd = on ? 'var(--accent)' : 'var(--border)';
+    return `<button onclick="setInstrumentFilter('${f.key}')" style="padding:4px 10px;border-radius:999px;border:1px solid ${bd};background:${bg};color:${fg};font-size:11px;cursor:pointer;font-weight:600">${f.icon} ${f.label}</button>`;
+  }).join('');
+  return `<div class="section" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--dim);margin-right:4px">Filtro:</span>${chips}
+  </div>`;
+}
+
+function setInstrumentFilter(k) {
+  state.instrumentFilter = k;
+  renderTabContent();
+}
+
+// v10.38 — trade audit modal
+function showTradeAudit(tradeId) {
+  if(!tradeId) return;
+  const t = state.tradesClosed.find(x => x.trade_id === tradeId);
+  if(!t) { alert('Trade não encontrado: '+tradeId); return; }
+  let fvi = t.fair_value_inputs;
+  if(typeof fvi === 'string') { try { fvi = JSON.parse(fvi); } catch(e){ fvi = fvi; } }
+  const rows = [
+    ['Trade ID', t.trade_id],
+    ['Estratégia', STRATEGIES[t.strategy_type]?.label || t.strategy_type],
+    ['Ativo', t.symbol],
+    ['Instrumento', t.instrument_type || STRATEGIES[t.strategy_type]?.instrument_type || '—'],
+    ['Estrutura', t.structure_type || '—'],
+    ['Notional', t.notional != null ? 'R$ '+parseFloat(t.notional).toFixed(2) : '—'],
+    ['Edge esperada (bps)', t.expected_edge != null ? parseFloat(t.expected_edge).toFixed(2) : '—'],
+    ['Preço teórico', t.theoretical_price != null ? parseFloat(t.theoretical_price).toFixed(4) : '—'],
+    ['Desvio (bps)', t.deviation_bps != null ? parseFloat(t.deviation_bps).toFixed(2) : '—'],
+    ['Confiança cérebro', t.brain_confidence != null ? (parseFloat(t.brain_confidence)*100).toFixed(1)+'%' : '—'],
+    ['Ajuste do aprendizado', t.brain_adjustment != null ? parseFloat(t.brain_adjustment).toFixed(4) : '—'],
+    ['Score de liquidez', t.liquidity_score != null ? parseFloat(t.liquidity_score).toFixed(1) : '—'],
+    ['Tier ativo', t.active_status || '—'],
+    ['P&L realizado', t.pnl != null ? 'R$ '+parseFloat(t.pnl).toFixed(2) : '—'],
+    ['Slippage', t.slippage != null ? parseFloat(t.slippage).toFixed(4) : '—'],
+    ['Latência (ms)', t.latency_ms != null ? parseFloat(t.latency_ms).toFixed(0) : '—'],
+    ['Custo estimado', t.expected_cost != null ? parseFloat(t.expected_cost).toFixed(2) : '—'],
+    ['Custo executado', t.executed_cost != null ? parseFloat(t.executed_cost).toFixed(2) : '—'],
+    ['Borrow fee', t.borrow_fee_estimate != null ? parseFloat(t.borrow_fee_estimate).toFixed(2) : '—'],
+    ['Hedge vinculado', t.hedge_trade_id || '—'],
+    ['Motivo do fechamento', t.close_reason || '—'],
+    ['Abertura', t.opened_at ? new Date(t.opened_at).toLocaleString('pt-BR') : '—'],
+    ['Fechamento', t.closed_at ? new Date(t.closed_at).toLocaleString('pt-BR') : '—'],
+    ['Notas', t.audit_notes || '—'],
+  ];
+  const rowsHtml = rows.map(([k,v]) => `<tr><td style="color:var(--dim);font-size:11px;padding:4px 10px">${k}</td><td class="text-mono" style="padding:4px 10px">${v}</td></tr>`).join('');
+  const fvHtml = fvi ? `<pre style="background:var(--bg-soft,rgba(255,255,255,.05));padding:10px;border-radius:4px;font-size:10px;overflow-x:auto">${JSON.stringify(fvi, null, 2)}</pre>` : '<span style="color:var(--dim);font-size:11px">Sem inputs de fair value</span>';
+  const body = `<div style="max-width:860px;margin:0 auto;background:var(--bg,#0a0a0a);border:1px solid var(--border);border-radius:8px;padding:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <h2 style="margin:0;font-size:16px">🔍 Auditoria de Trade</h2>
+      <button onclick="document.getElementById('audit-modal').remove()" style="background:transparent;border:1px solid var(--border);color:var(--dim);padding:4px 10px;border-radius:4px;cursor:pointer">Fechar</button>
+    </div>
+    <table style="width:100%;border-collapse:collapse"><tbody>${rowsHtml}</tbody></table>
+    <div style="margin-top:16px"><div style="font-size:12px;color:var(--dim);margin-bottom:6px">Inputs de fair value</div>${fvHtml}</div>
+  </div>`;
+  const modal = document.createElement('div');
+  modal.id = 'audit-modal';
+  modal.style = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);z-index:9999;overflow-y:auto;padding:40px 20px';
+  modal.innerHTML = body;
+  modal.onclick = e => { if(e.target === modal) modal.remove(); };
+  document.body.appendChild(modal);
+}
+
 function renderStrategyGrid() {
   let cards = '';
+  const flt = state.instrumentFilter || 'all';
   for(const [k,v] of Object.entries(STRATEGIES)) {
+    if(flt !== 'all' && (v.instrument_type || 'option') !== flt) continue;
     const ss = state.systemState?.strategies?.[k];
     const smart = smartStatus(k);
     const opps = ss?.opportunities_1h || 0;
@@ -612,6 +698,7 @@ function renderStrategyGrid() {
     const pnl = ss?.total_pnl || 0;
     const tier = tierLabel(ss?.best_tier);
     const tierC = tierColor(ss?.best_tier);
+    const itype = v.instrument_type || 'option';
 
     cards += `<div class="card" style="cursor:pointer" onclick="switchTab('${k}')">
       <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
@@ -620,7 +707,10 @@ function renderStrategyGrid() {
             <span style="width:28px;height:28px;background:${v.color}15;font-size:14px;border-radius:6px;display:flex;align-items:center;justify-content:center">${v.icon}</span>
             <span style="font-size:13px;font-weight:600">${v.label}</span>
           </div>
-          <span class="badge-status" style="background:${tierC}15;color:${tierC};border:1px solid ${tierC}30;font-size:9px">${tier}</span>
+          <div style="display:flex;gap:4px;align-items:center">
+            <span style="font-size:9px;color:var(--dim);background:var(--bg-soft,rgba(255,255,255,.05));padding:1px 6px;border-radius:4px;border:1px solid var(--border)">${itype}</span>
+            <span class="badge-status" style="background:${tierC}15;color:${tierC};border:1px solid ${tierC}30;font-size:9px">${tier}</span>
+          </div>
         </div>
         <div class="smart-indicator">
           <span class="smart-dot${smart.pulse?' pulse':''}" style="background:${smart.dotColor}"></span>
@@ -635,7 +725,7 @@ function renderStrategyGrid() {
       </div>
     </div>`;
   }
-  return `<div class="grid-4 section">${cards}</div>`;
+  return renderInstrumentFilter() + `<div class="grid-4 section">${cards}</div>`;
 }
 
 function renderLiquidityChart() {
@@ -1154,24 +1244,32 @@ function renderTradesTab() {
     let rows = '';
     for(const t of state.tradesClosed) {
       const pnlC = parseFloat(t.pnl||0) >= 0 ? 'text-profit' : 'text-loss';
-      rows += `<tr>
+      const itype = t.instrument_type || STRATEGIES[t.strategy_type]?.instrument_type || '—';
+      const dev = t.deviation_bps != null ? parseFloat(t.deviation_bps).toFixed(1)+'bps' : '—';
+      const conf = t.brain_confidence != null ? (parseFloat(t.brain_confidence)*100).toFixed(0)+'%' : '—';
+      const hedge = t.hedge_trade_id ? `<span title="${t.hedge_trade_id}">🔗</span>` : '';
+      rows += `<tr style="cursor:pointer" onclick="showTradeAudit('${t.trade_id}')">
         <td class="text-mono text-dim" style="font-size:10px">${t.trade_id?.substring(0,8)||'—'}</td>
         <td>${STRATEGIES[t.strategy_type]?.label||t.strategy_type}</td>
-        <td class="text-mono" style="font-weight:700">${t.symbol}</td>
+        <td class="text-mono" style="font-weight:700">${t.symbol} ${hedge}</td>
+        <td class="text-dim" style="font-size:10px">${itype}</td>
         <td class="text-dim">${t.structure_type||'—'}</td>
-        <td class="text-right text-mono">${parseFloat(t.expected_edge||0).toFixed(2)} bps</td>
+        <td class="text-right text-mono">${parseFloat(t.expected_edge||0).toFixed(2)}</td>
+        <td class="text-right text-mono text-dim" style="font-size:10px">${dev}</td>
         <td class="text-right text-mono ${pnlC}" style="font-weight:700">R$ ${parseFloat(t.pnl||0).toFixed(2)}</td>
         <td class="text-right text-mono">${parseFloat(t.slippage||0).toFixed(4)}</td>
-        <td class="text-right text-mono">${parseFloat(t.latency_ms||0).toFixed(0)}ms</td>
+        <td class="text-right text-mono text-dim" style="font-size:10px">${conf}</td>
         <td class="text-dim">${t.close_reason||'—'}</td>
         <td class="text-right text-dim" style="font-size:10px">${t.closed_at ? new Date(t.closed_at).toLocaleString('pt-BR') : '—'}</td>
       </tr>`;
     }
     html += `<div class="card section"><div class="card-header"><div class="card-title">📋 Trades Fechados</div>
-      <span style="font-size:11px;color:var(--dim)">${state.tradesClosed.length} registros</span></div>
+      <span style="font-size:11px;color:var(--dim)">${state.tradesClosed.length} registros · clique em uma linha para auditoria</span></div>
       <div class="card-body" style="overflow-x:auto"><table><thead><tr>
-        <th>ID</th><th>Estratégia</th><th>Ativo</th><th>Estrutura</th><th class="text-right">Edge</th>
-        <th class="text-right">P&L</th><th class="text-right">Slippage</th><th class="text-right">Latência</th>
+        <th>ID</th><th>Estratégia</th><th>Ativo</th><th>Instr.</th><th>Estrutura</th>
+        <th class="text-right">Edge</th><th class="text-right">Desvio</th>
+        <th class="text-right">P&L</th><th class="text-right">Slippage</th>
+        <th class="text-right">Conf. Cérebro</th>
         <th>Motivo</th><th class="text-right">Fechado</th>
       </tr></thead><tbody>${rows}</tbody></table></div></div>`;
   } else {
@@ -1382,6 +1480,6 @@ fetchAll();
 autoInterval = setInterval(fetchAll, 30000);
 </script>
 <script src="/ticker-tape.js"></script>
-<script>initTickerTape('https://diligent-spirit-production.up.railway.app');</script>
+<script>initTickerTape('https://www.egreja.net');</script>
 </body>
 </html>

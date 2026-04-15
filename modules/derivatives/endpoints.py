@@ -1121,6 +1121,57 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             log.error(f"GET /exit-signals error: {e}\n{traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
 
+    @strategies_bp.route('/close-sweep', methods=['POST', 'GET'])
+    def close_sweep():
+        """[v10.40] Force a close-sweep of stale OPEN trades.
+        Query params (optional):
+          - max_hours: override HARD_MAX_HOURS (default 144h = 6d)
+          - dry_run=1: only list candidates, do not close
+        """
+        try:
+            monitor = services_dict.get('deriv_monitor')
+            engine = services_dict.get('deriv_execution')
+            if not monitor or not engine:
+                return jsonify({'error': 'Monitor/engine not initialized'}), 503
+            from datetime import datetime
+            try:
+                max_hours = float(request.args.get('max_hours', 144))
+            except Exception:
+                max_hours = 144.0
+            dry_run = request.args.get('dry_run', '0') == '1'
+            now = datetime.utcnow()
+            closed, candidates = [], []
+            for trade in list(engine.get_active_trades()):
+                try:
+                    if not trade.opened_at:
+                        continue
+                    age_h = (now - trade.opened_at).total_seconds() / 3600.0
+                    if age_h < max_hours:
+                        continue
+                    candidates.append({'trade_id': trade.trade_id,
+                                       'strategy': trade.strategy,
+                                       'symbol': trade.symbol,
+                                       'age_hours': round(age_h, 1)})
+                    if not dry_run:
+                        ok, msg = engine.close_trade(
+                            trade.trade_id, realized_pnl=0.0,
+                            close_reason=f"SWEEP age={age_h:.0f}h>{max_hours:.0f}h",
+                        )
+                        closed.append({'trade_id': trade.trade_id, 'ok': ok, 'msg': msg})
+                except Exception as _e:
+                    closed.append({'trade_id': getattr(trade, 'trade_id', '?'), 'ok': False, 'msg': str(_e)})
+            return jsonify({
+                'dry_run': dry_run,
+                'max_hours': max_hours,
+                'candidates': candidates,
+                'closed': closed,
+                'total_candidates': len(candidates),
+                'total_closed': sum(1 for c in closed if c.get('ok')),
+            }), 200
+        except Exception as e:
+            log.error(f"POST /close-sweep error: {e}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e)}), 500
+
     # ============== SYSTEM STATE ENDPOINT ==============
 
     @strategies_bp.route('/system-state', methods=['GET'])

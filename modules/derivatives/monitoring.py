@@ -90,6 +90,10 @@ class ExitRules:
     theta_pnl_ratio_max: float = 0.5   # theta eats >50% of edge → exit
 
 
+# [v10.40] Hard safety cap: any open trade older than this is force-closed
+# regardless of strategy-specific rules (safety net for stale/orphaned positions).
+HARD_MAX_HOURS = 72 * 2   # 6 days
+
 DEFAULT_EXIT_RULES = {
     'pcp': ExitRules(stop_loss_pct=-0.015, take_profit_pct=0.025, max_hours_in_trade=48),
     'fst': ExitRules(stop_loss_pct=-0.02, take_profit_pct=0.04, max_hours_in_trade=72),
@@ -199,6 +203,10 @@ class DerivativesMonitor:
         for trade in active_trades:
             try:
                 snapshot = self._compute_snapshot(trade)
+                # [v10.40] If market-data snapshot fails (market closed, no quote, non-option legs),
+                # fall back to a time-only snapshot so TIME_EXIT/EXPIRY_APPROACH still fire.
+                if snapshot is None:
+                    snapshot = self._fallback_time_snapshot(trade)
                 if snapshot is None:
                     continue
 
@@ -372,11 +380,55 @@ class DerivativesMonitor:
                 logger.warning(f"Snapshot computation failed for {trade.trade_id}: {e}")
                 return None
 
+    def _fallback_time_snapshot(self, trade) -> Optional[PositionSnapshot]:
+        """[v10.40] Minimal snapshot with only time/expiry fields — used when market data
+        is unavailable so TIME_EXIT and EXPIRY_APPROACH can still fire."""
+        try:
+            time_in_trade = (datetime.utcnow() - trade.opened_at).total_seconds() / 3600
+            days_to_expiry = 0
+            if trade.expiry:
+                try:
+                    exp_date = datetime.strptime(trade.expiry, '%Y%m%d')
+                    days_to_expiry = max(0, (exp_date - datetime.utcnow()).days)
+                except ValueError:
+                    pass
+            return PositionSnapshot(
+                trade_id=trade.trade_id,
+                strategy=trade.strategy,
+                symbol=trade.symbol,
+                structure_type=getattr(trade, 'structure_type', '') or '',
+                notional=float(trade.notional or 0.0),
+                unrealized_pnl=0.0,
+                unrealized_pnl_pct=0.0,
+                greeks_pnl=0.0,
+                time_in_trade_hours=round(time_in_trade, 2),
+                days_to_expiry=int(days_to_expiry),
+                edge_remaining=float(trade.expected_edge or 0.0),
+            )
+        except Exception as e:
+            logger.warning(f"Fallback snapshot failed for {trade.trade_id}: {e}")
+            return None
+
     # ── Exit Evaluation ──────────────────────────────────────────
 
     def _evaluate_exits(self, trade, snapshot: PositionSnapshot) -> Optional[ExitSignal]:
         """Evaluate all exit triggers for a position."""
-        rules = self.exit_rules.get(trade.strategy, ExitRules())
+        # [v10.40] DEFAULT_EXIT_RULES keys are lowercase but trade.strategy comes
+        # uppercase (PCP, SKEW_ARB…). Normalize to match.
+        _sk = (trade.strategy or '').lower()
+        rules = self.exit_rules.get(_sk, ExitRules())
+
+        # [v10.40] Safety net: hard cap on trade age. Fires regardless of strategy rules.
+        if snapshot.time_in_trade_hours >= HARD_MAX_HOURS:
+            return ExitSignal(
+                trade_id=trade.trade_id,
+                trigger='TIME_EXIT',
+                reason=(
+                    f"HARD_CAP {snapshot.time_in_trade_hours:.1f}h >= {HARD_MAX_HOURS}h"
+                ),
+                urgency='IMMEDIATE',
+                estimated_pnl=snapshot.unrealized_pnl,
+            )
 
         # 1. Stop Loss
         if snapshot.unrealized_pnl_pct <= rules.stop_loss_pct:

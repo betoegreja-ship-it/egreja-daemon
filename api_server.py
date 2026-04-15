@@ -8579,7 +8579,7 @@ def api_info():
     except Exception:
         pass
     return jsonify({
-        'service':'Egreja Investment AI','version':'10.37','status':'online',
+        'service':'Egreja Investment AI','version':'10.38','status':'online',
         'kill_switch':RISK_KILL_SWITCH,'arbi_kill_switch':ARBI_KILL_SWITCH,
         'market_regime':market_regime.get('mode','UNKNOWN'),
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'lse':is_lse_open(),'hkex':is_hkex_open(),'crypto':True},

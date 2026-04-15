@@ -686,6 +686,71 @@ function showTradeAudit(tradeId) {
   document.body.appendChild(modal);
 }
 
+// v10.39 — mapeia chaves em estratégias para as chaves lower-case vindas de positions
+const STRATEGY_KEY_ALIASES = {
+  PCP: ['pcp'], FST: ['fst'], ROLL_ARB: ['roll_arb'], ETF_BASKET: ['etf_basket'],
+  SKEW_ARB: ['skew_arb'], DIVIDEND_ARB: ['dividend_arb'], VOL_ARB: ['vol_arb'],
+  IBOV_BASIS: ['ibov_basis'], DI_CALENDAR: ['di_calendar'],
+  INTERLISTED_HEDGED: ['interlisted_hedged','interlisted'],
+};
+
+function fmtBRL(v){
+  const x=Number(v)||0;
+  if(Math.abs(x)>=1e6) return (x/1e6).toFixed(2)+'M';
+  if(Math.abs(x)>=1e3) return (x/1e3).toFixed(1)+'k';
+  return x.toFixed(0);
+}
+function fmtDuration(mins){
+  if(mins==null||!isFinite(mins)) return '—';
+  if(mins<1)  return '<1m';
+  if(mins<60) return Math.round(mins)+'m';
+  if(mins<60*24) return (mins/60).toFixed(1)+'h';
+  return (mins/60/24).toFixed(1)+'d';
+}
+
+function strategyStats(k){
+  const aliases = STRATEGY_KEY_ALIASES[k] || [k.toLowerCase()];
+  const open = (state.positions||[]).filter(p => aliases.includes((p.strategy||'').toLowerCase()));
+  let notional = 0, uPnL = 0, uPnlValid = false, ageSumMin = 0, ageCount = 0;
+  const now = Date.now();
+  for(const p of open){
+    notional += Number(p.notional)||0;
+    if(p.unrealized_pnl!=null){ uPnL += Number(p.unrealized_pnl)||0; uPnlValid = true; }
+    if(p.opened_at){
+      const t = Date.parse(p.opened_at);
+      if(!isNaN(t)){
+        const mins = (now - t)/60000;
+        if(mins>=0 && mins<60*24*30){ ageSumMin += mins; ageCount++; }
+      }
+    }
+  }
+  const avgAge = ageCount>0 ? ageSumMin/ageCount : null;
+
+  // closed trades for this strategy (historical duration + realized pnl)
+  const closedAll = (state.tradesClosed||[]).filter(
+    t => aliases.includes((t.strategy_type||'').toLowerCase())
+  );
+  let durSumMin=0,durCount=0,closedPnl=0;
+  for(const t of closedAll){
+    if(t.opened_at && t.closed_at){
+      const a=Date.parse(t.opened_at), b=Date.parse(t.closed_at);
+      if(!isNaN(a)&&!isNaN(b)&&b>=a){ durSumMin += (b-a)/60000; durCount++; }
+    }
+    if(t.pnl!=null) closedPnl += Number(t.pnl)||0;
+  }
+  const avgCloseDur = durCount>0 ? durSumMin/durCount : null;
+
+  return {
+    openCount: open.length, openPositions: open,
+    notional, uPnL, uPnlValid,
+    avgAgeMin: avgAge,
+    closedCount: closedAll.length,
+    closedPnl,
+    avgCloseDurMin: avgCloseDur,
+    topSymbols: [...new Set(open.map(p=>p.symbol))].slice(0,3).join(' · '),
+  };
+}
+
 function renderStrategyGrid() {
   let cards = '';
   const flt = state.instrumentFilter || 'all';
@@ -694,14 +759,22 @@ function renderStrategyGrid() {
     const ss = state.systemState?.strategies?.[k];
     const smart = smartStatus(k);
     const opps = ss?.opportunities_1h || 0;
-    const openTr = ss?.open_trades || 0;
-    const pnl = ss?.total_pnl || 0;
     const tier = tierLabel(ss?.best_tier);
     const tierC = tierColor(ss?.best_tier);
     const itype = v.instrument_type || 'option';
+    const st = strategyStats(k);
+
+    const openPnlColor = !st.uPnlValid ? 'var(--dim)' : (st.uPnL>=0?'var(--profit)':'var(--loss)');
+    const openPnlTxt   = !st.uPnlValid ? '—' : (st.uPnL>=0?'+':'') + 'R$ ' + st.uPnL.toFixed(2);
+    const closedPnlColor = st.closedPnl>=0?'var(--profit)':'var(--loss)';
+    const closedPnlTxt   = (st.closedPnl>=0?'+':'') + 'R$ ' + fmtBRL(Math.abs(st.closedPnl));
+    const durTxt = st.avgCloseDurMin!=null ? fmtDuration(st.avgCloseDurMin) + ' (n='+st.closedCount+')'
+                                           : (st.avgAgeMin!=null ? fmtDuration(st.avgAgeMin) + ' (live)' : '—');
+
+    const symsLine = st.topSymbols ? `<div style="font-size:10px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📍 ${st.topSymbols}${st.openCount>3?'…':''}</div>` : '';
 
     cards += `<div class="card" style="cursor:pointer" onclick="switchTab('${k}')">
-      <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+      <div class="card-body" style="display:flex;flex-direction:column;gap:8px">
         <div style="display:flex;align-items:center;justify-content:space-between">
           <div style="display:flex;align-items:center;gap:8px">
             <span style="width:28px;height:28px;background:${v.color}15;font-size:14px;border-radius:6px;display:flex;align-items:center;justify-content:center">${v.icon}</span>
@@ -716,12 +789,15 @@ function renderStrategyGrid() {
           <span class="smart-dot${smart.pulse?' pulse':''}" style="background:${smart.dotColor}"></span>
           <span style="color:var(--dim)">${smart.text}</span>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;border-top:1px solid var(--border);padding-top:8px;margin-top:2px;font-size:11px">
-          <div style="color:var(--dim)">Opp. 1h: <span class="text-mono" style="color:${opps>0?'var(--profit)':'var(--dim)'}">  ${opps}</span></div>
-          <div style="color:var(--dim)">Abertas: <span class="text-mono" style="color:${openTr>0?'var(--accent)':'var(--dim)'}">${openTr}</span></div>
-          <div style="color:var(--dim)">P&L: <span class="text-mono" style="color:${pnl>=0?'var(--profit)':'var(--loss)'}">${pnl.toFixed(2)}</span></div>
-          <div style="color:var(--dim)">Cal: <span class="text-mono">${ss?.calibration_records||0} pts</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;border-top:1px solid var(--border);padding-top:8px;margin-top:2px;font-size:11px">
+          <div style="color:var(--dim)">Abertas: <span class="text-mono" style="color:${st.openCount>0?'var(--accent)':'var(--dim)'};font-weight:600">${st.openCount}</span></div>
+          <div style="color:var(--dim)">Exp.: <span class="text-mono" style="color:${st.notional>0?'var(--text)':'var(--dim)'}">R$ ${fmtBRL(st.notional)}</span></div>
+          <div style="color:var(--dim)">P&L aberto: <span class="text-mono" style="color:${openPnlColor};font-weight:600">${openPnlTxt}</span></div>
+          <div style="color:var(--dim)">P&L fech.: <span class="text-mono" style="color:${st.closedCount>0?closedPnlColor:'var(--dim)'}">${st.closedCount>0?closedPnlTxt:'—'}</span></div>
+          <div style="color:var(--dim)">Dur. méd: <span class="text-mono">${durTxt}</span></div>
+          <div style="color:var(--dim)">Opp 1h: <span class="text-mono" style="color:${opps>0?'var(--profit)':'var(--dim)'}">${opps}</span></div>
         </div>
+        ${symsLine}
       </div>
     </div>`;
   }

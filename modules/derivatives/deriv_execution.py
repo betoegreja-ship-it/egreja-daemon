@@ -221,7 +221,10 @@ class DerivativesExecutionEngine:
                 trade.close_reason = f"Capital denied: {reason}"
                 self.stats['failed'] += 1
                 logger.warning(f"Trade {trade_id} capital denied: {reason}")
-                self._persist_trade(trade)
+                # v10.37: do NOT persist capital-denied FAILED trades.
+                # They were polluting strategy_master_trades with noise rows
+                # and masking real open positions in dashboards/diagnostics.
+                # The strategy layer can observe the return value if it cares.
                 return trade
 
             # Execute legs

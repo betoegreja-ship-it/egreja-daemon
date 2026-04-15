@@ -481,48 +481,167 @@ try:
         log.warning(f'[v10.29d] DerivativesExecutionEngine init failed: {_dee_err}')
 
     # ═════════════════════════════════════════════════════════════
-    # [v10.32] Reconcile in-memory active_allocations from DB on boot
-    # Prevents caps saturating forever after a restart while positions are OPEN.
+    # [v10.37] One-shot DB cleanup of zombie rows accumulated while the
+    # reconcile bug was silently failing (pre-v10.37).
+    #   - All OPEN rows: never monitored (engine.active_trades was empty
+    #     every restart), so P&L stuck at 0. Not safely recoverable →
+    #     archive as ARCHIVED/v10.37_cleanup.
+    #   - All FAILED rows: capital-denied noise persisted on every reject
+    #     cycle (hundreds per minute). Pure garbage → archive.
+    # Protected by system_migrations marker so it runs exactly once.
+    # ═════════════════════════════════════════════════════════════
+    try:
+        _conn = get_db()
+        _cur = _conn.cursor()
+        _cur.execute("""
+            CREATE TABLE IF NOT EXISTS system_migrations (
+                migration_key VARCHAR(64) PRIMARY KEY,
+                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                detail VARCHAR(255)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        _cur.execute(
+            "SELECT 1 FROM system_migrations WHERE migration_key = %s",
+            ('v10_37_zombie_cleanup',),
+        )
+        if _cur.fetchone() is None:
+            _cur.execute(
+                "UPDATE strategy_master_trades "
+                "SET status='ARCHIVED', close_reason='v10.37 startup cleanup: pre-migration OPEN zombie', "
+                "    closed_at=NOW() "
+                "WHERE status='OPEN'"
+            )
+            _open_cleaned = _cur.rowcount
+            _cur.execute(
+                "UPDATE strategy_master_trades "
+                "SET status='ARCHIVED', close_reason=COALESCE(close_reason,'v10.37 cleanup: FAILED noise') "
+                "WHERE status='FAILED'"
+            )
+            _failed_cleaned = _cur.rowcount
+            _cur.execute(
+                "INSERT INTO system_migrations (migration_key, detail) VALUES (%s, %s)",
+                (
+                    'v10_37_zombie_cleanup',
+                    f'archived OPEN={_open_cleaned} FAILED={_failed_cleaned}',
+                ),
+            )
+            _conn.commit()
+            log.info(
+                f'[v10.37] zombie cleanup done: '
+                f'OPEN archived={_open_cleaned}, FAILED archived={_failed_cleaned}'
+            )
+        else:
+            log.info('[v10.37] zombie cleanup already applied — skipping')
+        _cur.close()
+        try: _conn.close()
+        except Exception: pass
+    except Exception as _mig_err:
+        log.warning(f'[v10.37] zombie cleanup failed (non-fatal): {_mig_err}')
+
+    # ═════════════════════════════════════════════════════════════
+    # [v10.37] Reconcile capital_manager AND engine.active_trades from DB on boot.
+    # Previous reconcile used wrong column ('strategy' instead of 'strategy_type')
+    # and silently failed for months — causing caps to reset every restart,
+    # zombies in DB, and monitor to see empty active_trades → no closes → total_pnl=0.
+    # After the one-shot cleanup above, there should be ZERO OPEN rows on first
+    # v10.37 boot; from here on the hydrate block keeps capital + engine in sync.
     # ═════════════════════════════════════════════════════════════
     try:
         _cap_mgr = _deriv_services.get('capital_manager')
+        _exec_engine = _deriv_services.get('deriv_execution')
         if _cap_mgr is not None:
             from modules.derivatives.capital import AllocationRecord as _AllocRec
+            from modules.derivatives.deriv_execution import (
+                DerivativesTrade as _DTrade, TradeLeg as _DLeg, TradeStatus as _DSt,
+            )
             from datetime import datetime as _dt
             _conn = get_db()
             _cur = _conn.cursor(dictionary=True)
             _cur.execute(
-                "SELECT trade_id, strategy, symbol, notional, created_at "
+                "SELECT trade_id, strategy_type, symbol, structure_type, strike, expiry, "
+                "       expected_edge, notional, liquidity_score, active_status, opened_at, created_at "
                 "FROM strategy_master_trades WHERE status = 'OPEN'"
             )
             _rows = _cur.fetchall() or []
+            # also pull legs for each trade in a single round-trip
+            _legs_by_trade = {}
+            if _rows:
+                _tids = [r['trade_id'] for r in _rows]
+                _placeholders = ','.join(['%s'] * len(_tids))
+                _cur.execute(
+                    f"SELECT trade_id, leg_type, symbol, qty, side, "
+                    f"       intended_price, executed_price, fill_status, slippage, latency_ms "
+                    f"FROM strategy_trade_legs WHERE trade_id IN ({_placeholders})",
+                    _tids,
+                )
+                for _lr in (_cur.fetchall() or []):
+                    _legs_by_trade.setdefault(_lr['trade_id'], []).append(_lr)
             _cur.close()
             try: _conn.close()
             except Exception: pass
-            _restored = 0
+            _restored_cap = 0
+            _restored_eng = 0
             for _r in _rows:
-                _tid  = str(_r.get('trade_id') or '')
-                _strat = str(_r.get('strategy') or '')
-                _sym   = str(_r.get('symbol') or '')
-                _not   = float(_r.get('notional') or 0.0)
+                _tid = str(_r.get('trade_id') or '')
+                _strat = str(_r.get('strategy_type') or '')
+                _sym = str(_r.get('symbol') or '')
+                _not = float(_r.get('notional') or 0.0)
                 if not _tid or not _strat:
                     continue
-                if _tid in _cap_mgr.active_allocations:
-                    continue
-                _cap_mgr.active_allocations[_tid] = _AllocRec(
-                    trade_id=_tid,
-                    strategy=_strat,
-                    symbol=_sym,
-                    amount=_not,
-                    direction='ALLOCATE',
-                    timestamp=_r.get('created_at') or _dt.utcnow(),
-                )
-                _cap_mgr.allocated += _not
-                _cap_mgr.strategy_allocated[_strat] += _not
-                _restored += 1
-            log.info(f'[v10.32] active_allocations reconciled from DB: restored={_restored} open positions')
+                # ---- capital_manager reconcile ----
+                if _tid not in _cap_mgr.active_allocations:
+                    _cap_mgr.active_allocations[_tid] = _AllocRec(
+                        trade_id=_tid,
+                        strategy=_strat,
+                        symbol=_sym,
+                        amount=_not,
+                        direction='ALLOCATE',
+                        timestamp=_r.get('created_at') or _dt.utcnow(),
+                    )
+                    _cap_mgr.allocated += _not
+                    _cap_mgr.strategy_allocated[_strat] += _not
+                    _restored_cap += 1
+                # ---- engine.active_trades reconcile ----
+                if _exec_engine is not None and _tid not in _exec_engine.active_trades:
+                    try:
+                        _legs_list = []
+                        for i, _lr in enumerate(_legs_by_trade.get(_tid, [])):
+                            _legs_list.append(_DLeg(
+                                leg_id=f"{_tid}-L{i}",
+                                leg_type=str(_lr.get('leg_type') or ''),
+                                symbol=str(_lr.get('symbol') or ''),
+                                qty=int(_lr.get('qty') or 0),
+                                side=str(_lr.get('side') or ''),
+                                intended_price=float(_lr.get('intended_price') or 0.0),
+                                executed_price=float(_lr.get('executed_price') or 0.0),
+                                slippage=float(_lr.get('slippage') or 0.0),
+                                latency_ms=int(_lr.get('latency_ms') or 0),
+                            ))
+                        _t = _DTrade(
+                            trade_id=_tid,
+                            strategy=_strat,
+                            symbol=_sym,
+                            structure_type=str(_r.get('structure_type') or ''),
+                            strike=float(_r.get('strike') or 0.0),
+                            expiry=str(_r.get('expiry') or ''),
+                            expected_edge=float(_r.get('expected_edge') or 0.0),
+                            notional=_not,
+                            legs=_legs_list,
+                            liquidity_score=float(_r.get('liquidity_score') or 0.0),
+                            active_status=str(_r.get('active_status') or ''),
+                            opened_at=_r.get('opened_at') or _dt.utcnow(),
+                            status=_DSt.OPEN,
+                        )
+                        _exec_engine.active_trades[_tid] = _t
+                        _restored_eng += 1
+                    except Exception as _eh:
+                        log.warning(f"[v10.37] engine hydrate skip {_tid}: {_eh}")
+            log.info(
+                f'[v10.37] hydrate from DB: capital_manager +{_restored_cap}, '
+                f'engine.active_trades +{_restored_eng} positions'
+            )
     except Exception as _rec_err:
-        log.warning(f'[v10.32] active_allocations reconcile failed: {_rec_err}')
+        log.warning(f'[v10.37] hydrate failed: {_rec_err}')
 
     # ═════════════════════════════════════════════════════════════
     # [v10.32] Start DerivativesMonitor background thread

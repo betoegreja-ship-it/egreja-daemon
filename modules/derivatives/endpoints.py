@@ -1236,7 +1236,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             providers_health = {}
             if provider_mgr:
                 try:
-                    for pname in ['brapi', 'oplab', 'polygon']:
+                    for pname in ['brapi', 'cedro', 'polygon']:
                         try:
                             ph = provider_mgr.get_provider_health(pname) if hasattr(provider_mgr, 'get_provider_health') else None
                             if ph:

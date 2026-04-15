@@ -80,7 +80,7 @@ try:
     # [v10.25] Derivatives module imports
     from modules.derivatives.config import get_config as get_deriv_config, DerivativesConfig, ActiveStatus
     from modules.derivatives.schema import create_derivatives_tables
-    from modules.derivatives.providers import ProviderManager, SimulatedMarketDataProvider, CedroMarketDataProvider, OpLabMarketDataProvider
+    from modules.derivatives.providers import ProviderManager, SimulatedMarketDataProvider, CedroMarketDataProvider  # v10.37: OpLab removed
     from modules.derivatives.services import (OptionsChainCache, FuturesChainCache, DividendEventService,
         RatesCurveService, GreeksCalculator, CalibrationService, StrategyScorecard, StructuredOrderExecutor,
         NAVCalculatorService, ImpliedVolEngine)
@@ -238,7 +238,7 @@ log = logging.getLogger('egreja')
 app = Flask(__name__)
 
 # ═══ [v10.31] CEDRO SOCKET PROVIDER ─ real-time streaming quotes ═══
-# Primary source for B3 quotes (stocks + indices + futures). BRAPI/OpLab used as fallback.
+# Primary source for B3 quotes (stocks + indices + futures). BRAPI used as fallback.
 _cedro_socket = None
 try:
     from modules.cedro_socket_provider import get_cedro as _get_cedro_socket, is_enabled as _cedro_enabled
@@ -351,54 +351,36 @@ def _overlay_cedro_on_batch(symbols):
     return n
 
 
-# ═══ [v10.27] DERIVATIVES MODULE INITIALIZATION ═══
-# Provider chain: OpLab (primary) → Cedro (backup) → Simulated (fallback)
+# ═══ [v10.37] DERIVATIVES MODULE INITIALIZATION ═══
+# OpLab removed (user canceled plan). Provider chain is now: Cedro → Simulated.
+# Cedro serves spot via Crystal socket + REST WebFeeder (when creds present);
+# option chains are synthesized against seeded strike grids; Greeks computed
+# locally via Black-Scholes. Simulated remains only as a last-resort fallback
+# so paper scans never crash on a fully offline environment.
 _deriv_config = get_deriv_config()
 _deriv_provider_mgr = ProviderManager()
 
-# 1. OpLab — primary provider for derivatives (options, Greeks, IV, book, rates)
-#    ADR prices via Polygon, dividends via BRAPI (both already configured)
-try:
-    _oplab_provider = OpLabMarketDataProvider()
-    _deriv_provider_mgr.register_provider('oplab', _oplab_provider, is_primary=True)
-    if _oplab_provider._token:
-        log.info('[v10.27] Derivatives: OpLabMarketDataProvider ACTIVE (primary — options/Greeks/IV/book)')
-    else:
-        log.info('[v10.27] Derivatives: OpLab registered but OPLAB_ACCESS_TOKEN not set')
-except Exception as e:
-    log.warning(f'[v10.27] OpLab provider init: {e}')
-
-# 2. Cedro — backup provider (activate by setting CEDRO_LOGIN + CEDRO_PASSWORD)
+# 1. Cedro — primary provider for derivatives
 try:
     _cedro_provider = CedroMarketDataProvider()
-    _deriv_provider_mgr.register_provider('cedro', _cedro_provider, is_primary=False)
+    _deriv_provider_mgr.register_provider('cedro', _cedro_provider, is_primary=True)
     if _cedro_provider._authenticated:
-        log.info('[v10.27] Derivatives: CedroMarketDataProvider registered (backup — active)')
+        log.info('[v10.37] Derivatives: Cedro ACTIVE (primary — REST + socket)')
+    elif getattr(_cedro_provider, '_socket', None) and getattr(_cedro_provider._socket, 'enabled', False):
+        log.info('[v10.37] Derivatives: Cedro ACTIVE (primary — socket only, no REST)')
     else:
-        log.info('[v10.27] Derivatives: Cedro registered (backup — dormant, no credentials)')
+        log.warning('[v10.37] Derivatives: Cedro registered but no credentials/socket — will degrade to Simulated')
 except Exception as e:
-    log.warning(f'[v10.27] Cedro provider init: {e}')
+    log.warning(f'[v10.37] Cedro provider init failed: {e}')
 
-# 3. Simulated — always available as last-resort fallback
+# 2. Simulated — last-resort fallback (keeps paper scan loops alive if Cedro drops)
 try:
     _sim_provider = SimulatedMarketDataProvider()
     _deriv_provider_mgr.register_provider('simulated', _sim_provider, is_primary=False)
     _deriv_provider_mgr._active = _sim_provider  # direct fallback attr
-    log.info('[v10.27] Derivatives: SimulatedMarketDataProvider registered (fallback/paper)')
+    log.info('[v10.37] Derivatives: Simulated registered (fallback/paper)')
 except Exception as e:
-    log.warning(f'[v10.27] Simulated provider init: {e}')
-
-# [v10.34] Force Cedro primary for derivatives — Cedro Crystal socket has real-time
-# spot + DB-seeded option chain discovery + Black-Scholes greeks computed locally.
-# OpLab's /market/status endpoint returns 200 (making health_check pass) BUT its
-# data endpoints (stocks, options, quotes) return 403 under the current plan, so
-# relying on OpLab for primary fails silently with empty chains. Cedro always wins
-# for this deployment; OpLab/Simulated remain in the fallback chain as safety.
-try:
-    _deriv_provider_mgr.set_primary_provider('cedro')
-    log.info('[v10.34] Cedro promoted to primary derivatives provider (OpLab kept as fallback)')
-except Exception as _sp_err:
-    log.warning(f'[v10.34] Cedro primary promotion failed: {_sp_err}')
+    log.warning(f'[v10.37] Simulated provider init failed: {e}')
 
 _deriv_services = {}
 try:
@@ -8440,7 +8422,7 @@ def api_info():
     except Exception:
         pass
     return jsonify({
-        'service':'Egreja Investment AI','version':'10.29d','status':'online',
+        'service':'Egreja Investment AI','version':'10.37','status':'online',
         'kill_switch':RISK_KILL_SWITCH,'arbi_kill_switch':ARBI_KILL_SWITCH,
         'market_regime':market_regime.get('mode','UNKNOWN'),
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'lse':is_lse_open(),'hkex':is_hkex_open(),'crypto':True},
@@ -8450,7 +8432,6 @@ def api_info():
         'crypto_prices_cached': len(crypto_prices),
         'deriv_providers': _prov_info,
         'deriv_sizer_active': _deriv_services.get('deriv_sizer') is not None,
-        'oplab_token_set': bool(os.environ.get('OPLAB_ACCESS_TOKEN', '').strip()),
         'brapi_token_set': bool(BRAPI_TOKEN),
         'cedro_socket': (lambda: {
             'enabled': bool(_cedro_socket and _cedro_socket.enabled),

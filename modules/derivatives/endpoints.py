@@ -1066,6 +1066,45 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             log.error(f"GET /exit-signals error: {e}\n{traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
 
+    # ============== DIAGNOSTIC ENDPOINT (v10.37) ==============
+
+    @strategies_bp.route('/trades-diag', methods=['GET'])
+    def get_trades_diagnostic():
+        """GET /strategies/trades-diag — breakdown of strategy_master_trades by status + pnl null-rate"""
+        try:
+            status_rows = _safe_query(
+                """SELECT strategy_type, status, COUNT(*) as cnt,
+                          SUM(CASE WHEN pnl IS NULL THEN 1 ELSE 0 END) as pnl_null,
+                          SUM(CASE WHEN pnl = 0 THEN 1 ELSE 0 END) as pnl_zero,
+                          SUM(CASE WHEN pnl IS NOT NULL AND pnl != 0 THEN 1 ELSE 0 END) as pnl_populated,
+                          MIN(opened_at) as first_opened, MAX(opened_at) as last_opened,
+                          MIN(closed_at) as first_closed, MAX(closed_at) as last_closed
+                   FROM strategy_master_trades
+                   GROUP BY strategy_type, status
+                   ORDER BY strategy_type, status"""
+            )
+            sample_rows = _safe_query(
+                """SELECT trade_id, strategy_type, symbol, status, pnl, opened_at, closed_at, close_reason
+                   FROM strategy_master_trades
+                   WHERE status != 'OPEN' OR status IS NULL
+                   ORDER BY updated_at DESC
+                   LIMIT 15"""
+            )
+            schema_rows = _safe_query(
+                """SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+                   FROM INFORMATION_SCHEMA.COLUMNS
+                   WHERE TABLE_NAME = 'strategy_master_trades'
+                   ORDER BY ORDINAL_POSITION"""
+            )
+            return jsonify({
+                'by_status': _serialize_rows(status_rows),
+                'non_open_sample': _serialize_rows(sample_rows),
+                'schema': _serialize_rows(schema_rows),
+            }), 200
+        except Exception as e:
+            log.error(f"GET /trades-diag error: {e}\n{traceback.format_exc()}")
+            return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
     # ============== SYSTEM STATE ENDPOINT ==============
 
     @strategies_bp.route('/system-state', methods=['GET'])

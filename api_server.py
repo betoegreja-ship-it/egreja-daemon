@@ -80,19 +80,28 @@ try:
     # [v10.25] Derivatives module imports
     from modules.derivatives.config import get_config as get_deriv_config, DerivativesConfig, ActiveStatus
     from modules.derivatives.schema import create_derivatives_tables
-    from modules.derivatives.providers import ProviderManager, SimulatedMarketDataProvider, CedroMarketDataProvider  # v10.37: OpLab removed
+    from modules.derivatives.providers import ProviderManager, SimulatedMarketDataProvider, CedroMarketDataProvider, OpLabMarketDataProvider
     from modules.derivatives.services import (OptionsChainCache, FuturesChainCache, DividendEventService,
         RatesCurveService, GreeksCalculator, CalibrationService, StrategyScorecard, StructuredOrderExecutor,
         NAVCalculatorService, ImpliedVolEngine)
-    from modules.derivatives.deriv_execution import DerivativesExecutionEngine
     from modules.derivatives.liquidity import LiquidityScoreEngine, PromotionEngine, ActiveStatusRegistry
-    from modules.derivatives.capital import DerivativesCapitalManager
-    from modules.derivatives.learning import DerivativesLearningEngine
-    from modules.derivatives.position_sizing import DerivativesPositionSizer
     from modules.derivatives.strategies import (pcp_scan_loop, fst_scan_loop, roll_arb_scan_loop,
         etf_basket_scan_loop, skew_arb_scan_loop, interlisted_scan_loop, dividend_arb_scan_loop, vol_arb_scan_loop,
         ibov_basis_scan_loop, di_calendar_scan_loop, interlisted_hedged_scan_loop)
     from modules.derivatives.endpoints import create_strategies_blueprint
+    # [v10.35] Execution / capital / monitoring / sizing / learning — paper trading end-to-end
+    from modules.derivatives.capital import DerivativesCapitalManager
+    from modules.derivatives.deriv_execution import (DerivativesExecutionEngine, DerivativesTrade,
+        TradeLeg, TradeStatus, LegStatus)
+    from modules.derivatives.monitoring import DerivativesMonitor
+    from modules.derivatives.position_sizing import DerivativesPositionSizer
+    from modules.derivatives.learning import DerivativesLearningEngine
+    # [v10.36] Top Opportunities daily audit (EOD 17:30 BRT snapshot + endpoint)
+    from modules.derivatives.top_opps_audit import (
+        create_top_opps_audit_table,
+        snapshot_top_opportunities,
+        query_top_opps_audit,
+    )
     _MODULES_LOADED = True
 except Exception as _mod_err:
     import traceback as _tb
@@ -125,6 +134,9 @@ except Exception as _mod_err:
     class ActiveStatus:
         OBSERVE='OBSERVE'; SHADOW_EXEC='SHADOW_EXEC'; PAPER_SMALL='PAPER_SMALL'; PAPER_FULL='PAPER_FULL'; DISABLED='DISABLED'
     def create_derivatives_tables(c): pass
+    def create_top_opps_audit_table(c): pass
+    def snapshot_top_opportunities(*a, **kw): return {'captured': 0, 'inserted': 0, 'errors': ['module_not_loaded']}
+    def query_top_opps_audit(*a, **kw): return {'rows': [], 'error': 'module_not_loaded'}
     class SimulatedMarketDataProvider: pass
     class ProviderManager:
         def __init__(self): pass
@@ -134,12 +146,23 @@ except Exception as _mod_err:
     class ActiveStatusRegistry: pass
     OptionsChainCache = FuturesChainCache = DividendEventService = RatesCurveService = None
     GreeksCalculator = CalibrationService = StrategyScorecard = StructuredOrderExecutor = None
-    DerivativesExecutionEngine = None
     NAVCalculatorService = ImpliedVolEngine = None
     def create_strategies_blueprint(**kw):
         from flask import Blueprint; return Blueprint('strategies', __name__)
     pcp_scan_loop = fst_scan_loop = roll_arb_scan_loop = etf_basket_scan_loop = None
     skew_arb_scan_loop = interlisted_scan_loop = dividend_arb_scan_loop = vol_arb_scan_loop = None
+    ibov_basis_scan_loop = di_calendar_scan_loop = interlisted_hedged_scan_loop = None
+    # [v10.35] Stubs for paper trading engine (fallback)
+    DerivativesCapitalManager = None
+    DerivativesExecutionEngine = None
+    DerivativesMonitor = None
+    DerivativesPositionSizer = None
+    DerivativesLearningEngine = None
+    DerivativesTrade = TradeLeg = None
+    class TradeStatus:
+        OPEN='OPEN'; CLOSED='CLOSED'; FAILED='FAILED'
+    class LegStatus:
+        FILLED='FILLED'; PENDING='PENDING'
 
 # ── [v10.28] Pure business logic modules ───────────────────────────────
 try:
@@ -238,8 +261,8 @@ log = logging.getLogger('egreja')
 
 app = Flask(__name__)
 
-# ═══ [v10.31] CEDRO SOCKET PROVIDER ─ real-time streaming quotes ═══
-# Primary source for B3 quotes (stocks + indices + futures). BRAPI used as fallback.
+# ═══ [v10.31] CEDRO SOCKET PROVIDER — real-time streaming quotes ═══
+# Primary source for B3 quotes (stocks + indices + futures). BRAPI/OpLab used as fallback.
 _cedro_socket = None
 try:
     from modules.cedro_socket_provider import get_cedro as _get_cedro_socket, is_enabled as _cedro_enabled
@@ -265,6 +288,7 @@ def _fetch_cedro_stock(display: str) -> tuple:
         return None, lat
     price = float(q.get('price') or 0)
     prev = float(q.get('prev_close') or 0) or price
+    # Start from last BRAPI candle cache if exists (for EMAs/RSI/ATR)
     cached = _get_cached_candles(f'brapi:{display}') if '_get_cached_candles' in globals() else None
     if cached:
         entry = dict(cached)
@@ -282,17 +306,26 @@ def _fetch_cedro_stock(display: str) -> tuple:
             'candles_available': 0, 'market': 'B3',
             'source': 'cedro-socket',
         }
+    # Enrich with Cedro-exclusive real-time fields
     entry.update({
-        'day_high': q.get('day_high'), 'day_low': q.get('day_low'), 'day_open': q.get('day_open'),
-        'week_high': q.get('week_high'), 'week_low': q.get('week_low'),
-        'month_high': q.get('month_high'), 'month_low': q.get('month_low'),
-        'year_high': q.get('year_high'), 'year_low': q.get('year_low'),
-        'var_week_pct': q.get('var_week_pct'), 'var_month_pct': q.get('var_month_pct'),
+        'day_high': q.get('day_high'),
+        'day_low': q.get('day_low'),
+        'day_open': q.get('day_open'),
+        'week_high': q.get('week_high'),
+        'week_low': q.get('week_low'),
+        'month_high': q.get('month_high'),
+        'month_low': q.get('month_low'),
+        'year_high': q.get('year_high'),
+        'year_low': q.get('year_low'),
+        'var_week_pct': q.get('var_week_pct'),
+        'var_month_pct': q.get('var_month_pct'),
         'var_year_pct': q.get('var_year_pct'),
         'volume_financial': q.get('volume_financial'),
-        'best_bid': q.get('best_bid'), 'best_ask': q.get('best_ask'),
+        'best_bid': q.get('best_bid'),
+        'best_ask': q.get('best_ask'),
         'market_cap': q.get('market_cap'),
-        'sector_code': q.get('sector_code'), 'subsector_code': q.get('subsector_code'),
+        'sector_code': q.get('sector_code'),
+        'subsector_code': q.get('subsector_code'),
         'segment_code': q.get('segment_code'),
         'trading_phase': q.get('trading_phase'),
         'updated_at': datetime.utcnow().isoformat(),
@@ -303,85 +336,42 @@ def _fetch_cedro_stock(display: str) -> tuple:
         pass
     return entry, lat
 
-def _overlay_cedro_on_batch(symbols):
-    """[v10.31] For each B3 symbol with fresh Cedro data, overwrite the BRAPI batch result
-    in stock_prices with Cedro real-time price/high/low/volume, preserving EMAs/RSI/ATR.
-    Auto-subscribes any missing symbols to Cedro on first sight."""
-    if not (_cedro_socket and _cedro_socket.enabled):
-        return 0
-    # Auto-subscribe missing symbols (fire once, cached internally)
-    try:
-        _cedro_socket.subscribe(symbols)  # idempotent (refcounts internally)
-    except Exception:
-        pass
-    n = 0
-    for sym in symbols:
-        try:
-            q = _cedro_socket.get_quote(sym, wait_ms=0)  # non-blocking read
-            if not q or not q.get('price'):
-                continue
-            price = float(q.get('price') or 0)
-            if price <= 0:
-                continue
-            with state_lock:
-                cur = stock_prices.get(sym)
-                if not isinstance(cur, dict):
-                    cur = {'market': 'B3'}
-                prev = float(q.get('prev_close') or cur.get('prev') or 0) or price
-                cur['price'] = price
-                cur['prev'] = prev
-                cur['change_pct'] = q.get('variation_pct') if q.get('variation_pct') is not None else (round((price/prev-1)*100, 2) if prev > 0 else 0)
-                cur['day_high'] = q.get('day_high')
-                cur['day_low'] = q.get('day_low')
-                cur['year_high'] = q.get('year_high')
-                cur['year_low'] = q.get('year_low')
-                cur['best_bid'] = q.get('best_bid')
-                cur['best_ask'] = q.get('best_ask')
-                cur['volume_financial'] = q.get('volume_financial')
-                cur['market_cap'] = q.get('market_cap')
-                cur['sector_code'] = q.get('sector_code')
-                # Tag source so ticker-tape/UI can show the right provider
-                prior_src = cur.get('source', '')
-                if 'cedro' not in prior_src:
-                    cur['source'] = 'cedro-socket+brapi-candles' if ('brapi' in prior_src or cur.get('ema9_real')) else 'cedro-socket'
-                cur['updated_at'] = datetime.utcnow().isoformat()
-                stock_prices[sym] = cur
-                n += 1
-        except Exception:
-            continue
-    return n
-
-
-# ═══ [v10.37] DERIVATIVES MODULE INITIALIZATION ═══
-# OpLab removed (user canceled plan). Provider chain is now: Cedro → Simulated.
-# Cedro serves spot via Crystal socket + REST WebFeeder (when creds present);
-# option chains are synthesized against seeded strike grids; Greeks computed
-# locally via Black-Scholes. Simulated remains only as a last-resort fallback
-# so paper scans never crash on a fully offline environment.
+# ═══ [v10.27] DERIVATIVES MODULE INITIALIZATION ═══
+# Provider chain: OpLab (primary) → Cedro (backup) → Simulated (fallback)
 _deriv_config = get_deriv_config()
 _deriv_provider_mgr = ProviderManager()
 
-# 1. Cedro — primary provider for derivatives
+# 1. OpLab — primary provider for derivatives (options, Greeks, IV, book, rates)
+#    ADR prices via Polygon, dividends via BRAPI (both already configured)
+try:
+    _oplab_provider = OpLabMarketDataProvider()
+    _deriv_provider_mgr.register_provider('oplab', _oplab_provider, is_primary=True)
+    if _oplab_provider._token:
+        log.info('[v10.27] Derivatives: OpLabMarketDataProvider ACTIVE (primary — options/Greeks/IV/book)')
+    else:
+        log.info('[v10.27] Derivatives: OpLab registered but OPLAB_ACCESS_TOKEN not set')
+except Exception as e:
+    log.warning(f'[v10.27] OpLab provider init: {e}')
+
+# 2. Cedro — backup provider (activate by setting CEDRO_LOGIN + CEDRO_PASSWORD)
 try:
     _cedro_provider = CedroMarketDataProvider()
-    _deriv_provider_mgr.register_provider('cedro', _cedro_provider, is_primary=True)
+    _deriv_provider_mgr.register_provider('cedro', _cedro_provider, is_primary=False)
     if _cedro_provider._authenticated:
-        log.info('[v10.37] Derivatives: Cedro ACTIVE (primary — REST + socket)')
-    elif getattr(_cedro_provider, '_socket', None) and getattr(_cedro_provider._socket, 'enabled', False):
-        log.info('[v10.37] Derivatives: Cedro ACTIVE (primary — socket only, no REST)')
+        log.info('[v10.27] Derivatives: CedroMarketDataProvider registered (backup — active)')
     else:
-        log.warning('[v10.37] Derivatives: Cedro registered but no credentials/socket — will degrade to Simulated')
+        log.info('[v10.27] Derivatives: Cedro registered (backup — dormant, no credentials)')
 except Exception as e:
-    log.warning(f'[v10.37] Cedro provider init failed: {e}')
+    log.warning(f'[v10.27] Cedro provider init: {e}')
 
-# 2. Simulated — last-resort fallback (keeps paper scan loops alive if Cedro drops)
+# 3. Simulated — always available as last-resort fallback
 try:
     _sim_provider = SimulatedMarketDataProvider()
     _deriv_provider_mgr.register_provider('simulated', _sim_provider, is_primary=False)
     _deriv_provider_mgr._active = _sim_provider  # direct fallback attr
-    log.info('[v10.37] Derivatives: Simulated registered (fallback/paper)')
+    log.info('[v10.27] Derivatives: SimulatedMarketDataProvider registered (fallback/paper)')
 except Exception as e:
-    log.warning(f'[v10.37] Simulated provider init failed: {e}')
+    log.warning(f'[v10.27] Simulated provider init: {e}')
 
 _deriv_services = {}
 try:
@@ -400,289 +390,99 @@ try:
     _deriv_services['liquidity_engine'] = LiquidityScoreEngine() if LiquidityScoreEngine else None
     _deriv_services['promotion_engine'] = PromotionEngine() if PromotionEngine else None
     _deriv_services['status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None
-    # [FIX] strategies.py reads this under 'active_status_registry' — alias
+    # [FIX] strategies.py reads this under 'active_status_registry' — alias for compatibility
     _deriv_services['active_status_registry'] = _deriv_services['status_registry']
-    # [FIX] Seed all tier-A × 8 strategies → PAPER_SMALL (paper mode)
+    # [v10.35] Aliases so all strategies.py scan loops can find services by their expected keys
+    _deriv_services['greeks_calculator'] = _deriv_services.get('greeks_calc')
+    _deriv_services['rates_curve'] = _deriv_services.get('rates_svc')
+    _deriv_services['dividend_service'] = _deriv_services.get('dividend_svc')
+    _deriv_services['nav_calculator'] = _deriv_services.get('nav_calc')
+    # [FIX] Seed all tier-A assets × 8 strategies → PAPER_SMALL (paper mode, no real $)
     try:
         _sr = _deriv_services['status_registry']
         if _sr is not None:
             from modules.derivatives.liquidity import ExecutionTier as _ET
             _tier_a = ['PETR4','VALE3','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3','BOVA11']
-            _strats = ['PCP','FST','ROLL_ARB','ETF_BASKET','SKEW_ARB','INTERLISTED','DIVIDEND_ARB','VOL_ARB']
+            _strats = ['PCP','FST','ROLL_ARB','ETF_BASKET','SKEW_ARB','INTERLISTED','DIVIDEND_ARB','VOL_ARB',
+                        'IBOV_BASIS','DI_CALENDAR','INTERLISTED_HEDGED']  # [v10.42] added 3 missing
+            # [v10.42] Futures assets need tiers too
+            _futures_assets = ['WIN','IND','DI1','WINFUT','INDFUT']
+            _tier_a = list(set(_tier_a + _futures_assets))
             for _a in _tier_a:
                 for _s in _strats:
                     _sr.set_status(_a, _s, _ET.PAPER_SMALL, reason='bootstrap_seed')
-            log.info(f'[FIX] Seeded {len(_tier_a)*len(_strats)} pairs to PAPER_SMALL')
+            log.info(f'[FIX] Seeded {len(_tier_a)*len(_strats)} (asset,strategy) pairs to PAPER_SMALL')
     except Exception as _seed_err:
         log.warning(f'[FIX] registry seed failed: {_seed_err}')
-    # [FORENSIC-ALIASES] strategies.py usa nomes diferentes; sem esses aliases 8 serviços ficavam invisíveis e nenhum derivativo executava
-    _deriv_services['active_status_registry'] = _deriv_services.get('status_registry')
-    _deriv_services['greeks_calculator']      = _deriv_services.get('greeks_calc')
-    _deriv_services['rates_curve']            = _deriv_services.get('rates_svc')
-    _deriv_services['dividend_service']       = _deriv_services.get('dividend_svc')
-    # [v10.29d] deriv_execution set after capital_manager init (needs DerivativesExecutionEngine)
-    # _deriv_services['deriv_execution'] = _deriv_services.get('order_executor')  # OLD
-    _deriv_services['nav_calculator']         = _deriv_services.get('nav_calc')
-    # [FORENSIC-FIX] Getter de heartbeat real pras threads, pra /strategies/health nao depender de log de oportunidades
-    _deriv_services['thread_heartbeat_getter'] = lambda name: thread_heartbeat.get(name)
+    log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
+except Exception as e:
+    log.warning(f'[v10.25] Derivatives services init: {e}')
 
-    # [FORENSIC-SEED] Registry vazio → tier=None → OBSERVE → nada executa.
-    # Semear universo Tier-A em PAPER_SMALL para PCP/FST para destravar execução.
-    try:
-        _reg = _deriv_services.get('active_status_registry')
-        if _reg:
-            from modules.derivatives.liquidity import ExecutionTier as _ET
-            _seed_universe = ['PETR4','VALE3','BOVA11','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3']
-            _seed_tier_str = os.environ.get('DERIV_SEED_TIER', 'PAPER_SMALL')
-            _seed_tier = getattr(_ET, _seed_tier_str, _ET.PAPER_SMALL)
-            for _sym in _seed_universe:
-                for _strat in ('PCP', 'FST'):
-                    if _reg.get_status(_sym, _strat) is None:
-                        _reg.set_status(_sym, _strat, _seed_tier, reason='startup_seed')
-            log.info(f'[FORENSIC-SEED] active_status_registry seeded {len(_seed_universe)} assets x 2 strategies @ {_seed_tier_str}')
-            # [v10.29c] DB seed moved to _seed_active_status_db() — runs after init_all_tables()
-    except Exception as _e:
-        log.warning(f'[FORENSIC-SEED] seed failed: {_e}')
-    # [FIX] Init capital manager + learning engine (antes ficavam None e quebravam trade opening + learning endpoint)
-    _deriv_cfg = None
-    try:
-        _deriv_cfg = get_deriv_config()
-    except Exception as _cfg_err:
-        log.warning(f'[FIX] get_deriv_config failed: {_cfg_err}')
-    try:
-        _deriv_services['capital_manager'] = DerivativesCapitalManager(_deriv_cfg, get_db_fn=get_db) if _deriv_cfg else None
-    except Exception as _cm_err:
-        log.warning(f'[FIX] capital_manager init failed: {_cm_err}')
-        _deriv_services['capital_manager'] = None
-    try:
-        _deriv_services['deriv_learner'] = DerivativesLearningEngine(_deriv_cfg, get_db_fn=get_db) if _deriv_cfg else None
-    except Exception as _dl_err:
-        log.warning(f'[FIX] deriv_learner init failed: {_dl_err}')
-        _deriv_services['deriv_learner'] = None
-    # [v10.29] CRITICAL FIX: deriv_sizer was NEVER initialized — strategies.py line 113-117
-    # checks (execution_engine AND sizer AND capital_mgr) and returns False if any is None.
-    # This caused PCP to find 11K+ opportunities but never execute ANY trade.
-    try:
-        _deriv_services['deriv_sizer'] = DerivativesPositionSizer(_deriv_cfg) if _deriv_cfg else None
-        if _deriv_services['deriv_sizer']:
-            log.info('[v10.29] deriv_sizer initialized — derivatives can now execute trades')
-    except Exception as _ds_err:
-        log.warning(f'[v10.29] deriv_sizer init failed: {_ds_err}')
-        _deriv_services['deriv_sizer'] = None
-    # [v10.29d] Init DerivativesExecutionEngine (has execute_trade method that strategies.py expects)
-    # StructuredOrderExecutor only has submit_multi_leg_order → AttributeError → 0 trades
-    try:
-        _cap_mgr = _deriv_services.get('capital_manager')
-        if DerivativesExecutionEngine and _deriv_cfg and _cap_mgr:
-            _deriv_services['deriv_execution'] = DerivativesExecutionEngine(_deriv_cfg, _cap_mgr, get_db_fn=get_db)
-            log.info('[v10.29d] DerivativesExecutionEngine initialized')
-        else:
-            log.warning('[v10.29d] DerivativesExecutionEngine skipped: missing deps')
-    except Exception as _dee_err:
-        log.warning(f'[v10.29d] DerivativesExecutionEngine init failed: {_dee_err}')
+# ═══ [v10.35] DERIVATIVES PAPER TRADING ENGINE ═══
+# Instantiate execution / capital / monitoring / sizing / learning so paper trades
+# actually open, mark-to-market, and close with realized PnL for the 2-month track record.
+_deriv_cap_mgr = None
+_deriv_exec = None
+_deriv_monitor = None
+_deriv_sizer = None
+_deriv_learner = None
+try:
+    # get_db is redefined later in the file (line ~722). Use a lambda to defer resolution.
+    def _resolve_get_db():
+        try:
+            return get_db()
+        except Exception:
+            return None
 
-    # ═════════════════════════════════════════════════════════════
-    # [v10.37] One-shot DB cleanup of zombie rows accumulated while the
-    # reconcile bug was silently failing (pre-v10.37).
-    #   - All OPEN rows: never monitored (engine.active_trades was empty
-    #     every restart), so P&L stuck at 0. Not safely recoverable →
-    #     archive as ARCHIVED/v10.37_cleanup.
-    #   - All FAILED rows: capital-denied noise persisted on every reject
-    #     cycle (hundreds per minute). Pure garbage → archive.
-    # Protected by system_migrations marker so it runs exactly once.
-    # ═════════════════════════════════════════════════════════════
-    try:
-        _conn = get_db()
-        _cur = _conn.cursor()
-        _cur.execute("""
-            CREATE TABLE IF NOT EXISTS system_migrations (
-                migration_key VARCHAR(64) PRIMARY KEY,
-                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                detail VARCHAR(255)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """)
-        _cur.execute(
-            "SELECT 1 FROM system_migrations WHERE migration_key = %s",
-            ('v10_37_zombie_cleanup',),
-        )
-        if _cur.fetchone() is None:
-            _cur.execute(
-                "UPDATE strategy_master_trades "
-                "SET status='ARCHIVED', close_reason='v10.37 startup cleanup: pre-migration OPEN zombie', "
-                "    closed_at=NOW() "
-                "WHERE status='OPEN'"
-            )
-            _open_cleaned = _cur.rowcount
-            _cur.execute(
-                "UPDATE strategy_master_trades "
-                "SET status='ARCHIVED', close_reason=COALESCE(close_reason,'v10.37 cleanup: FAILED noise') "
-                "WHERE status='FAILED'"
-            )
-            _failed_cleaned = _cur.rowcount
-            _cur.execute(
-                "INSERT INTO system_migrations (migration_key, detail) VALUES (%s, %s)",
-                (
-                    'v10_37_zombie_cleanup',
-                    f'archived OPEN={_open_cleaned} FAILED={_failed_cleaned}',
-                ),
-            )
-            _conn.commit()
-            log.info(
-                f'[v10.37] zombie cleanup done: '
-                f'OPEN archived={_open_cleaned}, FAILED archived={_failed_cleaned}'
-            )
-        else:
-            log.info('[v10.37] zombie cleanup already applied — skipping')
-        _cur.close()
-        try: _conn.close()
-        except Exception: pass
-    except Exception as _mig_err:
-        log.warning(f'[v10.37] zombie cleanup failed (non-fatal): {_mig_err}')
+    if DerivativesCapitalManager is not None:
+        _deriv_cap_mgr = DerivativesCapitalManager(_deriv_config, get_db_fn=_resolve_get_db)
+        _deriv_services['capital_manager'] = _deriv_cap_mgr
+        # Alias some strategies may look for
+        _deriv_services['deriv_capital'] = _deriv_cap_mgr
 
-    # ═════════════════════════════════════════════════════════════
-    # [v10.37] Reconcile capital_manager AND engine.active_trades from DB on boot.
-    # Previous reconcile used wrong column ('strategy' instead of 'strategy_type')
-    # and silently failed for months — causing caps to reset every restart,
-    # zombies in DB, and monitor to see empty active_trades → no closes → total_pnl=0.
-    # After the one-shot cleanup above, there should be ZERO OPEN rows on first
-    # v10.37 boot; from here on the hydrate block keeps capital + engine in sync.
-    # ═════════════════════════════════════════════════════════════
-    try:
-        _cap_mgr = _deriv_services.get('capital_manager')
-        _exec_engine = _deriv_services.get('deriv_execution')
-        if _cap_mgr is not None:
-            from modules.derivatives.capital import AllocationRecord as _AllocRec
-            from modules.derivatives.deriv_execution import (
-                DerivativesTrade as _DTrade, TradeLeg as _DLeg, TradeStatus as _DSt,
-            )
-            from datetime import datetime as _dt
-            _conn = get_db()
-            _cur = _conn.cursor(dictionary=True)
-            _cur.execute(
-                "SELECT trade_id, strategy_type, symbol, structure_type, strike, expiry, "
-                "       expected_edge, notional, liquidity_score, active_status, opened_at, created_at "
-                "FROM strategy_master_trades WHERE status = 'OPEN'"
-            )
-            _rows = _cur.fetchall() or []
-            # also pull legs for each trade in a single round-trip
-            _legs_by_trade = {}
-            if _rows:
-                _tids = [r['trade_id'] for r in _rows]
-                _placeholders = ','.join(['%s'] * len(_tids))
-                _cur.execute(
-                    f"SELECT trade_id, leg_type, symbol, qty, side, "
-                    f"       intended_price, executed_price, fill_status, slippage, latency_ms "
-                    f"FROM strategy_trade_legs WHERE trade_id IN ({_placeholders})",
-                    _tids,
-                )
-                for _lr in (_cur.fetchall() or []):
-                    _legs_by_trade.setdefault(_lr['trade_id'], []).append(_lr)
-            _cur.close()
-            try: _conn.close()
-            except Exception: pass
-            _restored_cap = 0
-            _restored_eng = 0
-            for _r in _rows:
-                _tid = str(_r.get('trade_id') or '')
-                _strat = str(_r.get('strategy_type') or '')
-                _sym = str(_r.get('symbol') or '')
-                _not = float(_r.get('notional') or 0.0)
-                if not _tid or not _strat:
-                    continue
-                # ---- capital_manager reconcile ----
-                if _tid not in _cap_mgr.active_allocations:
-                    _cap_mgr.active_allocations[_tid] = _AllocRec(
-                        trade_id=_tid,
-                        strategy=_strat,
-                        symbol=_sym,
-                        amount=_not,
-                        direction='ALLOCATE',
-                        timestamp=_r.get('created_at') or _dt.utcnow(),
-                    )
-                    _cap_mgr.allocated += _not
-                    _cap_mgr.strategy_allocated[_strat] += _not
-                    _restored_cap += 1
-                # ---- engine.active_trades reconcile ----
-                if _exec_engine is not None and _tid not in _exec_engine.active_trades:
-                    try:
-                        _legs_list = []
-                        for i, _lr in enumerate(_legs_by_trade.get(_tid, [])):
-                            _legs_list.append(_DLeg(
-                                leg_id=f"{_tid}-L{i}",
-                                leg_type=str(_lr.get('leg_type') or ''),
-                                symbol=str(_lr.get('symbol') or ''),
-                                qty=int(_lr.get('qty') or 0),
-                                side=str(_lr.get('side') or ''),
-                                intended_price=float(_lr.get('intended_price') or 0.0),
-                                executed_price=float(_lr.get('executed_price') or 0.0),
-                                slippage=float(_lr.get('slippage') or 0.0),
-                                latency_ms=int(_lr.get('latency_ms') or 0),
-                            ))
-                        _t = _DTrade(
-                            trade_id=_tid,
-                            strategy=_strat,
-                            symbol=_sym,
-                            structure_type=str(_r.get('structure_type') or ''),
-                            strike=float(_r.get('strike') or 0.0),
-                            expiry=str(_r.get('expiry') or ''),
-                            expected_edge=float(_r.get('expected_edge') or 0.0),
-                            notional=_not,
-                            legs=_legs_list,
-                            liquidity_score=float(_r.get('liquidity_score') or 0.0),
-                            active_status=str(_r.get('active_status') or ''),
-                            opened_at=_r.get('opened_at') or _dt.utcnow(),
-                            status=_DSt.OPEN,
-                        )
-                        _exec_engine.active_trades[_tid] = _t
-                        _restored_eng += 1
-                    except Exception as _eh:
-                        log.warning(f"[v10.37] engine hydrate skip {_tid}: {_eh}")
-            log.info(
-                f'[v10.37] hydrate from DB: capital_manager +{_restored_cap}, '
-                f'engine.active_trades +{_restored_eng} positions'
-            )
-    except Exception as _rec_err:
-        log.warning(f'[v10.37] hydrate failed: {_rec_err}')
+    if DerivativesPositionSizer is not None:
+        _deriv_sizer = DerivativesPositionSizer(_deriv_config)
+        _deriv_services['deriv_sizer'] = _deriv_sizer
 
-    # ═════════════════════════════════════════════════════════════
-    # [v10.32] Start DerivativesMonitor background thread
-    # Evaluates exits every cycle so positions actually close (SL/TP/trailing/max_hours).
-    # Without this, vol_arb/interlisted caps saturate and no new trades open.
-    # ═════════════════════════════════════════════════════════════
-    try:
-        _deriv_exec = _deriv_services.get('deriv_execution')
-        _greeks     = _deriv_services.get('greeks_calc')
-        _learner    = _deriv_services.get('deriv_learner')
-        if _deriv_exec is not None and _greeks is not None:
-            from modules.derivatives.monitoring import DerivativesMonitor as _DervMon
-            _deriv_monitor = _DervMon(
-                execution_engine=_deriv_exec,
-                greeks_calculator=_greeks,
-                provider_mgr=_deriv_provider_mgr,
-                learning_engine=_learner,
-                get_db_fn=get_db,
-            )
-            _deriv_services['deriv_monitor'] = _deriv_monitor
-            # [v10.41] Thread is now started via defs{} loop (watchdog-managed).
-            # Do NOT start separately here — that causes orphan thread outside watchdog.
-            log.info('[v10.41] DerivativesMonitor created — thread will start in main loop (watchdog-managed)')
-        else:
-            log.warning('[v10.32] DerivativesMonitor NOT started: missing deriv_execution or greeks_calc')
-    except Exception as _mon_err:
-        log.warning(f'[v10.32] DerivativesMonitor start failed: {_mon_err}')
+    if DerivativesLearningEngine is not None:
+        _deriv_learner = DerivativesLearningEngine(_deriv_config, get_db_fn=_resolve_get_db)
+        _deriv_services['deriv_learner'] = _deriv_learner
 
-    # [v10.38] Wire unified_brain into derivatives services for persist_decision
+    # [v10.38] Wire the unified brain learning engine into derivatives services
     try:
         from modules.unified_brain.learning_engine import LearningEngine as _UnifiedBrain
         if 'unified_brain' not in _deriv_services:
-            _deriv_services['unified_brain'] = _UnifiedBrain(db_fn=get_db, log=log)
+            _deriv_services['unified_brain'] = _UnifiedBrain(
+                db_fn=_resolve_get_db,
+                log=log,
+            )
             log.info('[v10.38] unified_brain wired into derivatives services')
     except Exception as _brain_err:
         log.debug(f'[v10.38] unified_brain not available: {_brain_err}')
 
-    log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
-except Exception as e:
-    log.warning(f'[v10.25] Derivatives services init: {e}')
+    if DerivativesExecutionEngine is not None and _deriv_cap_mgr is not None:
+        _deriv_exec = DerivativesExecutionEngine(_deriv_config, _deriv_cap_mgr, get_db_fn=_resolve_get_db)
+        _deriv_services['deriv_execution'] = _deriv_exec
+
+    _greeks_calc = _deriv_services.get('greeks_calc')
+    if DerivativesMonitor is not None and _deriv_exec is not None and _greeks_calc is not None:
+        _deriv_monitor = DerivativesMonitor(
+            execution_engine=_deriv_exec,
+            greeks_calculator=_greeks_calc,
+            provider_mgr=_deriv_provider_mgr,
+            learning_engine=_deriv_learner,
+            get_db_fn=_resolve_get_db,
+        )
+        _deriv_services['deriv_monitor'] = _deriv_monitor
+
+    log.info(
+        f'[v10.35] Paper engine: cap_mgr={bool(_deriv_cap_mgr)}, sizer={bool(_deriv_sizer)}, '
+        f'learner={bool(_deriv_learner)}, exec={bool(_deriv_exec)}, monitor={bool(_deriv_monitor)}'
+    )
+except Exception as _eng_err:
+    log.warning(f'[v10.35] Paper engine init failed: {_eng_err}')
+    import traceback as _tb2
+    _tb2.print_exc()
 # ═══ END DERIVATIVES INIT ═══
 
 # [v10.25] Register derivatives strategies blueprint
@@ -718,12 +518,10 @@ _mp_load_error = None
 try:
     from modules.long_horizon.monthly_picks.endpoints import create_monthly_picks_blueprint
     from modules.long_horizon.monthly_picks.repositories import MonthlyPicksRepository
-    # NOTE: enqueue_brain_lesson is defined later in this file, so we pass a
-    # late-binding lambda that resolves at call-time instead of import-time.
     _mp_bp = create_monthly_picks_blueprint(
         db_fn=get_db,
         log=log,
-        brain_lesson_fn=lambda *a, **k: enqueue_brain_lesson(*a, **k) if 'enqueue_brain_lesson' in globals() else None,
+        brain_lesson_fn=enqueue_brain_lesson,
     )
     app.register_blueprint(_mp_bp, url_prefix='/monthly-picks')
     log.info('[v3.2] Monthly Picks sleeve registered at /monthly-picks/* (modular)')
@@ -753,7 +551,7 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
-VERSION = 'v10.24.5'
+VERSION = 'v10.42'
 _boot_time = time.time()
 
 # ── [v10.23] Module instances ──────────────────────────────────────────
@@ -788,30 +586,11 @@ MAX_POSITION_STOCKS    = float(os.environ.get('MAX_POSITION_STOCKS', 350_000))  
 MAX_POSITION_CRYPTO    = float(os.environ.get('MAX_POSITION_CRYPTO', 500_000))  # [v10.25] máximo global
 # [v10.14] Posição máxima por símbolo — BTC e ETH são as âncoras de capital
 CRYPTO_MAX_POSITION_BY_SYM = {
-    # [v10.29c] Tier 1 — top performers get larger allocation
-    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  500_000)),  # WR 55% — best, max allocation
-    'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  400_000)),  # WR 53% — market reference
-    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',  350_000)),  # WR 54% — second best P&L
-    'NEARUSDT': float(os.environ.get('MAX_POS_NEAR', 350_000)),  # WR 55% — third
-    # Tier 2 — neutral, moderate allocation
-    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',  250_000)),  # WR 50% — stable
-    'SOLUSDT':  float(os.environ.get('MAX_POS_SOL',  200_000)),  # WR 47% — high vol
-    'XRPUSDT':  float(os.environ.get('MAX_POS_XRP',  200_000)),  # WR 49% — liquid
-    'ADAUSDT':  float(os.environ.get('MAX_POS_ADA',  200_000)),  # WR 48% — large cap
-    'AVAXUSDT': float(os.environ.get('MAX_POS_AVAX', 200_000)),  # WR 49% — L1
-    # Tier 3 — monitored, smaller allocation
-    'DOTUSDT':  float(os.environ.get('MAX_POS_DOT',  150_000)),  # WR 46%
-    'TRXUSDT':  float(os.environ.get('MAX_POS_TRX',  150_000)),  # WR 47%
-    'APTUSDT':  float(os.environ.get('MAX_POS_APT',  150_000)),  # WR 46%
-    'ATOMUSDT': float(os.environ.get('MAX_POS_ATOM', 150_000)),  # WR 47%
-    # Tier 4 — new additions, conservative allocation until data builds
-    'SUIUSDT':  float(os.environ.get('MAX_POS_SUI',  150_000)),
-    'LTCUSDT':  float(os.environ.get('MAX_POS_LTC',  150_000)),
-    'TONUSDT':  float(os.environ.get('MAX_POS_TON',  150_000)),
-    'FETUSDT':  float(os.environ.get('MAX_POS_FET',  120_000)),
-    'ENAUSDT':  float(os.environ.get('MAX_POS_ENA',  120_000)),
-    'ZECUSDT':  float(os.environ.get('MAX_POS_ZEC',  120_000)),
-    'TAOUSDT':  float(os.environ.get('MAX_POS_TAO',  120_000)),
+    'ETHUSDT':  float(os.environ.get('MAX_POS_ETH',  500_000)),  # [v10.24.4] 33% — melhor histórico WR 55%
+    'BTCUSDT':  float(os.environ.get('MAX_POS_BTC',  300_000)),  # 20% — referência de mercado
+    'ARBUSDT':  float(os.environ.get('MAX_POS_ARB',  200_000)),  # [v10.24.4] 13% — segundo melhor P&L
+    'NEARUSDT': float(os.environ.get('MAX_POS_NEAR', 200_000)),  # 13% — terceiro WR 55%
+    'BNBUSDT':  float(os.environ.get('MAX_POS_BNB',  200_000)),  # [v10.24.4] 13% — exchange coin estável
 }
 
 FMP_API_KEY      = os.environ.get('FMP_API_KEY', '')        # mantido como fallback terciário
@@ -856,7 +635,7 @@ ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 10))  # [v10.29d] 20 ativos, max 10 simultâneos
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.24.4] 5 símbolos — usar todo o capital nas 5 moedas
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
 # Settings ajustaveis em runtime (via /settings POST)
@@ -869,7 +648,7 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
-MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 59))  # [v10.26b]  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
 # Arbitragem — livro segregado
@@ -885,7 +664,7 @@ ARBI_MAX_DAILY_LOSS  = float(os.environ.get('ARBI_MAX_DAILY_LOSS_PCT', 1.5))
 ARBI_KILL_SWITCH     = False
 
 # Risco global
-MAX_OPEN_POSITIONS      = 70  # [v10.29d] 60 stocks + 10 crypto
+MAX_OPEN_POSITIONS      = 65  # [v10.14] 60 stocks + 5 crypto (hardcoded)
 MAX_DAILY_DRAWDOWN_PCT  = float(os.environ.get('MAX_DAILY_DRAWDOWN_PCT', 2.0))
 MAX_WEEKLY_DRAWDOWN_PCT = float(os.environ.get('MAX_WEEKLY_DRAWDOWN_PCT', 5.0))
 MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 10))
@@ -910,7 +689,6 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'stock_execution_worker': 300,   # [v10.9] 5min — era 150s, loop de 60s + processamento
     'arbi_scan_loop':         600,
     'arbi_monitor_loop':      180,
-    'arbi_learning_loop':     900,   # [FIX-ZOMBIE] pattern learning pode demorar >2min; era default 120s → gerava zombies
     'snapshot_loop':          600,
     'persistence_worker':     60,    # [v10.9] 60s
     'alert_worker':           60,
@@ -927,8 +705,12 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'interlisted_scan_loop': 300,
     'dividend_arb_scan_loop': 600,
     'vol_arb_scan_loop': 300,
-    # [v10.41] Monitor loop — beats every 15s, give 60s grace
-    'deriv_monitor_loop': 60,
+    # [v10.38] New futures-arbitrage strategies
+    'ibov_basis_scan_loop': 300,
+    'di_calendar_scan_loop': 300,
+    'interlisted_hedged_scan_loop': 300,
+    # [v10.35] Derivatives paper monitoring loop (beats every ~15s)
+    'deriv_monitor_loop': 120,
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -966,8 +748,8 @@ FLAT_EXIT_MAX_VARIATION   = float(os.environ.get('FLAT_EXIT_MAX_VARIATION', 0.30
 # ── [v10.17] Trailing stop triggers (mais baixos) ────────────────────────
 TRAILING_PEAK_STOCKS      = float(os.environ.get('TRAILING_PEAK_STOCKS', 1.0))     # era 1.5% — ativa trailing mais cedo
 TRAILING_DROP_STOCKS      = float(os.environ.get('TRAILING_DROP_STOCKS', 0.4))     # era 0.5% — retração menor
-TRAILING_PEAK_CRYPTO      = float(os.environ.get('TRAILING_PEAK_CRYPTO', 2.2))     # [v10.29c] mais espaço para winners (Manus TP/SL 0.86)
-TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 1.0))     # [v10.29c] menos cortes prematuros
+TRAILING_PEAK_CRYPTO      = float(os.environ.get('TRAILING_PEAK_CRYPTO', 1.5))     # era 2.0% — ativa trailing mais cedo
+TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 0.7))     # era 1.0% — retração menor
 # ── [v10.17] Directional exposure limit ───────────────────────────────────
 MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))       # max 70% das posições na mesma direção (stocks)
 MAX_DIRECTIONAL_PCT_CRYPTO = float(os.environ.get('MAX_DIRECTIONAL_PCT_CRYPTO', 100))  # [v10.24.4] crypto: 100% — mercado correlacionado, diversificação é entre moedas
@@ -983,61 +765,28 @@ RECONCILIATION_INTERVAL_S    = int(os.environ.get('RECONCILIATION_INTERVAL_S', 6
 RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))    # alertar se >2% desvio
 # ── [v10.18] Crypto conviction filter ───────────────────────────────────
 CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 52))        # [v10.24] era 58 — muito restritivo, bloqueava quase tudo em mercado lateral
-
-# [v10.26] New execution constants
-MAX_ENTRIES_PER_MINUTE_STOCKS  = _TC_MAX_ENTRIES_PER_MINUTE_STOCKS if '_TC_MAX_ENTRIES_PER_MINUTE_STOCKS' in dir() else 5
-MAX_ENTRIES_PER_MINUTE_CRYPTO  = _TC_MAX_ENTRIES_PER_MINUTE_CRYPTO if '_TC_MAX_ENTRIES_PER_MINUTE_CRYPTO' in dir() else 3
-REVERSAL_RSI_OB               = _TC_REVERSAL_RSI_OB if '_TC_REVERSAL_RSI_OB' in dir() else 72
-REVERSAL_RSI_OS               = _TC_REVERSAL_RSI_OS if '_TC_REVERSAL_RSI_OS' in dir() else 28
-REVERSAL_VOLUME_SPIKE_MULT    = _TC_REVERSAL_VOLUME_SPIKE_MULT if '_TC_REVERSAL_VOLUME_SPIKE_MULT' in dir() else 2.0
-REVERSAL_MIN_SIGNALS          = _TC_REVERSAL_MIN_SIGNALS if '_TC_REVERSAL_MIN_SIGNALS' in dir() else 2
-REVERSAL_BLOCK_COUNTER_TREND  = _TC_REVERSAL_BLOCK_COUNTER_TREND if '_TC_REVERSAL_BLOCK_COUNTER_TREND' in dir() else True
-REVERSAL_CLOSE_LOSING         = _TC_REVERSAL_CLOSE_LOSING if '_TC_REVERSAL_CLOSE_LOSING' in dir() else True
-POLYGON_CONFIRM_ENABLED       = _TC_POLYGON_CONFIRM_ENABLED if '_TC_POLYGON_CONFIRM_ENABLED' in dir() else True
-BRAPI_CONFIRM_ENABLED         = _TC_BRAPI_CONFIRM_ENABLED if '_TC_BRAPI_CONFIRM_ENABLED' in dir() else True
-CONFIRM_TIMEOUT_S             = _TC_CONFIRM_TIMEOUT_S if '_TC_CONFIRM_TIMEOUT_S' in dir() else 3.0
-CONFIRM_MIN_AGREEMENT         = _TC_CONFIRM_MIN_AGREEMENT if '_TC_CONFIRM_MIN_AGREEMENT' in dir() else 1
-
-# [v10.26] Monthly Picks LONG allocation
-MONTHLY_PICKS_OWNS_LONG = os.environ.get('MONTHLY_PICKS_OWNS_LONG', 'true').lower() != 'false'
 CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15))          # hold mínimo (min) para flat exit
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [v10.29d] 20 ativos — expandido de 13 para diversificação
-    # Tier 1 — Top performers (WR > 53%)
-    'ETHUSDT',    # +$5.723  WR 55% — best overall
-    'ARBUSDT',    # +$2.455  WR 54% — second best P&L
-    'NEARUSDT',   # +$964    WR 55% — third
-    'BTCUSDT',    # +$242    WR 53% — market reference
-    # Tier 2 — Neutral/recovery potential (WR 48-52%)
-    'BNBUSDT',    # +$191    WR 50% — exchange coin, stable
-    'SOLUSDT',    # WR 47% recovering — high volume
-    'XRPUSDT',    # WR 49% — high liquidity
-    'ADAUSDT',    # WR 48% — large cap
-    'AVAXUSDT',   # WR 49% — L1 ecosystem
-    # Tier 3 — Monitored (WR 45-48%)
-    'DOTUSDT',    # WR 46% — cross-chain
-    'TRXUSDT',    # WR 47% — stablecoin ecosystem
-    'APTUSDT',    # WR 46% — Move ecosystem
-    'ATOMUSDT',   # WR 47% — IBC hub
-    # Tier 4 — New additions (high liquidity, established projects)
-    'SUIUSDT',    # L1, $28M+ daily vol, Move ecosystem
-    'LTCUSDT',    # Established, $14M vol, digital silver
-    'TONUSDT',    # TON/Telegram, $13M vol, mass adoption
-    'FETUSDT',    # AI/ML narrative, $20M vol
-    'ENAUSDT',    # Ethena DeFi, $24M vol
-    'ZECUSDT',    # Privacy, $210M vol, high liquidity
-    'TAOUSDT',    # AI/decentralized compute, $420M vol
+    # [v10.14] Corte cirúrgico para 5 melhores por P&L real (análise 30/03/2026)
+    # REMOVIDOS por P&L negativo acumulado:
+    # ADAUSDT  -$5.515 (WR 48%), AVAXUSDT -$3.885 (WR 49%), SOLUSDT -$3.583 (WR 47%)
+    # DOGEUSDT -$3.037 (WR 54%!), XRPUSDT -$1.243, DOTUSDT -$5.897, UNIUSDT -$427
+    # LTCUSDT -$240, APTUSDT -$297, MATICUSDT -N/A, TRXUSDT -$1.372
+    # MANTIDOS (únicos lucrativos + neutros):
+    'ETHUSDT',   # +$5.723  WR 55% — melhor de todos
+    'ARBUSDT',   # +$2.455  WR 54% — segundo melhor
+    'NEARUSDT',  # +$964    WR 55% — terceiro
+    'BTCUSDT',   # +$242    WR 53% — quase neutro, referência de mercado
+    'BNBUSDT',   # +$191    WR 50% — quase neutro, exchange coin estável
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',
     'XRPUSDT':'XRP','ADAUSDT':'Cardano','DOGEUSDT':'Dogecoin','AVAXUSDT':'Avalanche',
     'TRXUSDT':'TRON','DOTUSDT':'Polkadot','LINKUSDT':'Chainlink','MATICUSDT':'Polygon',
     'LTCUSDT':'Litecoin','UNIUSDT':'Uniswap','ATOMUSDT':'Cosmos','XLMUSDT':'Stellar',
-    'BCHUSDT':'Bitcoin Cash','NEARUSDT':'NEAR','APTUSDT':'Aptos','ARBUSDT':'Arbitrum',
-    'SUIUSDT':'Sui','TONUSDT':'Toncoin','FETUSDT':'Fetch.ai','ENAUSDT':'Ethena',
-    'ZECUSDT':'Zcash','TAOUSDT':'Bittensor',
+    'BCHUSDT':'Bitcoin Cash','NEARUSDT':'NEAR','APTUSDT':'Aptos','ARBUSDT':'Arbitrum'
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -1071,15 +820,11 @@ def _get_pool():
             pool_cfg = dict(db_config)
             pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
             pool_cfg.pop('connection_timeout', None)
-            # [FORENSIC] pool_size 30→32 (limite MySQL connector). Falha de pool é
-            # principal suspeita do sumiço de trades arbi: get_db retornava None,
-            # _db_save_arbi_trade abortava silenciosamente, restart perdia memória.
             _db_pool = MySQLConnectionPool(
-                pool_name='egreja', pool_size=32,
-                pool_reset_session=False,
+                pool_name='egreja', pool_size=30,
                 autocommit=True, connection_timeout=10,
                 **pool_cfg)
-            log.info('[FORENSIC] MySQL connection pool inicializado (size=32, reset=False)')
+            log.info('[v10.7] MySQL connection pool inicializado (size=30)')
         except Exception as e:
             log.error(f'MySQL pool init: {e}')
     return _db_pool
@@ -1197,29 +942,7 @@ _reconciliation_log: list = []    # últimas N reconciliações
 def gen_id(prefix='TRD'):
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
-# [FIX-ZOMBIE] Registry of current thread per loop name.
-# When watchdog restarts a frozen loop the old thread may eventually wake up
-# and keep running — that's a zombie. On its next beat() it raises SystemExit
-# and the zombie dies cleanly.
-_thread_current = {}
-_thread_current_lock = threading.Lock()
-
-def _register_current_thread(name, thread_obj):
-    with _thread_current_lock:
-        _thread_current[name] = thread_obj
-
 def beat(name):
-    # [FIX-ZOMBIE] kill zombies at their next beat
-    try:
-        owner = _thread_current.get(name)
-        cur   = threading.current_thread()
-        if owner is not None and owner is not cur:
-            log.warning(f'[ZOMBIE-KILL] {name}: thread {cur.name} is not current owner → exiting')
-            raise SystemExit(0)
-    except SystemExit:
-        raise
-    except Exception:
-        pass
     thread_heartbeat[name] = time.time()
 
 # ═══════════════════════════════════════════════════════════════
@@ -1397,7 +1120,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/monthly-picks') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/cedro') or request.path.startswith('/static/') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/ticker-tape.js'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -1679,7 +1402,6 @@ def _trigger_kill_switch(dd_pct, period):
     global RISK_KILL_SWITCH
     RISK_KILL_SWITCH = True
     audit('KILL_SWITCH_ACTIVATED',{'drawdown_pct':round(dd_pct,2),'period':period})
-    send_whatsapp(f'KILL SWITCH ATIVADO — drawdown {period}: {dd_pct:.2f}%')
 
 def _auto_reset_kill_switch_if_safe():
     """[v10.14] Auto-reset do kill_switch no início de um novo dia se drawdown < limite."""
@@ -1703,6 +1425,7 @@ def _auto_reset_kill_switch_if_safe():
             audit('KILL_SWITCH_AUTO_RESET', {'dd_today': round(dd_today,2), 'threshold': MAX_DAILY_DRAWDOWN_PCT})
     except Exception as e:
         log.warning(f'auto_reset_ks: {e}')
+    send_whatsapp(f'KILL SWITCH ATIVADO — drawdown {period}: {dd_pct:.2f}%')
 
 def _second_validation(symbol, market_type, strategy):
     """Segunda validação leve DENTRO do state_lock"""
@@ -1946,16 +1669,16 @@ CRYPTO_HOUR_SCORE = {
     16: -8, 17: -8, 18: -15, 19: -15, 20: -15, 21: -15, 22: -8, 23: 0
 }
 
-# Score por dia da semana para crypto (0=Seg, 6=Dom)
-# [v10.29] Score por dia — Manus data: Quarta 0% WR, Sexta 8.7% WR, Domingo 100% WR
+# [v10.29] Score por dia da semana para crypto (0=Seg, 6=Dom)
+# Dados Manus confirmam: Quarta 0% WR, Sexta 8.7% WR, Domingo 100% WR
 CRYPTO_DOW_SCORE = {
     0: +8,   # Segunda: 53.7% WR Egreja | Manus: gap opportunities → reforçado
-    1: -10,  # Terça:   43.9% WR — pior dia Egreja
-    2: -25,  # [v10.29] Quarta: 40.3% WR Egreja | Manus: 0% WR → hard penalty
+    1: -10,  # Terça:   43.9% WR — pior dia Egreja, -$37.9K total
+    2: -25,  # [v10.29] Quarta: 40.3% WR Egreja | Manus: 0% WR → hard penalty (era -8)
     3: +2,   # Quinta:  48.7% WR — neutro-positivo
-    4: -20,  # [v10.29] Sexta: 42.0% WR Egreja | Manus: 8.7% WR → heavy penalty
+    4: -20,  # [v10.29] Sexta: 42.0% WR Egreja | Manus: 8.7% WR → heavy penalty (era -8)
     5: -6,   # Sábado:  43.3% WR
-    6: +20,  # [v10.29] Domingo: 64.7% WR Egreja | Manus: 100% WR → max boost
+    6: +20,  # [v10.29] Domingo: 64.7% WR Egreja | Manus: 100% WR → max boost (era +15)
 }
 
 # [v10.15] CRYPTO_BLOCKED_WINDOWS agora é DINÂMICO — calculado a partir do factor_stats real.
@@ -2105,14 +1828,15 @@ def get_cross_market_crypto_adj() -> int:
     elif usdbrl_chg < -1.5: adj -= 3  # dólar fraco → menos fluxo para cripto
     
     # [v10.29] BTC sentimento reforçado (Manus usa BTC como proxy cross-market)
+    # BTC caindo > 3% = altcoins em risco severo → penalidade forte
     btc_chg = s.get('btc_change_24h', 0.0)
-    if btc_chg > 5.0:    adj += 8   # BTC em forte alta → muito bullish
+    if btc_chg > 5.0:    adj += 8   # BTC em forte alta → mercado muito bullish
     elif btc_chg > 3.0:  adj += 5   # BTC em alta → mercado bullish
-    elif btc_chg < -5.0: adj -= 15  # [v10.29] BTC queda forte → altcoins em perigo severo
-    elif btc_chg < -3.0: adj -= 10  # [v10.29] BTC queda → bearish
+    elif btc_chg < -5.0: adj -= 15  # [v10.29] BTC em queda forte → altcoins em perigo severo (era -8)
+    elif btc_chg < -3.0: adj -= 10  # [v10.29] BTC em queda → mercado bearish (era -8)
     elif btc_chg < -1.5: adj -= 4   # [v10.29] BTC levemente negativo → cautela
 
-    return max(-25, min(+20, adj))  # [v10.29] cap expandido
+    return max(-25, min(+20, adj))  # [v10.29] cap expandido ±25/+20 pts (era ±20/+15)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -3062,8 +2786,7 @@ def evaluate_symbol_blacklist():
             _symbol_blacklist[sym] = {
                 'reason': f'avg_pnl=${avg_pnl:.0f} wr={wr:.0f}% n={stats["n"]}',
                 'until': now + BLACKLIST_REVIEW_H * 3600,
-                'stats': {'avg_pnl': round(avg_pnl, 2), 'wr': round(wr, 1), 'n': stats['n'],
-                           'asset_type': stats.get('asset_type', '')},  # [v10.29d] track source
+                'stats': {'avg_pnl': round(avg_pnl, 2), 'wr': round(wr, 1), 'n': stats['n']},
             }
         elif sym in _symbol_blacklist:
             # Símbolo melhorou — desbloquear
@@ -3091,9 +2814,18 @@ def get_symbol_wr_sizing_mult(symbol: str, asset_type: str = 'crypto') -> float:
     """[v10.29] Dynamic position sizing multiplier based on per-symbol WR.
     Inspired by Manus report: allocate more to high-WR assets, less to low-WR.
     Returns multiplier: 0.6x to 1.3x (default 1.0 if insufficient data).
+
+    Rules:
+    - WR > 58%: 1.3x (proven winner)
+    - WR > 53%: 1.15x (above average)
+    - WR 48-53%: 1.0x (neutral)
+    - WR 45-48%: 0.8x (underperformer)
+    - WR < 45%: 0.6x (poor performer — near blacklist territory)
+    - Minimum 10 closed trades required for adjustment.
     """
     with state_lock:
         closed_list = list(crypto_closed) if asset_type == 'crypto' else list(stocks_closed)
+    # Count wins/losses for this symbol
     n = 0; wins = 0
     for t in closed_list:
         if t.get('symbol', '') == symbol:
@@ -3108,6 +2840,7 @@ def get_symbol_wr_sizing_mult(symbol: str, asset_type: str = 'crypto') -> float:
     if wr >= 48:  return 1.00
     if wr >= 45:  return 0.80
     return 0.60
+
 
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
 def get_adaptive_sl_pct(trade: dict) -> float:
@@ -3312,7 +3045,7 @@ def validate_settings_on_boot():
         errors.append(f'MAX_POSITIONS_STOCKS={MAX_POSITIONS_STOCKS} fora de range [1,100]')
     if MIN_SCORE_AUTO < 50 or MIN_SCORE_AUTO > 95:
         errors.append(f'MIN_SCORE_AUTO={MIN_SCORE_AUTO} fora de range [50,95]')
-    if MIN_SCORE_AUTO_CRYPTO < 40 or MIN_SCORE_AUTO_CRYPTO > 95:
+    if MIN_SCORE_AUTO_CRYPTO < 40 or MIN_SCORE_AUTO_CRYPTO > 90:
         errors.append(f'MIN_SCORE_AUTO_CRYPTO={MIN_SCORE_AUTO_CRYPTO} fora de range [40,90]')
     if RISK_MULT_MIN >= RISK_MULT_MAX:
         errors.append(f'RISK_MULT_MIN={RISK_MULT_MIN} >= RISK_MULT_MAX={RISK_MULT_MAX}')
@@ -4508,18 +4241,9 @@ def init_all_tables():
             status VARCHAR(10) DEFAULT 'OPEN', close_reason VARCHAR(20),
             opened_at DATETIME, closed_at DATETIME, extensions INT DEFAULT 0)""")
         # [v10.23] Colunas de custo de aluguel
-        # [FORENSIC-SELF-HEAL] DBs antigos não tinham as colunas de custo do INSERT
-        # do motor. Sem elas, TODA trade Arbi era perdida com ProgrammingError 1054.
-        # Lista idempotente — ALTER falha silencioso se coluna já existir.
         for _col_sql in [
             "ALTER TABLE arbi_trades ADD COLUMN lending_cost DECIMAL(10,2) DEFAULT 0",
             "ALTER TABLE arbi_trades ADD COLUMN lending_rate_annual DECIMAL(6,4) DEFAULT 0",
-            "ALTER TABLE arbi_trades ADD COLUMN fx_cost DECIMAL(12,2) DEFAULT 0",
-            "ALTER TABLE arbi_trades ADD COLUMN slippage_cost_a DECIMAL(12,2) DEFAULT 0",
-            "ALTER TABLE arbi_trades ADD COLUMN slippage_cost_b DECIMAL(12,2) DEFAULT 0",
-            "ALTER TABLE arbi_trades ADD COLUMN exchange_fee_a DECIMAL(12,2) DEFAULT 0",
-            "ALTER TABLE arbi_trades ADD COLUMN exchange_fee_b DECIMAL(12,2) DEFAULT 0",
-            "ALTER TABLE arbi_trades ADD COLUMN total_cost_estimated DECIMAL(12,2) DEFAULT 0",
         ]:
             try: cursor.execute(_col_sql); conn.commit()
             except: pass  # coluna já existe
@@ -4774,37 +4498,34 @@ def init_all_tables():
         except Exception as e:
             if 'Duplicate key name' not in str(e) and 'already exists' not in str(e).lower():
                 log.debug(f'Migration uq_origin: {e}')
-        # [v10.29c] active_status_registry — created by create_derivatives_tables() via schema.py
         # [v10.25] Derivatives tables
         try:
             create_derivatives_tables(conn)
             log.info('[v10.25] Derivatives tables created/verified')
         except Exception as e:
             log.warning(f'[v10.25] Derivatives tables: {e}')
-        # [v10.38] Audit-trail columns on strategy_master_trades
+        # [v10.38] Audit columns for strategy_master_trades (instrument_type, audit trail)
+        for _col_sql in [
+            "ALTER TABLE strategy_master_trades ADD COLUMN instrument_type VARCHAR(16) DEFAULT 'option'",
+            "ALTER TABLE strategy_master_trades ADD COLUMN theoretical_price DECIMAL(14,4) NULL",
+            "ALTER TABLE strategy_master_trades ADD COLUMN deviation_bps DECIMAL(8,2) NULL",
+            "ALTER TABLE strategy_master_trades ADD COLUMN brain_confidence DECIMAL(5,4) NULL",
+            "ALTER TABLE strategy_master_trades ADD COLUMN brain_adjustment DECIMAL(5,4) NULL",
+            "ALTER TABLE strategy_master_trades ADD COLUMN borrow_fee_estimate DECIMAL(12,4) NULL DEFAULT 0",
+            "ALTER TABLE strategy_master_trades ADD COLUMN hedge_trade_id VARCHAR(64) NULL",
+            "ALTER TABLE strategy_master_trades ADD COLUMN fair_value_inputs TEXT NULL",
+            "ALTER TABLE strategy_master_trades ADD COLUMN audit_notes TEXT NULL",
+        ]:
+            try: cursor.execute(_col_sql); conn.commit()
+            except Exception as e:
+                if 'Duplicate column' not in str(e):
+                    log.debug(f'[v10.38] strategy_master_trades migration: {e}')
+        # [v10.36] Top opportunities daily audit table
         try:
-            _audit_cur = conn.cursor()
-            _audit_alters = [
-                "ALTER TABLE strategy_master_trades ADD COLUMN instrument_type VARCHAR(16) NULL",
-                "ALTER TABLE strategy_master_trades ADD COLUMN theoretical_price DECIMAL(16, 6) NULL",
-                "ALTER TABLE strategy_master_trades ADD COLUMN deviation_bps DECIMAL(10, 2) NULL",
-                "ALTER TABLE strategy_master_trades ADD COLUMN brain_confidence DECIMAL(6, 4) NULL",
-                "ALTER TABLE strategy_master_trades ADD COLUMN brain_adjustment DECIMAL(6, 4) NULL",
-                "ALTER TABLE strategy_master_trades ADD COLUMN borrow_fee_estimate DECIMAL(8, 4) NULL",
-                "ALTER TABLE strategy_master_trades ADD COLUMN hedge_trade_id VARCHAR(64) NULL",
-                "ALTER TABLE strategy_master_trades ADD COLUMN fair_value_inputs TEXT NULL",
-                "ALTER TABLE strategy_master_trades ADD COLUMN audit_notes TEXT NULL",
-            ]
-            for _stmt in _audit_alters:
-                try:
-                    _audit_cur.execute(_stmt)
-                except Exception as _ae:
-                    if 'Duplicate column' not in str(_ae) and 'already exists' not in str(_ae).lower():
-                        log.debug(f'[v10.38] audit column: {_ae}')
-            _audit_cur.close()
-            log.info('[v10.38] strategy_master_trades audit columns verified')
+            create_top_opps_audit_table(conn)
+            log.info('[v10.36] top_opportunities_audit table created/verified')
         except Exception as e:
-            log.warning(f'[v10.38] audit migration: {e}')
+            log.warning(f'[v10.36] top_opportunities_audit table: {e}')
         conn.commit(); cursor.close(); conn.close()
         log.info('All tables created/verified')
     except Exception as e: log.error(f'init_all_tables: {e}')
@@ -4974,64 +4695,21 @@ def _db_save_trade(trade):
         conn.commit(); cursor.close(); conn.close()
     except Exception as e: log.error(f'db_save_trade: {e}')
 
-ARBI_FORENSIC_FILE = '/tmp/arbi_forensic.jsonl'
-ARBI_LOST_FILE     = '/tmp/arbi_lost_trades.jsonl'
-_arbi_persist_stats = {'attempts':0,'success':0,'lost_no_conn':0,'lost_exception':0,'last_error':None,'last_lost':None}
-
-def _arbi_forensic_write(path, payload):
-    try:
-        import json as _j
-        with open(path, 'a') as _f:
-            _f.write(_j.dumps({'ts':datetime.utcnow().isoformat(), **payload}, default=str) + '\n')
-    except Exception as _e:
-        log.error(f'forensic write {path}: {_e}')
-
 def _db_save_arbi_trade(trade):
-    _arbi_persist_stats['attempts'] += 1
-    # [FORENSIC] write-ahead-log: SEMPRE grava em disco antes de tentar DB.
-    # Se DB falhar, ainda temos rastro. Arquivo é truncado por rotation simples.
-    _arbi_forensic_write(ARBI_FORENSIC_FILE, {'event':'persist_attempt','trade':trade})
     conn=get_db()
-    if not conn:
-        _arbi_persist_stats['lost_no_conn'] += 1
-        _arbi_persist_stats['last_lost'] = datetime.utcnow().isoformat()
-        log.error(f"[ARBI-LOST] _db_save_arbi_trade: get_db()=None. trade_id={trade.get('id')} pair={trade.get('pair_id')} status={trade.get('status')} pnl={trade.get('pnl')}")
-        _arbi_forensic_write(ARBI_LOST_FILE, {'reason':'get_db_none','trade':trade})
-        try: send_whatsapp(f"[ARBI-LOST] persist falhou (no conn) {trade.get('id')} {trade.get('pair_id')}")
-        except: pass
-        return
+    if not conn: return
     try:
         cursor=conn.cursor(); t=trade
         cursor.execute("""INSERT INTO arbi_trades (id,pair_id,name,leg_a,leg_b,mkt_a,mkt_b,
             direction,buy_leg,buy_mkt,short_leg,short_mkt,entry_spread,current_spread,
             position_size,pnl,pnl_pct,peak_pnl_pct,fx_rate,status,close_reason,opened_at,closed_at,extensions,
             fx_cost,slippage_cost_a,slippage_cost_b,exchange_fee_a,exchange_fee_b,
-            lending_cost,lending_rate_annual,total_cost_estimated,
-            price_a_entry,price_b_entry,price_a_exit,price_b_exit,
-            price_a_usd_norm_entry,price_b_usd_norm_entry,
-            price_a_usd_norm_exit,price_b_usd_norm_exit,
-            fx_rate_entry,fx_rate_exit,
-            bid_a_entry,ask_a_entry,bid_b_entry,ask_b_entry,
-            bid_a_exit,ask_a_exit,bid_b_exit,ask_b_exit,
-            spread_bps_a_entry,spread_bps_b_entry,spread_bps_a_exit,spread_bps_b_exit,
-            qty_a,qty_b)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            lending_cost,lending_rate_annual,total_cost_estimated)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_spread=VALUES(current_spread),pnl=VALUES(pnl),
             pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
             status=VALUES(status),close_reason=VALUES(close_reason),
-            closed_at=VALUES(closed_at),extensions=VALUES(extensions),
-            price_a_exit=COALESCE(VALUES(price_a_exit),price_a_exit),
-            price_b_exit=COALESCE(VALUES(price_b_exit),price_b_exit),
-            price_a_usd_norm_exit=COALESCE(VALUES(price_a_usd_norm_exit),price_a_usd_norm_exit),
-            price_b_usd_norm_exit=COALESCE(VALUES(price_b_usd_norm_exit),price_b_usd_norm_exit),
-            fx_rate_exit=COALESCE(VALUES(fx_rate_exit),fx_rate_exit),
-            bid_a_exit=COALESCE(VALUES(bid_a_exit),bid_a_exit),
-            ask_a_exit=COALESCE(VALUES(ask_a_exit),ask_a_exit),
-            bid_b_exit=COALESCE(VALUES(bid_b_exit),bid_b_exit),
-            ask_b_exit=COALESCE(VALUES(ask_b_exit),ask_b_exit),
-            spread_bps_a_exit=COALESCE(VALUES(spread_bps_a_exit),spread_bps_a_exit),
-            spread_bps_b_exit=COALESCE(VALUES(spread_bps_b_exit),spread_bps_b_exit)""",
+            closed_at=VALUES(closed_at),extensions=VALUES(extensions)""",
             (t.get('id'),t.get('pair_id'),t.get('name'),t.get('leg_a'),t.get('leg_b'),
              t.get('mkt_a'),t.get('mkt_b'),t.get('direction'),t.get('buy_leg'),t.get('buy_mkt'),
              t.get('short_leg'),t.get('short_mkt'),t.get('entry_spread'),t.get('current_spread'),
@@ -5040,30 +4718,9 @@ def _db_save_arbi_trade(trade):
              t.get('opened_at'),t.get('closed_at'),t.get('extensions',0),
              t.get('fx_cost',0),t.get('slippage_cost_a',0),t.get('slippage_cost_b',0),
              t.get('exchange_fee_a',0),t.get('exchange_fee_b',0),
-             t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0),
-             t.get('price_a_entry'),t.get('price_b_entry'),
-             t.get('price_a_exit'),t.get('price_b_exit'),
-             t.get('price_a_usd_norm'),t.get('price_b_usd_norm'),
-             t.get('price_a_usd_norm_exit'),t.get('price_b_usd_norm_exit'),
-             t.get('fx_rate_entry',t.get('fx_rate')),t.get('fx_rate_exit'),
-             t.get('bid_a'),t.get('ask_a'),t.get('bid_b'),t.get('ask_b'),
-             t.get('bid_a_exit'),t.get('ask_a_exit'),t.get('bid_b_exit'),t.get('ask_b_exit'),
-             t.get('spread_bps_a'),t.get('spread_bps_b'),
-             t.get('spread_bps_a_exit'),t.get('spread_bps_b_exit'),
-             t.get('qty_a'),t.get('qty_b')))
+             t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0)))
         conn.commit(); cursor.close(); conn.close()
-        _arbi_persist_stats['success'] += 1
-        _arbi_forensic_write(ARBI_FORENSIC_FILE, {'event':'persist_ok','id':trade.get('id'),'status':trade.get('status')})
-    except Exception as e:
-        _arbi_persist_stats['lost_exception'] += 1
-        _arbi_persist_stats['last_error'] = f'{type(e).__name__}: {e}'
-        _arbi_persist_stats['last_lost'] = datetime.utcnow().isoformat()
-        log.error(f"[ARBI-LOST] db_save_arbi_trade EXCEPTION: {e}. trade_id={trade.get('id')} pair={trade.get('pair_id')}")
-        _arbi_forensic_write(ARBI_LOST_FILE, {'reason':f'exception:{type(e).__name__}','error':str(e),'trade':trade})
-        try: send_whatsapp(f"[ARBI-LOST] persist exception {trade.get('id')} {type(e).__name__}")
-        except: pass
-        try: conn.close()
-        except: pass
+    except Exception as e: log.error(f'db_save_arbi_trade: {e}')
 
 def _db_save_cooldown(symbol, ts):
     conn=get_db()
@@ -5117,11 +4774,13 @@ STOCK_SYMBOLS_US = [
 ]
 ALL_STOCK_SYMBOLS = STOCK_SYMBOLS_B3 + STOCK_SYMBOLS_US
 
-# [v10.31] Warm Cedro socket cache ─ subscribe all B3 symbols + indices
+# [v10.31] Warm Cedro socket cache — subscribe all B3 symbols + indices/futures
 try:
     if _cedro_socket and _cedro_socket.enabled:
         _b3_clean = [s.replace('.SA', '') for s in STOCK_SYMBOLS_B3]
-        _extras = ['IBOV', 'WINFUT', 'INDFUT', 'DOLFUT', 'WDOFUT']
+        _extras = ['IBOV', 'WINFUT', 'INDFUT', 'DOLFUT', 'WDOFUT',
+                   'DI1F26', 'DI1F27', 'DI1F28', 'DI1F29', 'DI1F30',  # [v10.42] DI futures for DI_CALENDAR
+                   'PETR4F', 'VALE3F']  # [v10.42] synthetic single-stock futures
         _cedro_socket.subscribe(_b3_clean + _extras)
         log.info(f'[v10.31] Cedro socket pre-subscribed {len(_b3_clean)+len(_extras)} symbols')
 except Exception as _cedro_sub_err:
@@ -5517,7 +5176,6 @@ def fetch_stock_prices():
             with state_lock:
                 for sym, data in batch_result.items():
                     stock_prices[sym] = data
-            _overlay_cedro_on_batch(b3_open_positions)
 
         if b3_watchlist:
             last_wl_ts = getattr(fetch_stock_prices, '_last_b3_watchlist_ts', 0)
@@ -5532,7 +5190,6 @@ def fetch_stock_prices():
                 with state_lock:
                     for sym, data in batch_result.items():
                         stock_prices[sym] = data
-                _overlay_cedro_on_batch(b3_watchlist)
                 fetch_stock_prices._last_b3_watchlist_ts = now_ts
 
         # Posições abertas B3 fora do pregão: 1x/30min para monitorar gap de abertura
@@ -6600,9 +6257,6 @@ def stock_execution_worker():
 # ═══════════════════════════════════════════════════════════════
 # [V9-1] CRYPTO AUTO-TRADE — create_order FORA do state_lock
 # ═══════════════════════════════════════════════════════════════
-# [v10.30] Crypto trade diagnostics — captures per-coin blocking reason each loop
-_crypto_diag = {'last_run': None, 'coins': {}, 'loop_count': 0, 'open_count': 0}
-
 def auto_trade_crypto():
     global crypto_capital
     while True:
@@ -6613,16 +6267,11 @@ def auto_trade_crypto():
             if market_regime.get('mode')=='HIGH_VOL':
                 log.info('[CRYPTO] HIGH_VOL regime — sizing reduced 0.6x via get_regime_multiplier')  # [v10.24.1] não bloquear mais — sizing já é reduzido
             log.info(f'[CRYPTO-LOOP] precos={len(crypto_prices)} momentum={len(crypto_momentum)} regime={market_regime.get("mode")}')
-            _crypto_diag['last_run'] = datetime.utcnow().isoformat()
-            _crypto_diag['loop_count'] += 1
-            _crypto_diag['open_count'] = len(crypto_open)
-            _diag_coins = {}
             for sym in CRYPTO_SYMBOLS:
                 display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)
                 change_24h=crypto_momentum.get(sym,0)
                 if price<=0 or abs(change_24h)<0.3:  # [v10.24] era 0.5 — muito restritivo para mercado lateral
                     log.info(f'[CRYPTO-SKIP] {display}: price={price:.2f} change={change_24h:.2f}%')
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'momentum', 'detail': f'price={price:.2f} change_24h={change_24h:.2f}% (min 0.3%)', 'score': None}
                     continue
                 direction='LONG' if change_24h>0 else 'SHORT'
 
@@ -6658,19 +6307,19 @@ def auto_trade_crypto():
                 _t_adj, _t_blocked, _t_reason = get_temporal_crypto_score(_now_c.hour, _now_c.weekday())
                 if _t_blocked:
                     log.info(f"[CRYPTO-TBLOCK] {display}: {_t_reason}")
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'temporal', 'detail': _t_reason, 'score': score}
                     continue
                 _cm_adj = get_cross_market_crypto_adj()
                 _score_before = score
                 # [v10.29] Limitar penalidade temporal — caps ajustados para Quarta/Sexta
+                # Se crypto se move >3%, o mercado está em tendência — limitar mas não ignorar
                 _raw_change = float(ticker_data.get('change_pct', 0))
-                _strong_signal = abs(_raw_change) > 3.0  # [v10.29] era 2.0 — mais restritivo
+                _strong_signal = abs(_raw_change) > 3.0  # [v10.29] era 2.0 — mais restritivo para override temporal
                 if _strong_signal and (_t_adj + _cm_adj) < 0:
-                    # Sinal forte: penalidade máxima -12 (era -8)
+                    # Sinal forte: penalidade máxima -12 (era -8) — mesmo sinais fortes respeitam dias ruins
                     _capped_t = max(_t_adj + _cm_adj, -12)
                     score = max(0, min(100, score + _capped_t))
                 else:
-                    # [v10.29] Sinal normal: penalidade máxima -20 (era -12)
+                    # [v10.29] Sinal normal: penalidade máxima -20 (era -12) — Quarta/Sexta pesam mais
                     _total_t = _t_adj + _cm_adj
                     _capped_t = max(_total_t, -20) if _total_t < 0 else _total_t
                     score = max(0, min(100, score + _capped_t))
@@ -6689,7 +6338,6 @@ def auto_trade_crypto():
                     _disc_adj_c, _disc_blocked_c, _disc_key_c = 0, False, ''
                 if _disc_blocked_c:
                     log.info(f"[CRYPTO-CBLOCK] {display}: {_disc_key_c}")
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'composite_pattern', 'detail': _disc_key_c, 'score': score}
                     continue
                 if _disc_adj_c != 0:
                     score = max(0, min(100, score + _disc_adj_c))
@@ -6700,28 +6348,16 @@ def auto_trade_crypto():
                 _dd_blocked_c, _dd_reason_c = check_strategy_daily_dd('crypto')
                 if _dd_blocked_c:
                     log.info(f'[CRYPTO-DD-BLOCK] {display}: {_dd_reason_c}')
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'strategy_drawdown', 'detail': _dd_reason_c, 'score': score}
                     break
                 # [v10.16] Auto-blacklist check
-                # [v10.29d] Check blacklist with BOTH display name and full symbol.
-                # Crypto symbols (e.g. ATOM from ATOMUSDT) can collide with stock tickers.
-                # Only block if the blacklist entry came from crypto trades (check full sym too).
                 _bl_blocked_c, _bl_reason_c = is_symbol_blacklisted(display)
                 if _bl_blocked_c:
-                    # Verify it's actually a crypto blacklist, not a stock ticker collision
-                    _bl_info = _symbol_blacklist.get(display, {})
-                    _bl_asset = _bl_info.get('stats', {}).get('asset_type', '')
-                    if _bl_asset == 'crypto' or is_symbol_blacklisted(sym)[0]:
-                        log.info(f'[CRYPTO-BL-BLOCK] {display}: {_bl_reason_c}')
-                        _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'blacklist', 'detail': _bl_reason_c, 'score': score}
-                        continue
-                    else:
-                        log.info(f'[CRYPTO-BL-SKIP] {display}: blacklist is for stocks, not crypto — allowing')
+                    log.info(f'[CRYPTO-BL-BLOCK] {display}: {_bl_reason_c}')
+                    continue
                 # [v10.17] Directional exposure check
                 _dir_blocked_c, _dir_reason_c, _dir_stats_c = check_directional_exposure(direction, 'crypto')
                 if _dir_blocked_c:
                     log.info(f'[CRYPTO-DIR-BLOCK] {display}: {_dir_reason_c}')
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'directional_exposure', 'detail': _dir_reason_c, 'score': score}
                     continue
                 # [v10.24.2-FIX] _crypto_composite_score() já inverte o score para SHORT
                 # (linha 4650: composite = 100 - composite). Portanto score ALTO = sinal
@@ -6729,7 +6365,6 @@ def auto_trade_crypto():
                 _entry_ok = score >= MIN_SCORE_AUTO_CRYPTO
                 if not _entry_ok:
                     log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'score_threshold', 'detail': f'score={score} < {MIN_SCORE_AUTO_CRYPTO} dir={direction}', 'score': score}
                     continue
 
                 score_factor=min(abs(score-50)/50.0,1.0)
@@ -6742,7 +6377,6 @@ def auto_trade_crypto():
                     cached_c = processed_signal_ids.get(ms_key_c)
 
                 if cached_c and cached_c['reason'] in ('executed', 'kill_switch'):
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'dedup_cache', 'detail': f"reason={cached_c['reason']} sig={cached_c.get('sig_id','?')}", 'score': score}
                     continue
 
                 _sig_pre_id_c = cached_c['sig_id'] if cached_c else gen_id('SIG')
@@ -6774,7 +6408,6 @@ def auto_trade_crypto():
                 _conv_ok, _conv_reason = check_crypto_conviction(conf_c, change_24h, display)
                 if not _conv_ok:
                     log.info(f'[CRYPTO-CONV-BLOCK] {display}: {_conv_reason}')
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'conviction', 'detail': _conv_reason, 'score': score}
                     _csig_conv = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
                                         source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
                                         origin_signal_key=origin_key_c)
@@ -6787,7 +6420,6 @@ def auto_trade_crypto():
                     features_c, conf_c, asset_type='crypto')
                 if not _ml_ok:
                     log.info(f'[CRYPTO-ML-BLOCK] {display}: {_ml_reason} score={score}')
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'ml_gate', 'detail': f'{_ml_reason} ml_score={_ml_score}', 'score': score}
                     _csig_ml = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
                                         source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
                                         origin_signal_key=origin_key_c)
@@ -6801,7 +6433,6 @@ def auto_trade_crypto():
                 _skip_dz_c = abs(_raw_change_c) >= 2.5 or abs(change_24h) >= 2.5
                 if not _skip_dz_c and LEARNING_DEAD_ZONE_LOW <= _lc_c < LEARNING_DEAD_ZONE_HIGH:
                     log.info(f'[CRYPTO-DZ] {display}: conf={_lc_c:.1f} change={_raw_change_c:.1f}% → dead_zone BLOCK')
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'dead_zone', 'detail': f'confidence={_lc_c:.1f} change={_raw_change_c:.1f}% (zone {LEARNING_DEAD_ZONE_LOW}-{LEARNING_DEAD_ZONE_HIGH})', 'score': score}
                     _csig_id = record_signal_event(sig_enriched_c, features_c, feat_hash_c, conf_c, insight_c,
                                         source_type='crypto_signal', existing_signal_id=_sig_pre_id_c,
                                         origin_signal_key=origin_key_c)
@@ -6809,25 +6440,31 @@ def auto_trade_crypto():
                     with learning_lock: processed_signal_ids[ms_key_c] = {'sig_id': _csig_id, 'reason': 'learning_dead_zone'}
                     continue
 
-                # [v10.29] Crypto sizing — capital distribuído + WR-based dynamic sizing
+                # [v10.29] Crypto sizing — capital distribuído entre MAX_POSITIONS_CRYPTO slots
+                # + dynamic WR-based sizing multiplier (Manus insight)
                 _sym_max = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)
+                # [v10.14] Posição baseada no portfolio TOTAL de crypto
                 _crypto_port_total = max(
                     crypto_capital + sum(t.get('position_value',0) for t in crypto_open),
                     INITIAL_CAPITAL_CRYPTO)
-                _regime_csize_m, _regime_csl_tmp, _regime_cinfo = get_regime_multiplier()
+                _regime_csize_m, _regime_csl_tmp, _regime_cinfo = get_regime_multiplier()  # [v10.17]
+                # [v10.28] Crypto regime floor: crypto é naturalmente volátil, regime
+                # HIGH_VOL não deve penalizar tanto — floor 0.75x (era 0.6x sem floor)
                 _regime_csize_m = max(_regime_csize_m, 0.75)
+                # [v10.28] Score factor mais agressivo para crypto: 0.80 base (era 0.70)
                 _crypto_pos_target = _crypto_port_total / MAX_POSITIONS_CRYPTO * (0.80 + score_factor * 0.20)
+                # [v10.28] Risk mult floor para crypto: mínimo 0.6 (era 0.3 global)
                 _risk_mult_crypto = max(risk_mult_c, 0.6)
                 # [v10.29] Dynamic WR-based sizing: allocate more to proven winners
                 _wr_sizing_mult = get_symbol_wr_sizing_mult(display, 'crypto')
-                _min_crypto_pos = max(80_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.12)
+                # [v10.28] Mínimo por posição: 15% do slot (era 50K fixo)
+                _min_crypto_pos = max(80_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.12)  # [v10.29] min 80K (era 100K), 12% slot (era 15%) — mais ativos = slots menores
                 desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m * _wr_sizing_mult, _min_crypto_pos), _sym_max)
                 if _wr_sizing_mult != 1.0:
                     log.info(f'[CRYPTO-WR-SIZE] {display}: wr_mult={_wr_sizing_mult:.2f} desired={desired_pos:,.0f}')
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'risk_check', 'detail': risk_reason, 'score': score}
                     # [v10.3.3-F3] Motivo real preservado
                     real_reason_c = risk_reason.split()[0] if risk_reason else 'risk_blocked'
                     is_perm_c = 'KILL_SWITCH' in risk_reason or 'DRAWDOWN' in risk_reason
@@ -6846,9 +6483,7 @@ def auto_trade_crypto():
                             'reason': 'kill_switch' if is_perm_c else real_reason_c}
                     if is_perm_c: break
                     continue
-                if approved_size<=0:
-                    _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'risk_zero_size', 'detail': f'approved_size={approved_size}', 'score': score}
-                    continue
+                if approved_size<=0: continue
 
                 # [V91-1] Gerar IDs ANTES do lock
                 pre_trade_id = gen_id('CRY'); pre_order_id = gen_id('ORD')
@@ -6905,7 +6540,6 @@ def auto_trade_crypto():
                         # impedindo reavaliação futura. Padrão simétrico ao bloco stocks (linhas 3285-3290).
                         _c_block2 = reason2 if not ok2 else 'capital'
                         log.info(f'Crypto Risk-2 {display}: {_c_block2}')
-                        _diag_coins[display] = {'status': 'BLOCKED', 'filter': 'second_validation', 'detail': _c_block2, 'score': score}
                         record_shadow_decision(sig_id_c, sig_enriched_c, _c_block2)
                         is_perm_c = 'DUPLICATE' in (_c_block2 or '').upper()
                         with learning_lock:
@@ -6915,7 +6549,6 @@ def auto_trade_crypto():
                             }
 
                 if trade is None: continue
-                _diag_coins[display] = {'status': 'EXECUTED', 'filter': None, 'detail': f'trade_id={pre_trade_id} dir={direction} size={approved_size:.0f}', 'score': score}
 
                 # [FIX-2] Vincular trade_id e order_id ao signal_event imediatamente
                 update_signal_attribution(sig_id_c, pre_trade_id, pre_order_id)
@@ -6930,8 +6563,6 @@ def auto_trade_crypto():
                 _last_trade_opened['crypto'] = time.time()  # [v10.16] inactivity tracking
                 audit('TRADE_OPENED',{'id':pre_trade_id,'symbol':display,'direction':direction,'score':score})
                 enqueue_persist('trade',trade)
-            # [v10.30] Flush diagnostics after full coin loop
-            _crypto_diag['coins'] = _diag_coins
         except Exception as e:
             import traceback
             log.error(f'auto_trade_crypto: {e}\n{traceback.format_exc()}')
@@ -7671,7 +7302,7 @@ def arbi_scan_loop():
                             'current_spread':spread['spread_pct'],
                             'position_size':round(pos,2),
                             'pnl':0,'pnl_pct':0,'peak_pnl_pct':0,
-                            'fx_rate':spread['fx_rate'],'fx_rate_entry':spread['fx_rate'],'fx_ts':spread.get('fx_ts',_entry_ts),
+                            'fx_rate':spread['fx_rate'],'fx_ts':spread.get('fx_ts',_entry_ts),
                             # Timestamps Sprint 1
                             'entry_ts':_entry_ts,
                             'signal_ts_a':spread.get('signal_ts_a',_entry_ts),
@@ -7759,20 +7390,6 @@ def arbi_monitor_loop():
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else: reason='TIMEOUT'
                     if reason:
-                        # [FORENSIC] Snapshot de saída — preços, FX, bid/ask no momento do close
-                        _sd_exit = arbi_spreads.get(trade['pair_id']) or {}
-                        if _sd_exit:
-                            trade['price_a_exit'] = _sd_exit.get('price_a')
-                            trade['price_b_exit'] = _sd_exit.get('price_b')
-                            trade['price_a_usd_norm_exit'] = _sd_exit.get('price_a_usd')
-                            trade['price_b_usd_norm_exit'] = _sd_exit.get('price_b_usd')
-                            trade['fx_rate_exit'] = _sd_exit.get('fx_rate')
-                            trade['bid_a_exit'] = _sd_exit.get('bid_a')
-                            trade['ask_a_exit'] = _sd_exit.get('ask_a')
-                            trade['bid_b_exit'] = _sd_exit.get('bid_b')
-                            trade['ask_b_exit'] = _sd_exit.get('ask_b')
-                            trade['spread_bps_a_exit'] = _sd_exit.get('spread_bps_a')
-                            trade['spread_bps_b_exit'] = _sd_exit.get('spread_bps_b')
                         # [v10.20] Ledger: RELEASE + PNL_CREDIT arbi (ordem contábil correta)
                         arbi_capital += trade['position_size']
                         ledger_record('arbi', 'RELEASE', trade.get('name', trade.get('pair_id', '')),
@@ -7819,7 +7436,6 @@ def arbi_monitor_loop():
 # [C-1] WATCHDOG — timeout por thread + [V9-3] _check_degraded
 # ═══════════════════════════════════════════════════════════════
 def watchdog():
-    global RISK_KILL_SWITCH, _queue_alert_last
     while True:
         beat('watchdog')
         # [v10.16] Periodic checks
@@ -7828,31 +7444,6 @@ def watchdog():
             check_inactivity_alert()
             persist_calibration()    # [v10.18] salvar calibração a cada 5min
             run_reconciliation()     # [v10.18] reconciliar capital a cada 10min
-
-            # [v10.29d] Auto-reset RISK_KILL_SWITCH in watchdog (doesn't depend on check_risk being called)
-            if RISK_KILL_SWITCH:
-                try:
-                    _auto_reset_kill_switch_if_safe()
-                    if not RISK_KILL_SWITCH:
-                        log.info('[v10.29d] WATCHDOG: RISK_KILL_SWITCH auto-reset to False')
-                except Exception as _ar_e:
-                    log.warning(f'[v10.29d] watchdog auto-reset: {_ar_e}')
-
-            # [v10.29d] Auto-deactivate ExternalKillSwitch if auto_resume_at has passed
-            try:
-                _all_ks = ext_kill_switch.check_all(get_db)
-                for _scope_name, _scope_info in _all_ks.items():
-                    if _scope_info.get('active') and _scope_info.get('auto_resume_at'):
-                        _resume_at_str = _scope_info['auto_resume_at']
-                        try:
-                            _resume_at = datetime.fromisoformat(str(_resume_at_str).replace('Z',''))
-                            if datetime.utcnow() > _resume_at:
-                                ext_kill_switch.deactivate(_scope_name, 'SYSTEM_AUTO_RESUME', get_db)
-                                log.info(f'[v10.29d] ExternalKillSwitch {_scope_name} auto-resumed (was due at {_resume_at_str})')
-                        except Exception:
-                            pass
-            except Exception as _eks_e:
-                log.debug(f'watchdog ext_ks check: {_eks_e}')
 
             # [v10.22] Institutional risk check
             try:
@@ -7886,6 +7477,7 @@ def watchdog():
         # [V91-3] Alerta de fila crítica direto no watchdog — não depende do persistence_worker
         qsize = urgent_queue.qsize()
         if qsize >= URGENT_QUEUE_CRIT:
+            global _queue_alert_last
             if now - _queue_alert_last > 300:
                 _queue_alert_last = now
                 log.critical(f'[V91-3] WATCHDOG: urgent_queue CRÍTICA {qsize} itens — DB pode estar travado')
@@ -7912,6 +7504,7 @@ def watchdog():
 
             if count>=5:  # [v10.9] era 3x — aumentado para reduzir falsos positivos
                 log.critical(f'WATCHDOG: {name} failed 5x — activating kill switch')
+                global RISK_KILL_SWITCH
                 RISK_KILL_SWITCH=True
                 send_whatsapp(f'CRITICO: thread {name} falhou 3x ({problem}). Kill switch ativado.')
                 thread_restart_count[name]=0
@@ -7923,16 +7516,14 @@ def watchdog():
                     # [v10.14-FIX] Verificar limite de threads antes de criar novo
                     import threading as _th
                     active = _th.active_count()
-                    if active > 200:  # [FORENSIC] era 45 — bloqueava arbi_learning_loop
-                        _names = sorted([t.name for t in _th.enumerate()])
-                        log.error(f'WATCHDOG: {name} NÃO reiniciada — threads ativos={active} (limite 200). Threads: {_names[:60]}')
+                    if active > 45:  # limite seguro (padrão Python = 50)
+                        log.error(f'WATCHDOG: {name} NÃO reiniciada — threads ativos={active} (limite atingido)')
                         send_whatsapp(f'CRITICO: thread starvation! {active} threads ativos. Reiniciar o serviço.')
                         # Marcar heartbeat para não tentar de novo em loop
                         thread_heartbeat[name] = time.time()
                     else:
-                        new_t=threading.Thread(target=fn,daemon=True,name=name); new_t.start()
+                        new_t=threading.Thread(target=fn,daemon=True); new_t.start()
                         thread_health[name]=new_t
-                        _register_current_thread(name, new_t)  # [FIX-ZOMBIE] old thread dies on next beat
                         thread_restart_count[name]=count+1
                         thread_last_restart[name]=now
                         thread_heartbeat[name]=now
@@ -7993,7 +7584,163 @@ def network_sync_loop():
             time.sleep(60)
 
 
+# ═══ [v10.35] Derivatives boot reconciliation + monitoring loop ═══
+def _rehydrate_derivatives_state():
+    """
+    Rehydrate DerivativesExecutionEngine.active_trades and
+    DerivativesCapitalManager.active_allocations from DB after every restart.
+
+    Without this, the engine loses all knowledge of previously opened paper trades
+    when Railway restarts the process, so the monitor never generates exits and
+    PnL never gets marked. Called once during start_background_threads().
+    """
+    from datetime import datetime as _dt_fix
+    if _deriv_exec is None or _deriv_cap_mgr is None:
+        log.warning('[v10.35] Rehydrate skipped — execution/capital not initialized')
+        return
+
+    conn = None
+    try:
+        conn = get_db()
+        if conn is None:
+            log.warning('[v10.35] Rehydrate skipped — no DB connection')
+            return
+
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """SELECT trade_id, strategy_type, symbol, strike, expiry,
+                      structure_type, expected_edge, notional,
+                      liquidity_score, active_status, opened_at, status
+               FROM strategy_master_trades
+               WHERE status = 'OPEN'
+               ORDER BY opened_at ASC
+               LIMIT 2000"""
+        )
+        trade_rows = cursor.fetchall()
+
+        # Index legs per trade_id
+        legs_by_trade = {}
+        if trade_rows:
+            tids = [r['trade_id'] for r in trade_rows]
+            placeholders = ','.join(['%s'] * len(tids))
+            cursor.execute(
+                f"""SELECT trade_id, leg_type, symbol, qty, side,
+                           intended_price, executed_price, fill_status,
+                           slippage, latency_ms, timestamp
+                    FROM strategy_trade_legs
+                    WHERE trade_id IN ({placeholders})""",
+                tids,
+            )
+            for row in cursor.fetchall():
+                legs_by_trade.setdefault(row['trade_id'], []).append(row)
+        cursor.close()
+
+        restored_trades = 0
+        restored_capital = 0
+        for row in trade_rows:
+            try:
+                # Rebuild TradeLeg objects
+                trade_legs = []
+                for i, lrow in enumerate(legs_by_trade.get(row['trade_id'], [])):
+                    try:
+                        lstatus = LegStatus(lrow['fill_status'])
+                    except Exception:
+                        lstatus = LegStatus.FILLED
+                    leg = TradeLeg(
+                        leg_id=f"{row['trade_id']}-L{i}",
+                        leg_type=lrow['leg_type'],
+                        symbol=lrow['symbol'],
+                        qty=int(lrow['qty'] or 0),
+                        side=lrow['side'],
+                        intended_price=float(lrow['intended_price'] or 0),
+                        executed_price=float(lrow['executed_price'] or 0),
+                        slippage=float(lrow['slippage'] or 0),
+                        latency_ms=int(lrow['latency_ms'] or 0),
+                        status=lstatus,
+                        timestamp=lrow['timestamp'] or _dt_fix.utcnow(),
+                    )
+                    trade_legs.append(leg)
+
+                trade = DerivativesTrade(
+                    trade_id=row['trade_id'],
+                    strategy=(row['strategy_type'] or '').lower(),
+                    symbol=row['symbol'] or '',
+                    structure_type=row['structure_type'] or '',
+                    strike=float(row['strike'] or 0),
+                    expiry=row['expiry'] or '',
+                    expected_edge=float(row['expected_edge'] or 0),
+                    notional=float(row['notional'] or 0),
+                    legs=trade_legs,
+                    status=TradeStatus.OPEN,
+                    opened_at=row['opened_at'] or _dt_fix.utcnow(),
+                    liquidity_score=float(row['liquidity_score'] or 0),
+                    active_status=row['active_status'] or '',
+                )
+
+                _deriv_exec.active_trades[trade.trade_id] = trade
+                restored_trades += 1
+
+                # Rebuild capital allocation (margin ~15% of notional)
+                try:
+                    margin_amt = float(row['notional'] or 0) * 0.15
+                    from modules.derivatives.capital import AllocationRecord as _AR
+                    rec = _AR(
+                        trade_id=trade.trade_id,
+                        strategy=trade.strategy,
+                        symbol=trade.symbol,
+                        amount=margin_amt,
+                        direction='ALLOCATE',
+                        timestamp=trade.opened_at,
+                    )
+                    _deriv_cap_mgr.active_allocations[trade.trade_id] = rec
+                    _deriv_cap_mgr.allocated += margin_amt
+                    _deriv_cap_mgr.strategy_allocated[trade.strategy] += margin_amt
+                    restored_capital += 1
+                except Exception as _cap_err:
+                    log.debug(f'[v10.35] Capital restore failed for {trade.trade_id}: {_cap_err}')
+            except Exception as _trow_err:
+                log.debug(f"[v10.35] Trade restore failed for {row.get('trade_id')}: {_trow_err}")
+
+        log.info(
+            f'[v10.35] Rehydrated {restored_trades} open trades into exec.active_trades, '
+            f'{restored_capital} into capital.active_allocations '
+            f'(allocated=R${_deriv_cap_mgr.allocated:,.0f})'
+        )
+    except Exception as e:
+        log.warning(f'[v10.35] Rehydrate error: {e}')
+        import traceback as _tb
+        _tb.print_exc()
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def deriv_monitor_loop():
+    """Derivatives monitoring background loop — mark-to-market + exit triggers."""
+    loop_name = 'deriv_monitor_loop'
+    if _deriv_monitor is None:
+        log.warning(f'[v10.35] {loop_name} skipped — monitor not initialized')
+        # Keep thread alive but idle so watchdog doesn't churn
+        while True:
+            beat(loop_name)
+            time.sleep(60)
+    try:
+        _deriv_monitor.monitoring_loop(beat, log)
+    except Exception as e:
+        log.error(f'[v10.35] {loop_name} crashed: {e}')
+        import traceback; traceback.print_exc()
+
+
 def start_background_threads():
+    # [v10.35] Rehydrate paper trades from DB BEFORE threads start so monitor sees them
+    try:
+        _rehydrate_derivatives_state()
+    except Exception as _rh_err:
+        log.warning(f'[v10.35] Rehydrate call failed: {_rh_err}')
+
     defs = {
         'stock_price_loop':       stock_price_loop,
         'crypto_price_loop':      crypto_price_loop,
@@ -8013,6 +7760,7 @@ def start_background_threads():
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
         'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
         'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
+        'deriv_monitor_loop':     deriv_monitor_loop,        # [v10.35] paper MTM + exits (stop/target/expiry)
     }
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
     _deriv_loop_args = dict(
@@ -8031,27 +7779,11 @@ def start_background_threads():
         'interlisted_scan_loop': interlisted_scan_loop,
         'dividend_arb_scan_loop': dividend_arb_scan_loop,
         'vol_arb_scan_loop': vol_arb_scan_loop,
-        # v10.38 — new arbitrage loops
+        # [v10.38] New arbitrage strategies
         'ibov_basis_scan_loop': ibov_basis_scan_loop,
         'di_calendar_scan_loop': di_calendar_scan_loop,
         'interlisted_hedged_scan_loop': interlisted_hedged_scan_loop,
     }
-    # [v10.41] Wire deriv_monitor_loop into watchdog-managed thread system
-    _dm = globals().get('_deriv_services', {}).get('deriv_monitor')
-    if _dm:
-        def _make_monitor_wrapper(_monitor_obj):
-            def _monitor_fn():
-                try:
-                    _monitor_obj.monitoring_loop(beat, log)
-                except Exception as _e:
-                    log.error(f'[v10.41] deriv_monitor_loop crashed: {_e}')
-                    import traceback; traceback.print_exc()
-            return _monitor_fn
-        defs['deriv_monitor_loop'] = _make_monitor_wrapper(_dm)
-        log.info('[v10.41] deriv_monitor_loop added to watchdog-managed threads')
-    else:
-        log.warning('[v10.41] deriv_monitor not available — monitor thread will not start')
-
     for dname, dfn in _deriv_loops.items():
         if dfn is None:
             log.warning(f'[v10.25] {dname} not available (stub mode)')
@@ -8070,9 +7802,8 @@ def start_background_threads():
     for name,fn in defs.items():
         thread_fns[name]=fn; thread_restart_count[name]=0
         thread_last_restart[name]=0; thread_heartbeat[name]=now
-        t=threading.Thread(target=fn,daemon=True,name=name); t.start()
+        t=threading.Thread(target=fn,daemon=True); t.start()
         thread_health[name]=t
-        _register_current_thread(name, t)  # [FIX-ZOMBIE]
         log.info(f'Thread started: {name} (hb_timeout={THREAD_HEARTBEAT_TIMEOUT.get(name,DEFAULT_HB_TIMEOUT)}s)')
 
 # ═══════════════════════════════════════════════════════════════
@@ -8221,7 +7952,8 @@ def cedro_health():
 
 @app.route('/cedro/analysis/<symbol>')
 def cedro_analysis(symbol):
-    """[v10.31] Full Cedro real-time analysis for a symbol."""
+    """[v10.31] Full Cedro real-time analysis for a symbol:
+    price, prev, day/week/month/year high-low, market cap, sector, bid/ask, volume, variations."""
     if not _cedro_socket or not _cedro_socket.enabled:
         return jsonify({'error': 'cedro_disabled'}), 503
     data = _cedro_socket.get_analysis(symbol)
@@ -8270,49 +8002,6 @@ def health():
         'learning_degraded': LEARNING_DEGRADED,   # [L-10]
         'threads':hb_status,'timestamp':datetime.utcnow().isoformat()
     })
-
-@app.route('/health/kill-switch')
-def health_kill_switch():
-    """[v10.29d] Public kill switch diagnostics."""
-    result = {
-        'risk_kill_switch': RISK_KILL_SWITCH,
-        'arbi_kill_switch': ARBI_KILL_SWITCH,
-    }
-    # Check ExternalKillSwitch from DB
-    try:
-        result['external'] = ext_kill_switch.check_all(get_db)
-    except Exception as e:
-        result['external_error'] = str(e)
-    # Drawdown info
-    try:
-        with state_lock:
-            s_closed = list(stocks_closed); c_closed = list(crypto_closed)
-        cutoff = (datetime.utcnow()-timedelta(days=1)).isoformat()
-        daily_net = sum(t.get('pnl',0) for t in s_closed+c_closed if t.get('closed_at','')>=cutoff)
-        total_cap = INITIAL_CAPITAL_STOCKS + INITIAL_CAPITAL_CRYPTO
-        dd = abs(min(daily_net,0))/total_cap*100 if total_cap>0 else 0
-        result['daily_net_24h'] = round(daily_net,2)
-        result['drawdown_pct'] = round(dd,4)
-        result['max_daily_dd_pct'] = MAX_DAILY_DRAWDOWN_PCT
-        result['auto_reset_threshold'] = MAX_DAILY_DRAWDOWN_PCT * 0.5
-        result['should_auto_reset'] = dd < MAX_DAILY_DRAWDOWN_PCT * 0.5
-        result['closed_24h_count'] = len([t for t in s_closed+c_closed if t.get('closed_at','')>=cutoff])
-    except Exception as e:
-        result['drawdown_error'] = str(e)
-    return jsonify(result)
-
-@app.route('/health/kill-switch/reset', methods=['POST'])
-def health_kill_switch_reset():
-    """[v10.29d] Force-reset both kill switches."""
-    global RISK_KILL_SWITCH
-    RISK_KILL_SWITCH = False
-    try:
-        for scope in ['global', 'stocks', 'crypto', 'arbi']:
-            ext_kill_switch.deactivate(scope, 'MANUAL_RESET', get_db)
-    except Exception as e:
-        return jsonify({'reset': 'partial', 'risk_ks': False, 'ext_error': str(e)})
-    log.info('[v10.29d] Both kill switches force-reset via /health/kill-switch/reset')
-    return jsonify({'reset': 'ok', 'risk_kill_switch': False, 'external': 'all_deactivated'})
 
 @app.route('/ops')
 @require_auth
@@ -8575,47 +8264,13 @@ def ticker_tape_js():
 @app.route('/api/info')
 def api_info():
     """API service info (previously served at /)."""
-    # [v10.29c] Provider diagnostics
-    _prov_info = {}
-    try:
-        _pm = _deriv_provider_mgr
-        if _pm:
-            for _pname, _pprov in getattr(_pm, '_providers', {}).items():
-                _prov_info[_pname] = {
-                    'registered': True,
-                    'active': getattr(_pprov, '_token', None) is not None or getattr(_pprov, '_authenticated', False),
-                    'type': type(_pprov).__name__,
-                }
-    except Exception:
-        pass
     return jsonify({
-        'service':'Egreja Investment AI','version':'10.41','status':'online',
+        'service':'Egreja Investment AI','version':'10.26.0','status':'online',
         'kill_switch':RISK_KILL_SWITCH,'arbi_kill_switch':ARBI_KILL_SWITCH,
         'market_regime':market_regime.get('mode','UNKNOWN'),
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'lse':is_lse_open(),'hkex':is_hkex_open(),'crypto':True},
         'deploy_mode':'single-process',
-        'degraded': _read_degraded()['active'],
-        'crypto_symbols_count': len(CRYPTO_SYMBOLS),
-        'crypto_prices_cached': len(crypto_prices),
-        'deriv_providers': _prov_info,
-        'deriv_sizer_active': _deriv_services.get('deriv_sizer') is not None,
-        'brapi_token_set': bool(BRAPI_TOKEN),
-        'cedro_socket': (lambda: {
-            'enabled': bool(_cedro_socket and _cedro_socket.enabled),
-            'connected': bool(_cedro_socket and _cedro_socket.enabled and getattr(_cedro_socket, 'healthcheck', lambda: {})().get('connected')),
-            'subscriptions': (_cedro_socket.healthcheck().get('subscriptions') if _cedro_socket and _cedro_socket.enabled else 0),
-            'cached_symbols': (_cedro_socket.healthcheck().get('cached_symbols') if _cedro_socket and _cedro_socket.enabled else 0),
-            'last_msg_age_s': (_cedro_socket.healthcheck().get('last_msg_age_s') if _cedro_socket and _cedro_socket.enabled else None),
-            'msg_count': (_cedro_socket.healthcheck().get('msg_count') if _cedro_socket and _cedro_socket.enabled else 0),
-            'is_realtime': bool(_cedro_socket and _cedro_socket.enabled and (_cedro_socket.healthcheck().get('last_msg_age_s') or 999) < 30),
-            'host': (_cedro_socket.healthcheck().get('host') if _cedro_socket and _cedro_socket.enabled else None),
-        })() if _cedro_socket is not None else {'enabled': False, 'connected': False, 'is_realtime': False},
-        'quote_providers': {
-            'b3_primary': 'cedro-socket' if (_cedro_socket and _cedro_socket.enabled and _cedro_socket.healthcheck().get('connected')) else 'brapi',
-            'b3_fallback': 'brapi',
-            'crypto_primary': 'binance',
-            'us_primary': 'polygon',
-        },
+        'degraded': _read_degraded()['active'],   # [V91-5] flag rápida
     })
 
 @app.route('/api/modules-debug')
@@ -8625,10 +8280,8 @@ def modules_debug():
     return jsonify({
         'registered_blueprints': bp_names,
         'long_horizon_loaded': 'long_horizon' in bp_names,
-        'monthly_picks_loaded': any('monthly' in n for n in bp_names),
         'brain_loaded': 'brain' in bp_names or 'unified_brain' in bp_names,
         'lh_error': _lh_load_error,
-        'mp_error': _mp_load_error,
         'brain_error': _brain_load_error,
     })
 
@@ -8641,14 +8294,12 @@ def ticker_tape():
         if not isinstance(data, dict):
             continue
         ticker = sym.replace('.SA', '')
-        src = data.get('source', '')
         items.append({
             't': ticker,
             'p': round(data.get('price', 0), 2),
             'c': round(data.get('change_pct', 0), 2),
             'm': data.get('market', 'B3'),
             'cur': 'BRL' if data.get('market') == 'B3' else 'USD',
-            'src': 'cedro' if 'cedro' in src else ('brapi' if 'brapi' in src else src or 'unknown'),
         })
     # Crypto
     for sym, price in dict(crypto_prices).items():
@@ -9391,30 +9042,6 @@ def performance_crypto():
         })
     except Exception as e: return jsonify({'error':str(e)}), 500
 
-@app.route('/performance/crypto-diagnostics')
-def performance_crypto_diagnostics():
-    """[v10.30] Per-coin diagnostics: which filter blocked each crypto coin in the last loop."""
-    diag = dict(_crypto_diag)
-    coins = diag.get('coins', {})
-    # Summary by filter
-    filter_counts = {}
-    scored_blocked = []
-    for sym, info in coins.items():
-        f = info.get('filter', 'unknown')
-        filter_counts[f] = filter_counts.get(f, 0) + 1
-        if info.get('score') is not None and info['score'] >= MIN_SCORE_AUTO_CRYPTO and info.get('status') == 'BLOCKED':
-            scored_blocked.append({'symbol': sym, **info})
-    return jsonify({
-        'last_run': diag.get('last_run'),
-        'loop_count': diag.get('loop_count', 0),
-        'open_trades': diag.get('open_count', 0),
-        'total_coins': len(coins),
-        'filter_summary': filter_counts,
-        'high_score_blocked': sorted(scored_blocked, key=lambda x: x.get('score', 0), reverse=True),
-        'all_coins': {k: v for k, v in sorted(coins.items(), key=lambda x: x[1].get('score') or 0, reverse=True)},
-        'min_score_threshold': MIN_SCORE_AUTO_CRYPTO,
-    })
-
 @app.route('/risk/reset_arbi_kill_switch', methods=['POST'])
 def reset_arbi_kill_switch():
     global ARBI_KILL_SWITCH
@@ -9658,46 +9285,6 @@ def arbi_fix_trade():
     finally:
         try: cur.close(); conn.close()
         except: pass
-
-@app.route('/arbitrage/forensic')
-def arbi_forensic_route():
-    """[FORENSIC] Diagnóstico ao vivo do motor de Arbi. Auth bypass via /arbitrage."""
-    import threading as _th, os as _os
-    with state_lock:
-        open_t=list(arbi_open); closed_t_count=len(arbi_closed); cap=arbi_capital
-    th_names = sorted([t.name for t in _th.enumerate()])
-    arbi_thread_state = {}
-    for n in ('arbi_scan_loop','arbi_monitor_loop','arbi_learning_loop'):
-        hb = thread_heartbeat.get(n)
-        arbi_thread_state[n] = {
-            'last_beat_iso': datetime.utcfromtimestamp(hb).isoformat() if hb else None,
-            'seconds_ago': round(time.time()-hb,1) if hb else None,
-            'restart_count': thread_restart_count.get(n,0),
-            'alive': any(t.name==n for t in _th.enumerate()),
-        }
-    lost_tail=[]; forensic_tail=[]
-    try:
-        if _os.path.exists(ARBI_LOST_FILE):
-            with open(ARBI_LOST_FILE) as _f:
-                lost_tail = _f.readlines()[-30:]
-    except: pass
-    try:
-        if _os.path.exists(ARBI_FORENSIC_FILE):
-            with open(ARBI_FORENSIC_FILE) as _f:
-                forensic_tail = _f.readlines()[-30:]
-    except: pass
-    return jsonify({
-        'persist_stats': _arbi_persist_stats,
-        'arbi_open_in_memory': len(open_t),
-        'arbi_closed_in_memory': closed_t_count,
-        'arbi_capital': round(cap,2),
-        'urgent_queue_size': urgent_queue.qsize(),
-        'thread_count_total': _th.active_count(),
-        'arbi_threads': arbi_thread_state,
-        'all_thread_names': th_names,
-        'lost_trades_tail': lost_tail,
-        'forensic_log_tail': forensic_tail,
-    })
 
 @app.route('/arbitrage/trades')
 def arbi_trades_route():
@@ -10705,7 +10292,8 @@ def _brain_hourly_reminder():
         time.sleep(60)
 
 def _report_scheduler():
-    """Scheduler automatico: diario 20h BRT, semanal sextas, mensal ultimo dia."""
+    """Scheduler automatico: diario 20h BRT, semanal sextas, mensal ultimo dia.
+    [v10.36] Também dispara o snapshot EOD de top opportunities às 17:30 BRT (seg-sex)."""
     import pytz, calendar as _cal
     brt = pytz.timezone('America/Sao_Paulo')
     sent = set()
@@ -10714,8 +10302,20 @@ def _report_scheduler():
             beat('report_scheduler')
             now_brt = datetime.now(brt)
             key_d  = now_brt.strftime('%Y-%m-%d')
-            hour   = now_brt.hour; wd = now_brt.weekday()
+            hour   = now_brt.hour; minute = now_brt.minute; wd = now_brt.weekday()
             last_d = _cal.monthrange(now_brt.year, now_brt.month)[1]
+            # [v10.36] EOD Top Opportunities snapshot — 17:30 BRT, seg-sex
+            if wd < 5 and hour == 17 and minute >= 30:
+                topk = key_d + '-TOPOPPS'
+                if topk not in sent:
+                    sent.add(topk)
+                    try:
+                        _res = snapshot_top_opportunities(get_db, log=log,
+                                                         snapshot_date=now_brt.date(),
+                                                         top_n=10)
+                        log.info(f'[v10.36] top-opps snapshot: {_res}')
+                    except Exception as _e:
+                        log.error(f'[v10.36] top-opps snapshot error: {_e}')
             if hour == 20:
                 if key_d not in sent:
                     sent.add(key_d)
@@ -10933,33 +10533,6 @@ if __name__ == '__main__':
         log.warning(f'Pre-init cleanup error: {_e}')
     init_all_tables()
 
-    # [v10.29c] Seed active_status_registry DB table after tables are created
-    try:
-        _seed_conn = get_db()
-        if _seed_conn:
-            _seed_cur = _seed_conn.cursor()
-            _seed_assets = ['PETR4','VALE3','BOVA11','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3']
-            _seed_strats = ['PCP','FST','ROLL_ARB','ETF_BASKET','SKEW_ARB','INTERLISTED','DIVIDEND_ARB','VOL_ARB']
-            _seed_tier_str_val = os.environ.get('DERIV_SEED_TIER','PAPER_SMALL')
-            _seed_n = 0
-            for _sym in _seed_assets:
-                for _strat in _seed_strats:
-                    try:
-                        _seed_cur.execute(
-                            """INSERT INTO active_status_registry (symbol, strategy_type, current_status, updated_at)
-                            VALUES (%s, %s, %s, NOW())
-                            ON DUPLICATE KEY UPDATE updated_at = NOW()""",
-                            (_sym, _strat, _seed_tier_str_val))
-                        _seed_n += 1
-                    except Exception:
-                        pass
-            _seed_conn.commit()
-            _seed_cur.close()
-            _seed_conn.close()
-            log.info(f'[v10.29c] active_status_registry DB seeded: {_seed_n} rows')
-    except Exception as _e:
-        log.warning(f'[v10.29c] DB seed after init_all_tables failed: {_e}')
-
     # [v3.0] Create unified brain tables (persistent memory — the brain never forgets)
     try:
         _brain_conn = get_db()
@@ -10970,43 +10543,27 @@ if __name__ == '__main__':
     except Exception as _be:
         log.warning(f'[v3.0] Brain tables creation warning: {_be}')
 
-    # [v3.2] Long Horizon + Monthly Picks tables
+    # [v10.27] Long Horizon tables (lh_assets, lh_scores, etc.)
     try:
         _lh_conn = get_db()
         if _lh_conn:
             from modules.long_horizon.schema import create_long_horizon_tables
             create_long_horizon_tables(_lh_conn)
             _lh_conn.close()
-            log.info('[v3.2] Long Horizon tables created/verified (10 tables)')
+            log.info('[v10.27] Long Horizon tables created/verified (10 tables)')
     except Exception as _lhe:
-        log.warning(f'[v3.2] Long Horizon tables warning: {_lhe}')
+        log.warning(f'[v10.27] Long Horizon tables warning: {_lhe}')
 
+    # [v3.2] Monthly Picks tables (8 tables — modular sleeve)
     try:
         _mp_conn = get_db()
         if _mp_conn:
             from modules.long_horizon.monthly_picks.repositories import create_monthly_picks_tables
             create_monthly_picks_tables(_mp_conn)
             _mp_conn.close()
-            log.info('[v3.2] Monthly Picks tables created/verified (8 tables)')
+            log.info('[v3.2] Monthly Picks tables created/verified (8 tables — modular sleeve)')
     except Exception as _mpe:
         log.warning(f'[v3.2] Monthly Picks tables warning: {_mpe}')
-
-    # [v10.27] Seed sleeve_status = paper_full in mp_config
-    try:
-        _cfg_conn = get_db()
-        if _cfg_conn:
-            _cfg_cur = _cfg_conn.cursor()
-            _cfg_cur.execute("""
-                INSERT INTO mp_config (config_key, config_value)
-                VALUES ('sleeve_status', 'paper_full')
-                ON DUPLICATE KEY UPDATE config_value = 'paper_full'
-            """)
-            _cfg_conn.commit()
-            _cfg_cur.close()
-            _cfg_conn.close()
-            log.info('[v10.27] mp_config sleeve_status seeded to paper_full')
-    except Exception as _cfe:
-        log.warning(f'[v10.27] mp_config seed warning: {_cfe}')
 
     fetch_fx_rates()          # [v10.6-P1-4] FX carregado ANTES de stock — ADR usa USDBRL
     fetch_crypto_prices()

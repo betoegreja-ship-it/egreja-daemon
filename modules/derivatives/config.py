@@ -37,7 +37,7 @@ class PCPConfig:
     enabled: bool = True
     max_notional: float = 600_000.0
     max_daily_loss: float = 12_000.0
-    max_positions: int = 12
+    max_positions: int = 50
     safety_factor: float = 1.75
     min_edge_bps: float = 5.0
     
@@ -169,7 +169,7 @@ class DerivativesConfig:
                 "enabled": True,
                 "max_notional": 475_000.0,
                 "max_daily_loss": 12_000.0,
-                "max_positions": 20,
+                "max_positions": 50,  # [v10.42] was 20 — too low, capped immediately
                 "safety_factor": 1.5,
                 "min_edge_bps": 10.0,
                 "heartbeat_timeout": 25,
@@ -191,6 +191,33 @@ class DerivativesConfig:
                 "safety_factor": 1.9,
                 "min_edge_bps": 12.0,
                 "heartbeat_timeout": 45,
+            },
+            "ibov_basis": {  # [v10.42] was missing — blocked by no config
+                "enabled": True,
+                "max_notional": 500_000.0,
+                "max_daily_loss": 10_000.0,
+                "max_positions": 25,
+                "safety_factor": 1.7,
+                "min_edge_bps": 5.0,
+                "heartbeat_timeout": 30,
+            },
+            "di_calendar": {  # [v10.42]
+                "enabled": True,
+                "max_notional": 600_000.0,
+                "max_daily_loss": 12_000.0,
+                "max_positions": 30,
+                "safety_factor": 1.6,
+                "min_edge_bps": 3.0,
+                "heartbeat_timeout": 30,
+            },
+            "interlisted_hedged": {  # [v10.42]
+                "enabled": True,
+                "max_notional": 500_000.0,
+                "max_daily_loss": 10_000.0,
+                "max_positions": 30,
+                "safety_factor": 1.5,
+                "min_edge_bps": 8.0,
+                "heartbeat_timeout": 30,
             },
         }
     )

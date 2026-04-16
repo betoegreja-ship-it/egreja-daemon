@@ -230,7 +230,7 @@ def _try_autonomous_execution(
             symbol=symbol,
             edge_bps=edge_bps,
             confidence=confidence,
-            liquidity_tier=active_status_str or 'PAPER_FULL',
+            liquidity_tier=(active_status_str or 'PAPER_FULL').upper(),  # [v10.43] ensure uppercase for sizer
             capital_available=cap_snap.available,
             daily_loss_remaining=cap_snap.daily_loss_remaining,
             spot_price=spot_price,
@@ -347,7 +347,7 @@ def _try_autonomous_exec_generic(
         tier_str = 'OBSERVE'
         if active_status_reg:
             tier_obj = active_status_reg.get_status(symbol, strategy.upper())
-            tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+            tier_str = (tier_obj.value if tier_obj else 'OBSERVE').upper()  # [v10.43] fix case
 
         if tier_str not in ('PAPER_FULL', 'PAPER_SMALL'):
             return False
@@ -710,7 +710,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                             tier_str = ''
                             if active_status_reg:
                                 tier_obj = active_status_reg.get_status(asset, 'PCP')
-                                tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+                                tier_str = (tier_obj.value if tier_obj else 'OBSERVE').upper()  # [v10.43] fix case
 
                             # Per-asset cap: max 2 open PCP positions per underlying
                             _MAX_PCP_PER_ASSET = 2
@@ -748,7 +748,7 @@ def pcp_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, risk_che
                                     notional_estimate=spot_price * 100,
                                     strike=strike, expiry=expiry_str,
                                     legs=legs, spot_price=spot_price,
-                                    liquidity_score=0.0,
+                                    liquidity_score=_liq_score or 0.0,  # [v10.43] pass real score
                                     active_status_str=tier_str,
                                 )
 
@@ -1716,7 +1716,7 @@ def ibov_basis_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, r
                 tier_str = 'OBSERVE'
                 if active_status_reg:
                     tier_obj = active_status_reg.get_status(future_underlying, strategy_upper)
-                    tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+                    tier_str = (tier_obj.value if tier_obj else 'OBSERVE').upper()  # [v10.43] fix case
                 if tier_str not in ('PAPER_FULL', 'PAPER_SMALL'):
                     continue
 
@@ -1917,7 +1917,7 @@ def di_calendar_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services_dict, 
                     tier_str = 'OBSERVE'
                     if active_status_reg:
                         tier_obj = active_status_reg.get_status(f'DI1_{pair_label}', strategy_upper)
-                        tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+                        tier_str = (tier_obj.value if tier_obj else 'OBSERVE').upper()  # [v10.43] fix case
                     if tier_str not in ('PAPER_FULL', 'PAPER_SMALL'):
                         continue
 
@@ -2067,7 +2067,7 @@ def interlisted_hedged_scan_loop(beat_fn, get_db_fn, log, provider_mgr, services
                     tier_str = 'OBSERVE'
                     if active_status_reg:
                         tier_obj = active_status_reg.get_status(b3_ticker, strategy_upper)
-                        tier_str = tier_obj.value if tier_obj else 'OBSERVE'
+                        tier_str = (tier_obj.value if tier_obj else 'OBSERVE').upper()  # [v10.43] fix case
                     if tier_str not in ('PAPER_FULL', 'PAPER_SMALL'):
                         continue
 

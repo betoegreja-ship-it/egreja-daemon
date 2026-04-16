@@ -39,7 +39,7 @@ class PCPConfig:
     max_daily_loss: float = 12_000.0
     max_positions: int = 50
     safety_factor: float = 1.75
-    min_edge_bps: float = 5.0
+    min_edge_bps: float = 0.5  # [v10.43] was 5.0 — too high for B3 PCP edges (typically 0.1-2.0 bps)
     
     # Strike selection
     strikes: List[str] = field(default_factory=lambda: ["ATM", "1_ITM", "2_OTM"])

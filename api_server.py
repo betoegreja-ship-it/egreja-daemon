@@ -663,17 +663,9 @@ try:
                 get_db_fn=get_db,
             )
             _deriv_services['deriv_monitor'] = _deriv_monitor
-
-            import threading as _th
-            def _deriv_monitor_runner():
-                try:
-                    _deriv_monitor.monitoring_loop(beat, log)
-                except Exception as _mloop_err:
-                    log.error(f'[v10.32] deriv_monitor_loop crashed: {_mloop_err}')
-
-            _mthr = _th.Thread(target=_deriv_monitor_runner, name='deriv_monitor_loop', daemon=True)
-            _mthr.start()
-            log.info('[v10.32] DerivativesMonitor thread started — positions will now evaluate exits')
+            # [v10.41] Thread is now started via defs{} loop (watchdog-managed).
+            # Do NOT start separately here — that causes orphan thread outside watchdog.
+            log.info('[v10.41] DerivativesMonitor created — thread will start in main loop (watchdog-managed)')
         else:
             log.warning('[v10.32] DerivativesMonitor NOT started: missing deriv_execution or greeks_calc')
     except Exception as _mon_err:
@@ -935,6 +927,8 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'interlisted_scan_loop': 300,
     'dividend_arb_scan_loop': 600,
     'vol_arb_scan_loop': 300,
+    # [v10.41] Monitor loop — beats every 15s, give 60s grace
+    'deriv_monitor_loop': 60,
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -8042,6 +8036,22 @@ def start_background_threads():
         'di_calendar_scan_loop': di_calendar_scan_loop,
         'interlisted_hedged_scan_loop': interlisted_hedged_scan_loop,
     }
+    # [v10.41] Wire deriv_monitor_loop into watchdog-managed thread system
+    _dm = globals().get('_deriv_services', {}).get('deriv_monitor')
+    if _dm:
+        def _make_monitor_wrapper(_monitor_obj):
+            def _monitor_fn():
+                try:
+                    _monitor_obj.monitoring_loop(beat, log)
+                except Exception as _e:
+                    log.error(f'[v10.41] deriv_monitor_loop crashed: {_e}')
+                    import traceback; traceback.print_exc()
+            return _monitor_fn
+        defs['deriv_monitor_loop'] = _make_monitor_wrapper(_dm)
+        log.info('[v10.41] deriv_monitor_loop added to watchdog-managed threads')
+    else:
+        log.warning('[v10.41] deriv_monitor not available — monitor thread will not start')
+
     for dname, dfn in _deriv_loops.items():
         if dfn is None:
             log.warning(f'[v10.25] {dname} not available (stub mode)')
@@ -8579,7 +8589,7 @@ def api_info():
     except Exception:
         pass
     return jsonify({
-        'service':'Egreja Investment AI','version':'10.40','status':'online',
+        'service':'Egreja Investment AI','version':'10.41','status':'online',
         'kill_switch':RISK_KILL_SWITCH,'arbi_kill_switch':ARBI_KILL_SWITCH,
         'market_regime':market_regime.get('mode','UNKNOWN'),
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'lse':is_lse_open(),'hkex':is_hkex_open(),'crypto':True},

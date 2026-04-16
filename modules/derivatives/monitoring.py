@@ -85,12 +85,16 @@ class ExitRules:
     # Expiry approach: close N days before expiry
     close_before_expiry_days: int = 2
     # Edge collapse: if remaining edge < threshold (bps)
-    min_edge_bps: float = -50.0  # [v10.42] was 1.0 — too aggressive, trades closed immediately
+    min_edge_bps: float = -50.0  # [v10.42] was 1.0 — too aggressive
     # Grace period: skip edge-collapse check during first N minutes after open
-    edge_collapse_grace_min: float = 10.0  # [v10.42] 10 min warmup before edge checks
+    edge_collapse_grace_min: float = 10.0  # [v10.42] 10 min warmup
     # Theta decay: close if daily theta > X% of remaining edge
     theta_pnl_ratio_max: float = 0.5   # theta eats >50% of edge → exit
 
+
+# [v10.40] Hard safety cap: any open trade older than this is force-closed
+# regardless of strategy-specific rules (safety net for stale/orphaned positions).
+HARD_MAX_HOURS = 72 * 2   # 6 days
 
 DEFAULT_EXIT_RULES = {
     'pcp': ExitRules(stop_loss_pct=-0.015, take_profit_pct=0.025, max_hours_in_trade=48),
@@ -195,21 +199,16 @@ class DerivativesMonitor:
         """Single monitoring cycle across all active trades."""
         active_trades = self.engine.get_active_trades()
 
-        # Log cycle heartbeat every 20 cycles (~5 min) for observability
-        if self.stats['monitoring_cycles'] % 20 == 0:
-            log.info(
-                f"[deriv_monitor] cycle={self.stats['monitoring_cycles']} "
-                f"active_trades={len(active_trades)} "
-                f"tracked={len(self.snapshots)} "
-                f"exits_generated={self.stats['exit_signals_generated']}"
-            )
-
         if not active_trades:
             return
 
         for trade in active_trades:
             try:
                 snapshot = self._compute_snapshot(trade)
+                # [v10.40] If market-data snapshot fails (market closed, no quote, non-option legs),
+                # fall back to a time-only snapshot so TIME_EXIT/EXPIRY_APPROACH still fire.
+                if snapshot is None:
+                    snapshot = self._fallback_time_snapshot(trade)
                 if snapshot is None:
                     continue
 
@@ -288,47 +287,28 @@ class DerivativesMonitor:
         """Compute current position snapshot with Greeks-based P&L."""
         with self._lock:
             try:
-                # Get current spot — if unavailable, fall back to entry so we can
-                # still evaluate time-based and expiry-based exits (critical for paper
-                # trades that outlived their provider session).
-                spot_price = 0.0
-                try:
-                    spot_quote = self.provider.get_spot(trade.symbol)
-                    if spot_quote:
-                        spot_price = spot_quote.mid
-                except Exception:
-                    spot_price = 0.0
+                # Get current spot
+                spot_quote = self.provider.get_spot(trade.symbol)
+                if not spot_quote:
+                    return None
+                spot_price = spot_quote.mid
 
                 # Get or set entry spot
                 if trade.trade_id not in self.entry_spots:
                     self.entry_spots[trade.trade_id] = spot_price
                 entry_spot = self.entry_spots[trade.trade_id]
-                if spot_price <= 0:
-                    # No market data — use entry so delta_s = 0 and only time/expiry
-                    # triggers fire.
-                    spot_price = entry_spot
 
                 # Calculate time in trade
                 time_in_trade = (datetime.utcnow() - trade.opened_at).total_seconds() / 3600
 
-                # Days to expiry — robust to multiple formats and negative drift.
-                # days_to_expiry can be negative → caller uses it to trigger expiry exits.
+                # Days to expiry
                 days_to_expiry = 0
-                expired = False
                 if trade.expiry:
-                    exp_str = str(trade.expiry).strip()
-                    exp_date = None
-                    for fmt in ('%Y%m%d', '%Y-%m-%d', '%Y/%m/%d', '%d/%m/%Y'):
-                        try:
-                            exp_date = datetime.strptime(exp_str, fmt)
-                            break
-                        except ValueError:
-                            continue
-                    if exp_date is not None:
-                        raw_days = (exp_date - datetime.utcnow()).days
-                        days_to_expiry = max(0, raw_days)
-                        if raw_days < 0:
-                            expired = True
+                    try:
+                        exp_date = datetime.strptime(trade.expiry, '%Y%m%d')
+                        days_to_expiry = max(0, (exp_date - datetime.utcnow()).days)
+                    except ValueError:
+                        pass
 
                 # Calculate portfolio Greeks
                 port_delta = 0.0
@@ -391,11 +371,6 @@ class DerivativesMonitor:
                     days_to_expiry=days_to_expiry,
                     edge_remaining=round(edge_remaining, 4),
                 )
-                # Expose expired flag via attribute (PositionSnapshot is a dataclass)
-                try:
-                    snapshot.expired = expired  # type: ignore[attr-defined]
-                except Exception:
-                    pass
 
                 # Update peak P&L for trailing stop
                 if unrealized_pnl > self.peak_pnl.get(trade.trade_id, 0):
@@ -407,18 +382,52 @@ class DerivativesMonitor:
                 logger.warning(f"Snapshot computation failed for {trade.trade_id}: {e}")
                 return None
 
+    def _fallback_time_snapshot(self, trade) -> Optional[PositionSnapshot]:
+        """[v10.40] Minimal snapshot with only time/expiry fields — used when market data
+        is unavailable so TIME_EXIT and EXPIRY_APPROACH can still fire."""
+        try:
+            time_in_trade = (datetime.utcnow() - trade.opened_at).total_seconds() / 3600
+            days_to_expiry = 0
+            if trade.expiry:
+                try:
+                    exp_date = datetime.strptime(trade.expiry, '%Y%m%d')
+                    days_to_expiry = max(0, (exp_date - datetime.utcnow()).days)
+                except ValueError:
+                    pass
+            return PositionSnapshot(
+                trade_id=trade.trade_id,
+                strategy=trade.strategy,
+                symbol=trade.symbol,
+                structure_type=getattr(trade, 'structure_type', '') or '',
+                notional=float(trade.notional or 0.0),
+                unrealized_pnl=0.0,
+                unrealized_pnl_pct=0.0,
+                greeks_pnl=0.0,
+                time_in_trade_hours=round(time_in_trade, 2),
+                days_to_expiry=int(days_to_expiry),
+                edge_remaining=float(trade.expected_edge or 0.0),
+            )
+        except Exception as e:
+            logger.warning(f"Fallback snapshot failed for {trade.trade_id}: {e}")
+            return None
+
     # ── Exit Evaluation ──────────────────────────────────────────
 
     def _evaluate_exits(self, trade, snapshot: PositionSnapshot) -> Optional[ExitSignal]:
         """Evaluate all exit triggers for a position."""
-        rules = self.exit_rules.get(trade.strategy, ExitRules())
+        # [v10.40] DEFAULT_EXIT_RULES keys are lowercase but trade.strategy comes
+        # uppercase (PCP, SKEW_ARB…). Normalize to match.
+        _sk = (trade.strategy or '').lower()
+        rules = self.exit_rules.get(_sk, ExitRules())
 
-        # 0. Expired: option expiry date is already in the past → settle immediately.
-        if getattr(snapshot, 'expired', False):
+        # [v10.40] Safety net: hard cap on trade age. Fires regardless of strategy rules.
+        if snapshot.time_in_trade_hours >= HARD_MAX_HOURS:
             return ExitSignal(
                 trade_id=trade.trade_id,
-                trigger='EXPIRED',
-                reason=f"Expiry {trade.expiry} already in the past",
+                trigger='TIME_EXIT',
+                reason=(
+                    f"HARD_CAP {snapshot.time_in_trade_hours:.1f}h >= {HARD_MAX_HOURS}h"
+                ),
                 urgency='IMMEDIATE',
                 estimated_pnl=snapshot.unrealized_pnl,
             )

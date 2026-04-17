@@ -45,6 +45,73 @@ from typing import Optional, Iterable
 
 log = logging.getLogger('egreja.cedro')
 
+
+# ── [v10.43] Brapi fallback helpers ──────────────────────────────────────
+# Some tickers (observed: EMBR3) are silently rejected by the Cedro feed even
+# though the socket subscription is accepted. They show trading_phase='F' + price=0
+# while B3 is actively trading. When detected, we fetch from Brapi as fallback.
+_BRAPI_TOKEN = os.environ.get('BRAPI_TOKEN', '')
+_BRAPI_CACHE: dict = {}  # symbol -> (timestamp, quote_dict)
+_BRAPI_CACHE_TTL = 60  # seconds
+
+
+def _is_b3_market_hours() -> bool:
+    """Checa se é horário de pregão B3 (10h-18h BRT = 13h-21h UTC, seg-sex).
+    Aproximação simples (ignora DST transitions, mas funcional para a detecção)."""
+    try:
+        now = datetime.utcnow()
+        if now.weekday() >= 5:
+            return False
+        return 13 <= now.hour <= 21
+    except Exception:
+        return False
+
+
+def _brapi_fallback(symbol):
+    """Fetch a quote from Brapi.dev as fallback for stuck Cedro tickers. Cached 60s."""
+    if not _BRAPI_TOKEN:
+        return None
+    try:
+        import requests
+    except ImportError:
+        return None
+    now_ts = time.time()
+    if symbol in _BRAPI_CACHE:
+        ts, cached = _BRAPI_CACHE[symbol]
+        if now_ts - ts < _BRAPI_CACHE_TTL:
+            return cached
+    try:
+        r = requests.get(
+            f'https://brapi.dev/api/quote/{symbol}',
+            params={'token': _BRAPI_TOKEN},
+            timeout=5,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        results = data.get('results') or []
+        if not results:
+            return None
+        row = results[0]
+        price = row.get('regularMarketPrice')
+        if not price or price <= 0:
+            return None
+        q = {
+            'price': float(price),
+            'prev_close': row.get('regularMarketPreviousClose'),
+            'day_high': row.get('regularMarketDayHigh'),
+            'day_low': row.get('regularMarketDayLow'),
+            'day_open': row.get('regularMarketOpen'),
+            'volume_qty': row.get('regularMarketVolume'),
+            'updated_at': row.get('regularMarketTime'),
+        }
+        _BRAPI_CACHE[symbol] = (now_ts, q)
+        return q
+    except Exception as e:
+        log.debug(f'brapi_fallback({symbol}) failed: {e}')
+        return None
+
+
 # SQT field index → canonical name. Covers what we need for full analysis.
 # See Cedro API Socket PDF for the complete list.
 SQT_FIELDS = {
@@ -513,14 +580,37 @@ class CedroSocketProvider:
         return opts
 
     def get_quote(self, symbol: str, wait_ms: int = 1500) -> Optional[dict]:
-        """Return full cached quote dict for symbol. Auto-subscribes if missing, waits briefly."""
+        """Return full cached quote dict for symbol. Auto-subscribes if missing, waits briefly.
+
+        [v10.43] FALLBACK: If Cedro reports trading_phase='F' with price=0 but B3 is trading,
+        tries Brapi. Covers known cases (e.g. EMBR3) where the Cedro feed silently blocks
+        the subscription despite accepting the SQT command.
+        """
         if not self.enabled:
             return None
         k = symbol.strip().upper()
         q = self._get_cached(k)
         if q and q.get('price'):
             return q
-        # Not cached — subscribe and wait for first snapshot
+
+        # ── [v10.43] Fast path: known-stuck ticker (cached with trading_phase=F) ──
+        # Skip the 1.5s wait loop if we already know Cedro won't deliver.
+        if (q is not None and not q.get('price')
+                and q.get('trading_phase') == 'F' and _is_b3_market_hours()):
+            brapi_q = _brapi_fallback(k)
+            if brapi_q:
+                q = dict(q)
+                q['price'] = brapi_q['price']
+                q['prev_close'] = brapi_q.get('prev_close') or q.get('prev_close')
+                q['day_high'] = brapi_q.get('day_high') or q.get('day_high')
+                q['day_low'] = brapi_q.get('day_low') or q.get('day_low')
+                q['source'] = 'brapi-fallback'
+                q['_fallback_reason'] = 'cedro_trading_phase_F_fastpath'
+                q['_updated_at'] = brapi_q.get('updated_at', datetime.utcnow().isoformat())
+                log.info(f'[cedro] Brapi fast-fallback for {k}: price={brapi_q["price"]}')
+                return q
+
+        # Not cached or waiting for snapshot — subscribe and wait
         self.subscribe([k])
         deadline = time.time() + wait_ms / 1000.0
         while time.time() < deadline:
@@ -528,7 +618,23 @@ class CedroSocketProvider:
             if q and q.get('price'):
                 return q
             time.sleep(0.05)
-        return self._get_cached(k)  # maybe partial
+        q = self._get_cached(k)  # maybe partial
+
+        # ── [v10.43] Slow path fallback (after wait loop timed out) ───────────
+        if (q is not None and not q.get('price')
+                and q.get('trading_phase') == 'F' and _is_b3_market_hours()):
+            brapi_q = _brapi_fallback(k)
+            if brapi_q:
+                q = dict(q)
+                q['price'] = brapi_q['price']
+                q['prev_close'] = brapi_q.get('prev_close') or q.get('prev_close')
+                q['day_high'] = brapi_q.get('day_high') or q.get('day_high')
+                q['day_low'] = brapi_q.get('day_low') or q.get('day_low')
+                q['source'] = 'brapi-fallback'
+                q['_fallback_reason'] = 'cedro_trading_phase_F_slowpath'
+                q['_updated_at'] = brapi_q.get('updated_at', datetime.utcnow().isoformat())
+                log.warning(f'[cedro] Brapi slow-fallback for {k}: price={brapi_q["price"]}')
+        return q
 
     def get_price(self, symbol: str, wait_ms: int = 1500) -> Optional[float]:
         q = self.get_quote(symbol, wait_ms=wait_ms)

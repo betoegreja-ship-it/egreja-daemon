@@ -420,12 +420,14 @@ def create_long_horizon_blueprint(db_fn, log, **kwargs):
                 if pnl_value > 0:
                     wins += 1
                 
+                entry_d = c.get('entry_date')
+                close_d = c.get('close_date')
                 trades.append({
                     'position_id': c.get('position_id'),
                     'ticker': c.get('ticker'),
                     'sector': c.get('sector'),
-                    'entry_date': c.get('entry_date').isoformat() if c.get('entry_date') else None,
-                    'close_date': c.get('close_date').isoformat() if c.get('close_date') else None,
+                    'entry_date': (entry_d.isoformat() if hasattr(entry_d, 'isoformat') else (str(entry_d) if entry_d else None)),
+                    'close_date': (close_d.isoformat() if hasattr(close_d, 'isoformat') else (str(close_d) if close_d else None)),
                     'entry_price': round(entry_price, 4),
                     'close_price': round(close_price, 4),
                     'quantity': round(quantity, 4),

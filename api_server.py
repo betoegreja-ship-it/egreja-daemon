@@ -648,6 +648,8 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
+# [v10.46] Score engine v3 regime-aware (set to 'false' para reverter para v1)
+USE_SCORE_V2             = os.environ.get('USE_SCORE_V2', 'true').lower() != 'false'
 MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
@@ -4683,8 +4685,9 @@ def _db_save_trade(trade):
             entry_price,exit_price,current_price,quantity,position_value,
             pnl,pnl_pct,peak_pnl_pct,score,`signal`,status,close_reason,
             from_watchlist,order_id,opened_at,closed_at,extensions,
-            signal_id,feature_hash,learning_confidence,insight_summary,learning_version,features_json)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            signal_id,feature_hash,learning_confidence,insight_summary,learning_version,features_json,
+            score_v2,regime_v2,signal_v2)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_price=VALUES(current_price),pnl=VALUES(pnl),
             pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
             status=VALUES(status),close_reason=VALUES(close_reason),
@@ -4696,7 +4699,8 @@ def _db_save_trade(trade):
              t.get('close_reason'),1 if t.get('from_watchlist') else 0,
              t.get('order_id'),t.get('opened_at'),t.get('closed_at'),t.get('extensions',0),
              t.get('signal_id'),t.get('feature_hash'),t.get('learning_confidence'),
-             t.get('insight_summary'),t.get('learning_version'),features_json))
+             t.get('insight_summary'),t.get('learning_version'),features_json,
+             t.get('score_v2'),t.get('regime_v2'),t.get('signal_v2')))
         conn.commit(); cursor.close(); conn.close()
     except Exception as e: log.error(f'db_save_trade: {e}')
 
@@ -5918,10 +5922,36 @@ def stock_execution_worker():
                     log.debug(f"COMPOSITE_ADJ stock {sym}: {_disc_adj:+d} via {_disc_key}")
                 if abs(_st_adj) >= 5:
                     log.debug(f"STOCK_SCORE_ADJ: {sym} {_score_before_t}→{score} ({_st_reason})")
-                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')  # [v10.24-FIX] was MIN_SCORE_AUTO_CRYPTO — bug: stock signals used crypto threshold
+                # [v10.46] Cutover para score_engine_v2 (v3 regime-aware)
+                # Fallback automático para v1 se USE_SCORE_V2=false ou se v3 crashar
+                score_v1_fallback = score
+                regime_v2_val = None; signal_v2_val = None
+                if USE_SCORE_V2:
+                    try:
+                        from modules.score_engine_v2 import compute_score_v3 as _csv3
+                        _c = pd_data.get('closes_series', [])
+                        _h = pd_data.get('highs_series', [])
+                        _l = pd_data.get('lows_series', [])
+                        _v = pd_data.get('volumes_series', [])
+                        if len(_c) >= 30 and len(_h) == len(_c) and len(_l) == len(_c):
+                            _r = _csv3(_c, _h, _l, _v,
+                                       factor_stats_cache=factor_stats_cache,
+                                       pattern_stats_cache=pattern_stats_cache,
+                                       temporal_adj=float(_st_adj_effective or 0))
+                            score = _r['score']
+                            regime_v2_val = _r['regime']
+                            signal_v2_val = _r['signal']
+                            log.debug(f"V3_STOCK {sym}: v1={score_v1_fallback} v3={score} regime={regime_v2_val} signal={signal_v2_val}")
+                    except Exception as _e:
+                        log.warning(f"V3_STOCK_FAIL {sym}: {_e} — fallback v1={score_v1_fallback}")
+                        score = score_v1_fallback
+                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')  # [v10.24-FIX] was MIN_SCORE_AUTO_CRYPTO
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),
                     'score': score, 'signal': signal_val,
+                    'score_v2': score if USE_SCORE_V2 else None,
+                    'regime_v2': regime_v2_val,
+                    'signal_v2': signal_v2_val,
                     'market_type': mkt_type, 'asset_type': 'stock',
                     'rsi': rsi, 'ema9': ema9, 'ema21': ema21,
                     'ema50': pd_data.get('ema50', 0) or 0,
@@ -6288,15 +6318,34 @@ def auto_trade_crypto():
                     kline_cache_key = f'klines:{sym}'
                     klines_data = _get_cached_candles(kline_cache_key, ttl_min=60) or {}
                     if not klines_data:
-                        klines_data = _fetch_binance_klines(sym, 22)
+                        # [v10.46] Aumentado 22→100 barras para suportar score_engine_v2 (Ichimoku precisa 52+)
+                        klines_data = _fetch_binance_klines(sym, 100)
                         if klines_data:
                             _set_cached_candles(kline_cache_key, klines_data)
-                    score = _crypto_composite_score(ticker_data, klines_data, direction)
+                    # v1 calcula — mantemos como fallback
+                    score_v1_crypto = _crypto_composite_score(ticker_data, klines_data, direction)
+                    score = score_v1_crypto
                     # ATR pct e volume_ratio vindos dos klines
                     closes_k = klines_data.get('closes', [])
                     highs_k  = klines_data.get('highs', [])
                     lows_k   = klines_data.get('lows', [])
                     vols_k   = klines_data.get('volumes', [])
+                    # [v10.46] Cutover v3 para crypto
+                    regime_v2_c = None; signal_v2_c = None
+                    if USE_SCORE_V2:
+                        try:
+                            from modules.score_engine_v2 import compute_score_v3 as _csv3c
+                            if len(closes_k) >= 30:
+                                _rc = _csv3c(closes_k, highs_k, lows_k, vols_k,
+                                             factor_stats_cache=factor_stats_cache,
+                                             pattern_stats_cache=pattern_stats_cache)
+                                score = _rc['score']
+                                regime_v2_c = _rc['regime']
+                                signal_v2_c = _rc['signal']
+                                log.debug(f"V3_CRYPTO {sym}: v1={score_v1_crypto} v3={score} regime={regime_v2_c}")
+                        except Exception as _e:
+                            log.warning(f"V3_CRYPTO_FAIL {sym}: {_e} — fallback v1={score_v1_crypto}")
+                            score = score_v1_crypto
                     atr_c    = _calc_atr(closes_k, highs_k, lows_k, 14) if len(closes_k) >= 15 else 0.0
                     atr_pct_c = round((atr_c / price) * 100, 3) if price > 0 and atr_c > 0 else 0.0
                     avg_vol20_c = sum(vols_k[-20:]) / len(vols_k[-20:]) if len(vols_k) >= 20 else 0

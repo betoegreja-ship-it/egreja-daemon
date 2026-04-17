@@ -226,6 +226,11 @@ def _fetch_polygon_stock(ticker: str, api_key: str, cache_dict: dict, cache_lock
             'ema9_real': n >= 9, 'ema21_real': n >= 21, 'ema50_real': n >= 50, 'rsi_real': n >= 15,
             'candles_available': n, 'market': market,
             '_avg_vol20': avg_vol20,   # guardado no cache para atualizar vol_ratio no snapshot
+            # [v10.46] Séries OHLCV para score_engine_v2 (shadow mode)
+            'closes_series':  list(closes[-60:]) if closes else [],
+            'highs_series':   list(highs[-60:])  if highs  else [],
+            'lows_series':    list(lows[-60:])   if lows   else [],
+            'volumes_series': [],  # polygon path não expõe volumes array aqui
             'source': 'Polygon', 'updated_at': datetime.utcnow().isoformat()
         }
         _set_cached_candles(f'polygon:{ticker}', result, cache_dict, cache_lock)
@@ -362,6 +367,11 @@ def _fetch_brapi_batch(tickers: list, brapi_token: str, cache_dict: dict, cache_
                     'ema9_real': n >= 9, 'ema21_real': n >= 21,
                     'ema50_real': n >= 50, 'rsi_real': n >= 15,
                     'candles_available': n, 'market': 'B3',
+                    # [v10.46] Séries OHLCV para score_engine_v2 (shadow mode)
+                    'closes_series':  list(closes[-60:])  if closes  else [],
+                    'highs_series':   list(highs[-60:])   if highs   else [],
+                    'lows_series':    list(lows[-60:])    if lows    else [],
+                    'volumes_series': list(volumes[-60:]) if volumes else [],
                     'source': 'brapi-batch-cold', 'updated_at': datetime.utcnow().isoformat()
                 }
                 _set_cached_candles(f'brapi:{sym}', entry, cache_dict, cache_lock)

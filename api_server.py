@@ -8152,35 +8152,69 @@ def admin_audit():
 # ── [v10.22] Data quality endpoint ──────────────────────────────────
 
 
+def _fetch_yahoo_history_cached(yahoo_symbol, days=60):
+    """Busca histórico diário do Yahoo Finance para um símbolo (IBOV=^BVSP, SPY=SPY).
+    Cacheia em memória por 1h para não martelar o Yahoo.
+    Retorna dict {iso_date: close_price} ou {} se falhar.
+    """
+    import requests, time as _t, json as _j
+    cache_key = f'_yahoo_hist_{yahoo_symbol}_{days}'
+    g = globals()
+    if cache_key in g:
+        ts, data = g[cache_key]
+        if _t.time() - ts < 3600:
+            return data
+    try:
+        url = f'https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}?interval=1d&range={days}d'
+        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        if r.status_code != 200: return {}
+        j = r.json()
+        result = (j.get('chart') or {}).get('result') or []
+        if not result: return {}
+        timestamps = result[0].get('timestamp') or []
+        indicators = result[0].get('indicators') or {}
+        quote = (indicators.get('quote') or [{}])[0]
+        closes = quote.get('close') or []
+        from datetime import datetime as _dt
+        out = {}
+        for ts, cl in zip(timestamps, closes):
+            if cl is None: continue
+            d = _dt.utcfromtimestamp(ts).strftime('%Y-%m-%d')
+            out[d] = float(cl)
+        g[cache_key] = (_t.time(), out)
+        return out
+    except Exception as e:
+        log.debug(f'yahoo history {yahoo_symbol}: {e}')
+        return {}
+
+
 @app.route('/performance/benchmark')
 def benchmark_comparison():
-    """[v10.44] Benchmark comparison — retorno do sistema vs IBOV/SPY com alpha/beta.
-    
+    """[v10.44] Benchmark comparison — system returns vs IBOV/SPY com alpha/beta real.
+
     Query params:
-      days (int, default=30) - janela temporal
+      days (int, default=30, max=180) - janela temporal
       market (str: 'B3', 'NYSE', 'CRYPTO', 'ALL', default='ALL')
-    
+
     Retorna:
-      - series: lista de pontos {date, system_cum_pct, ibov_cum_pct, spy_cum_pct}
-      - alpha_beta: por mercado (alpha diário, beta, sharpe, max_dd)
-      - summary: retornos acumulados comparativos
+      summary: retornos acumulados + vs benchmarks
+      series: lista de pontos {date, system_cum_pct, ibov_cum_pct, spy_cum_pct, alpha_day}
+      alpha_beta: por mercado (alpha, beta, sharpe, max_dd, wins/losses)
     """
     conn = get_db()
-    if not conn: return jsonify({'error':'DB unavailable'}), 503
+    if not conn: return jsonify({'error': 'DB unavailable'}), 503
     try:
         days = min(int(request.args.get('days', 30)), 180)
         market_filter = request.args.get('market', 'ALL').upper()
         cursor = conn.cursor(dictionary=True)
 
-        # 1. Pegar trades fechadas do período agrupadas por dia
         where_market = "" if market_filter == 'ALL' else "AND market = %s"
-        params = (days,)
-        if market_filter != 'ALL':
-            params = (days, market_filter)
+        params = (days,) if market_filter == 'ALL' else (days, market_filter)
         cursor.execute(f"""
             SELECT DATE(closed_at) AS dia, market,
                    SUM(pnl) AS pnl_dia,
                    SUM(position_value) AS capital_dia,
+                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
                    COUNT(*) AS trades
             FROM trades
             WHERE status='closed'
@@ -8192,40 +8226,62 @@ def benchmark_comparison():
         """, params)
         daily_rows = cursor.fetchall()
 
-        # 2. Reconstruir série diária de retorno do sistema
         from collections import defaultdict
         daily_pnl = defaultdict(float)
-        daily_capital = defaultdict(float)
+        daily_cap = defaultdict(float)
         daily_trades = defaultdict(int)
-        market_daily_pnl = defaultdict(lambda: defaultdict(float))  # {market: {date: pnl}}
-        
+        daily_wins = defaultdict(int)
+        market_daily = defaultdict(lambda: defaultdict(lambda: {'pnl': 0, 'cap': 0, 'n': 0, 'w': 0}))
+
         for r in daily_rows:
             d = r['dia'].isoformat() if r['dia'] else None
             if not d: continue
-            daily_pnl[d] += float(r['pnl_dia'] or 0)
-            daily_capital[d] += float(r['capital_dia'] or 0)
-            daily_trades[d] += int(r['trades'] or 0)
-            market_daily_pnl[r['market']][d] += float(r['pnl_dia'] or 0)
+            pnl_d = float(r['pnl_dia'] or 0)
+            cap_d = float(r['capital_dia'] or 0)
+            trades_d = int(r['trades'] or 0)
+            wins_d = int(r['wins'] or 0)
+            daily_pnl[d] += pnl_d
+            daily_cap[d] += cap_d
+            daily_trades[d] += trades_d
+            daily_wins[d] += wins_d
+            md = market_daily[r['market']][d]
+            md['pnl'] += pnl_d; md['cap'] += cap_d
+            md['n'] += trades_d; md['w'] += wins_d
 
         sorted_dates = sorted(daily_pnl.keys())
         if not sorted_dates:
             return jsonify({'error': 'no_data', 'days': days, 'market': market_filter}), 404
 
-        # 3. Pegar cotação IBOV e SPY do cache (stock_prices global)
-        # Buscar retornos diários reais via tabela trades do IBOV e SPY como proxy
-        # Simplificação: usar variação % diária fictícia aproximada via yfinance seria ideal,
-        # mas aqui vamos usar dados que já temos
-        mm = __import__('sys').modules.get('__main__')
-        sp = {}
-        if mm and hasattr(mm, 'stock_prices'): sp = mm.stock_prices
+        # Buscar IBOV e SPY
+        ibov_hist = _fetch_yahoo_history_cached('^BVSP', days=days + 10)
+        spy_hist = _fetch_yahoo_history_cached('SPY', days=days + 10)
 
-        # 4. Calcular retornos acumulados
-        # Assume capital_base por dia = soma dos notionals abertos (position_value)
-        # Retorno diário do sistema = pnl_dia / capital_dia (aproximação honesta)
+        def _cum_return_from_hist(hist, dates):
+            """Calcula retorno acumulado a partir de dict {date: close}."""
+            if not hist or not dates: return [0] * len(dates)
+            first_date = None
+            for d in sorted(hist.keys()):
+                if d >= dates[0]:
+                    first_date = d; break
+            if not first_date: return [0] * len(dates)
+            base = hist[first_date]
+            out = []
+            last_price = base
+            for d in dates:
+                if d in hist:
+                    last_price = hist[d]
+                ret = (last_price / base - 1) * 100
+                out.append(round(ret, 4))
+            return out
+
+        ibov_cum = _cum_return_from_hist(ibov_hist, sorted_dates)
+        spy_cum = _cum_return_from_hist(spy_hist, sorted_dates)
+
+        # Retorno do sistema
         series = []
         cum_system = 0.0
-        for d in sorted_dates:
-            cap = daily_capital.get(d, 0)
+        for i, d in enumerate(sorted_dates):
+            cap = daily_cap.get(d, 0)
             pnl = daily_pnl.get(d, 0)
             ret_day = (pnl / cap * 100) if cap > 0 else 0
             cum_system += ret_day
@@ -8233,54 +8289,105 @@ def benchmark_comparison():
                 'date': d,
                 'system_daily_pct': round(ret_day, 4),
                 'system_cum_pct': round(cum_system, 4),
+                'ibov_cum_pct': ibov_cum[i] if i < len(ibov_cum) else 0,
+                'spy_cum_pct': spy_cum[i] if i < len(spy_cum) else 0,
+                'alpha_vs_ibov': round(cum_system - (ibov_cum[i] if i < len(ibov_cum) else 0), 4),
+                'alpha_vs_spy': round(cum_system - (spy_cum[i] if i < len(spy_cum) else 0), 4),
                 'trades': daily_trades.get(d, 0),
+                'wins': daily_wins.get(d, 0),
                 'pnl': round(pnl, 2),
                 'capital': round(cap, 2),
             })
 
-        # 5. Alpha/Beta — calcular via series diárias vs benchmark
-        # Para isso precisaríamos histórico diário do IBOV/SPY. Por ora,
-        # usamos retornos de um proxy via tabela trades de tickers-benchmark.
-        # Aproximação: IBOV representado por médio dos trades B3, SPY pelos de NYSE.
-        alpha_beta = {}
-        for mkt in ['B3', 'NYSE', 'CRYPTO']:
-            mkt_daily = market_daily_pnl.get(mkt, {})
-            if not mkt_daily:
-                continue
-            rets = [float(mkt_daily.get(d, 0)) for d in sorted_dates]
-            n = len(rets)
+        # Alpha/Beta por mercado
+        def _compute_stats(date_to_market, benchmark_cum, dates):
+            """Calcula retornos diários do mercado e compara com benchmark."""
+            sys_rets = []
+            bench_rets = [benchmark_cum[i] - (benchmark_cum[i-1] if i > 0 else 0) for i in range(len(benchmark_cum))]
+            for i, d in enumerate(dates):
+                mdata = date_to_market.get(d, {'pnl': 0, 'cap': 0})
+                r = (mdata['pnl'] / mdata['cap'] * 100) if mdata['cap'] > 0 else 0
+                sys_rets.append(r)
+            n = len(sys_rets)
             if n < 2:
-                continue
-            mean = sum(rets) / n
-            var = sum((r - mean) ** 2 for r in rets) / n
-            std = var ** 0.5
-            sharpe = (mean / std) if std > 0 else 0
-            # Max drawdown
-            cum = 0; peak = 0; max_dd = 0
-            for r in rets:
+                return None
+            mean_s = sum(sys_rets) / n
+            mean_b = sum(bench_rets) / n
+            var_s = sum((r - mean_s) ** 2 for r in sys_rets) / n
+            var_b = sum((r - mean_b) ** 2 for r in bench_rets) / n
+            cov = sum((sys_rets[i] - mean_s) * (bench_rets[i] - mean_b) for i in range(n)) / n
+            beta = (cov / var_b) if var_b > 0 else 0
+            alpha = mean_s - beta * mean_b  # daily alpha
+            std_s = var_s ** 0.5
+            sharpe = (mean_s / std_s * (252 ** 0.5)) if std_s > 0 else 0  # annualized
+            cum_s = sum(sys_rets)
+            cum_b = sum(bench_rets)
+            peak = 0; max_dd = 0; cum = 0
+            for r in sys_rets:
                 cum += r
                 if cum > peak: peak = cum
                 dd = peak - cum
                 if dd > max_dd: max_dd = dd
-            alpha_beta[mkt] = {
-                'total_pnl': round(sum(rets), 2),
-                'mean_daily_pnl': round(mean, 2),
-                'std_daily_pnl': round(std, 2),
-                'sharpe_approx': round(sharpe, 3),
-                'max_drawdown_pnl': round(max_dd, 2),
-                'trades_total': sum(1 for r in rets if r != 0),
+            total_trades = sum(market_daily[mkt][d]['n'] for d in dates for mkt in market_daily if d in market_daily[mkt])
+            return {
+                'alpha_daily': round(alpha, 4),
+                'alpha_annualized_pct': round(alpha * 252, 2),
+                'beta': round(beta, 3),
+                'sharpe_annualized': round(sharpe, 3),
+                'max_drawdown_pct': round(max_dd, 2),
+                'cum_return_pct': round(cum_s, 2),
+                'benchmark_cum_pct': round(cum_b, 2),
+                'alpha_absolute_pct': round(cum_s - cum_b, 2),
             }
 
-        # 6. Summary
+        alpha_beta = {}
+        for mkt, bench_cum in [('B3', ibov_cum), ('NYSE', spy_cum)]:
+            if mkt in market_daily:
+                stats = _compute_stats(market_daily[mkt], bench_cum, sorted_dates)
+                if stats:
+                    n_mkt = sum(market_daily[mkt][d]['n'] for d in sorted_dates if d in market_daily[mkt])
+                    w_mkt = sum(market_daily[mkt][d]['w'] for d in sorted_dates if d in market_daily[mkt])
+                    stats['trades'] = n_mkt
+                    stats['wins'] = w_mkt
+                    stats['win_rate_pct'] = round(w_mkt / n_mkt * 100, 2) if n_mkt > 0 else 0
+                    stats['benchmark'] = 'IBOV' if mkt == 'B3' else 'SPY'
+                    alpha_beta[mkt] = stats
+
+        # Crypto (sem benchmark padrão, apenas métricas absolutas)
+        if 'CRYPTO' in market_daily:
+            crypto_rets = []
+            for d in sorted_dates:
+                mdata = market_daily['CRYPTO'].get(d, {'pnl': 0, 'cap': 0})
+                crypto_rets.append((mdata['pnl'] / mdata['cap'] * 100) if mdata['cap'] > 0 else 0)
+            n = len(crypto_rets)
+            if n > 1:
+                mean = sum(crypto_rets) / n
+                std = (sum((r - mean) ** 2 for r in crypto_rets) / n) ** 0.5
+                n_crypto = sum(market_daily['CRYPTO'][d]['n'] for d in sorted_dates if d in market_daily['CRYPTO'])
+                w_crypto = sum(market_daily['CRYPTO'][d]['w'] for d in sorted_dates if d in market_daily['CRYPTO'])
+                alpha_beta['CRYPTO'] = {
+                    'cum_return_pct': round(sum(crypto_rets), 2),
+                    'sharpe_annualized': round((mean / std * (252 ** 0.5)) if std > 0 else 0, 3),
+                    'trades': n_crypto,
+                    'wins': w_crypto,
+                    'win_rate_pct': round(w_crypto / n_crypto * 100, 2) if n_crypto > 0 else 0,
+                    'benchmark': 'none',
+                }
+
         summary = {
             'period_days': days,
             'market_filter': market_filter,
             'start_date': sorted_dates[0],
             'end_date': sorted_dates[-1],
             'total_trades': sum(daily_trades.values()),
+            'total_wins': sum(daily_wins.values()),
+            'win_rate_pct': round(sum(daily_wins.values()) / sum(daily_trades.values()) * 100, 2) if sum(daily_trades.values()) > 0 else 0,
             'total_pnl': round(sum(daily_pnl.values()), 2),
-            'total_capital_turnover': round(sum(daily_capital.values()), 2),
             'system_cum_return_pct': round(cum_system, 4),
+            'ibov_cum_return_pct': ibov_cum[-1] if ibov_cum else None,
+            'spy_cum_return_pct': spy_cum[-1] if spy_cum else None,
+            'alpha_vs_ibov_pct': round(cum_system - (ibov_cum[-1] if ibov_cum else 0), 2),
+            'alpha_vs_spy_pct': round(cum_system - (spy_cum[-1] if spy_cum else 0), 2),
             'trading_days': len(sorted_dates),
         }
 
@@ -8290,12 +8397,12 @@ def benchmark_comparison():
             'summary': summary,
             'series': series,
             'alpha_beta': alpha_beta,
-            'note': 'Alpha/Beta absolutos vs benchmarks reais (IBOV/SPY) requer snapshot_loop funcionando. Por ora mostra métricas por mercado.',
         }), 200
     except Exception as e:
         import traceback as _tb
         log.error(f'/performance/benchmark: {e}\n{_tb.format_exc()}')
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/data/quality')
 @require_auth

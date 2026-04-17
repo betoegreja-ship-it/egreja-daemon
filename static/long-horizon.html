@@ -201,6 +201,7 @@ async function fetchAll() {
       fetch(`${API}/alerts`).then(r => r.json()).catch(() => null),
       fetch(`${API}/health`).then(r => r.json()).catch(() => null),
       fetch(`${API}/closed-trades?limit=200`).then(r => r.json()).catch(() => null),
+      fetch(`${RW}/performance/benchmark?days=30`).then(r => r.json()).catch(() => null),
     ]);
 
     state.systemState = results[0].status === 'fulfilled' ? results[0].value : null;
@@ -213,6 +214,7 @@ async function fetchAll() {
     state.alerts = results[7].status === 'fulfilled' ? (results[7].value?.alerts || []) : [];
     state.health = results[8].status === 'fulfilled' ? results[8].value : null;
     state.closedTrades = results[9].status === 'fulfilled' ? results[9].value : null;
+    state.benchmark = results[10].status === 'fulfilled' ? results[10].value : null;
 
     state.loading = false;
     updateClock();
@@ -330,7 +332,8 @@ function renderTabs() {
     { id: 'capital', label: 'Capital' },
     { id: 'alertas', label: 'Alertas' },
     { id: 'saude', label: 'Saúde' },
-    { id: 'historico', label: 'Histórico' }
+    { id: 'historico', label: 'Histórico' },
+    { id: 'benchmark', label: 'Benchmark' }
   ];
 
   let html = '';
@@ -1014,6 +1017,181 @@ function renderSaude() {
 }
 
 // ─── Rendering ────────────────────────────────────────────────
+// ─── Benchmark — sistema vs IBOV/SPY ──────────────────────────────
+function renderBenchmark() {
+  const d = state.benchmark;
+  if (!d || !d.summary) {
+    return `<div class="section"><div class="card"><div class="card-body"><div class="empty-state">
+      <div style="font-size:32px;opacity:.3;margin-bottom:8px">📊</div>
+      <p>Sem dados de benchmark disponíveis.</p>
+      <p style="font-size:11px;color:var(--dim);margin-top:8px">O endpoint /performance/benchmark retorna histórico de retorno vs IBOV e SPY.</p>
+    </div></div></div></div>`;
+  }
+
+  const s = d.summary;
+  const series = d.series || [];
+  const ab = d.alpha_beta || {};
+
+  // Determinar cores
+  const sysColor = s.system_cum_return_pct >= 0 ? 'var(--profit)' : 'var(--loss)';
+  const alphaIbovColor = s.alpha_vs_ibov_pct >= 0 ? 'var(--profit)' : 'var(--loss)';
+  const alphaSpyColor = s.alpha_vs_spy_pct >= 0 ? 'var(--profit)' : 'var(--loss)';
+
+  // === Cards de resumo ===
+  const cards = `
+    <div class="grid-4" style="margin-bottom:16px">
+      <div class="card stat-card">
+        <div class="stat-label">Sistema (${s.period_days}d)</div>
+        <div class="stat-value" style="color:${sysColor}">${(s.system_cum_return_pct >= 0 ? '+' : '') + s.system_cum_return_pct.toFixed(2)}%</div>
+        <div style="font-size:11px;color:var(--dim);margin-top:4px">${s.total_trades} trades · WR ${s.win_rate_pct}%</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">IBOV (mesmo período)</div>
+        <div class="stat-value" style="color:${s.ibov_cum_return_pct >= 0 ? 'var(--profit)' : 'var(--loss)'}">${s.ibov_cum_return_pct != null ? ((s.ibov_cum_return_pct >= 0 ? '+' : '') + s.ibov_cum_return_pct.toFixed(2)) + '%' : '—'}</div>
+        <div style="font-size:11px;color:${alphaIbovColor};margin-top:4px;font-weight:600">Alpha: ${(s.alpha_vs_ibov_pct >= 0 ? '+' : '') + s.alpha_vs_ibov_pct.toFixed(2)}pp</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">SPY (mesmo período)</div>
+        <div class="stat-value" style="color:${s.spy_cum_return_pct >= 0 ? 'var(--profit)' : 'var(--loss)'}">${s.spy_cum_return_pct != null ? ((s.spy_cum_return_pct >= 0 ? '+' : '') + s.spy_cum_return_pct.toFixed(2)) + '%' : '—'}</div>
+        <div style="font-size:11px;color:${alphaSpyColor};margin-top:4px;font-weight:600">Alpha: ${(s.alpha_vs_spy_pct >= 0 ? '+' : '') + s.alpha_vs_spy_pct.toFixed(2)}pp</div>
+      </div>
+      <div class="card stat-card">
+        <div class="stat-label">P&amp;L Total</div>
+        <div class="stat-value" style="color:${s.total_pnl >= 0 ? 'var(--profit)' : 'var(--loss)'}">${formatBRL(s.total_pnl)}</div>
+        <div style="font-size:11px;color:var(--dim);margin-top:4px">${s.trading_days} pregões</div>
+      </div>
+    </div>
+  `;
+
+  // === Gráfico SVG sobreposto ===
+  let chart = '';
+  if (series.length > 1) {
+    const w = 900, h = 300, padL = 50, padR = 20, padT = 20, padB = 40;
+    const iw = w - padL - padR;
+    const ih = h - padT - padB;
+
+    const allValues = series.flatMap(pt => [pt.system_cum_pct, pt.ibov_cum_pct || 0, pt.spy_cum_pct || 0]);
+    const yMin = Math.min(...allValues, 0);
+    const yMax = Math.max(...allValues, 0);
+    const yRange = Math.max(yMax - yMin, 1);
+
+    const xStep = iw / Math.max(series.length - 1, 1);
+    const toXY = (i, v) => [padL + i * xStep, padT + ih - ((v - yMin) / yRange) * ih];
+
+    const buildLine = (key) => series.map((pt, i) => {
+      const [x, y] = toXY(i, pt[key] || 0);
+      return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+    }).join(' ');
+
+    const sysPath = buildLine('system_cum_pct');
+    const ibovPath = buildLine('ibov_cum_pct');
+    const spyPath = buildLine('spy_cum_pct');
+
+    // Y-axis labels
+    const ySteps = 5;
+    let yLabels = '';
+    for (let k = 0; k <= ySteps; k++) {
+      const v = yMin + (yRange * k / ySteps);
+      const y = padT + ih - (k / ySteps) * ih;
+      yLabels += `<text x="${padL - 5}" y="${y + 4}" text-anchor="end" fill="var(--dim)" font-size="10" font-family="var(--mono)">${v.toFixed(1)}%</text>`;
+      yLabels += `<line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke="var(--dim)" stroke-opacity="0.1" stroke-dasharray="2,2"/>`;
+    }
+
+    // X-axis labels (primeira, média, última)
+    const xIdx = [0, Math.floor(series.length / 2), series.length - 1];
+    let xLabels = '';
+    for (const i of xIdx) {
+      const [x, _] = toXY(i, 0);
+      const d = series[i].date.slice(5);
+      xLabels += `<text x="${x}" y="${h - 15}" text-anchor="middle" fill="var(--dim)" font-size="10" font-family="var(--mono)">${d}</text>`;
+    }
+
+    // Zero line
+    const [_, yZero] = toXY(0, 0);
+    const zeroLine = (yZero > padT && yZero < padT + ih)
+      ? `<line x1="${padL}" y1="${yZero}" x2="${w - padR}" y2="${yZero}" stroke="var(--dim)" stroke-width="1.5"/>`
+      : '';
+
+    chart = `
+      <div class="card section" style="margin-bottom:16px">
+        <div class="card-header">
+          <div class="card-title">Retorno acumulado — Sistema vs IBOV vs SPY</div>
+          <div style="display:flex;gap:16px;font-size:11px">
+            <span style="color:#60a5fa">━ Sistema</span>
+            <span style="color:#22c55e">━ IBOV</span>
+            <span style="color:#c9a84c">━ SPY</span>
+          </div>
+        </div>
+        <div class="card-body" style="overflow-x:auto">
+          <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="display:block">
+            ${yLabels}
+            ${zeroLine}
+            <path d="${ibovPath}" stroke="#22c55e" stroke-width="1.8" fill="none" opacity="0.8"/>
+            <path d="${spyPath}" stroke="#c9a84c" stroke-width="1.8" fill="none" opacity="0.8"/>
+            <path d="${sysPath}" stroke="#60a5fa" stroke-width="2.2" fill="none"/>
+            ${xLabels}
+          </svg>
+        </div>
+      </div>
+    `;
+  }
+
+  // === Alpha/Beta por mercado ===
+  let abRows = '';
+  for (const [mkt, m] of Object.entries(ab)) {
+    const alpha = m.alpha_absolute_pct || 0;
+    const bench = m.benchmark || 'none';
+    const alphaColor = alpha >= 0 ? 'var(--profit)' : 'var(--loss)';
+    const cumColor = (m.cum_return_pct || 0) >= 0 ? 'var(--profit)' : 'var(--loss)';
+    const sharpe = m.sharpe_annualized || 0;
+    const sharpeColor = sharpe >= 1 ? 'var(--profit)' : (sharpe >= 0 ? 'var(--text)' : 'var(--loss)');
+    abRows += `<tr>
+      <td style="font-weight:600">${mkt}</td>
+      <td>${bench}</td>
+      <td class="text-right" style="color:${cumColor}">${(m.cum_return_pct >= 0 ? '+' : '') + (m.cum_return_pct || 0).toFixed(2)}%</td>
+      <td class="text-right" style="color:var(--dim)">${bench !== 'none' ? ((m.benchmark_cum_pct >= 0 ? '+' : '') + (m.benchmark_cum_pct || 0).toFixed(2)) + '%' : '—'}</td>
+      <td class="text-right" style="color:${alphaColor};font-weight:600">${bench !== 'none' ? ((alpha >= 0 ? '+' : '') + alpha.toFixed(2)) + 'pp' : '—'}</td>
+      <td class="text-right">${bench !== 'none' ? (m.beta || 0).toFixed(3) : '—'}</td>
+      <td class="text-right" style="color:${sharpeColor};font-weight:600">${sharpe.toFixed(2)}</td>
+      <td class="text-right">${m.trades || 0}</td>
+      <td class="text-right">${m.win_rate_pct || 0}%</td>
+      <td class="text-right" style="color:var(--loss)">${m.max_drawdown_pct ? '-' + m.max_drawdown_pct.toFixed(2) + '%' : '—'}</td>
+    </tr>`;
+  }
+
+  const tableAB = `
+    <div class="card section">
+      <div class="card-header">
+        <div class="card-title">Alpha, Beta, Sharpe por Mercado</div>
+        <div style="font-size:11px;color:var(--dim)">
+          Alpha = retorno sistema − retorno benchmark. Beta = sensibilidade ao índice (1.0 = move junto, 0 = descorrelacionado).
+        </div>
+      </div>
+      <div class="card-body" style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Mercado</th>
+              <th>Benchmark</th>
+              <th class="text-right">Retorno Sistema</th>
+              <th class="text-right">Retorno Bench</th>
+              <th class="text-right">Alpha</th>
+              <th class="text-right">Beta</th>
+              <th class="text-right">Sharpe</th>
+              <th class="text-right">Trades</th>
+              <th class="text-right">WR</th>
+              <th class="text-right">Max DD</th>
+            </tr>
+          </thead>
+          <tbody>${abRows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  return `<div class="section">${cards}${chart}${tableAB}</div>`;
+}
+
 // ─── Histórico de Trades Fechadas ─────────────────────────────────
 function renderHistorico() {
   const data = state.closedTrades;
@@ -1150,6 +1328,9 @@ function render() {
       break;
     case 'historico':
       content = renderHistorico();
+      break;
+    case 'benchmark':
+      content = renderBenchmark();
       break;
     default:
       content = renderOverview();

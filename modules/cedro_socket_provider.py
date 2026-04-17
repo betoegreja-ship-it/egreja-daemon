@@ -712,7 +712,8 @@ class CedroSocketProvider:
             'last_trade_time': q.get('last_trade_time'),
             'last_trade_date': q.get('last_trade_date'),
             'updated_at': q.get('_updated_at'),
-            'source': 'cedro-socket',
+            'source': q.get('source') or 'cedro-socket',
+            '_fallback_reason': q.get('_fallback_reason'),
         }
 
     def healthcheck(self) -> dict:

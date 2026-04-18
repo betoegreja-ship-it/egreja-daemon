@@ -34,7 +34,7 @@
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 body{background:var(--navy);color:var(--text);font-family:'Instrument Sans',sans-serif;font-size:13px;line-height:1.5;min-height:100vh;-webkit-font-smoothing:antialiased;padding-top:130px}
-.topbar{height:64px;background:linear-gradient(180deg,#0d1f38 0%,#0a1628 100%);border-bottom:1px solid rgba(184,151,58,0.25);display:flex;align-items:center;padding:0 36px;position:fixed;top:32px;left:0;right:0;z-index:200;box-shadow:0 2px 16px rgba(0,0,0,0.5)}
+.topbar{height:64px;background:linear-gradient(180deg,#0d1f38 0%,#0a1628 100%);border-bottom:1px solid rgba(184,151,58,0.25);display:flex;align-items:center;padding:0 36px;position:fixed;top:44px;left:0;right:0;z-index:200;box-shadow:0 2px 16px rgba(0,0,0,0.5)}
 .topbar-logo{display:flex;align-items:center;gap:14px;padding-right:36px;border-right:1px solid rgba(184,151,58,0.2);margin-right:36px;flex-shrink:0}
 .logo-emblem{width:38px;height:38px;background:linear-gradient(135deg,#b8973a,#8a6f2a);display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .logo-primary{font-family:'EB Garamond',serif;font-size:17px;font-weight:500;color:var(--white);letter-spacing:0.03em;line-height:1.2}
@@ -60,7 +60,7 @@ body{background:var(--navy);color:var(--text);font-family:'Instrument Sans',sans
 #topbar-clock{font-family:monospace;font-size:11px;color:var(--text2);letter-spacing:.06em}
 .btn-refresh{height:30px;padding:0 18px;background:linear-gradient(180deg,rgba(184,151,58,0.15),rgba(184,151,58,0.08));border:1px solid rgba(184,151,58,0.4);color:var(--gold2);font-family:'Instrument Sans',sans-serif;font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .2s}
 .btn-refresh:hover{background:linear-gradient(180deg,rgba(184,151,58,0.28),rgba(184,151,58,0.15));border-color:var(--gold2);color:var(--gold3)}
-.subbar{height:34px;background:var(--navy2);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 36px;gap:36px;position:fixed;top:96px;left:0;right:0;z-index:198;background:#0a1628}
+.subbar{height:34px;background:var(--navy2);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 36px;gap:36px;position:fixed;top:108px;left:0;right:0;z-index:198;background:#0a1628}
 .market-pill{display:flex;align-items:center;gap:8px;font-family:monospace;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase}
 .mpill-dot{width:5px;height:5px;border-radius:50%}
 .mpill-label{color:var(--text2)}
@@ -3238,222 +3238,99 @@ function toggleVal(id) {
   </script>
 
 
+
+
+
+
+
+<!-- ═══ [tv] TRADINGVIEW TICKER TAPE (widget oficial) ═══ -->
+<style id="tv-ticker-styles">
+  /* Container do ticker TradingView: primeira linha, topo absoluto */
+  #tv-ticker-wrap{position:fixed;left:0;right:0;top:0;z-index:250;
+    height:44px;background:#0a1628;border-bottom:1px solid rgba(184,151,58,0.35);
+    overflow:hidden}
+  #tv-ticker-wrap .tradingview-widget-container{height:44px !important}
+  #tv-ticker-wrap .tradingview-widget-container__widget{height:44px !important}
+  #tv-ticker-wrap iframe{height:44px !important}
+</style>
+
+<div id="tv-ticker-wrap">
+  <div class="tradingview-widget-container">
+    <div class="tradingview-widget-container__widget"></div>
+  </div>
+</div>
+
+<script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
+{
+  "symbols": [
+    {"description":"BTC","proName":"BINANCE:BTCUSDT"},
+    {"description":"PETR4","proName":"BMFBOVESPA:PETR4"},
+    {"description":"ETH","proName":"BINANCE:ETHUSDT"},
+    {"description":"VALE3","proName":"BMFBOVESPA:VALE3"},
+    {"description":"AAPL","proName":"NASDAQ:AAPL"},
+    {"description":"ITUB4","proName":"BMFBOVESPA:ITUB4"},
+    {"description":"SOL","proName":"BINANCE:SOLUSDT"},
+    {"description":"BBDC4","proName":"BMFBOVESPA:BBDC4"},
+    {"description":"MSFT","proName":"NASDAQ:MSFT"},
+    {"description":"ABEV3","proName":"BMFBOVESPA:ABEV3"},
+    {"description":"BNB","proName":"BINANCE:BNBUSDT"},
+    {"description":"WEGE3","proName":"BMFBOVESPA:WEGE3"},
+    {"description":"NVDA","proName":"NASDAQ:NVDA"},
+    {"description":"XRP","proName":"BINANCE:XRPUSDT"},
+    {"description":"BBAS3","proName":"BMFBOVESPA:BBAS3"},
+    {"description":"TSLA","proName":"NASDAQ:TSLA"},
+    {"description":"ADA","proName":"BINANCE:ADAUSDT"},
+    {"description":"RENT3","proName":"BMFBOVESPA:RENT3"},
+    {"description":"AMZN","proName":"NASDAQ:AMZN"},
+    {"description":"DOGE","proName":"BINANCE:DOGEUSDT"},
+    {"description":"LREN3","proName":"BMFBOVESPA:LREN3"},
+    {"description":"GOOGL","proName":"NASDAQ:GOOGL"},
+    {"description":"AVAX","proName":"BINANCE:AVAXUSDT"},
+    {"description":"META","proName":"NASDAQ:META"},
+    {"description":"USD/BRL","proName":"FX_IDC:USDBRL"},
+    {"description":"EUR/BRL","proName":"FX_IDC:EURBRL"},
+    {"description":"IBOV","proName":"BMFBOVESPA:IBOV"},
+    {"description":"SPY","proName":"AMEX:SPY"},
+    {"description":"LINK","proName":"BINANCE:LINKUSDT"},
+    {"description":"DOT","proName":"BINANCE:DOTUSDT"},
+    {"description":"MATIC","proName":"BINANCE:MATICUSDT"},
+    {"description":"LTC","proName":"BINANCE:LTCUSDT"}
+  ],
+  "showSymbolLogo": true,
+  "isTransparent": false,
+  "displayMode": "adaptive",
+  "colorTheme": "dark",
+  "locale": "br"
+}
+</script>
+<!-- ═══ fim [tv] TRADINGVIEW TICKER ═══ -->
+
 <style id="scroll-lock-css">
-/* ═══ [v4] SCROLL LOCK — só a tabela rola ═══ */
+/* ═══ SCROLL LOCK v5 — só a tabela rola ═══ */
 html, body{height:100%;overflow:hidden;margin:0}
-body{padding-top:130px}  /* ticker(32) + topbar(64) + subbar(34) */
+/* Padding: ticker(44) + topbar(64) + subbar(34) + folga(8) = 150 */
+body{padding-top:150px}
 
-/* Subbar: borda e sombra inferior para separar visualmente da toolbar */
-.subbar{border-bottom:2px solid rgba(184,151,58,0.35) !important;box-shadow:0 2px 12px rgba(0,0,0,0.4)}
+.subbar{border-bottom:2px solid rgba(184,151,58,0.35) !important}
 
-/* Page ativa: ocupa toda altura restante, sem scroll */
-.page.active{height:calc(100vh - 130px);overflow:hidden;display:flex;flex-direction:column}
-
-/* Layout grid (sidebar + main): flex:1, sem scroll interno no grid */
+.page.active{height:calc(100vh - 150px);overflow:hidden;display:flex;flex-direction:column}
 .page.active > .layout{flex:1;min-height:0;display:grid}
-
-/* Sidebar: scroll interno se precisar */
 .left-panel{overflow-y:auto;overflow-x:hidden;min-height:0}
 .left-panel::-webkit-scrollbar{width:6px}
 .left-panel::-webkit-scrollbar-thumb{background:rgba(184,151,58,0.2);border-radius:3px}
 
-/* Main area: flex-column, stats + toolbar NÃO rolam, tab-panel rola */
 .main-area{display:flex;flex-direction:column;overflow:hidden;min-height:0}
-.main-area > .stats-strip{flex-shrink:0}   /* KPIs: altura natural, não corta */
-.main-area > .toolbar{flex-shrink:0}       /* Toolbar: altura 46px, não corta */
+.main-area > .stats-strip{flex-shrink:0}
+.main-area > .toolbar{flex-shrink:0}
 
-/* Tab panels: flex:1 para ocupar resto; table-container rola */
 .tab-panel{display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden}
 .tab-panel.active{display:flex}
 .tab-panel > .table-container{flex:1;overflow-y:auto;overflow-x:auto;min-height:0}
 .tab-panel > .table-container::-webkit-scrollbar{width:8px;height:8px}
 .tab-panel > .table-container::-webkit-scrollbar-thumb{background:rgba(184,151,58,0.25);border-radius:4px}
 
-/* Demais páginas: ocultas */
 .page:not(.active){display:none}
 </style>
-
-<!-- ═══ [v3] TICKER TAPE HARD RESET — bloco autocontido ═══ -->
-<style id="tt-v3-styles">
-  /* Usar position:fixed para garantir funcionamento mesmo com ancestrais */
-  #tt-v3{position:fixed;left:0;right:0;top:0;z-index:250;height:32px;
-    background:linear-gradient(180deg,#050c18 0%,#020810 100%);
-    border-bottom:1px solid rgba(184,151,58,0.35);
-    overflow:hidden;font-family:'DM Mono','JetBrains Mono',monospace;font-size:11px;
-    user-select:none;will-change:transform}
-  #tt-v3:hover .tt-v3-track{animation-play-state:paused}
-  .tt-v3-track{display:flex;align-items:center;height:100%;white-space:nowrap;
-    will-change:transform;animation:ttv3Scroll var(--ttv3-dur,50s) linear infinite}
-  @keyframes ttv3Scroll{0%{transform:translate3d(0,0,0)}100%{transform:translate3d(-33.333%,0,0)}}
-  .tt-v3-item{display:inline-flex;align-items:center;gap:8px;padding:0 18px;height:100%;
-    border-right:1px solid rgba(184,151,58,0.08);flex-shrink:0}
-  .tt-v3-mkt{font-size:9px;letter-spacing:.1em;font-weight:700;padding:2px 6px;border-radius:3px}
-  .tt-v3-mkt.b3{color:#d4ae57;background:rgba(212,174,87,0.12)}
-  .tt-v3-mkt.nyse{color:#60A5FA;background:rgba(96,165,250,0.12)}
-  .tt-v3-mkt.crypto{color:#c77dff;background:rgba(199,125,255,0.12)}
-  .tt-v3-sym{font-weight:700;color:#f0f4f9;letter-spacing:.02em}
-  .tt-v3-px{color:#8fa3be}
-  .tt-v3-chg{font-weight:700}
-  .tt-v3-chg.up{color:#2ecc71}
-  .tt-v3-chg.down{color:#e74c3c}
-  .tt-v3-chg.flat{color:#64748B}
-  .tt-v3-loading{display:flex;align-items:center;justify-content:center;height:100%;
-    color:#64748B;font-size:10px;letter-spacing:.1em}
-  #tt-v3::before,#tt-v3::after{content:"";position:absolute;top:0;bottom:0;width:60px;
-    z-index:2;pointer-events:none}
-  #tt-v3::before{left:0;background:linear-gradient(to right,#081220,transparent)}
-  #tt-v3::after{right:0;background:linear-gradient(to left,#050c18,transparent)}
-
-  /* Empurrar conteúdo abaixo pra não ficar atrás do ticker fixo */
-  body{padding-top:0}
-  
-
-  /* Mobile: ajustar top considerando header menor */
-  
-</style>
-
-<div id="tt-v3" aria-label="Ticker de preços em tempo real">
-  <div class="tt-v3-loading">Conectando ao mercado…</div>
-</div>
-
-<script id="tt-v3-script">
-(function(){
-  'use strict';
-  var API = 'https://diligent-spirit-production.up.railway.app';
-  var REFRESH_MS = 15000;
-  var RESHUFFLE_EVERY = 4;  // a cada 4 ciclos (60s) re-embaralhar ordem
-  var _cycleCount = 0;
-  var _lastLength = 0;
-  var _timer = null;
-
-  function fmtPx(p){
-    if(p >= 1000) return p.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-    if(p >= 1) return p.toFixed(2);
-    return p.toFixed(4);
-  }
-
-  function shuffle(arr){
-    for(var i = arr.length - 1; i > 0; i--){
-      var j = Math.floor(Math.random() * (i + 1));
-      var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
-    }
-    return arr;
-  }
-
-  function buildHTML(items){
-    var out = '';
-    for(var i = 0; i < items.length; i++){
-      var it = items[i];
-      var dir = it.c > 0.01 ? 'up' : (it.c < -0.01 ? 'down' : 'flat');
-      var arrow = dir === 'up' ? '▲' : (dir === 'down' ? '▼' : '·');
-      var sign = it.c > 0 ? '+' : '';
-      var mkt = it.m === 'B3' ? 'b3' : (it.m === 'CRYPTO' ? 'crypto' : 'nyse');
-      var cur = it.cur === 'BRL' ? 'R$' : '$';
-      out += '<div class="tt-v3-item">' +
-             '<span class="tt-v3-mkt '+mkt+'">'+it.m+'</span>' +
-             '<span class="tt-v3-sym">'+it.t+'</span>' +
-             '<span class="tt-v3-px">'+cur+fmtPx(it.p)+'</span>' +
-             '<span class="tt-v3-chg '+dir+'">'+arrow+' '+sign+it.c.toFixed(2)+'%</span>' +
-             '</div>';
-    }
-    return out;
-  }
-
-  function render(items, reason){
-    var el = document.getElementById('tt-v3');
-    if(!el) return;
-    // Triplicar (3x) para scroll mais suave e menos "retorno visual"
-    var inner = buildHTML(items);
-    // Duração rápida: 22 segundos por ciclo completo (1/3 do track por ~7s)
-    // items * 0.22s = 124 * 0.22 = 27s. Suficientemente rápido.
-    var dur = Math.max(25, items.length * 0.22);
-    el.innerHTML = '<div class="tt-v3-track" style="--ttv3-dur:'+dur+'s">'+inner+inner+inner+'</div>';
-    console.log('[TT-v3] '+reason+': '+items.length+' ativos, ciclo '+dur.toFixed(0)+'s');
-  }
-
-  function updatePricesInPlace(items){
-    var el = document.getElementById('tt-v3');
-    if(!el) return;
-    var map = {};
-    for(var i = 0; i < items.length; i++) map[items[i].t] = items[i];
-    var rows = el.querySelectorAll('.tt-v3-item');
-    for(var j = 0; j < rows.length; j++){
-      var row = rows[j];
-      var sym = row.querySelector('.tt-v3-sym');
-      if(!sym) continue;
-      var data = map[sym.textContent.trim()];
-      if(!data) continue;
-      var px = row.querySelector('.tt-v3-px');
-      var chg = row.querySelector('.tt-v3-chg');
-      if(px) px.textContent = (data.cur === 'BRL' ? 'R$' : '$') + fmtPx(data.p);
-      if(chg){
-        var d = data.c > 0.01 ? 'up' : (data.c < -0.01 ? 'down' : 'flat');
-        var a = d === 'up' ? '▲' : (d === 'down' ? '▼' : '·');
-        var s = data.c > 0 ? '+' : '';
-        chg.className = 'tt-v3-chg ' + d;
-        chg.textContent = a + ' ' + s + data.c.toFixed(2) + '%';
-      }
-    }
-  }
-
-  function update(){
-    fetch(API + '/api/ticker-tape')
-      .then(function(r){ return r.ok ? r.json() : Promise.reject('HTTP '+r.status); })
-      .then(function(d){
-        var items = (d && d.items) || [];
-        if(items.length === 0) return;
-
-        _cycleCount++;
-        var needRebuild = false;
-        var reason = '';
-
-        // Forçar rebuild se: 1ª vez, universo mudou, OU a cada N ciclos
-        if(_lastLength === 0){
-          needRebuild = true;
-          reason = 'Primeira renderização';
-        } else if(items.length !== _lastLength){
-          needRebuild = true;
-          reason = 'Universo mudou ('+_lastLength+'→'+items.length+')';
-        } else if(_cycleCount % RESHUFFLE_EVERY === 0){
-          needRebuild = true;
-          reason = 'Reshuffle periódico (ciclo '+_cycleCount+')';
-        }
-
-        if(needRebuild){
-          var shuffled = shuffle(items.slice());
-          render(shuffled, reason);
-          _lastLength = items.length;
-        } else {
-          updatePricesInPlace(items);
-        }
-      })
-      .catch(function(e){ console.warn('[TT-v3] erro:', e); });
-  }
-
-  function start(){
-    console.log('[TT-v3] start()');
-    update();
-    if(_timer) clearInterval(_timer);
-    _timer = setInterval(update, REFRESH_MS);
-  }
-
-  if(document.readyState === 'loading'){
-    document.addEventListener('DOMContentLoaded', start);
-  } else {
-    start();
-  }
-
-  document.addEventListener('visibilitychange', function(){
-    if(document.hidden){
-      if(_timer){ clearInterval(_timer); _timer = null; }
-    } else {
-      update();
-      if(!_timer) _timer = setInterval(update, REFRESH_MS);
-    }
-  });
-})();
-</script>
-<!-- ═══ fim [v3] TICKER TAPE ═══ -->
 
 </body>
 </html>

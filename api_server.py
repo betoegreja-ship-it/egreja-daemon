@@ -780,6 +780,7 @@ CRYPTO_SYMBOLS = [
     'BTCUSDT',   # +$242    WR 53%
     'BNBUSDT',   # +$191    WR 50%
     'TRXUSDT',   # [v10.46.3] V3 backtest: LONG WR 85%, soma +28.8% em 90d
+    'SOLUSDT',   # [v10.46.4] V3 backtest 180d: SHORT WR 91% (n=11), soma +51.4%
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',

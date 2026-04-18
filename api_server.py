@@ -635,8 +635,8 @@ ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.24.4] 5 símbolos — usar todo o capital nas 5 moedas
-MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 20)) # [v10.47] 20 simultâneas — v3 discrimina, não deixar dinheiro parado
+MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 20)) # [v10.47]
 
 # Settings ajustaveis em runtime (via /settings POST)
 KILL_SWITCH_USD          = float(os.environ.get('KILL_SWITCH_USD', 30000))
@@ -652,6 +652,34 @@ MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
 USE_SCORE_V2             = os.environ.get('USE_SCORE_V2', 'true').lower() != 'false'
 MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
+
+# [v10.47] Position sizing escalado por score (dinheiro parado é prejuízo)
+# Quanto maior confiança do score v3, maior o capital alocado
+# Baseline 1.0x para score neutro, máximo 2.0x em score 85+
+SCORE_SIZING_ENABLED     = os.environ.get('SCORE_SIZING_ENABLED', 'true').lower() != 'false'
+SCORE_SIZING_MAX_MULT    = float(os.environ.get('SCORE_SIZING_MAX_MULT', 2.0))
+
+def get_score_sizing_mult(score: int) -> float:
+    """Retorna multiplicador de sizing baseado no score [0-100].
+
+    - Score 85-100: 2.0x (alta confiança, alocar mais)
+    - Score 75-84:  1.6x
+    - Score 65-74:  1.3x
+    - Score 50-64:  1.0x (baseline)
+    - Score <50:    0.8x (LOW/SHORT — ainda passa, mas menor)
+
+    Para SHORTs (score baixo indica venda forte), o multiplicador
+    também cresce — usamos abs(50-score) como magnitude.
+    """
+    if not SCORE_SIZING_ENABLED:
+        return 1.0
+    mag = abs(score - 50)  # distância do neutro
+    if   mag >= 35: return min(SCORE_SIZING_MAX_MULT, 2.0)   # score 85+ ou ≤15
+    elif mag >= 25: return 1.6                                # 75-84 ou 16-25
+    elif mag >= 15: return 1.3                                # 65-74 ou 26-35
+    elif mag >= 5:  return 1.0                                # 55-64 ou 36-45
+    else:           return 0.8                                # 46-54 (zona morta)
+
 
 # Arbitragem — livro segregado
 ARBI_CAPITAL         = float(os.environ.get('ARBI_CAPITAL', 4_500_000))  # [v10.9] aumentado de 3M para 4.5M
@@ -669,7 +697,7 @@ ARBI_KILL_SWITCH     = False
 MAX_OPEN_POSITIONS      = 65  # [v10.14] 60 stocks + 5 crypto (hardcoded)
 MAX_DAILY_DRAWDOWN_PCT  = float(os.environ.get('MAX_DAILY_DRAWDOWN_PCT', 2.0))
 MAX_WEEKLY_DRAWDOWN_PCT = float(os.environ.get('MAX_WEEKLY_DRAWDOWN_PCT', 5.0))
-MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 10))
+MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 20))  # [v10.47]
 MAX_SAME_SYMBOL         = int(os.environ.get('MAX_SAME_SYMBOL', 1))
 MAX_RISK_PER_TRADE_PCT  = float(os.environ.get('MAX_RISK_PER_TRADE_PCT', 1.5))
 RISK_KILL_SWITCH        = False
@@ -732,9 +760,9 @@ SHADOW_TRACK_REASONS   = {'confidence_low','market_closed','risk_blocked','symbo
 DAILY_DD_STOCKS_PCT   = float(os.environ.get('DAILY_DD_STOCKS_PCT', 1.5))   # max 1.5% drawdown diário em stocks
 DAILY_DD_CRYPTO_PCT   = float(os.environ.get('DAILY_DD_CRYPTO_PCT', 2.0))   # max 2.0% drawdown diário em crypto (mais volátil)
 # ── [v10.16] Auto-blacklist: suspende símbolo com histórico ruim ──────────
-BLACKLIST_MIN_TRADES    = int(os.environ.get('BLACKLIST_MIN_TRADES', 20))     # mínimo de trades para avaliar
+BLACKLIST_MIN_TRADES    = int(os.environ.get('BLACKLIST_MIN_TRADES', 9999))   # [v10.47] DESLIGADO — v3 discrimina por score, não por histórico por símbolo
 BLACKLIST_MAX_AVG_PNL   = float(os.environ.get('BLACKLIST_MAX_AVG_PNL', -40)) # avg PnL < -$40 = blacklist
-BLACKLIST_MAX_WR        = float(os.environ.get('BLACKLIST_MAX_WR', 42))       # WR < 42% = blacklist
+BLACKLIST_MAX_WR        = float(os.environ.get('BLACKLIST_MAX_WR', 0))        # [v10.47] 0 = nunca blacklist (v3 decide)
 BLACKLIST_REVIEW_H      = float(os.environ.get('BLACKLIST_REVIEW_H', 24))     # reavaliar a cada 24h
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
 ATR_SL_MULTIPLIER_STOCK  = float(os.environ.get('ATR_SL_MULTIPLIER_STOCK', 2.5))  # SL = ATR * 2.5 para stocks
@@ -771,10 +799,9 @@ CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15)) 
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [v10.46.5] Universo de 20 cryptos — instrução direta do usuário (17/abr/2026)
-    # Filosofia com V3: score regime-aware decide COMPRA ou VENDA por símbolo.
-    # Moedas em downtrend (que v1 comprava errado) agora geram SHORTs corretos.
-    # MAX_POSITIONS_CRYPTO=5 continua limitando quantidade simultânea.
+    # [v10.47] Universo de 20 cryptos (expansão via v3 regime-aware)
+    # Filosofia: v3 decide COMPRA ou VENDA por símbolo — downtrend vira SHORT.
+    # MAX_POSITIONS_CRYPTO=20 | Blacklist OFF | Score sizing 2.0x em score 85+
     'BTCUSDT',   # Bitcoin — referência de mercado
     'ETHUSDT',   # Ethereum — histórico melhor WR 55%
     'BNBUSDT',   # BNB — exchange coin
@@ -6173,7 +6200,11 @@ def stock_execution_worker():
                 _stocks_port_total = s.get('stocks_portfolio_value', INITIAL_CAPITAL_STOCKS) if False else                     max(stocks_capital + sum(t.get('position_value',0) for t in stocks_open), INITIAL_CAPITAL_STOCKS)
                 _regime_size_m, _regime_sl_tmp, _regime_info = get_regime_multiplier()  # [v10.17]
                 _pos_target = _stocks_port_total / MAX_POSITIONS_STOCKS * (0.8 + score_factor * 0.4)
-                desired_pos = min(max(_pos_target * risk_mult * _regime_size_m, 50_000), MAX_POSITION_STOCKS)  # [v10.17] regime sizing
+                # [v10.47] Score sizing multiplier — mais capital em scores altos
+                _score_mult = get_score_sizing_mult(score)
+                desired_pos = min(max(_pos_target * risk_mult * _regime_size_m * _score_mult, 50_000), MAX_POSITION_STOCKS)
+                if _score_mult != 1.0:
+                    log.info(f'[STK-SCORE-SIZE] {sym}: score={score} mult={_score_mult:.1f}x desired={desired_pos:,.0f}')
                 # [v10.16] Strategy daily drawdown check
                 _dd_blocked_s, _dd_reason_s = check_strategy_daily_dd('stocks')
                 if _dd_blocked_s:
@@ -6529,11 +6560,13 @@ def auto_trade_crypto():
                 _risk_mult_crypto = max(risk_mult_c, 0.6)
                 # [v10.29] Dynamic WR-based sizing: allocate more to proven winners
                 _wr_sizing_mult = get_symbol_wr_sizing_mult(display, 'crypto')
+                # [v10.47] Score sizing multiplier — mais capital em scores altos
+                _score_mult_c = get_score_sizing_mult(score)
                 # [v10.28] Mínimo por posição: 15% do slot (era 50K fixo)
-                _min_crypto_pos = max(80_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.12)  # [v10.29] min 80K (era 100K), 12% slot (era 15%) — mais ativos = slots menores
-                desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m * _wr_sizing_mult, _min_crypto_pos), _sym_max)
-                if _wr_sizing_mult != 1.0:
-                    log.info(f'[CRYPTO-WR-SIZE] {display}: wr_mult={_wr_sizing_mult:.2f} desired={desired_pos:,.0f}')
+                _min_crypto_pos = max(80_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.12)
+                desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m * _wr_sizing_mult * _score_mult_c, _min_crypto_pos), _sym_max)
+                if _wr_sizing_mult != 1.0 or _score_mult_c != 1.0:
+                    log.info(f'[CRYPTO-SIZE] {display}: wr_mult={_wr_sizing_mult:.2f} score_mult={_score_mult_c:.1f}x score={score} desired={desired_pos:,.0f}')
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:

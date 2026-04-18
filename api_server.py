@@ -5415,8 +5415,9 @@ def fetch_crypto_prices():
                 # Usa cache _candles_cache para evitar excesso de chamadas.
                 for sym in CRYPTO_SYMBOLS:
                     cached_klines = _get_cached_candles(f'klines:{sym}', ttl_min=60)  # [v10.6.3-Fix2]
-                    if cached_klines is None:
-                        klines = _fetch_binance_klines(sym, 22)
+                    # [v10.46] 22→100 barras para score_engine_v2 (Ichimoku precisa 52+, RSI 14+)
+                    if cached_klines is None or len(cached_klines.get('closes', [])) < 60:
+                        klines = _fetch_binance_klines(sym, 100)
                         if klines:
                             _set_cached_candles(f'klines:{sym}', klines)
                     else:
@@ -5941,7 +5942,7 @@ def stock_execution_worker():
                             score = _r['score']
                             regime_v2_val = _r['regime']
                             signal_v2_val = _r['signal']
-                            log.debug(f"V3_STOCK {sym}: v1={score_v1_fallback} v3={score} regime={regime_v2_val} signal={signal_v2_val}")
+                            log.info(f"V3_STOCK {sym}: v1={score_v1_fallback} v3={score} regime={regime_v2_val} signal={signal_v2_val}")
                     except Exception as _e:
                         log.warning(f"V3_STOCK_FAIL {sym}: {_e} — fallback v1={score_v1_fallback}")
                         score = score_v1_fallback
@@ -6346,7 +6347,7 @@ def auto_trade_crypto():
                                 score = _rc['score']
                                 regime_v2_c = _rc['regime']
                                 signal_v2_c = _rc['signal']
-                                log.debug(f"V3_CRYPTO {sym}: v1={score_v1_crypto} v3={score} regime={regime_v2_c}")
+                                log.info(f"V3_CRYPTO {sym}: v1={score_v1_crypto} v3={score} regime={regime_v2_c} sig={signal_v2_c}")
                         except Exception as _e:
                             log.warning(f"V3_CRYPTO_FAIL {sym}: {_e} — fallback v1={score_v1_crypto}")
                             score = score_v1_crypto

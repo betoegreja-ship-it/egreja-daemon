@@ -1163,7 +1163,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/ticker-tape.js'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -8766,6 +8766,20 @@ def modules_debug():
         'lh_error': _lh_load_error,
         'brain_error': _brain_load_error,
     })
+
+@app.route('/api/fx-rates')
+def fx_rates_endpoint():
+    """[v2] Public endpoint: cotações de câmbio para exibição no header do dashboard."""
+    # fx_rates é populado por fetch_fx_rates() (arbi_scan_loop, a cada ~6min)
+    # Valores: USDBRL (BRL por USD), EURUSD (USD por EUR), GBPUSD, HKDUSD, CADUSD
+    out = dict(fx_rates) if isinstance(fx_rates, dict) else {}
+    # Derivar EURBRL para conveniência do frontend (EUR em BRL)
+    if out.get('EURUSD') and out.get('USDBRL'):
+        out['EURBRL'] = round(out['EURUSD'] * out['USDBRL'], 4)
+    if out.get('GBPUSD') and out.get('USDBRL'):
+        out['GBPBRL'] = round(out['GBPUSD'] * out['USDBRL'], 4)
+    return jsonify({'fx': out, 'ts': datetime.utcnow().isoformat()})
+
 
 @app.route('/api/ticker-tape')
 def ticker_tape():

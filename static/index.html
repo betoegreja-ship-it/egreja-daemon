@@ -1083,11 +1083,12 @@
     let _fxPrev = {};
     async function updateFxRates() {
         try {
-            const r = await fetch(`${API}/prices/live`);
+            const r = await fetch(`${API}/api/fx-rates`);   // [v2] endpoint dedicado
             if (!r.ok) return;
             const data = await r.json();
-            const usd = data.fx?.USDBRL || data.USDBRL;
-            const eur = data.fx?.EURUSD || data.EURUSD;
+            const fx = data.fx || {};
+            const usd = fx.USDBRL;
+            const eur = fx.EURBRL;   // já derivado no backend
             let html = '';
             if (usd) {
                 const dir = _fxPrev.usd ? (usd > _fxPrev.usd ? 'up' : (usd < _fxPrev.usd ? 'down' : '')) : '';
@@ -1095,12 +1096,9 @@
                 _fxPrev.usd = usd;
             }
             if (eur) {
-                const eurBrl = usd ? (eur * usd) : null;
-                if (eurBrl) {
-                    const dir = _fxPrev.eur ? (eurBrl > _fxPrev.eur ? 'up' : (eurBrl < _fxPrev.eur ? 'down' : '')) : '';
-                    html += `<span class="fx-chip ${dir}"><span class="fx-label">EUR</span><span class="fx-value">R$ ${eurBrl.toFixed(4)}</span></span>`;
-                    _fxPrev.eur = eurBrl;
-                }
+                const dir = _fxPrev.eur ? (eur > _fxPrev.eur ? 'up' : (eur < _fxPrev.eur ? 'down' : '')) : '';
+                html += `<span class="fx-chip ${dir}"><span class="fx-label">EUR</span><span class="fx-value">R$ ${eur.toFixed(4)}</span></span>`;
+                _fxPrev.eur = eur;
             }
             const el = document.getElementById('fx-rates');
             if (el) el.innerHTML = html;

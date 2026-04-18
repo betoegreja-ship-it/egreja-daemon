@@ -206,6 +206,7 @@
     }
 
     let _initialized = false;
+    let _lastSymbols = '';  // fingerprint da lista para detectar mudança
 
     async function updateTape() {
         const items = await fetchPrices();
@@ -214,12 +215,20 @@
         // Fast scroll: 0.35s per item so 120 items = ~42s full cycle
         _animDuration = Math.max(30, items.length * 0.35);
 
-        if (!_initialized) {
-            // First load: build full HTML
+        // [v2 fix] Detectar se a lista de símbolos mudou (novo ativo, remoção)
+        const currentSymbols = items.map(i => i.t).sort().join(',');
+        const symbolsChanged = currentSymbols !== _lastSymbols;
+
+        if (!_initialized || symbolsChanged) {
+            // First load OR universo mudou: rebuildar HTML
             _tape.style.setProperty('--tape-duration', _animDuration + 's');
             _tape.innerHTML = `<div class="ticker-tape-track">${buildTapeHTML(items)}</div>`;
             _track = _tape.querySelector('.ticker-tape-track');
             _initialized = true;
+            _lastSymbols = currentSymbols;
+            if (symbolsChanged && _initialized) {
+                console.log(`[TickerTape] Universo atualizado: ${items.length} ativos`);
+            }
         } else {
             // Subsequent loads: update prices in-place WITHOUT resetting scroll position
             const allItems = _track.querySelectorAll('.ticker-tape-item');

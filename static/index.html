@@ -109,6 +109,57 @@
 
         /* Footer */
         footer { text-align: center; padding: 2rem; color: var(--dim); font-size: 0.75rem; border-top: 1px solid var(--border); margin-top: 2rem; }
+
+        /* ═══ [v2] LAYOUT: header fixo + scroll interno ═══ */
+        html, body { height: 100%; }
+        body { overflow: hidden; display: flex; flex-direction: column; }
+        header { flex-shrink: 0; position: sticky; top: 0; z-index: 100; }
+        main { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 24px; }
+        main > .tab-content { min-height: 100%; }
+        footer { flex-shrink: 0; }
+
+        /* Scroll customizado */
+        main::-webkit-scrollbar { width: 10px; }
+        main::-webkit-scrollbar-track { background: var(--bg-primary); }
+        main::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 5px; }
+        main::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+        /* ═══ [v2] TABELAS ORDENÁVEIS (Item 2) ═══ */
+        table.sortable th { cursor: pointer; user-select: none; position: relative; padding-right: 18px; }
+        table.sortable th:hover { color: var(--text); background: rgba(201,168,76,.05); }
+        table.sortable th.sort-asc::after  { content: ' ▲'; color: var(--gold); position: absolute; right: 4px; }
+        table.sortable th.sort-desc::after { content: ' ▼'; color: var(--gold); position: absolute; right: 4px; }
+        table.sortable th.sort-none::after { content: ' ⇅'; color: var(--muted); position: absolute; right: 4px; opacity: .4; }
+
+        /* Header de tabela sticky dentro da tab */
+        .card-body.scrollable { max-height: 70vh; overflow-y: auto; padding: 0; }
+        .card-body.scrollable table thead th { position: sticky; top: 0; background: var(--bg-secondary); z-index: 2; box-shadow: 0 1px 0 var(--border); }
+
+        /* ═══ [v2] LOADING SKELETON (Item 10) ═══ */
+        .skel { background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--muted) 50%, var(--bg-tertiary) 75%); background-size: 200% 100%; animation: skel 1.5s infinite; border-radius: 4px; }
+        @keyframes skel { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .skel-line { height: 14px; margin: 6px 0; }
+        .skel-card { height: 80px; }
+        .loading-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+        /* ═══ [v2] FILTROS DE MERCADO (Item 1) ═══ */
+        .market-filter-bar { display: flex; gap: 6px; padding: 12px 0; align-items: center; flex-wrap: wrap; }
+        .market-filter-bar .filter-label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; margin-right: 8px; }
+        .mf-btn { background: transparent; border: 1px solid var(--border); color: var(--dim); padding: 6px 14px; font-size: 12px; font-weight: 600; border-radius: 6px; cursor: pointer; font-family: inherit; transition: all .15s; }
+        .mf-btn:hover { color: var(--text); border-color: var(--muted); }
+        .mf-btn.active { background: var(--gold); color: var(--bg-primary); border-color: var(--gold); }
+        .mf-btn .count { opacity: .7; margin-left: 4px; font-weight: 400; }
+
+        /* ═══ [v2] SEARCH BOX ═══ */
+        .search-box { background: var(--bg-tertiary); border: 1px solid var(--border); color: var(--text); padding: 6px 12px; border-radius: 6px; font-size: 12px; font-family: inherit; min-width: 240px; }
+        .search-box:focus { outline: none; border-color: var(--gold); }
+
+        /* ═══ [v2] FX CHIP ═══ */
+        .fx-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px; background: var(--bg-tertiary); font-size: 11px; }
+        .fx-chip .fx-label { color: var(--dim); font-weight: 600; }
+        .fx-chip .fx-value { color: var(--text); font-weight: 600; }
+        .fx-chip.up .fx-value { color: var(--green-profit); }
+        .fx-chip.down .fx-value { color: var(--red-loss); }
     </style>
 </head>
 <body>
@@ -119,6 +170,7 @@
             </div>
             <nav id="navigation">
                 <button data-tab="dashboard" class="nav-btn active">Dashboard</button>
+                <button data-tab="mercados" class="nav-btn">Mercados</button>
                 <button data-tab="derivativos" class="nav-btn">Derivativos</button>
                 <button data-tab="pnl" class="nav-btn">P&L</button>
                 <button data-tab="winrate" class="nav-btn">Win Rate</button>
@@ -129,6 +181,7 @@
                 <button data-tab="saude" class="nav-btn">Saúde</button>
             </nav>
             <div class="header-right">
+                <span id="fx-rates" class="text-mono" style="color:var(--dim);display:flex;gap:10px;align-items:center"></span>
                 <span id="market-clock" class="text-mono" style="color:var(--dim)"></span>
                 <span class="text-mono" style="color:var(--dim)" id="last-refresh">—</span>
             </div>
@@ -137,7 +190,23 @@
 
     <main>
         <div id="banner-container"></div>
-        <div id="dashboard" class="tab-content active"></div>
+        <div id="dashboard" class="tab-content active">
+            <div class="grid-4 loading-grid" style="margin-bottom:16px">
+                <div class="skel skel-card"></div>
+                <div class="skel skel-card"></div>
+                <div class="skel skel-card"></div>
+                <div class="skel skel-card"></div>
+            </div>
+            <div class="card"><div class="card-body">
+                <div class="skel skel-line" style="width:60%"></div>
+                <div class="skel skel-line" style="width:80%"></div>
+                <div class="skel skel-line" style="width:45%"></div>
+                <div class="skel skel-line" style="width:70%"></div>
+                <div class="skel skel-line" style="width:55%"></div>
+            </div></div>
+            <div style="text-align:center;margin-top:20px;font-size:12px;color:var(--dim)">⏳ Conectando ao servidor...</div>
+        </div>
+        <div id="mercados" class="tab-content"></div>
         <div id="derivativos" class="tab-content"></div>
         <div id="pnl" class="tab-content"></div>
         <div id="winrate" class="tab-content"></div>
@@ -173,6 +242,7 @@
         positions: [], tradesClosed: [],
         pnlDaily: [], pnlMonthly: [], pnlAnnual: [], winRate: [],
         tickerPrices: {},  // { 'PETR4': { price: 48.6, change_pct: 1.2 }, ... }
+        tickerRaw: [],     // [v2] array raw dos ativos para aba Mercados
     };
     let currentTab = 'dashboard';
 
@@ -219,8 +289,9 @@
         // Build ticker price map for OpenTrades
         const _tapeItems = v(17)?.items || [];
         S.tickerPrices = {};
+        S.tickerRaw = _tapeItems;   // [v2] raw para aba Mercados
         for (const ti of _tapeItems) {
-            S.tickerPrices[ti.t] = { price: ti.p, change_pct: ti.c, cur: ti.cur };
+            S.tickerPrices[ti.t] = { price: ti.p, change_pct: ti.c, m: ti.m, cur: ti.cur };
         }
         document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('pt-BR');
         render();
@@ -247,6 +318,7 @@
             dashboard: renderDashboard, derivativos: renderDerivatives,
             pnl: renderPnl, winrate: renderWinRate, capital: renderCapital,
             trades: renderTrades, liquidez: renderLiquidez, calibracao: renderCalibration,
+            mercados: renderMercados,
             saude: renderSaude
         };
         if(fn[currentTab]) document.getElementById(currentTab).innerHTML = fn[currentTab]();
@@ -747,6 +819,55 @@
             ${kpi('Modo', ss?.overall?.mode||(typeof h?.market_regime==='object'?(h?.market_regime?.mode||'—'):h?.market_regime)||'—', `Kill Switch: ${ss?.overall?.kill_switch?'ATIVADO':'Off'}`, 'var(--blue-accent)')}
         </div>`;
 
+        // [v2] Sistema Score V3 (Item 4 — info v10.46-v10.51)
+        html += `<div class="section-title">🧠 Sistema Score V3 — Regime-Aware</div>
+        <div class="card section"><div class="card-body">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+                <div>
+                    <div class="kpi-label">Motor de Score</div>
+                    <div style="font-size:14px;font-weight:600;color:var(--gold)">V3 Regime-Aware</div>
+                    <div style="font-size:11px;color:var(--dim);margin-top:4px">13 indicadores técnicos ponderados por regime de mercado</div>
+                </div>
+                <div>
+                    <div class="kpi-label">Indicadores</div>
+                    <div style="font-size:12px;font-family:var(--mono);color:var(--text);line-height:1.6">RSI · MACD · Bollinger · ADX · CCI<br/>EMA cross · Stochastic · Williams %R<br/>ATR% · VWAP · OBV · Supertrend · Ichimoku</div>
+                </div>
+                <div>
+                    <div class="kpi-label">Regimes</div>
+                    <div style="font-size:12px;line-height:1.7">
+                        <span class="badge badge-ok">TRENDING</span> ADX ≥ 25<br/>
+                        <span class="badge badge-info">MIXED</span> 20 ≤ ADX < 25<br/>
+                        <span class="badge badge-warn">RANGING</span> ADX < 20<br/>
+                        <span class="badge badge-err">CHOPPY</span> ATR > 5%
+                    </div>
+                </div>
+                <div>
+                    <div class="kpi-label">Frequência de cálculo</div>
+                    <div style="font-size:14px;font-weight:600">90 segundos</div>
+                    <div style="font-size:11px;color:var(--dim);margin-top:4px">Cache de klines: 5 min · Interval: 1h</div>
+                </div>
+            </div>
+        </div></div>
+
+        <div class="section-title">🔧 Regras de Fechamento</div>
+        <div class="card section"><div class="card-body">
+            <table><thead><tr><th>Ordem</th><th>Regra</th><th>Critério</th></tr></thead><tbody>
+                <tr><td class="text-center">1</td><td>TRAILING_STOP</td><td class="text-dim">peak ≥ 1,5% e drop ≥ 0,7% do peak</td></tr>
+                <tr><td class="text-center">2</td><td>STOP_LOSS</td><td class="text-dim">ATR × regime (não mais fixo -2%)</td></tr>
+                <tr><td class="text-center">3</td><td><strong style="color:var(--gold)">V3_REVERSAL</strong> 🆕</td><td class="text-dim">Só trades com tese V3 — fecha se signal virar MANTER/contrário</td></tr>
+                <tr><td class="text-center">4</td><td>FLAT_EXIT</td><td class="text-dim">Só trades sem tese V3 decisiva</td></tr>
+                <tr><td class="text-center">5</td><td>TIMEOUT</td><td class="text-dim">Só trades sem tese V3 decisiva</td></tr>
+                <tr><td class="text-center">6</td><td>MARKET_CLOSE</td><td class="text-dim">Fim de pregão B3/NYSE</td></tr>
+            </tbody></table>
+        </div></div>
+
+        <div class="section-title">⚙️ Limites Operacionais</div>
+        <div class="grid-3 section">
+            <div class="kpi-card"><div class="kpi-label">Posições Crypto</div><div class="kpi-value" style="color:var(--green-profit)">20 máx</div><div class="kpi-sub">MAX_POSITIONS_CRYPTO</div></div>
+            <div class="kpi-card"><div class="kpi-label">Universo Crypto</div><div class="kpi-value">20 ativos</div><div class="kpi-sub">BTC, ETH, BNB, SOL, XRP, ADA, DOGE, AVAX, DOT, LINK, MATIC, LTC, UNI, ATOM, XLM, BCH, NEAR, APT, ARB, TRX</div></div>
+            <div class="kpi-card"><div class="kpi-label">Risco Máx / Trade</div><div class="kpi-value" style="color:var(--orange)">1,5%</div><div class="kpi-sub">MAX_RISK_PER_TRADE_PCT — teto R$ 75k</div></div>
+        </div>`;
+
         // Providers
         const provs = ss?.providers||{};
         if(Object.keys(provs).length>0) {
@@ -802,6 +923,192 @@
     }
 
     // ─── NAVIGATION ─────────────────────────────────────────────
+
+    // ═══════════════════════════════════════════════════════════
+    // [v2] MERCADOS (Item 1) + ORDENAÇÃO DE COLUNAS (Item 2)
+    // ═══════════════════════════════════════════════════════════
+    const MERCADOS_STATE = {
+        filter: 'all',     // 'all' | 'B3' | 'NYSE' | 'CRYPTO'
+        search: '',
+        sortKey: 'symbol',
+        sortDir: 'asc',
+    };
+
+    function classifyMarket(item) {
+        // Usa o campo 'm' do /api/ticker-tape se disponível
+        if (item.m) return item.m;
+        if (item.market) return item.market;
+        const t = (item.t || item.symbol || '').toUpperCase();
+        if (t.endsWith('USDT') || /^(BTC|ETH|BNB|SOL|XRP|ADA|DOGE)/.test(t)) return 'CRYPTO';
+        // Heurística: se não tem número no começo, pode ser NYSE
+        return 'B3'; // default para ambiguidade
+    }
+
+    function sortRows(rows, key, dir) {
+        const mul = dir === 'asc' ? 1 : -1;
+        return [...rows].sort((a, b) => {
+            let va = a[key], vb = b[key];
+            if (va == null) va = '';
+            if (vb == null) vb = '';
+            if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mul;
+            return String(va).localeCompare(String(vb), 'pt-BR', { numeric: true }) * mul;
+        });
+    }
+
+    function applyMercadosFilter(items) {
+        let filtered = items;
+        if (MERCADOS_STATE.filter !== 'all') {
+            filtered = filtered.filter(i => classifyMarket(i) === MERCADOS_STATE.filter);
+        }
+        if (MERCADOS_STATE.search) {
+            const q = MERCADOS_STATE.search.toLowerCase();
+            filtered = filtered.filter(i => (i.t || i.symbol || '').toLowerCase().includes(q));
+        }
+        return sortRows(filtered, MERCADOS_STATE.sortKey, MERCADOS_STATE.sortDir);
+    }
+
+    function renderMercados() {
+        // Fonte: tickerData (do /api/ticker-tape já em S.tickerPrices)
+        // ou direto do S.tickerRaw se existir
+        const items = S.tickerRaw || [];
+
+        if (items.length === 0) {
+            return '<div class="card"><div class="card-body"><div class="empty-state">Carregando ativos monitorados…<div style="margin-top:12px"><div class="skel skel-line" style="width:80%"></div><div class="skel skel-line" style="width:60%"></div><div class="skel skel-line" style="width:70%"></div></div></div></div></div>';
+        }
+
+        const counts = { all: items.length, B3: 0, NYSE: 0, CRYPTO: 0 };
+        items.forEach(i => { const m = classifyMarket(i); if (counts[m] != null) counts[m]++; });
+
+        const rows = applyMercadosFilter(items);
+        const arrow = (k) => MERCADOS_STATE.sortKey === k ? (MERCADOS_STATE.sortDir === 'asc' ? 'sort-asc' : 'sort-desc') : 'sort-none';
+
+        let tr = '';
+        for (const it of rows) {
+            const sym = it.t || it.symbol || '—';
+            const mkt = classifyMarket(it);
+            const price = it.p != null ? it.p : (it.price != null ? it.price : null);
+            const chg = it.c != null ? it.c : (it.change_pct != null ? it.change_pct : null);
+            const cur = it.cur || (mkt === 'B3' ? 'BRL' : 'USD');
+            const sym_sign = cur === 'BRL' ? 'R$' : '$';
+            const priceStr = price != null ? `${sym_sign} ${parseFloat(price).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : '—';
+            const chgColor = chg > 0.01 ? 'var(--green-profit)' : (chg < -0.01 ? 'var(--red-loss)' : 'var(--dim)');
+            const chgArrow = chg > 0.01 ? '▲' : (chg < -0.01 ? '▼' : '─');
+            const chgStr = chg != null ? `${chgArrow} ${chg > 0 ? '+' : ''}${parseFloat(chg).toFixed(2)}%` : '—';
+            const mktBadge = mkt === 'B3' ? 'badge-ok' : (mkt === 'NYSE' ? 'badge-info' : 'badge-warn');
+            tr += `<tr>
+                <td class="text-mono text-center" style="font-weight:700">${sym}</td>
+                <td class="text-center"><span class="badge ${mktBadge}">${mkt}</span></td>
+                <td class="text-center text-mono">${priceStr}</td>
+                <td class="text-center text-mono" style="font-weight:600;color:${chgColor}">${chgStr}</td>
+            </tr>`;
+        }
+
+        return `
+        <div class="section-title">📊 Mercados — Ativos Monitorados</div>
+        <div class="market-filter-bar">
+            <span class="filter-label">Mercado:</span>
+            <button class="mf-btn ${MERCADOS_STATE.filter==='all'?'active':''}" onclick="setMercadosFilter('all')">Todos <span class="count">${counts.all}</span></button>
+            <button class="mf-btn ${MERCADOS_STATE.filter==='B3'?'active':''}" onclick="setMercadosFilter('B3')">B3 <span class="count">${counts.B3}</span></button>
+            <button class="mf-btn ${MERCADOS_STATE.filter==='NYSE'?'active':''}" onclick="setMercadosFilter('NYSE')">NYSE <span class="count">${counts.NYSE}</span></button>
+            <button class="mf-btn ${MERCADOS_STATE.filter==='CRYPTO'?'active':''}" onclick="setMercadosFilter('CRYPTO')">Crypto <span class="count">${counts.CRYPTO}</span></button>
+            <div style="flex:1"></div>
+            <input type="text" class="search-box" id="mercados-search" placeholder="🔍 Buscar ativo..." value="${MERCADOS_STATE.search}" oninput="setMercadosSearch(this.value)">
+        </div>
+        <div class="card section"><div class="card-body scrollable"><table class="sortable"><thead><tr>
+            <th class="text-center ${arrow('symbol')}" onclick="setMercadosSort('symbol')">Ativo</th>
+            <th class="text-center ${arrow('market')}" onclick="setMercadosSort('market')">Mercado</th>
+            <th class="text-center ${arrow('price')}" onclick="setMercadosSort('price')">Preço</th>
+            <th class="text-center ${arrow('change')}" onclick="setMercadosSort('change')">Var. 24h</th>
+        </tr></thead><tbody>${tr || '<tr><td colspan="4" class="text-center text-dim" style="padding:40px">Nenhum ativo corresponde ao filtro</td></tr>'}</tbody></table></div></div>
+        <div style="margin-top:12px;font-size:11px;color:var(--dim)">Total exibido: ${rows.length} · Clique nos cabeçalhos para ordenar.</div>
+        `;
+    }
+
+    function setMercadosFilter(f) { MERCADOS_STATE.filter = f; document.getElementById('mercados').innerHTML = renderMercados(); }
+    function setMercadosSearch(s) { MERCADOS_STATE.search = s; document.getElementById('mercados').innerHTML = renderMercados(); const sb = document.getElementById('mercados-search'); if (sb) { sb.focus(); sb.setSelectionRange(s.length, s.length); } }
+    function setMercadosSort(k) {
+        // Mapear key para campo real
+        const map = { symbol: 't', market: 'm', price: 'p', change: 'c' };
+        const realKey = map[k] || k;
+        if (MERCADOS_STATE.sortKey === realKey) {
+            MERCADOS_STATE.sortDir = MERCADOS_STATE.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            MERCADOS_STATE.sortKey = realKey;
+            MERCADOS_STATE.sortDir = 'asc';
+        }
+        document.getElementById('mercados').innerHTML = renderMercados();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [v2] ORDENAÇÃO GENÉRICA DE TABELAS (Item 2)
+    // Aplicar em qualquer <table class="sortable"> via delegation
+    // ═══════════════════════════════════════════════════════════
+    function makeSortable(tableEl) {
+        if (!tableEl || tableEl.dataset.sortableInit) return;
+        tableEl.dataset.sortableInit = '1';
+        const headers = tableEl.querySelectorAll('thead th');
+        headers.forEach((th, idx) => {
+            th.classList.add('sort-none');
+            th.addEventListener('click', () => {
+                const tbody = tableEl.querySelector('tbody');
+                if (!tbody) return;
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const curDir = th.classList.contains('sort-asc') ? 'desc' : 'asc';
+                headers.forEach(h => h.classList.remove('sort-asc', 'sort-desc', 'sort-none'));
+                headers.forEach(h => h.classList.add('sort-none'));
+                th.classList.remove('sort-none');
+                th.classList.add(curDir === 'asc' ? 'sort-asc' : 'sort-desc');
+                const mul = curDir === 'asc' ? 1 : -1;
+                rows.sort((a, b) => {
+                    const va = (a.cells[idx]?.textContent || '').trim();
+                    const vb = (b.cells[idx]?.textContent || '').trim();
+                    const na = parseFloat(va.replace(/[^\d.-]/g, ''));
+                    const nb = parseFloat(vb.replace(/[^\d.-]/g, ''));
+                    if (!isNaN(na) && !isNaN(nb)) return (na - nb) * mul;
+                    return va.localeCompare(vb, 'pt-BR', {numeric: true}) * mul;
+                });
+                rows.forEach(r => tbody.appendChild(r));
+            });
+        });
+    }
+
+    // Auto-ativar em todas tabelas .sortable após cada render
+    function autoSortable() {
+        document.querySelectorAll('table.sortable').forEach(makeSortable);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // [v2] FX RATES (Item 8) — USD/EUR no header
+    // ═══════════════════════════════════════════════════════════
+    let _fxPrev = {};
+    async function updateFxRates() {
+        try {
+            const r = await fetch(`${API}/prices/live`);
+            if (!r.ok) return;
+            const data = await r.json();
+            const usd = data.fx?.USDBRL || data.USDBRL;
+            const eur = data.fx?.EURUSD || data.EURUSD;
+            let html = '';
+            if (usd) {
+                const dir = _fxPrev.usd ? (usd > _fxPrev.usd ? 'up' : (usd < _fxPrev.usd ? 'down' : '')) : '';
+                html += `<span class="fx-chip ${dir}"><span class="fx-label">USD</span><span class="fx-value">R$ ${usd.toFixed(4)}</span></span>`;
+                _fxPrev.usd = usd;
+            }
+            if (eur) {
+                const eurBrl = usd ? (eur * usd) : null;
+                if (eurBrl) {
+                    const dir = _fxPrev.eur ? (eurBrl > _fxPrev.eur ? 'up' : (eurBrl < _fxPrev.eur ? 'down' : '')) : '';
+                    html += `<span class="fx-chip ${dir}"><span class="fx-label">EUR</span><span class="fx-value">R$ ${eurBrl.toFixed(4)}</span></span>`;
+                    _fxPrev.eur = eurBrl;
+                }
+            }
+            const el = document.getElementById('fx-rates');
+            if (el) el.innerHTML = html;
+        } catch (e) { /* silencioso */ }
+    }
+    // Atualizar a cada 30s
+    setInterval(updateFxRates, 30000);
+
     function switchTab(tabName) {
         currentTab = tabName;
         document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -819,9 +1126,13 @@
 
     // ─── INIT ───────────────────────────────────────────────────
     fetchAll();
+    updateFxRates();                      // [v2] FX inicial (Item 8)
     setInterval(fetchAll, 30000);
+    // Re-aplicar sortable em tabelas após cada render
+    const _origRender = render;
+    render = function() { _origRender(); autoSortable(); };  // [v2] Item 2
     </script>
-    <script src="/ticker-tape.js?v=3"></script>
+    <script src="/ticker-tape.js?v=4"></script>
     <script>initTickerTape('https://diligent-spirit-production.up.railway.app');</script>
 </body>
 </html>

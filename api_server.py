@@ -771,17 +771,15 @@ CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15)) 
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [v10.14] Corte cirúrgico para 5 melhores por P&L real (análise 30/03/2026)
-    # REMOVIDOS por P&L negativo acumulado:
-    # ADAUSDT  -$5.515 (WR 48%), AVAXUSDT -$3.885 (WR 49%), SOLUSDT -$3.583 (WR 47%)
-    # DOGEUSDT -$3.037 (WR 54%!), XRPUSDT -$1.243, DOTUSDT -$5.897, UNIUSDT -$427
-    # LTCUSDT -$240, APTUSDT -$297, MATICUSDT -N/A, TRXUSDT -$1.372
-    # MANTIDOS (únicos lucrativos + neutros):
-    'ETHUSDT',   # +$5.723  WR 55% — melhor de todos
-    'ARBUSDT',   # +$2.455  WR 54% — segundo melhor
-    'NEARUSDT',  # +$964    WR 55% — terceiro
-    'BTCUSDT',   # +$242    WR 53% — quase neutro, referência de mercado
-    'BNBUSDT',   # +$191    WR 50% — quase neutro, exchange coin estável
+    # [v10.14] Corte cirúrgico para 5 melhores por P&L real
+    # [v10.46.3] TRXUSDT readicionado: backtest v3 Yahoo 120d mostrou WR 85% em 27 LONGs (+28.8%)
+    # V3 regime-aware detecta TRX em uptrend muito melhor que v1 (v1 tinha -$1.372)
+    'ETHUSDT',   # +$5.723  WR 55%
+    'ARBUSDT',   # +$2.455  WR 54%
+    'NEARUSDT',  # +$964    WR 55%
+    'BTCUSDT',   # +$242    WR 53%
+    'BNBUSDT',   # +$191    WR 50%
+    'TRXUSDT',   # [v10.46.3] V3 backtest: LONG WR 85%, soma +28.8% em 90d
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',

@@ -138,8 +138,7 @@ tbody td:last-child{padding-right:28px;text-align:right}
 .score-fill{height:100%;border-radius:1px;transition:width .6s ease}
 .cell-ema,.cell-rsi{font-family:monospace;font-size:11.5px;color:var(--text2)}
 .cell-time{font-family:monospace;font-size:11px;color:var(--text3)}
-.tab-panel{display:none}
-.tab-panel.active{display:flex;flex-direction:column;flex:1}
+/* .tab-panel base removido - scroll no bloco v4 abaixo */
 .opp-grid{display:grid;grid-template-columns:1fr 1fr;flex:1}
 .opp-col{border-right:1px solid var(--line)}
 .opp-col:last-child{border-right:none}
@@ -3323,11 +3322,14 @@ body{padding-top:150px}
 .main-area > .stats-strip{flex-shrink:0}
 .main-area > .toolbar{flex-shrink:0}
 
-.tab-panel{display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden}
-.tab-panel.active{display:flex}
-.tab-panel > .table-container{flex:1;overflow-y:auto;overflow-x:auto;min-height:0}
-.tab-panel > .table-container::-webkit-scrollbar{width:8px;height:8px}
-.tab-panel > .table-container::-webkit-scrollbar-thumb{background:rgba(184,151,58,0.25);border-radius:4px}
+/* Scroll no proprio tab-panel (funciona em tabs sem table-container como history) */
+.tab-panel{display:none;flex:1;min-height:0}
+.tab-panel.active{display:block;overflow-y:auto;overflow-x:auto;height:100%}
+.tab-panel.active::-webkit-scrollbar{width:8px;height:8px}
+.tab-panel.active::-webkit-scrollbar-thumb{background:rgba(184,151,58,0.25);border-radius:4px}
+.tab-panel.active::-webkit-scrollbar-track{background:transparent}
+.tab-panel .table-container{overflow-x:auto}
+thead th{background:var(--navy2);position:sticky;top:0;z-index:5}
 
 .page:not(.active){display:none}
 </style>

@@ -6253,6 +6253,10 @@ def stock_execution_worker():
                             # [v10.16] Score snapshot + ATR para SL adaptativo
                             '_score_snapshot':     make_score_snapshot(sig_enriched, features, conf),
                             '_atr_pct':            sig.get('atr_pct', 0),
+                            # [v10.46] Score v3 fields
+                            'score_v2':            sig.get('score_v2'),
+                            'regime_v2':           sig.get('regime_v2'),
+                            'signal_v2':           sig.get('signal_v2'),
                         }
                         stocks_open.append(trade)
                     else:
@@ -6586,6 +6590,10 @@ def auto_trade_crypto():
                             # [v10.16] Score snapshot + ATR para SL adaptativo
                             '_score_snapshot':     make_score_snapshot(sig_enriched_c, features_c, conf_c),
                             '_atr_pct':            atr_pct_c,
+                            # [v10.46] Score v3 fields
+                            'score_v2':            score if USE_SCORE_V2 else None,
+                            'regime_v2':           locals().get('regime_v2_c'),
+                            'signal_v2':           locals().get('signal_v2_c'),
                         }
                         crypto_open.append(trade)
                     else:

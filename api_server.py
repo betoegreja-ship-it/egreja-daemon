@@ -6377,7 +6377,10 @@ def stock_execution_worker():
                     if not ks_ok:
                         log.warning(f'[KILL-SWITCH] Stock blocked: {ks_reason}')
                         continue
-                    risk_ok, risk_reason = risk_manager.check_can_open('stocks', sym, price*qty, stocks_capital)
+                    # [v10.51] Portfolio TOTAL para stocks também
+                    _total_stocks_portfolio = stocks_capital + sum(t.get('position_value', 0) for t in stocks_open)
+                    _total_stocks_portfolio = max(_total_stocks_portfolio, INITIAL_CAPITAL_STOCKS)
+                    risk_ok, risk_reason = risk_manager.check_can_open('stocks', sym, price*qty, _total_stocks_portfolio)
                     if not risk_ok:
                         log.warning(f'[RISK-BLOCK] Stock {sym}: {risk_reason}')
                         continue
@@ -6718,7 +6721,14 @@ def auto_trade_crypto():
                     if not ks_ok:
                         log.warning(f'[KILL-SWITCH] Crypto blocked: {ks_reason}')
                         continue
-                    risk_ok_pre, risk_reason_pre = risk_manager.check_can_open('crypto', display, approved_size, crypto_capital)
+                    # [v10.51] Passar portfolio TOTAL (livre + alocado), não só o livre.
+                    # Bug: conforme mais trades abrem, capital livre diminui → concentração
+                    # aparente de uma trade nova cresce artificialmente. Ex: 13 abertas × 75k = 975k
+                    # alocado; livre = 472k; trade 84k / 472k = 17.86% > 15% limite.
+                    # Correto: 84k / 1.500k (portfolio total) = 5.6% (dentro do limite).
+                    _total_crypto_portfolio = crypto_capital + sum(t.get('position_value', 0) for t in crypto_open)
+                    _total_crypto_portfolio = max(_total_crypto_portfolio, INITIAL_CAPITAL_CRYPTO)
+                    risk_ok_pre, risk_reason_pre = risk_manager.check_can_open('crypto', display, approved_size, _total_crypto_portfolio)
                     if not risk_ok_pre:
                         log.warning(f'[RISK-BLOCK] Crypto {display}: {risk_reason_pre}')
                         continue

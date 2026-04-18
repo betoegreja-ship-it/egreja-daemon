@@ -3435,61 +3435,94 @@ body{padding-top:150px}
 <!-- ═══ fim [v5] TICKER TAPE TradingView ═══ -->
 
 
-<script id="scroll-height-js">
+<!-- scroll-height-js removido, substituido por brute-force -->
+
+<script id="scroll-brute-force">
 (function(){
   'use strict';
-  // Mede altura real do ticker+topbar+subbar e seta altura da .page.active inline
-  function recalc(){
+
+  function computeAndApply(){
     var ticker = document.getElementById('tv-ticker-wrap');
     var topbar = document.querySelector('.topbar');
     var subbar = document.querySelector('.subbar');
-    var pages = document.querySelectorAll('.page');
-
     var tickerH = ticker ? ticker.offsetHeight : 36;
     var topbarH = topbar ? topbar.offsetHeight : 64;
     var subbarH = subbar ? subbar.offsetHeight : 34;
-    var total = tickerH + topbarH + subbarH;
+    var reservedTop = tickerH + topbarH + subbarH;
     var viewportH = window.innerHeight;
-    var pageHeight = viewportH - total;
 
-    // Sincronizar padding-top do body com o total real
-    document.body.style.paddingTop = total + 'px';
-    // Setar altura exata em TODAS as pages (ativas ou não)
-    pages.forEach(function(p){
-      p.style.height = pageHeight + 'px';
-      p.style.maxHeight = pageHeight + 'px';
+    // Sincronizar padding-top do body
+    document.body.style.paddingTop = reservedTop + 'px';
+
+    // Para cada tab-panel ATIVO, medir a posicao inicial e forcar
+    // max-height para caber no espaco restante
+    var actives = document.querySelectorAll('.tab-panel.active');
+    actives.forEach(function(tp){
+      var rect = tp.getBoundingClientRect();
+      var topPos = rect.top;  // posicao real no viewport
+      var spaceBelow = viewportH - topPos - 4;  // 4px folga
+
+      tp.style.height = spaceBelow + 'px';
+      tp.style.maxHeight = spaceBelow + 'px';
+      tp.style.overflowY = 'auto';
+      tp.style.overflowX = 'auto';
+      tp.style.webkitOverflowScrolling = 'touch';
     });
-    console.log('[scroll-v5] pageH='+pageHeight+'px (ticker '+tickerH+'+topbar '+topbarH+'+subbar '+subbarH+'='+total+')');
+
+    console.log('[scroll-brute] tabs=' + actives.length + ' reservedTop=' + reservedTop);
   }
 
-  // Recalcular ao carregar, resize e quando mudar de aba
+  // Rodar em varios momentos
+  function run(){
+    try { computeAndApply(); } catch(e){ console.warn('[scroll-brute]', e); }
+  }
   if(document.readyState === 'loading'){
     document.addEventListener('DOMContentLoaded', function(){
-      recalc();
-      // Esperar 500ms pro iframe do TradingView carregar e obter altura final
-      setTimeout(recalc, 500);
-      setTimeout(recalc, 1500);
+      run();
+      setTimeout(run, 300);
+      setTimeout(run, 1000);
+      setTimeout(run, 2500);
     });
   } else {
-    recalc();
-    setTimeout(recalc, 500);
-    setTimeout(recalc, 1500);
+    run();
+    setTimeout(run, 300);
+    setTimeout(run, 1000);
+    setTimeout(run, 2500);
   }
 
-  window.addEventListener('resize', recalc);
+  window.addEventListener('resize', run);
 
-  // ResizeObserver no ticker e subbar (caso mudem altura)
-  if(typeof ResizeObserver !== 'undefined'){
-    var ro = new ResizeObserver(recalc);
-    setTimeout(function(){
-      var t = document.getElementById('tv-ticker-wrap');
-      var tb = document.querySelector('.topbar');
-      var sb = document.querySelector('.subbar');
-      if(t) ro.observe(t);
-      if(tb) ro.observe(tb);
-      if(sb) ro.observe(sb);
-    }, 1000);
-  }
+  // Observer para pegar quando user clica em Trade History (mudanca de .active)
+  var observer = new MutationObserver(function(muts){
+    for(var i = 0; i < muts.length; i++){
+      if(muts[i].attributeName === 'class'){
+        // Classe mudou em algum lugar - re-aplicar
+        run();
+        return;
+      }
+    }
+  });
+
+  // Observar mudancas de class em .tab-panel (quando fica .active)
+  setTimeout(function(){
+    document.querySelectorAll('.tab-panel').forEach(function(tp){
+      observer.observe(tp, { attributes: true, attributeFilter: ['class'] });
+    });
+  }, 500);
+
+  // Tambem interceptar a funcao switchTab existente
+  setTimeout(function(){
+    if(typeof window.switchTab === 'function'){
+      var orig = window.switchTab;
+      window.switchTab = function(){
+        var r = orig.apply(this, arguments);
+        setTimeout(run, 50);
+        return r;
+      };
+      console.log('[scroll-brute] switchTab interceptado');
+    }
+  }, 800);
+
 })();
 </script>
 </body>

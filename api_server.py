@@ -795,7 +795,7 @@ RECONCILIATION_INTERVAL_S    = int(os.environ.get('RECONCILIATION_INTERVAL_S', 6
 RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))    # alertar se >2% desvio
 # ── [v10.18] Crypto conviction filter ───────────────────────────────────
 CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 52))        # [v10.24] era 58 — muito restritivo, bloqueava quase tudo em mercado lateral
-CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15))          # hold mínimo (min) para flat exit
+CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 180))         # [v10.46.6] 15→180min — era muito agressivo, matava trades boas do v3
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
@@ -2974,7 +2974,16 @@ def is_trade_flat(trade: dict, now: datetime) -> bool:
     - |pnl_pct| < FLAT_EXIT_MAX_VARIATION (quase zero)
     - Peak nunca passou de 0.5% (nunca teve momentum real)
     - Últimos 3 pontos de pnl_history ~iguais (sem tendência)
+    [v10.46.6] NUNCA aplica flat exit em trade com tese V3 válida
+    (regime=TRENDING + signal COMPRA/VENDA). Essas têm momentum esperado
+    pela arquitetura e devem esperar stop/take_profit normal.
     """
+    # [v10.46.6] Pular flat exit se trade tem tese v3 forte
+    regime_v2 = trade.get('regime_v2')
+    signal_v2 = trade.get('signal_v2')
+    if regime_v2 == 'TRENDING' and signal_v2 in ('COMPRA', 'VENDA'):
+        return False  # tese v3 — deixar stop/TP normal decidir
+
     age_min = (now - datetime.fromisoformat(trade['opened_at'])).total_seconds() / 60
     # [v10.18] Min hold time for crypto — evitar flat exit prematuro
     _min_age = CRYPTO_MIN_HOLD_MIN if trade.get('asset_type') == 'crypto' else FLAT_EXIT_MIN_AGE_MIN

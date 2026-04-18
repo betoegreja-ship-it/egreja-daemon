@@ -5419,14 +5419,16 @@ def _fetch_binance_ticker(symbol: str) -> dict:
         return {}
 
 def _fetch_binance_klines(symbol: str, period: int = 20) -> dict:
-    """[v10.4][v10.5-2] Binance klines diárias para ATR e volume médio.
+    """[v10.4][v10.5-2] Binance klines para ATR e volume médio.
+    [v10.50] interval='1h' em vez de '1d' — trades duram horas, não meses.
+    Score_engine_v2 calcula sobre estes candles; com 1d a visão era de 3 meses.
     Usa b[7] (quoteAssetVolume, em USDT) — compatível com vol_quote do allTickers.
     b[5] é volume em moeda base (BTC, ETH…) — não comparável com quoteVolume.
     """
     try:
         r = requests.get(
             'https://api.binance.com/api/v3/klines',
-            params={'symbol': symbol, 'interval': '1d', 'limit': period + 2},
+            params={'symbol': symbol, 'interval': '1h', 'limit': period + 2},
             timeout=6)
         if r.status_code != 200: return {}
         bars = r.json()

@@ -98,7 +98,7 @@ body{background:var(--navy);color:var(--text);font-family:'Instrument Sans',sans
 .stat-block-label{font-family:monospace;font-size:8.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--text3);margin-bottom:8px}
 .stat-block-val{font-family:'EB Garamond',serif;font-size:28px;font-weight:500;line-height:1;margin-bottom:4px}
 .stat-block-sub{font-size:10.5px;color:var(--text3)}
-.toolbar{height:46px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 24px;background:var(--navy2)}
+.toolbar{height:46px;border-bottom:1px solid var(--line);border-top:1px solid rgba(184,151,58,0.15);display:flex;align-items:center;padding:0 24px;background:var(--navy3,#132540)}
 .toolbar-tab{height:46px;display:flex;align-items:center;gap:8px;padding:0 18px;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap}
 .toolbar-tab:hover{color:var(--text2)}
 .toolbar-tab.active{color:var(--white);border-bottom-color:var(--gold2)}
@@ -3239,23 +3239,37 @@ function toggleVal(id) {
 
 
 <style id="scroll-lock-css">
-/* ═══ [v3] SCROLL LOCK — só a tabela rola ═══ */
-html, body{height:100%;overflow:hidden}
-body{padding-top:130px}  /* compensa ticker(32) + topbar(64) + subbar(34) */
+/* ═══ [v4] SCROLL LOCK — só a tabela rola ═══ */
+html, body{height:100%;overflow:hidden;margin:0}
+body{padding-top:130px}  /* ticker(32) + topbar(64) + subbar(34) */
+
+/* Subbar: borda e sombra inferior para separar visualmente da toolbar */
+.subbar{border-bottom:2px solid rgba(184,151,58,0.35) !important;box-shadow:0 2px 12px rgba(0,0,0,0.4)}
+
+/* Page ativa: ocupa toda altura restante, sem scroll */
 .page.active{height:calc(100vh - 130px);overflow:hidden;display:flex;flex-direction:column}
-.page.active > .layout{flex:1;min-height:0;overflow:hidden}
-.left-panel{overflow-y:auto;overflow-x:hidden;max-height:100%}
+
+/* Layout grid (sidebar + main): flex:1, sem scroll interno no grid */
+.page.active > .layout{flex:1;min-height:0;display:grid}
+
+/* Sidebar: scroll interno se precisar */
+.left-panel{overflow-y:auto;overflow-x:hidden;min-height:0}
 .left-panel::-webkit-scrollbar{width:6px}
 .left-panel::-webkit-scrollbar-thumb{background:rgba(184,151,58,0.2);border-radius:3px}
-/* Coluna direita do overview: toolbar fica no topo, tab-panel rola */
-.layout > div:not(.left-panel){display:flex;flex-direction:column;overflow:hidden;min-height:0}
-.tab-panel.active{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
-.tab-panel.active > .table-container{flex:1;overflow-y:auto;overflow-x:auto;min-height:0}
-.tab-panel.active > .table-container::-webkit-scrollbar{width:8px;height:8px}
-.tab-panel.active > .table-container::-webkit-scrollbar-thumb{background:rgba(184,151,58,0.25);border-radius:4px}
-/* thead sticky já existe via position:sticky top:0 na definição global */
 
-/* Demais páginas (.page não-active): scroll normal */
+/* Main area: flex-column, stats + toolbar NÃO rolam, tab-panel rola */
+.main-area{display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.main-area > .stats-strip{flex-shrink:0}   /* KPIs: altura natural, não corta */
+.main-area > .toolbar{flex-shrink:0}       /* Toolbar: altura 46px, não corta */
+
+/* Tab panels: flex:1 para ocupar resto; table-container rola */
+.tab-panel{display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden}
+.tab-panel.active{display:flex}
+.tab-panel > .table-container{flex:1;overflow-y:auto;overflow-x:auto;min-height:0}
+.tab-panel > .table-container::-webkit-scrollbar{width:8px;height:8px}
+.tab-panel > .table-container::-webkit-scrollbar-thumb{background:rgba(184,151,58,0.25);border-radius:4px}
+
+/* Demais páginas: ocultas */
 .page:not(.active){display:none}
 </style>
 

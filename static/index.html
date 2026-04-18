@@ -3332,5 +3332,68 @@ body{padding-top:150px}
 .page:not(.active){display:none}
 </style>
 
+
+<!-- ═══ [v5] TICKER TAPE — TradingView Widget oficial ═══ -->
+<style id="tv-ticker-styles">
+  /* Container fixo no TOPO da página */
+  #tv-ticker-wrap{position:fixed;left:0;right:0;top:0;z-index:250;height:36px;
+    background:#050c18;border-bottom:1px solid rgba(184,151,58,0.35);overflow:hidden}
+  #tv-ticker-wrap .tradingview-widget-container,
+  #tv-ticker-wrap .tradingview-widget-container__widget{height:100% !important}
+  /* Acelerar a animação do widget (TradingView anima via CSS transform) */
+  #tv-ticker-wrap iframe{animation-duration:30s !important}
+  /* Esconder branding minúsculo da TradingView embaixo */
+  #tv-ticker-wrap .tradingview-widget-copyright{display:none !important}
+</style>
+
+<div id="tv-ticker-wrap">
+  <div class="tradingview-widget-container">
+    <div class="tradingview-widget-container__widget"></div>
+    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
+    {
+      "symbols": [
+        {"proName": "BINANCE:BTCUSDT", "title": "Bitcoin"},
+        {"proName": "BINANCE:ETHUSDT", "title": "Ethereum"},
+        {"proName": "BINANCE:BNBUSDT", "title": "BNB"},
+        {"proName": "BINANCE:SOLUSDT", "title": "Solana"},
+        {"proName": "BINANCE:XRPUSDT", "title": "XRP"},
+        {"proName": "BINANCE:ADAUSDT", "title": "Cardano"},
+        {"proName": "BINANCE:DOGEUSDT", "title": "Dogecoin"},
+        {"proName": "BINANCE:AVAXUSDT", "title": "Avalanche"},
+        {"proName": "BINANCE:DOTUSDT", "title": "Polkadot"},
+        {"proName": "BINANCE:LINKUSDT", "title": "Chainlink"},
+        {"proName": "FOREXCOM:SPXUSD", "title": "S&P 500"},
+        {"proName": "FOREXCOM:DJI", "title": "Dow Jones"},
+        {"proName": "FOREXCOM:NSXUSD", "title": "Nasdaq 100"},
+        {"proName": "BMFBOVESPA:IBOV", "title": "Ibovespa"},
+        {"description": "USD/BRL", "proName": "FX_IDC:USDBRL"},
+        {"description": "EUR/USD", "proName": "FX:EURUSD"},
+        {"proName": "NASDAQ:AAPL", "title": "Apple"},
+        {"proName": "NASDAQ:MSFT", "title": "Microsoft"},
+        {"proName": "NASDAQ:GOOGL", "title": "Google"},
+        {"proName": "NASDAQ:AMZN", "title": "Amazon"},
+        {"proName": "NASDAQ:NVDA", "title": "Nvidia"},
+        {"proName": "NASDAQ:TSLA", "title": "Tesla"},
+        {"proName": "NASDAQ:META", "title": "Meta"},
+        {"proName": "NYSE:BRK.B", "title": "Berkshire"},
+        {"proName": "NYSE:JPM", "title": "JPMorgan"},
+        {"proName": "NYSE:V", "title": "Visa"},
+        {"proName": "BMFBOVESPA:PETR4", "title": "Petrobras"},
+        {"proName": "BMFBOVESPA:VALE3", "title": "Vale"},
+        {"proName": "BMFBOVESPA:ITUB4", "title": "Itaú"},
+        {"proName": "BMFBOVESPA:BBDC4", "title": "Bradesco"},
+        {"proName": "BMFBOVESPA:ABEV3", "title": "Ambev"}
+      ],
+      "showSymbolLogo": true,
+      "isTransparent": false,
+      "displayMode": "adaptive",
+      "colorTheme": "dark",
+      "locale": "br"
+    }
+    </script>
+  </div>
+</div>
+<!-- ═══ fim [v5] TICKER TAPE TradingView ═══ -->
+
 </body>
 </html>

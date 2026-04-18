@@ -771,16 +771,30 @@ CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15)) 
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [v10.14] Corte cirúrgico para 5 melhores por P&L real
-    # [v10.46.3] TRXUSDT readicionado: backtest v3 Yahoo 120d mostrou WR 85% em 27 LONGs (+28.8%)
-    # V3 regime-aware detecta TRX em uptrend muito melhor que v1 (v1 tinha -$1.372)
-    'ETHUSDT',   # +$5.723  WR 55%
-    'ARBUSDT',   # +$2.455  WR 54%
-    'NEARUSDT',  # +$964    WR 55%
-    'BTCUSDT',   # +$242    WR 53%
-    'BNBUSDT',   # +$191    WR 50%
-    'TRXUSDT',   # [v10.46.3] V3 backtest: LONG WR 85%, soma +28.8% em 90d
-    'SOLUSDT',   # [v10.46.4] V3 backtest 180d: SHORT WR 91% (n=11), soma +51.4%
+    # [v10.46.5] Universo de 20 cryptos — instrução direta do usuário (17/abr/2026)
+    # Filosofia com V3: score regime-aware decide COMPRA ou VENDA por símbolo.
+    # Moedas em downtrend (que v1 comprava errado) agora geram SHORTs corretos.
+    # MAX_POSITIONS_CRYPTO=5 continua limitando quantidade simultânea.
+    'BTCUSDT',   # Bitcoin — referência de mercado
+    'ETHUSDT',   # Ethereum — histórico melhor WR 55%
+    'BNBUSDT',   # BNB — exchange coin
+    'SOLUSDT',   # Solana — V3 SHORT WR 91%
+    'XRPUSDT',   # XRP — alta liquidez
+    'ADAUSDT',   # Cardano
+    'DOGEUSDT',  # Dogecoin — meme coin
+    'AVAXUSDT',  # Avalanche
+    'TRXUSDT',   # TRON — V3 LONG WR 85%
+    'DOTUSDT',   # Polkadot
+    'LINKUSDT',  # Chainlink
+    'MATICUSDT', # Polygon
+    'LTCUSDT',   # Litecoin
+    'UNIUSDT',   # Uniswap
+    'ATOMUSDT',  # Cosmos
+    'XLMUSDT',   # Stellar
+    'BCHUSDT',   # Bitcoin Cash
+    'NEARUSDT',  # NEAR
+    'APTUSDT',   # Aptos
+    'ARBUSDT',   # Arbitrum
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',

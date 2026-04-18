@@ -3032,7 +3032,7 @@ def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
         # Puxar dados de mercado atuais
         if asset_type == 'crypto':
             sym = trade['symbol'] + 'USDT'
-            klines = _get_cached_candles(f'klines:{sym}', ttl_min=60) or {}
+            klines = _get_cached_candles(f'klines:{sym}', ttl_min=5) or {}  # [v10.49] 60→5min
             if not klines or len(klines.get('closes', [])) < 30:
                 return False, None, None, 'crypto_no_klines'
             r = compute_score_v3(klines['closes'], klines.get('highs', []),
@@ -5535,7 +5535,7 @@ def fetch_crypto_prices():
                 # Feito APÓS o bulk para não bloquear a atualização de preço.
                 # Usa cache _candles_cache para evitar excesso de chamadas.
                 for sym in CRYPTO_SYMBOLS:
-                    cached_klines = _get_cached_candles(f'klines:{sym}', ttl_min=60)  # [v10.6.3-Fix2]
+                    cached_klines = _get_cached_candles(f'klines:{sym}', ttl_min=5)  # [v10.49] 60→5min
                     # [v10.46] 22→100 barras para score_engine_v2 (Ichimoku precisa 52+, RSI 14+)
                     if cached_klines is None or len(cached_klines.get('closes', [])) < 60:
                         klines = _fetch_binance_klines(sym, 100)
@@ -6475,7 +6475,7 @@ def auto_trade_crypto():
                     # [v10.6.2-Fix4] Cache unificado: usa _candles_cache com TTL=60min (klines diários).
                     # Elimina o segundo cache privado auto_trade_crypto._klines_cache — fonte única.
                     kline_cache_key = f'klines:{sym}'
-                    klines_data = _get_cached_candles(kline_cache_key, ttl_min=60) or {}
+                    klines_data = _get_cached_candles(kline_cache_key, ttl_min=5) or {}  # [v10.49] 60→5min
                     if not klines_data:
                         # [v10.46] Aumentado 22→100 barras para suportar score_engine_v2 (Ichimoku precisa 52+)
                         klines_data = _fetch_binance_klines(sym, 100)
@@ -8927,7 +8927,7 @@ def signals():
                 ticker_data = crypto_tickers.get(sym, {})
                 kline_cache_key = f'klines:{sym}'
                 # [v10.6.2-Fix4] Mesma fonte única de klines — _candles_cache TTL=60min
-                klines_data = _get_cached_candles(kline_cache_key, ttl_min=60) or {}
+                klines_data = _get_cached_candles(kline_cache_key, ttl_min=5) or {}  # [v10.49] 60→5min
                 # [v10.47] SISTEMA APENAS V3
                 if klines_data and len(klines_data.get('closes', [])) >= 30:
                     try:

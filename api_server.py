@@ -2977,12 +2977,14 @@ def is_trade_flat(trade: dict, now: datetime) -> bool:
     [v10.46.6] NUNCA aplica flat exit em trade com tese V3 válida
     (regime=TRENDING + signal COMPRA/VENDA). Essas têm momentum esperado
     pela arquitetura e devem esperar stop/take_profit normal.
+    [v10.46.7] Ampliado: qualquer signal_v2 decisivo (COMPRA/VENDA)
+    tem tese v3 válida — v3 só emite signal quando há convergência
+    mínima. Trades sem convicção ficam com signal_v2=MANTER.
     """
-    # [v10.46.6] Pular flat exit se trade tem tese v3 forte
-    regime_v2 = trade.get('regime_v2')
+    # [v10.46.7] Pular flat exit se trade tem tese v3 decisiva
     signal_v2 = trade.get('signal_v2')
-    if regime_v2 == 'TRENDING' and signal_v2 in ('COMPRA', 'VENDA'):
-        return False  # tese v3 — deixar stop/TP normal decidir
+    if signal_v2 in ('COMPRA', 'VENDA'):
+        return False  # tese v3 — deixar stop/TP/timeout decidir
 
     age_min = (now - datetime.fromisoformat(trade['opened_at'])).total_seconds() / 60
     # [v10.18] Min hold time for crypto — evitar flat exit prematuro

@@ -205,62 +205,16 @@
         }
     }
 
-    let _initialized = false;
-    let _lastSymbols = '';  // fingerprint da lista para detectar mudança
-
     async function updateTape() {
         const items = await fetchPrices();
         if (!items || items.length === 0) return;
 
-        // Fast scroll: 0.35s per item so 120 items = ~42s full cycle
-        _animDuration = Math.max(30, items.length * 0.35);
+        // Calculate animation duration based on item count
+        _animDuration = Math.max(60, items.length * 1.2);
 
-        // [v2 fix] Detectar se a lista de símbolos mudou (novo ativo, remoção)
-        const currentSymbols = items.map(i => i.t).sort().join(',');
-        const symbolsChanged = currentSymbols !== _lastSymbols;
-
-        if (!_initialized || symbolsChanged) {
-            // First load OR universo mudou: rebuildar HTML
-            _tape.style.setProperty('--tape-duration', _animDuration + 's');
-            _tape.innerHTML = `<div class="ticker-tape-track">${buildTapeHTML(items)}</div>`;
-            _track = _tape.querySelector('.ticker-tape-track');
-            _initialized = true;
-            _lastSymbols = currentSymbols;
-            if (symbolsChanged && _initialized) {
-                console.log(`[TickerTape] Universo atualizado: ${items.length} ativos`);
-            }
-        } else {
-            // Subsequent loads: update prices in-place WITHOUT resetting scroll position
-            const allItems = _track.querySelectorAll('.ticker-tape-item');
-            const itemMap = {};
-            for (const item of items) {
-                itemMap[item.t] = item;
-            }
-            allItems.forEach(el => {
-                const symEl = el.querySelector('.tt-symbol');
-                if (!symEl) return;
-                const ticker = symEl.textContent.trim();
-                const data = itemMap[ticker];
-                if (!data) return;
-
-                // Update price
-                const priceEl = el.querySelector('.tt-price');
-                if (priceEl) {
-                    const cur = data.cur === 'BRL' ? 'R$' : '$';
-                    priceEl.textContent = `${cur}${formatPrice(data.p, data.cur)}`;
-                }
-
-                // Update change
-                const changeEl = el.querySelector('.tt-change');
-                if (changeEl) {
-                    const dir = data.c > 0.01 ? 'up' : (data.c < -0.01 ? 'down' : 'flat');
-                    const arrow = dir === 'up' ? '▲' : (dir === 'down' ? '▼' : '─');
-                    const sign = data.c > 0 ? '+' : '';
-                    changeEl.className = `tt-change ${dir}`;
-                    changeEl.textContent = `${arrow} ${sign}${data.c.toFixed(2)}%`;
-                }
-            });
-        }
+        _tape.style.setProperty('--tape-duration', _animDuration + 's');
+        _tape.innerHTML = `<div class="ticker-tape-track">${buildTapeHTML(items)}</div>`;
+        _track = _tape.querySelector('.ticker-tape-track');
     }
 
     /**

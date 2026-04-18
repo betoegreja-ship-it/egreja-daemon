@@ -247,7 +247,7 @@ async function fetchAll() {
       fetch(`${BRAIN_API}/system-state`).then(r=>r.json()).catch(()=>({})),
       fetch(`${BRAIN_API}/lessons`).then(r=>r.json()).catch(()=>({lessons:[]})),
       fetch(`${BRAIN_API}/patterns`).then(r=>r.json()).catch(()=>({patterns:[]})),
-      fetch(`${BRAIN_API}/correlations`).then(r=>r.json()).catch(()=>({correlations:[]})),
+      // [v2] /correlations removido — seção nunca funcionou direito
       fetch(`${BRAIN_API}/regime`).then(r=>r.json()).catch(()=>({regime:'UNKNOWN'})),
       fetch(`${BRAIN_API}/decisions`).then(r=>r.json()).catch(()=>({decisions:[]})),
       fetch(`${BRAIN_API}/evolution`).then(r=>r.json()).catch(()=>({evolution:{}})),
@@ -260,7 +260,6 @@ async function fetchAll() {
     if(ss.status==='fulfilled' && ss.value) state.systemState = ss.value;
     if(les.status==='fulfilled' && les.value) state.lessons = les.value.lessons || [];
     if(pat.status==='fulfilled' && pat.value) state.patterns = pat.value.patterns || [];
-    if(corr.status==='fulfilled' && corr.value) state.correlations = corr.value.correlations || [];
     if(reg.status==='fulfilled' && reg.value) state.regime = reg.value.regime || 'UNKNOWN';
     if(dec.status==='fulfilled' && dec.value) state.decisions = dec.value.decisions || [];
     if(evo.status==='fulfilled' && evo.value) state.evolution = evo.value;
@@ -371,8 +370,8 @@ function renderTabs() {
     { key:'overview', label:'Visão Geral' },
     { key:'learning', label:'Aprendizado' },
     { key:'patterns', label:'Padrões' },
-    { key:'correlations', label:'Correlações' },
     { key:'regime', label:'Regime' },
+    { key:'scorev3', label:'Sistema V3' },
     { key:'decisions', label:'Decisões' },
     { key:'evolution', label:'Evolução' },
     { key:'risk', label:'Risco' },
@@ -394,8 +393,8 @@ function renderTabContent() {
     case 'overview': el.innerHTML = renderOverview(); break;
     case 'learning': el.innerHTML = renderLearning(); break;
     case 'patterns': el.innerHTML = renderPatterns(); break;
-    case 'correlations': el.innerHTML = renderCorrelations(); break;
     case 'regime': el.innerHTML = renderRegime(); break;
+    case 'scorev3': el.innerHTML = renderScoreV3(); break;
     case 'decisions': el.innerHTML = renderDecisions(); break;
     case 'evolution': el.innerHTML = renderEvolution(); break;
     case 'risk': el.innerHTML = renderRisk(); break;
@@ -688,6 +687,106 @@ function renderCorrelations() {
       <span style="color:${color};font-weight:700;font-family:var(--mono)">${fmtNum(corr.coefficient, 3)} (${strength})</span>
     </div>`;
   }
+
+  html += '</div>';
+  return html;
+}
+
+
+// ═══ [v2] NOVA ABA "Sistema V3" — Item 4 do pedido do usuário ═══
+function renderScoreV3() {
+  let html = '<div class="section">';
+
+  // Card intro
+  html += `<div class="card section" style="background:linear-gradient(135deg,rgba(184,151,58,.1),rgba(96,165,250,.05));border:1px solid rgba(184,151,58,.25);padding:20px">
+    <div style="font-size:18px;font-weight:700;color:var(--gold,#C9A84C);margin-bottom:8px">🧠 Motor de Score V3 — Regime-Aware</div>
+    <div style="font-size:13px;color:var(--text2,#8fa3be);line-height:1.6">
+      Substitui o V1 simplista (score = 50 + variação). V3 usa <strong>13 indicadores técnicos</strong> ponderados por
+      <strong>regime de mercado</strong> (TRENDING / MIXED / RANGING / CHOPPY). Reage a cada 90 segundos com candles de 1 hora.
+    </div>
+  </div>`;
+
+  // 13 indicadores
+  html += '<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">📊 Os 13 Indicadores Técnicos</div><div class="grid-3">';
+  const indicators = [
+    {name: 'RSI (14)', desc: 'Sobrecompra/venda — overbought >75, oversold <25'},
+    {name: 'MACD (12/26/9)', desc: 'Momentum — cruzamento e histograma'},
+    {name: 'Bollinger (20,2σ)', desc: 'Preço vs desvio padrão — %B'},
+    {name: 'ADX (14)', desc: 'Força da tendência — define regime'},
+    {name: 'CCI (20)', desc: 'Commodity Channel — desvio da média'},
+    {name: 'EMA Cross (9/21/50)', desc: 'Tendência por stack de médias'},
+    {name: 'Stochastic %K/%D', desc: 'Cruzamentos e zonas extremas'},
+    {name: 'Williams %R (14)', desc: 'Confirmação de overbought/sold'},
+    {name: 'ATR%', desc: 'Volatilidade normalizada ao preço'},
+    {name: 'VWAP', desc: 'Preço ponderado por volume'},
+    {name: 'OBV', desc: 'Confirmação de volume direcional'},
+    {name: 'Supertrend (10, 3×ATR)', desc: 'Suporte/resistência dinâmica'},
+    {name: 'Ichimoku Cloud (9/26/52)', desc: 'Estrutura completa de tendência'},
+  ];
+  for(const i of indicators) {
+    html += `<div class="card" style="padding:10px"><div style="font-family:var(--mono);font-size:11px;font-weight:700;color:var(--gold,#C9A84C);margin-bottom:2px">${i.name}</div><div style="font-size:11px;color:var(--dim,#64748B)">${i.desc}</div></div>`;
+  }
+  html += '</div></div>';
+
+  // 4 regimes
+  html += '<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">🎯 Os 4 Regimes de Mercado</div><div class="grid-2">';
+  const regimes = [
+    {name: 'TRENDING', cond: 'ADX ≥ 25', action: 'Segue tendência — EMA/MACD/Ichimoku dominam', color: '#2ecc71'},
+    {name: 'MIXED', cond: '20 ≤ ADX < 25', action: 'Cautela — sinais fracos, threshold intermediário', color: '#C9A84C'},
+    {name: 'RANGING', cond: 'ADX < 20', action: 'Reversão à média — osciladores dominam', color: '#60A5FA'},
+    {name: 'CHOPPY', cond: 'ATR% > 5%', action: 'Alta volatilidade — exige convicção reforçada', color: '#e74c3c'},
+  ];
+  for(const r of regimes) {
+    html += `<div class="card" style="padding:12px;border-left:3px solid ${r.color}"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:${r.color};margin-bottom:4px">${r.name}</div><div style="font-size:11px;color:var(--text2,#8fa3be);margin-bottom:4px"><strong>Condição:</strong> ${r.cond}</div><div style="font-size:11px;color:var(--dim,#64748B)">${r.action}</div></div>`;
+  }
+  html += '</div></div>';
+
+  // Regras de fechamento
+  html += `<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">🔧 Hierarquia de Fechamento de Trades</div>
+    <div class="card"><table style="width:100%;font-size:11px">
+      <thead><tr style="background:var(--s3,#132540);text-align:left"><th style="padding:8px">#</th><th style="padding:8px">Regra</th><th style="padding:8px">Critério</th></tr></thead>
+      <tbody>
+        <tr><td style="padding:8px">1</td><td style="padding:8px;color:#2ecc71">TRAILING_STOP</td><td style="padding:8px;color:var(--dim,#64748B)">peak ≥ 1,5% e drop ≥ 0,7%</td></tr>
+        <tr><td style="padding:8px">2</td><td style="padding:8px;color:#e74c3c">STOP_LOSS</td><td style="padding:8px;color:var(--dim,#64748B)">ATR × regime (não mais fixo -2%)</td></tr>
+        <tr><td style="padding:8px">3</td><td style="padding:8px;color:var(--gold,#C9A84C);font-weight:700">V3_REVERSAL 🆕</td><td style="padding:8px;color:var(--dim,#64748B)">Trades com tese V3 — fecha se signal virar MANTER/contrário</td></tr>
+        <tr><td style="padding:8px">4</td><td style="padding:8px">FLAT_EXIT</td><td style="padding:8px;color:var(--dim,#64748B)">Só trades sem tese V3 decisiva</td></tr>
+        <tr><td style="padding:8px">5</td><td style="padding:8px">TIMEOUT</td><td style="padding:8px;color:var(--dim,#64748B)">Só trades sem tese V3 decisiva</td></tr>
+        <tr><td style="padding:8px">6</td><td style="padding:8px">MARKET_CLOSE</td><td style="padding:8px;color:var(--dim,#64748B)">Fim de pregão B3/NYSE</td></tr>
+      </tbody>
+    </table></div></div>`;
+
+  // Limites operacionais
+  html += `<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">⚙️ Limites Operacionais (v10.51)</div><div class="grid-3">
+    <div class="card" style="padding:14px"><div style="font-size:10px;color:var(--dim,#64748B);text-transform:uppercase;letter-spacing:.1em">Posições Crypto</div><div style="font-size:22px;font-weight:700;color:#2ecc71;font-family:var(--mono);margin:4px 0">20 máx</div><div style="font-size:10px;color:var(--dim,#64748B)">MAX_POSITIONS_CRYPTO</div></div>
+    <div class="card" style="padding:14px"><div style="font-size:10px;color:var(--dim,#64748B);text-transform:uppercase;letter-spacing:.1em">Universo Crypto</div><div style="font-size:22px;font-weight:700;color:var(--gold,#C9A84C);font-family:var(--mono);margin:4px 0">20 ativos</div><div style="font-size:10px;color:var(--dim,#64748B)">BTC, ETH, BNB, SOL, XRP, ADA, DOGE, AVAX, DOT, LINK, MATIC, LTC, UNI, ATOM, XLM, BCH, NEAR, APT, ARB, TRX</div></div>
+    <div class="card" style="padding:14px"><div style="font-size:10px;color:var(--dim,#64748B);text-transform:uppercase;letter-spacing:.1em">Risco / Trade</div><div style="font-size:22px;font-weight:700;color:#FB923C;font-family:var(--mono);margin:4px 0">1,5%</div><div style="font-size:10px;color:var(--dim,#64748B)">MAX_RISK_PER_TRADE_PCT — teto R$ 75k</div></div>
+  </div></div>`;
+
+  // Frequência de cálculo
+  html += `<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">⏱️ Frequência de Cálculo</div><div class="card" style="padding:14px">
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;font-size:12px">
+      <div><strong style="color:var(--gold,#C9A84C)">Loop auto_trade:</strong> 90 segundos</div>
+      <div><strong style="color:var(--gold,#C9A84C)">Cache klines:</strong> 5 minutos TTL</div>
+      <div><strong style="color:var(--gold,#C9A84C)">Candles:</strong> 1 hora (1h interval)</div>
+      <div><strong style="color:var(--gold,#C9A84C)">Comparativo Manus:</strong> 30 min (20× mais lento)</div>
+    </div>
+  </div></div>`;
+
+  // Histórico de deploys
+  html += `<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">📜 Histórico de Deploys v10.46 → v10.51</div>
+    <div class="card"><table style="width:100%;font-size:11px;font-family:var(--mono)">
+      <thead><tr style="background:var(--s3,#132540);text-align:left"><th style="padding:8px">Commit</th><th style="padding:8px">Versão</th><th style="padding:8px">Descrição</th></tr></thead>
+      <tbody>
+        <tr><td style="padding:6px 8px;color:var(--dim,#64748B)">549cc8e</td><td style="padding:6px 8px">v10.46</td><td style="padding:6px 8px">Cutover para score_engine_v2 (regime-aware)</td></tr>
+        <tr><td style="padding:6px 8px;color:var(--dim,#64748B)">359939d</td><td style="padding:6px 8px">v10.46.5</td><td style="padding:6px 8px">Universo crypto 5 → 20 símbolos</td></tr>
+        <tr><td style="padding:6px 8px;color:var(--dim,#64748B)">259b6c6</td><td style="padding:6px 8px">v10.46.6</td><td style="padding:6px 8px">FLAT_EXIT fix: 15min → 180min</td></tr>
+        <tr><td style="padding:6px 8px;color:var(--dim,#64748B)">9094873</td><td style="padding:6px 8px">v10.47</td><td style="padding:6px 8px">Sistema apenas V3 (remove fallback V1)</td></tr>
+        <tr><td style="padding:6px 8px;color:var(--dim,#64748B)">4d89643</td><td style="padding:6px 8px">v10.48</td><td style="padding:6px 8px">V3_REVERSAL — tendência não fecha por tempo</td></tr>
+        <tr><td style="padding:6px 8px;color:var(--dim,#64748B)">3ba0869</td><td style="padding:6px 8px">v10.49</td><td style="padding:6px 8px">TTL cache klines 60 → 5min</td></tr>
+        <tr><td style="padding:6px 8px;color:var(--dim,#64748B)">e0b1dab</td><td style="padding:6px 8px">v10.50</td><td style="padding:6px 8px;color:#e74c3c">CRÍTICO: candles Binance 1d → 1h</td></tr>
+        <tr><td style="padding:6px 8px;color:var(--dim,#64748B)">a77a92e</td><td style="padding:6px 8px">v10.51</td><td style="padding:6px 8px">Concentração usa portfolio TOTAL</td></tr>
+      </tbody>
+    </table></div></div>`;
 
   html += '</div>';
   return html;

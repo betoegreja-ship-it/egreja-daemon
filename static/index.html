@@ -45,6 +45,16 @@ body{background:var(--navy);color:var(--text);font-family:'Instrument Sans',sans
 .nav-item.active{color:var(--white);border-bottom-color:var(--gold2)}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:28px}
 .status-pill{display:flex;align-items:center;gap:8px;font-family:monospace;font-size:10px;color:var(--text2)}
+/* ═══ [v2] Skeleton shimmer (Item 10) ═══ */
+@keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+.skel-shimmer{background:linear-gradient(90deg,rgba(255,255,255,0.03) 25%,rgba(255,255,255,0.08) 50%,rgba(255,255,255,0.03) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:3px;display:inline-block;min-width:60px;height:1em;vertical-align:middle}
+.kpi-loading{color:transparent !important;background:linear-gradient(90deg,rgba(184,151,58,0.05) 25%,rgba(184,151,58,0.15) 50%,rgba(184,151,58,0.05) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:3px}
+.fx-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:3px;background:rgba(184,151,58,0.06);border:1px solid rgba(184,151,58,0.2);font-family:monospace;font-size:10px;transition:all .2s}
+.fx-chip .fx-label{color:var(--text3);font-size:9px;letter-spacing:.08em}
+.fx-chip .fx-value{color:var(--gold2);font-weight:600}
+.fx-chip.up .fx-value{color:#2ecc71}
+.fx-chip.down .fx-value{color:#e74c3c}
+.fx-group{display:flex;align-items:center;gap:6px}
 .status-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:breathe 3s ease-in-out infinite}
 @keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
 #topbar-clock{font-family:monospace;font-size:11px;color:var(--text2);letter-spacing:.06em}
@@ -98,6 +108,11 @@ body{background:var(--navy);color:var(--text);font-family:'Instrument Sans',sans
 .filter-chip{height:26px;padding:0 13px;border:1px solid rgba(255,255,255,0.1);background:none;color:var(--text3);font-family:'Instrument Sans',sans-serif;font-size:10.5px;font-weight:600;letter-spacing:.08em;cursor:pointer;transition:all .2s}
 .filter-chip:hover{border-color:var(--line2);color:var(--text2)}
 .filter-chip.active{border-color:rgba(184,151,58,0.5);color:var(--gold2);background:rgba(184,151,58,0.08)}
+.sig-th:hover{background:rgba(184,151,58,0.06) !important}
+.sig-th .sort-arrow{display:inline-block;width:10px;margin-left:3px;opacity:.4;font-size:9px;color:var(--gold2)}
+.sig-th.sort-asc  .sort-arrow::before{content:"▲";opacity:1}
+.sig-th.sort-desc .sort-arrow::before{content:"▼";opacity:1}
+.sig-th.sort-none .sort-arrow::before{content:"⇅";opacity:.3}
 .table-container{flex:1;overflow-x:auto}
 table{width:100%;border-collapse:collapse}
 thead th{height:36px;padding:0 18px;text-align:left;font-family:monospace;font-size:8.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--text3);font-weight:400;border-bottom:1px solid var(--line);background:var(--navy2);white-space:nowrap;position:sticky;top:0;z-index:10}
@@ -447,6 +462,7 @@ tbody td:last-child{padding-right:28px;text-align:right}
   </div>
   <div class="topbar-right">
     <div class="status-pill"><div class="status-dot"></div><span id="api-status">Connecting</span></div>
+    <div id="fx-rates" class="fx-group"></div>
     <div id="topbar-clock">--:--:--</div>
     <button class="btn-refresh" onclick="loadAll()">↺ Refresh</button>
   </div>
@@ -554,6 +570,7 @@ tbody td:last-child{padding-right:28px;text-align:right}
           <button class="filter-chip active" onclick="filterSignals('ALL',this)">All</button>
           <button class="filter-chip" onclick="filterSignals('B3',this)">B3</button>
           <button class="filter-chip" onclick="filterSignals('NYSE',this)">NYSE</button>
+          <button class="filter-chip" onclick="filterSignals('CRYPTO',this)">Crypto</button>
           <button class="filter-chip" onclick="filterSignals('COMPRA',this)">Buy</button>
           <button class="filter-chip" onclick="filterSignals('VENDA',this)">Sell</button>
           <button class="filter-chip" onclick="filterSignals('MANTER',this)">Hold</button>
@@ -561,7 +578,18 @@ tbody td:last-child{padding-right:28px;text-align:right}
       </div>
       <div id="tab-signals" class="tab-panel active">
         <div class="table-container"><table>
-          <thead><tr><th style="text-align:left;padding:10px 14px;width:110px">Asset</th><th style="text-align:right;padding:10px 8px;width:100px">Price</th><th style="text-align:right;padding:10px 8px;width:80px">Var %</th><th style="text-align:center;padding:10px 8px;width:80px">Signal</th><th style="text-align:right;padding:10px 8px;width:60px">Score</th><th style="text-align:right;padding:10px 8px;width:55px">RSI</th><th style="text-align:right;padding:10px 8px;width:90px">EMA 9</th><th style="text-align:right;padding:10px 8px;width:90px">EMA 21</th><th style="text-align:right;padding:10px 8px;width:90px">EMA 50</th><th style="text-align:right;padding:10px 8px;width:55px" class="hide-mobile">Upd</th></tr></thead>
+          <thead><tr>
+            <th class="sig-th" data-sort-key="symbol"     style="text-align:left;padding:10px 14px;width:110px;cursor:pointer" onclick="sortSignals('symbol')">Asset <span class="sort-arrow"></span></th>
+            <th class="sig-th" data-sort-key="price"      style="text-align:right;padding:10px 8px;width:100px;cursor:pointer" onclick="sortSignals('price')">Price <span class="sort-arrow"></span></th>
+            <th class="sig-th" data-sort-key="change_24h" style="text-align:right;padding:10px 8px;width:80px;cursor:pointer" onclick="sortSignals('change_24h')">Var % <span class="sort-arrow"></span></th>
+            <th class="sig-th" data-sort-key="signal"     style="text-align:center;padding:10px 8px;width:80px;cursor:pointer" onclick="sortSignals('signal')">Signal <span class="sort-arrow"></span></th>
+            <th class="sig-th" data-sort-key="score"      style="text-align:right;padding:10px 8px;width:60px;cursor:pointer" onclick="sortSignals('score')">Score <span class="sort-arrow"></span></th>
+            <th class="sig-th" data-sort-key="rsi"        style="text-align:right;padding:10px 8px;width:55px;cursor:pointer" onclick="sortSignals('rsi')">RSI <span class="sort-arrow"></span></th>
+            <th class="sig-th" data-sort-key="ema9"       style="text-align:right;padding:10px 8px;width:90px;cursor:pointer" onclick="sortSignals('ema9')">EMA 9 <span class="sort-arrow"></span></th>
+            <th class="sig-th" data-sort-key="ema21"      style="text-align:right;padding:10px 8px;width:90px;cursor:pointer" onclick="sortSignals('ema21')">EMA 21 <span class="sort-arrow"></span></th>
+            <th class="sig-th" data-sort-key="ema50"      style="text-align:right;padding:10px 8px;width:90px;cursor:pointer" onclick="sortSignals('ema50')">EMA 50 <span class="sort-arrow"></span></th>
+            <th style="text-align:right;padding:10px 8px;width:55px" class="hide-mobile">Upd</th>
+          </tr></thead>
           <tbody id="signals-body"><tr><td colspan="10"><div class="state-box"><div class="loader"></div><div class="state-text">Fetching market data</div></div></td></tr></tbody>
         </table></div>
       </div>
@@ -2141,6 +2169,8 @@ function renderTable(sigs){
     if(currentFilter==='CRYPTO')return x.market_type==='CRYPTO';
     return true;
   });
+  // [v2] Aplicar ordenação se houver (Item 2)
+  if(currentSort && currentSort.key) list = _applySortToList(list, currentSort.key, currentSort.dir);
   var tb=document.getElementById('signals-body');if(!tb)return;
   if(!list.length){tb.innerHTML='<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--text3)">Sem sinais</td></tr>';return;}
   tb.innerHTML=list.map(function(s){
@@ -2351,6 +2381,38 @@ function filterSignals(f,el){
   document.querySelectorAll('.filter-btn').forEach(function(b){b.classList.remove('active');});
   if(el)el.classList.add('active');
   renderTable(allSignals);
+}
+
+/* ═══ [v2] SORT de colunas (Item 2) ═══ */
+var currentSort = { key: null, dir: 'desc' };
+function sortSignals(key){
+  if(currentSort.key === key){
+    currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    currentSort.key = key;
+    currentSort.dir = 'desc';
+  }
+  // Atualizar classes visuais das setas
+  document.querySelectorAll('.sig-th').forEach(function(th){
+    var k = th.getAttribute('data-sort-key');
+    th.classList.remove('sort-asc','sort-desc','sort-none');
+    if(k === key) th.classList.add(currentSort.dir === 'asc' ? 'sort-asc' : 'sort-desc');
+    else th.classList.add('sort-none');
+  });
+  renderTable(allSignals);
+}
+
+function _applySortToList(list, key, dir){
+  if(!key) return list;
+  var mul = dir === 'asc' ? 1 : -1;
+  return list.slice().sort(function(a, b){
+    var va = a[key], vb = b[key];
+    if(va == null && vb == null) return 0;
+    if(va == null) return 1;
+    if(vb == null) return -1;
+    if(typeof va === 'number' && typeof vb === 'number') return (va - vb) * mul;
+    return String(va).localeCompare(String(vb), 'pt-BR', {numeric:true}) * mul;
+  });
 }
 
 function showPage(page,el){
@@ -2602,9 +2664,36 @@ async function loadNetworkIntelligence(force){
   }catch(e){console.error('Network sync error:',e);}
 }
 
+/* ═══ [v2] FX USD/EUR realtime (Item 8) ═══ */
+var _fxPrev = {};
+async function updateFxChips(){
+  try {
+    var r = await fetch(API_BASE + '/api/fx-rates');
+    if(!r.ok) return;
+    var d = await r.json();
+    var fx = (d && d.fx) || {};
+    var usd = fx.USDBRL, eur = fx.EURBRL;
+    var html = '';
+    if(usd){
+      var dir = _fxPrev.usd ? (usd > _fxPrev.usd ? 'up' : (usd < _fxPrev.usd ? 'down' : '')) : '';
+      html += '<div class="fx-chip '+dir+'"><span class="fx-label">USD</span><span class="fx-value">R$ '+usd.toFixed(4)+'</span></div>';
+      _fxPrev.usd = usd;
+    }
+    if(eur){
+      var dir = _fxPrev.eur ? (eur > _fxPrev.eur ? 'up' : (eur < _fxPrev.eur ? 'down' : '')) : '';
+      html += '<div class="fx-chip '+dir+'"><span class="fx-label">EUR</span><span class="fx-value">R$ '+eur.toFixed(4)+'</span></div>';
+      _fxPrev.eur = eur;
+    }
+    var el = document.getElementById('fx-rates');
+    if(el) el.innerHTML = html;
+  } catch(e) {}
+}
+
 loadAll();
+updateFxChips();                           // [v2] FX inicial
 setInterval(loadAll,10*1000);
 setInterval(loadLivePrices,3000);
+setInterval(updateFxChips, 30000);         // [v2] FX a cada 30s
 
 </script>
 

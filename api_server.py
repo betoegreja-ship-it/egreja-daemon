@@ -3009,6 +3009,75 @@ def is_trade_flat(trade: dict, now: datetime) -> bool:
 
 
 # ── [v10.17] Directional Exposure Check ───────────────────────────────────
+def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
+    """[v10.48] Reavalia v3 em trade aberta.
+    Retorna (should_close: bool, new_regime: str, new_signal: str, reason_detail: str)
+
+    Critérios para fechar (reversão de tese):
+    - Signal virou MANTER (convicção se perdeu)
+    - Signal virou oposto do da abertura (LONG com signal VENDA ou SHORT com signal COMPRA)
+    - Regime saiu de TRENDING para RANGING/CHOPPY (tendência acabou)
+
+    Se dados insuficientes ou v3 falha, retorna (False, None, None, 'data_insufficient') —
+    não fecha em dúvida.
+    """
+    opened_signal = trade.get('signal_v2')
+    opened_regime = trade.get('regime_v2')
+    direction = trade.get('direction', 'LONG')
+    if not opened_signal or opened_signal == 'MANTER':
+        return False, None, None, 'no_v3_thesis'  # trade não tem tese v3, não reavaliar
+
+    try:
+        from modules.score_engine_v2 import compute_score_v3
+        # Puxar dados de mercado atuais
+        if asset_type == 'crypto':
+            sym = trade['symbol'] + 'USDT'
+            klines = _get_cached_candles(f'klines:{sym}', ttl_min=60) or {}
+            if not klines or len(klines.get('closes', [])) < 30:
+                return False, None, None, 'crypto_no_klines'
+            r = compute_score_v3(klines['closes'], klines.get('highs', []),
+                                 klines.get('lows', []), klines.get('volumes', []),
+                                 factor_stats_cache=factor_stats_cache,
+                                 pattern_stats_cache=pattern_stats_cache)
+        else:  # stock
+            sym = trade['symbol']
+            with state_lock:
+                pd_data = stock_prices.get(sym, {})
+            c = pd_data.get('closes_series', [])
+            h = pd_data.get('highs_series', [])
+            l = pd_data.get('lows_series', [])
+            v = pd_data.get('volumes_series', [])
+            if len(c) < 30:
+                return False, None, None, 'stock_no_series'
+            r = compute_score_v3(c, h, l, v,
+                                 factor_stats_cache=factor_stats_cache,
+                                 pattern_stats_cache=pattern_stats_cache)
+
+        new_regime = r.get('regime')
+        new_signal = r.get('signal')
+
+        # Critério 1: signal virou MANTER (convicção se perdeu)
+        if new_signal == 'MANTER':
+            return True, new_regime, new_signal, 'signal_to_hold'
+
+        # Critério 2: signal virou oposto (COMPRA→VENDA ou VENDA→COMPRA)
+        # LONG aberto com signal=COMPRA: sair se virou VENDA (tendência inverteu)
+        # SHORT aberto com signal=VENDA: sair se virou COMPRA
+        if direction == 'LONG' and new_signal == 'VENDA':
+            return True, new_regime, new_signal, 'signal_reversed_long_to_venda'
+        if direction == 'SHORT' and new_signal == 'COMPRA':
+            return True, new_regime, new_signal, 'signal_reversed_short_to_compra'
+
+        # Critério 3: regime saiu de TRENDING (tendência acabou)
+        if opened_regime == 'TRENDING' and new_regime != 'TRENDING':
+            return True, new_regime, new_signal, f'trend_ended_{opened_regime}_to_{new_regime}'
+
+        return False, new_regime, new_signal, 'thesis_valid'
+    except Exception as e:
+        log.debug(f"check_v3_reversal {trade.get('symbol')}: {e}")
+        return False, None, None, f'exception:{str(e)[:40]}'
+
+
 def check_directional_exposure(direction: str, strategy: str = 'stocks') -> tuple:
     """[v10.17] Verifica se abrir mais uma posição nesta direção excede o limite.
     Retorna (blocked: bool, reason: str, stats: dict).
@@ -5664,10 +5733,20 @@ def monitor_trades():
                     _regime_sm, _regime_sl_m, _regime_r = get_regime_multiplier()  # [v10.17]
                     _eff_sl_s = round(_adaptive_sl_s * _regime_sl_m, 2)  # [v10.17] SL ajustado por regime
                     _timeout_s = get_dynamic_timeout_h(sym, 2.0)  # [v10.17] timeout dinâmico (default 2h)
+                    # [v10.48] Trade com tese v3 válida ignora TIMEOUT — só fecha se tendência reverter
+                    _has_v3_thesis = trade.get('signal_v2') in ('COMPRA', 'VENDA')
                     if peak>=TRAILING_PEAK_STOCKS and trade['pnl_pct']<=peak-TRAILING_DROP_STOCKS:
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.0%, drop≥0.4% (era 1.5/0.5)
                     elif trade['pnl_pct']<=-_eff_sl_s:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime (era fixo -2.0%)
+                    elif _has_v3_thesis:
+                        _should_close, _new_reg, _new_sig, _rdet = check_v3_reversal(trade, 'stock')
+                        if _should_close:
+                            reason='V3_REVERSAL'
+                            trade['_v3_reversal_detail'] = _rdet
+                            trade['_v3_new_regime'] = _new_reg
+                            trade['_v3_new_signal'] = _new_sig
+                            log.info(f"V3_REVERSAL {trade['symbol']}: {trade.get('regime_v2')}/{trade.get('signal_v2')} → {_new_reg}/{_new_sig} ({_rdet})")
                     elif is_trade_flat(trade, now):
                         reason='FLAT_EXIT'  # [v10.17] trade estagnada — liberar capital
                     elif age_h>=_timeout_s:
@@ -5747,10 +5826,21 @@ def monitor_trades():
                     _regime_cm, _regime_csl_m, _regime_cr = get_regime_multiplier()  # [v10.17]
                     _eff_sl_c = round(_adaptive_sl_c * _regime_csl_m, 2)  # [v10.17] SL ajustado por regime
                     _timeout_c = get_dynamic_timeout_h(trade['symbol'], 4.0)  # [v10.17] timeout dinâmico (default 4h)
+                    # [v10.48] Trade com tese v3 válida ignora TIMEOUT — só fecha se tendência reverter
+                    _has_v3_thesis = trade.get('signal_v2') in ('COMPRA', 'VENDA')
                     if peak>=TRAILING_PEAK_CRYPTO and trade['pnl_pct']<=peak-TRAILING_DROP_CRYPTO:
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.5%, drop≥0.7% (era 2.0/1.0)
                     elif trade['pnl_pct']<=-_eff_sl_c:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime
+                    elif _has_v3_thesis:
+                        # [v10.48] Trade com tese v3: só fecha se v3 reverter
+                        _should_close, _new_reg, _new_sig, _rdet = check_v3_reversal(trade, 'crypto')
+                        if _should_close:
+                            reason='V3_REVERSAL'
+                            trade['_v3_reversal_detail'] = _rdet
+                            trade['_v3_new_regime'] = _new_reg
+                            trade['_v3_new_signal'] = _new_sig
+                            log.info(f"V3_REVERSAL {trade['symbol']}: {trade.get('regime_v2')}/{trade.get('signal_v2')} → {_new_reg}/{_new_sig} ({_rdet})")
                     elif is_trade_flat(trade, now):
                         reason='FLAT_EXIT'  # [v10.17] trade estagnada — liberar capital
                     elif age_h>=_timeout_c:

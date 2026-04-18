@@ -3336,6 +3336,42 @@ thead th{background:var(--navy2);position:sticky;top:0;z-index:5}
 </style>
 
 
+<style id="scroll-v5">/* ═══ [v5] SCROLL — JS-assisted, garantido ═══ */
+html,body{height:100%;margin:0;overflow:hidden}
+body{padding-top:150px}
+.subbar{border-bottom:2px solid rgba(184,151,58,0.35) !important}
+
+/* Page: preenche espaço entre barras fixas e bottom da viewport */
+.page.active{display:flex;flex-direction:column;overflow:hidden}
+#scroll-height-probe{display:none}
+
+/* Layout grid: altura ditada por .page.active (via JS) */
+.page.active > .layout{flex:1;min-height:0;display:grid;overflow:hidden}
+.page.active > .layout > *{min-height:0;min-width:0}
+
+/* Sidebar: pode rolar internamente se tiver muito conteudo */
+.left-panel{overflow-y:auto;overflow-x:hidden}
+.left-panel::-webkit-scrollbar{width:6px}
+.left-panel::-webkit-scrollbar-thumb{background:rgba(184,151,58,0.2);border-radius:3px}
+
+/* Main-area flex-column: stats+toolbar fixos, tab-panel cresce */
+.main-area{display:flex;flex-direction:column;overflow:hidden;height:100%}
+.main-area > .stats-strip,
+.main-area > .toolbar{flex-shrink:0}
+
+/* Tab-panel: ocupa espaco restante e rola */
+.tab-panel{display:none}
+.tab-panel.active{display:block;flex:1;overflow-y:auto;overflow-x:auto;min-height:0}
+.tab-panel.active::-webkit-scrollbar{width:8px;height:8px}
+.tab-panel.active::-webkit-scrollbar-thumb{background:rgba(184,151,58,0.25);border-radius:4px}
+.tab-panel.active::-webkit-scrollbar-track{background:transparent}
+
+/* Headers sticky dentro do tab-panel */
+.tab-panel thead th{background:var(--navy2);position:sticky;top:0;z-index:5}
+
+.page:not(.active){display:none}
+</style>
+
 <!-- ═══ [v5] TICKER TAPE — TradingView Widget oficial ═══ -->
 <style id="tv-ticker-styles">
   /* Container fixo no TOPO da página */
@@ -3398,5 +3434,63 @@ thead th{background:var(--navy2);position:sticky;top:0;z-index:5}
 </div>
 <!-- ═══ fim [v5] TICKER TAPE TradingView ═══ -->
 
+
+<script id="scroll-height-js">
+(function(){
+  'use strict';
+  // Mede altura real do ticker+topbar+subbar e seta altura da .page.active inline
+  function recalc(){
+    var ticker = document.getElementById('tv-ticker-wrap');
+    var topbar = document.querySelector('.topbar');
+    var subbar = document.querySelector('.subbar');
+    var pages = document.querySelectorAll('.page');
+
+    var tickerH = ticker ? ticker.offsetHeight : 36;
+    var topbarH = topbar ? topbar.offsetHeight : 64;
+    var subbarH = subbar ? subbar.offsetHeight : 34;
+    var total = tickerH + topbarH + subbarH;
+    var viewportH = window.innerHeight;
+    var pageHeight = viewportH - total;
+
+    // Sincronizar padding-top do body com o total real
+    document.body.style.paddingTop = total + 'px';
+    // Setar altura exata em TODAS as pages (ativas ou não)
+    pages.forEach(function(p){
+      p.style.height = pageHeight + 'px';
+      p.style.maxHeight = pageHeight + 'px';
+    });
+    console.log('[scroll-v5] pageH='+pageHeight+'px (ticker '+tickerH+'+topbar '+topbarH+'+subbar '+subbarH+'='+total+')');
+  }
+
+  // Recalcular ao carregar, resize e quando mudar de aba
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', function(){
+      recalc();
+      // Esperar 500ms pro iframe do TradingView carregar e obter altura final
+      setTimeout(recalc, 500);
+      setTimeout(recalc, 1500);
+    });
+  } else {
+    recalc();
+    setTimeout(recalc, 500);
+    setTimeout(recalc, 1500);
+  }
+
+  window.addEventListener('resize', recalc);
+
+  // ResizeObserver no ticker e subbar (caso mudem altura)
+  if(typeof ResizeObserver !== 'undefined'){
+    var ro = new ResizeObserver(recalc);
+    setTimeout(function(){
+      var t = document.getElementById('tv-ticker-wrap');
+      var tb = document.querySelector('.topbar');
+      var sb = document.querySelector('.subbar');
+      if(t) ro.observe(t);
+      if(tb) ro.observe(tb);
+      if(sb) ro.observe(sb);
+    }, 1000);
+  }
+})();
+</script>
 </body>
 </html>

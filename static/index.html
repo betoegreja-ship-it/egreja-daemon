@@ -60,7 +60,7 @@ body{background:var(--navy);color:var(--text);font-family:'Instrument Sans',sans
 #topbar-clock{font-family:monospace;font-size:11px;color:var(--text2);letter-spacing:.06em}
 .btn-refresh{height:30px;padding:0 18px;background:linear-gradient(180deg,rgba(184,151,58,0.15),rgba(184,151,58,0.08));border:1px solid rgba(184,151,58,0.4);color:var(--gold2);font-family:'Instrument Sans',sans-serif;font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .2s}
 .btn-refresh:hover{background:linear-gradient(180deg,rgba(184,151,58,0.28),rgba(184,151,58,0.15));border-color:var(--gold2);color:var(--gold3)}
-.subbar{height:34px;background:var(--navy2);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 36px;gap:36px}
+.subbar{height:34px;background:var(--navy2);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 36px;gap:36px;position:sticky;top:64px;z-index:198;background:#0a1628}
 .market-pill{display:flex;align-items:center;gap:8px;font-family:monospace;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase}
 .mpill-dot{width:5px;height:5px;border-radius:50%}
 .mpill-label{color:var(--text2)}
@@ -428,6 +428,32 @@ tbody td:last-child{padding-right:28px;text-align:right}
   pointer-events: auto !important;
   opacity: 1 !important;
 }
+
+/* ═══ [v2] NOVO TICKER TAPE — inline, substitui ticker-tape.js ═══ */
+.tt-container{position:sticky;top:98px;z-index:199;width:100%;background:linear-gradient(180deg,#0a1628 0%,#081220 100%);border-bottom:1px solid rgba(184,151,58,0.2);overflow:hidden;height:34px;font-family:'DM Mono',monospace;font-size:11px;user-select:none}
+.tt-container:hover .tt-track{animation-play-state:paused}
+.tt-track{display:flex;align-items:center;height:100%;white-space:nowrap;will-change:transform;animation:ttScroll var(--tt-duration,180s) linear infinite}
+@keyframes ttScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+.tt-item{display:inline-flex;align-items:center;gap:8px;padding:0 16px;height:100%;border-right:1px solid rgba(184,151,58,0.08);flex-shrink:0}
+.tt-mkt{font-size:9px;letter-spacing:.1em;font-weight:600;padding:1px 5px;border-radius:2px}
+.tt-mkt.b3{color:var(--gold2);background:rgba(184,151,58,0.1)}
+.tt-mkt.nyse{color:#60A5FA;background:rgba(96,165,250,0.1)}
+.tt-mkt.crypto{color:#c77dff;background:rgba(199,125,255,0.1)}
+.tt-sym{font-weight:600;color:var(--white);letter-spacing:.02em}
+.tt-px{color:var(--text2)}
+.tt-chg{font-weight:600}
+.tt-chg.up{color:#2ecc71}
+.tt-chg.down{color:#e74c3c}
+.tt-chg.flat{color:var(--text3)}
+.tt-loading{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text3);font-size:10px;gap:6px}
+.tt-loading span{animation:ttPulse 1.2s infinite ease-in-out}
+.tt-loading span:nth-child(2){animation-delay:.2s}
+.tt-loading span:nth-child(3){animation-delay:.4s}
+@keyframes ttPulse{0%,80%,100%{opacity:.3}40%{opacity:1}}
+.tt-container::before,.tt-container::after{content:"";position:absolute;top:0;bottom:0;width:40px;z-index:2;pointer-events:none}
+.tt-container::before{left:0;background:linear-gradient(to right,#0a1628,transparent)}
+.tt-container::after{right:0;background:linear-gradient(to left,#081220,transparent)}
+
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 </head>
@@ -473,6 +499,11 @@ tbody td:last-child{padding-right:28px;text-align:right}
   <div class="market-pill"><div class="mpill-dot" id="dot-b3" style="background:var(--text3)"></div><span class="mpill-label">B3</span><span class="mpill-status" id="b3-status">10h–17h BRT</span></div>
   <div class="market-pill"><div class="mpill-dot" id="dot-nyse" style="background:var(--text3)"></div><span class="mpill-label">NYSE / NASDAQ</span><span class="mpill-status" id="nyse-status">9:30–16h EST</span></div>
   <div class="subbar-right" id="last-update">Awaiting data</div>
+</div>
+
+<!-- [v2] NOVO TICKER TAPE — logo após subbar, antes do conteúdo -->
+<div id="tt-container" class="tt-container">
+  <div class="tt-loading"><span>●</span><span>●</span><span>●</span>&nbsp; Carregando ativos…</div>
 </div>
 
 <!-- ═══ MOBILE BOTTOM NAVIGATION ══════════════════════════════ -->
@@ -2666,6 +2697,81 @@ async function loadNetworkIntelligence(force){
 
 /* ═══ [v2] FX USD/EUR realtime (Item 8) ═══ */
 var _fxPrev = {};
+/* ═══ [v2] NOVO TICKER TAPE — JS inline ═══ */
+var _ttSymbols = '';
+var _ttTimer = null;
+
+function ttFormatPx(p){
+  if(p >= 1000) return p.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+  if(p >= 1) return p.toFixed(2);
+  return p.toFixed(4);
+}
+
+function ttBuildHTML(items){
+  var out = '';
+  for(var i = 0; i < items.length; i++){
+    var it = items[i];
+    var dir = it.c > 0.01 ? 'up' : (it.c < -0.01 ? 'down' : 'flat');
+    var arrow = dir === 'up' ? '▲' : (dir === 'down' ? '▼' : '─');
+    var sign = it.c > 0 ? '+' : '';
+    var mktCls = it.m === 'B3' ? 'b3' : (it.m === 'CRYPTO' ? 'crypto' : 'nyse');
+    var curSym = it.cur === 'BRL' ? 'R$' : '$';
+    out += '<div class="tt-item">' +
+           '<span class="tt-mkt ' + mktCls + '">' + it.m + '</span>' +
+           '<span class="tt-sym">' + it.t + '</span>' +
+           '<span class="tt-px">' + curSym + ttFormatPx(it.p) + '</span>' +
+           '<span class="tt-chg ' + dir + '">' + arrow + ' ' + sign + it.c.toFixed(2) + '%</span>' +
+           '</div>';
+  }
+  return out;
+}
+
+async function ttUpdate(){
+  try {
+    var r = await fetch(API_BASE + '/api/ticker-tape');
+    if(!r.ok) return;
+    var d = await r.json();
+    var items = (d && d.items) || [];
+    if(items.length === 0) return;
+    var fp = items.map(function(x){ return x.t; }).sort().join(',');
+    var container = document.getElementById('tt-container');
+    if(!container) return;
+    if(fp !== _ttSymbols){
+      var duration = Math.max(60, items.length * 1.8);
+      var inner = ttBuildHTML(items);
+      container.innerHTML = '<div class="tt-track" style="--tt-duration:' + duration + 's">' + inner + inner + '</div>';
+      _ttSymbols = fp;
+      console.log('[Ticker] ' + items.length + ' ativos');
+    } else {
+      var itemMap = {};
+      for(var i = 0; i < items.length; i++) itemMap[items[i].t] = items[i];
+      container.querySelectorAll('.tt-item').forEach(function(el){
+        var sym = el.querySelector('.tt-sym');
+        if(!sym) return;
+        var data = itemMap[sym.textContent.trim()];
+        if(!data) return;
+        var px = el.querySelector('.tt-px');
+        var chg = el.querySelector('.tt-chg');
+        if(px) px.textContent = (data.cur === 'BRL' ? 'R$' : '$') + ttFormatPx(data.p);
+        if(chg){
+          var dir = data.c > 0.01 ? 'up' : (data.c < -0.01 ? 'down' : 'flat');
+          var arrow = dir === 'up' ? '▲' : (dir === 'down' ? '▼' : '─');
+          var sign = data.c > 0 ? '+' : '';
+          chg.className = 'tt-chg ' + dir;
+          chg.textContent = arrow + ' ' + sign + data.c.toFixed(2) + '%';
+        }
+      });
+    }
+  } catch(e){ console.warn('ttUpdate:', e); }
+}
+
+ttUpdate();
+_ttTimer = setInterval(ttUpdate, 15000);
+document.addEventListener('visibilitychange', function(){
+  if(document.hidden){ if(_ttTimer){ clearInterval(_ttTimer); _ttTimer = null; } }
+  else { ttUpdate(); if(!_ttTimer) _ttTimer = setInterval(ttUpdate, 15000); }
+});
+
 async function updateFxChips(){
   try {
     var r = await fetch(API_BASE + '/api/fx-rates');
@@ -3234,7 +3340,6 @@ function toggleVal(id) {
 }
 
   </script>
-<script src="/ticker-tape.js"></script>
-<script>initTickerTape("https://diligent-spirit-production.up.railway.app");</script>
+<!-- ticker-tape antigo removido, nova versão inline -->
 </body>
 </html>

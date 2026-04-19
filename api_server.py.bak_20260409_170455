@@ -85,23 +85,12 @@ try:
         RatesCurveService, GreeksCalculator, CalibrationService, StrategyScorecard, StructuredOrderExecutor,
         NAVCalculatorService, ImpliedVolEngine)
     from modules.derivatives.liquidity import LiquidityScoreEngine, PromotionEngine, ActiveStatusRegistry
-    from modules.derivatives.strategies import (pcp_scan_loop, fst_scan_loop, roll_arb_scan_loop,
-        etf_basket_scan_loop, skew_arb_scan_loop, interlisted_scan_loop, dividend_arb_scan_loop, vol_arb_scan_loop,
-        ibov_basis_scan_loop, di_calendar_scan_loop, interlisted_hedged_scan_loop)
-    from modules.derivatives.endpoints import create_strategies_blueprint
-    # [v10.35] Execution / capital / monitoring / sizing / learning — paper trading end-to-end
     from modules.derivatives.capital import DerivativesCapitalManager
-    from modules.derivatives.deriv_execution import (DerivativesExecutionEngine, DerivativesTrade,
-        TradeLeg, TradeStatus, LegStatus)
-    from modules.derivatives.monitoring import DerivativesMonitor
-    from modules.derivatives.position_sizing import DerivativesPositionSizer
     from modules.derivatives.learning import DerivativesLearningEngine
-    # [v10.36] Top Opportunities daily audit (EOD 17:30 BRT snapshot + endpoint)
-    from modules.derivatives.top_opps_audit import (
-        create_top_opps_audit_table,
-        snapshot_top_opportunities,
-        query_top_opps_audit,
-    )
+    from modules.derivatives.position_sizing import DerivativesPositionSizer
+    from modules.derivatives.strategies import (pcp_scan_loop, fst_scan_loop, roll_arb_scan_loop,
+        etf_basket_scan_loop, skew_arb_scan_loop, interlisted_scan_loop, dividend_arb_scan_loop, vol_arb_scan_loop)
+    from modules.derivatives.endpoints import create_strategies_blueprint
     _MODULES_LOADED = True
 except Exception as _mod_err:
     import traceback as _tb
@@ -134,9 +123,6 @@ except Exception as _mod_err:
     class ActiveStatus:
         OBSERVE='OBSERVE'; SHADOW_EXEC='SHADOW_EXEC'; PAPER_SMALL='PAPER_SMALL'; PAPER_FULL='PAPER_FULL'; DISABLED='DISABLED'
     def create_derivatives_tables(c): pass
-    def create_top_opps_audit_table(c): pass
-    def snapshot_top_opportunities(*a, **kw): return {'captured': 0, 'inserted': 0, 'errors': ['module_not_loaded']}
-    def query_top_opps_audit(*a, **kw): return {'rows': [], 'error': 'module_not_loaded'}
     class SimulatedMarketDataProvider: pass
     class ProviderManager:
         def __init__(self): pass
@@ -151,18 +137,6 @@ except Exception as _mod_err:
         from flask import Blueprint; return Blueprint('strategies', __name__)
     pcp_scan_loop = fst_scan_loop = roll_arb_scan_loop = etf_basket_scan_loop = None
     skew_arb_scan_loop = interlisted_scan_loop = dividend_arb_scan_loop = vol_arb_scan_loop = None
-    ibov_basis_scan_loop = di_calendar_scan_loop = interlisted_hedged_scan_loop = None
-    # [v10.35] Stubs for paper trading engine (fallback)
-    DerivativesCapitalManager = None
-    DerivativesExecutionEngine = None
-    DerivativesMonitor = None
-    DerivativesPositionSizer = None
-    DerivativesLearningEngine = None
-    DerivativesTrade = TradeLeg = None
-    class TradeStatus:
-        OPEN='OPEN'; CLOSED='CLOSED'; FAILED='FAILED'
-    class LegStatus:
-        FILLED='FILLED'; PENDING='PENDING'
 
 # ── [v10.28] Pure business logic modules ───────────────────────────────
 try:
@@ -261,81 +235,6 @@ log = logging.getLogger('egreja')
 
 app = Flask(__name__)
 
-# ═══ [v10.31] CEDRO SOCKET PROVIDER — real-time streaming quotes ═══
-# Primary source for B3 quotes (stocks + indices + futures). BRAPI/OpLab used as fallback.
-_cedro_socket = None
-try:
-    from modules.cedro_socket_provider import get_cedro as _get_cedro_socket, is_enabled as _cedro_enabled
-    if _cedro_enabled():
-        _cedro_socket = _get_cedro_socket()
-        log.info('[v10.31] CedroSocketProvider STARTED (primary for B3 real-time quotes)')
-    else:
-        log.info('[v10.31] CedroSocketProvider dormant (CEDRO_USER/CEDRO_PASSWORD not set)')
-except Exception as _cedro_e:
-    log.warning(f'[v10.31] CedroSocketProvider init failed: {_cedro_e}')
-    _cedro_socket = None
-
-def _fetch_cedro_stock(display: str) -> tuple:
-    """[v10.31] Cedro socket primary for B3 stocks/indices.
-    Merges real-time price/high/low/volume/fundamentals with cached candle-based EMAs/RSI/ATR.
-    Returns (result_dict | None, latency_ms)."""
-    if not _cedro_socket or not _cedro_socket.enabled:
-        return None, 0.0
-    t0 = time.time()
-    q = _cedro_socket.get_quote(display, wait_ms=1200)
-    lat = (time.time() - t0) * 1000
-    if not q or not q.get('price'):
-        return None, lat
-    price = float(q.get('price') or 0)
-    prev = float(q.get('prev_close') or 0) or price
-    # Start from last BRAPI candle cache if exists (for EMAs/RSI/ATR)
-    cached = _get_cached_candles(f'brapi:{display}') if '_get_cached_candles' in globals() else None
-    if cached:
-        entry = dict(cached)
-        entry['price'] = price
-        entry['prev'] = prev
-        entry['change_pct'] = q.get('variation_pct') if q.get('variation_pct') is not None else (round((price/prev-1)*100, 2) if prev > 0 else 0)
-        entry['source'] = 'cedro-socket+brapi-candles'
-    else:
-        entry = {
-            'price': price, 'prev': prev,
-            'change_pct': q.get('variation_pct') if q.get('variation_pct') is not None else (round((price/prev-1)*100, 2) if prev > 0 else 0),
-            'ema9': price, 'ema21': price, 'ema50': price,
-            'rsi': 50.0, 'atr_pct': 0.0, 'volume_ratio': 0.0,
-            'ema9_real': False, 'ema21_real': False, 'ema50_real': False, 'rsi_real': False,
-            'candles_available': 0, 'market': 'B3',
-            'source': 'cedro-socket',
-        }
-    # Enrich with Cedro-exclusive real-time fields
-    entry.update({
-        'day_high': q.get('day_high'),
-        'day_low': q.get('day_low'),
-        'day_open': q.get('day_open'),
-        'week_high': q.get('week_high'),
-        'week_low': q.get('week_low'),
-        'month_high': q.get('month_high'),
-        'month_low': q.get('month_low'),
-        'year_high': q.get('year_high'),
-        'year_low': q.get('year_low'),
-        'var_week_pct': q.get('var_week_pct'),
-        'var_month_pct': q.get('var_month_pct'),
-        'var_year_pct': q.get('var_year_pct'),
-        'volume_financial': q.get('volume_financial'),
-        'best_bid': q.get('best_bid'),
-        'best_ask': q.get('best_ask'),
-        'market_cap': q.get('market_cap'),
-        'sector_code': q.get('sector_code'),
-        'subsector_code': q.get('subsector_code'),
-        'segment_code': q.get('segment_code'),
-        'trading_phase': q.get('trading_phase'),
-        'updated_at': datetime.utcnow().isoformat(),
-    })
-    try:
-        record_data_quality(display, 'cedro-socket', lat, True)
-    except Exception:
-        pass
-    return entry, lat
-
 # ═══ [v10.27] DERIVATIVES MODULE INITIALIZATION ═══
 # Provider chain: OpLab (primary) → Cedro (backup) → Simulated (fallback)
 _deriv_config = get_deriv_config()
@@ -390,99 +289,76 @@ try:
     _deriv_services['liquidity_engine'] = LiquidityScoreEngine() if LiquidityScoreEngine else None
     _deriv_services['promotion_engine'] = PromotionEngine() if PromotionEngine else None
     _deriv_services['status_registry'] = ActiveStatusRegistry() if ActiveStatusRegistry else None
-    # [FIX] strategies.py reads this under 'active_status_registry' — alias for compatibility
+    # [FIX] strategies.py reads this under 'active_status_registry' — alias
     _deriv_services['active_status_registry'] = _deriv_services['status_registry']
-    # [v10.35] Aliases so all strategies.py scan loops can find services by their expected keys
-    _deriv_services['greeks_calculator'] = _deriv_services.get('greeks_calc')
-    _deriv_services['rates_curve'] = _deriv_services.get('rates_svc')
-    _deriv_services['dividend_service'] = _deriv_services.get('dividend_svc')
-    _deriv_services['nav_calculator'] = _deriv_services.get('nav_calc')
-    # [FIX] Seed all tier-A assets × 8 strategies → PAPER_SMALL (paper mode, no real $)
+    # [FIX] Seed all tier-A × 8 strategies → PAPER_SMALL (paper mode)
     try:
         _sr = _deriv_services['status_registry']
         if _sr is not None:
             from modules.derivatives.liquidity import ExecutionTier as _ET
             _tier_a = ['PETR4','VALE3','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3','BOVA11']
-            _strats = ['PCP','FST','ROLL_ARB','ETF_BASKET','SKEW_ARB','INTERLISTED','DIVIDEND_ARB','VOL_ARB',
-                        'IBOV_BASIS','DI_CALENDAR','INTERLISTED_HEDGED']  # [v10.42] added 3 missing
-            # [v10.42] Futures assets need tiers too
-            _futures_assets = ['WIN','IND','DI1','WINFUT','INDFUT']
-            _tier_a = list(set(_tier_a + _futures_assets))
+            _strats = ['PCP','FST','ROLL_ARB','ETF_BASKET','SKEW_ARB','INTERLISTED','DIVIDEND_ARB','VOL_ARB']
             for _a in _tier_a:
                 for _s in _strats:
                     _sr.set_status(_a, _s, _ET.PAPER_SMALL, reason='bootstrap_seed')
-            log.info(f'[FIX] Seeded {len(_tier_a)*len(_strats)} (asset,strategy) pairs to PAPER_SMALL')
+            log.info(f'[FIX] Seeded {len(_tier_a)*len(_strats)} pairs to PAPER_SMALL')
     except Exception as _seed_err:
         log.warning(f'[FIX] registry seed failed: {_seed_err}')
+    # [FORENSIC-ALIASES] strategies.py usa nomes diferentes; sem esses aliases 8 serviços ficavam invisíveis e nenhum derivativo executava
+    _deriv_services['active_status_registry'] = _deriv_services.get('status_registry')
+    _deriv_services['greeks_calculator']      = _deriv_services.get('greeks_calc')
+    _deriv_services['rates_curve']            = _deriv_services.get('rates_svc')
+    _deriv_services['dividend_service']       = _deriv_services.get('dividend_svc')
+    _deriv_services['deriv_execution']        = _deriv_services.get('order_executor')
+    _deriv_services['nav_calculator']         = _deriv_services.get('nav_calc')
+    # [FORENSIC-FIX] Getter de heartbeat real pras threads, pra /strategies/health nao depender de log de oportunidades
+    _deriv_services['thread_heartbeat_getter'] = lambda name: thread_heartbeat.get(name)
+
+    # [FORENSIC-SEED] Registry vazio → tier=None → OBSERVE → nada executa.
+    # Semear universo Tier-A em PAPER_SMALL para PCP/FST para destravar execução.
+    try:
+        _reg = _deriv_services.get('active_status_registry')
+        if _reg:
+            from modules.derivatives.liquidity import ExecutionTier as _ET
+            _seed_universe = ['PETR4','VALE3','BOVA11','ITUB4','BBDC4','BBAS3','ABEV3','B3SA3']
+            _seed_tier_str = os.environ.get('DERIV_SEED_TIER', 'PAPER_SMALL')
+            _seed_tier = getattr(_ET, _seed_tier_str, _ET.PAPER_SMALL)
+            for _sym in _seed_universe:
+                for _strat in ('PCP', 'FST'):
+                    if _reg.get_status(_sym, _strat) is None:
+                        _reg.set_status(_sym, _strat, _seed_tier, reason='startup_seed')
+            log.info(f'[FORENSIC-SEED] active_status_registry seeded {len(_seed_universe)} assets x 2 strategies @ {_seed_tier_str}')
+    except Exception as _e:
+        log.warning(f'[FORENSIC-SEED] seed failed: {_e}')
+    # [FIX] Init capital manager + learning engine (antes ficavam None e quebravam trade opening + learning endpoint)
+    _deriv_cfg = None
+    try:
+        _deriv_cfg = get_deriv_config()
+    except Exception as _cfg_err:
+        log.warning(f'[FIX] get_deriv_config failed: {_cfg_err}')
+    try:
+        _deriv_services['capital_manager'] = DerivativesCapitalManager(_deriv_cfg, get_db_fn=get_db) if _deriv_cfg else None
+    except Exception as _cm_err:
+        log.warning(f'[FIX] capital_manager init failed: {_cm_err}')
+        _deriv_services['capital_manager'] = None
+    try:
+        _deriv_services['deriv_learner'] = DerivativesLearningEngine(_deriv_cfg, get_db_fn=get_db) if _deriv_cfg else None
+    except Exception as _dl_err:
+        log.warning(f'[FIX] deriv_learner init failed: {_dl_err}')
+        _deriv_services['deriv_learner'] = None
+    # [v10.29] CRITICAL FIX: deriv_sizer was NEVER initialized — strategies.py line 113-117
+    # checks (execution_engine AND sizer AND capital_mgr) and returns False if any is None.
+    # This caused PCP to find 11K+ opportunities but never execute ANY trade.
+    try:
+        _deriv_services['deriv_sizer'] = DerivativesPositionSizer(_deriv_cfg) if _deriv_cfg else None
+        if _deriv_services['deriv_sizer']:
+            log.info('[v10.29] deriv_sizer initialized — derivatives can now execute trades')
+    except Exception as _ds_err:
+        log.warning(f'[v10.29] deriv_sizer init failed: {_ds_err}')
+        _deriv_services['deriv_sizer'] = None
     log.info(f'[v10.25] Derivatives services initialized: {len([v for v in _deriv_services.values() if v])} active')
 except Exception as e:
     log.warning(f'[v10.25] Derivatives services init: {e}')
-
-# ═══ [v10.35] DERIVATIVES PAPER TRADING ENGINE ═══
-# Instantiate execution / capital / monitoring / sizing / learning so paper trades
-# actually open, mark-to-market, and close with realized PnL for the 2-month track record.
-_deriv_cap_mgr = None
-_deriv_exec = None
-_deriv_monitor = None
-_deriv_sizer = None
-_deriv_learner = None
-try:
-    # get_db is redefined later in the file (line ~722). Use a lambda to defer resolution.
-    def _resolve_get_db():
-        try:
-            return get_db()
-        except Exception:
-            return None
-
-    if DerivativesCapitalManager is not None:
-        _deriv_cap_mgr = DerivativesCapitalManager(_deriv_config, get_db_fn=_resolve_get_db)
-        _deriv_services['capital_manager'] = _deriv_cap_mgr
-        # Alias some strategies may look for
-        _deriv_services['deriv_capital'] = _deriv_cap_mgr
-
-    if DerivativesPositionSizer is not None:
-        _deriv_sizer = DerivativesPositionSizer(_deriv_config)
-        _deriv_services['deriv_sizer'] = _deriv_sizer
-
-    if DerivativesLearningEngine is not None:
-        _deriv_learner = DerivativesLearningEngine(_deriv_config, get_db_fn=_resolve_get_db)
-        _deriv_services['deriv_learner'] = _deriv_learner
-
-    # [v10.38] Wire the unified brain learning engine into derivatives services
-    try:
-        from modules.unified_brain.learning_engine import LearningEngine as _UnifiedBrain
-        if 'unified_brain' not in _deriv_services:
-            _deriv_services['unified_brain'] = _UnifiedBrain(
-                db_fn=_resolve_get_db,
-                log=log,
-            )
-            log.info('[v10.38] unified_brain wired into derivatives services')
-    except Exception as _brain_err:
-        log.debug(f'[v10.38] unified_brain not available: {_brain_err}')
-
-    if DerivativesExecutionEngine is not None and _deriv_cap_mgr is not None:
-        _deriv_exec = DerivativesExecutionEngine(_deriv_config, _deriv_cap_mgr, get_db_fn=_resolve_get_db)
-        _deriv_services['deriv_execution'] = _deriv_exec
-
-    _greeks_calc = _deriv_services.get('greeks_calc')
-    if DerivativesMonitor is not None and _deriv_exec is not None and _greeks_calc is not None:
-        _deriv_monitor = DerivativesMonitor(
-            execution_engine=_deriv_exec,
-            greeks_calculator=_greeks_calc,
-            provider_mgr=_deriv_provider_mgr,
-            learning_engine=_deriv_learner,
-            get_db_fn=_resolve_get_db,
-        )
-        _deriv_services['deriv_monitor'] = _deriv_monitor
-
-    log.info(
-        f'[v10.35] Paper engine: cap_mgr={bool(_deriv_cap_mgr)}, sizer={bool(_deriv_sizer)}, '
-        f'learner={bool(_deriv_learner)}, exec={bool(_deriv_exec)}, monitor={bool(_deriv_monitor)}'
-    )
-except Exception as _eng_err:
-    log.warning(f'[v10.35] Paper engine init failed: {_eng_err}')
-    import traceback as _tb2
-    _tb2.print_exc()
 # ═══ END DERIVATIVES INIT ═══
 
 # [v10.25] Register derivatives strategies blueprint
@@ -518,10 +394,12 @@ _mp_load_error = None
 try:
     from modules.long_horizon.monthly_picks.endpoints import create_monthly_picks_blueprint
     from modules.long_horizon.monthly_picks.repositories import MonthlyPicksRepository
+    # NOTE: enqueue_brain_lesson is defined later in this file, so we pass a
+    # late-binding lambda that resolves at call-time instead of import-time.
     _mp_bp = create_monthly_picks_blueprint(
         db_fn=get_db,
         log=log,
-        brain_lesson_fn=enqueue_brain_lesson,
+        brain_lesson_fn=lambda *a, **k: enqueue_brain_lesson(*a, **k) if 'enqueue_brain_lesson' in globals() else None,
     )
     app.register_blueprint(_mp_bp, url_prefix='/monthly-picks')
     log.info('[v3.2] Monthly Picks sleeve registered at /monthly-picks/* (modular)')
@@ -551,7 +429,7 @@ CORS(app)
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
-VERSION = 'v10.43'
+VERSION = 'v10.24.5'
 _boot_time = time.time()
 
 # ── [v10.23] Module instances ──────────────────────────────────────────
@@ -635,8 +513,8 @@ ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
 MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
-MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 20)) # [v10.47] 20 simultâneas — v3 discrimina, não deixar dinheiro parado
-MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 20)) # [v10.47]
+MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 5))  # [v10.24.4] 5 símbolos — usar todo o capital nas 5 moedas
+MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 10))
 
 # Settings ajustaveis em runtime (via /settings POST)
 KILL_SWITCH_USD          = float(os.environ.get('KILL_SWITCH_USD', 30000))
@@ -648,39 +526,8 @@ TIMEOUT_B3_H             = float(os.environ.get('TIMEOUT_B3_H', 5))
 TIMEOUT_CRYPTO_H         = float(os.environ.get('TIMEOUT_CRYPTO_H', 48))
 TIMEOUT_NYSE_H           = float(os.environ.get('TIMEOUT_NYSE_H', 7))
 MIN_SCORE_AUTO           = int(os.environ.get('MIN_SCORE_AUTO', 70))
-# [v10.47] Sistema APENAS V3 — sem fallback para v1
-# Emergency stop: se setado true, pula todos os loops de trading (sistema morto)
-V3_EMERGENCY_STOP        = os.environ.get('V3_EMERGENCY_STOP', 'false').lower() == 'true'
-MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
+MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 60))  # [v10.26b]  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
-
-# [v10.47] Position sizing escalado por score (dinheiro parado é prejuízo)
-# Quanto maior confiança do score v3, maior o capital alocado
-# Baseline 1.0x para score neutro, máximo 2.0x em score 85+
-SCORE_SIZING_ENABLED     = os.environ.get('SCORE_SIZING_ENABLED', 'true').lower() != 'false'
-SCORE_SIZING_MAX_MULT    = float(os.environ.get('SCORE_SIZING_MAX_MULT', 2.0))
-
-def get_score_sizing_mult(score: int) -> float:
-    """Retorna multiplicador de sizing baseado no score [0-100].
-
-    - Score 85-100: 2.0x (alta confiança, alocar mais)
-    - Score 75-84:  1.6x
-    - Score 65-74:  1.3x
-    - Score 50-64:  1.0x (baseline)
-    - Score <50:    0.8x (LOW/SHORT — ainda passa, mas menor)
-
-    Para SHORTs (score baixo indica venda forte), o multiplicador
-    também cresce — usamos abs(50-score) como magnitude.
-    """
-    if not SCORE_SIZING_ENABLED:
-        return 1.0
-    mag = abs(score - 50)  # distância do neutro
-    if   mag >= 35: return min(SCORE_SIZING_MAX_MULT, 2.0)   # score 85+ ou ≤15
-    elif mag >= 25: return 1.6                                # 75-84 ou 16-25
-    elif mag >= 15: return 1.3                                # 65-74 ou 26-35
-    elif mag >= 5:  return 1.0                                # 55-64 ou 36-45
-    else:           return 0.8                                # 46-54 (zona morta)
-
 
 # Arbitragem — livro segregado
 ARBI_CAPITAL         = float(os.environ.get('ARBI_CAPITAL', 4_500_000))  # [v10.9] aumentado de 3M para 4.5M
@@ -698,7 +545,7 @@ ARBI_KILL_SWITCH     = False
 MAX_OPEN_POSITIONS      = 65  # [v10.14] 60 stocks + 5 crypto (hardcoded)
 MAX_DAILY_DRAWDOWN_PCT  = float(os.environ.get('MAX_DAILY_DRAWDOWN_PCT', 2.0))
 MAX_WEEKLY_DRAWDOWN_PCT = float(os.environ.get('MAX_WEEKLY_DRAWDOWN_PCT', 5.0))
-MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 20))  # [v10.47]
+MAX_POSITION_SAME_MKT   = int(os.environ.get('MAX_POSITION_SAME_MKT', 10))
 MAX_SAME_SYMBOL         = int(os.environ.get('MAX_SAME_SYMBOL', 1))
 MAX_RISK_PER_TRADE_PCT  = float(os.environ.get('MAX_RISK_PER_TRADE_PCT', 1.5))
 RISK_KILL_SWITCH        = False
@@ -720,6 +567,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'stock_execution_worker': 300,   # [v10.9] 5min — era 150s, loop de 60s + processamento
     'arbi_scan_loop':         600,
     'arbi_monitor_loop':      180,
+    'arbi_learning_loop':     900,   # [FIX-ZOMBIE] pattern learning pode demorar >2min; era default 120s → gerava zombies
     'snapshot_loop':          600,
     'persistence_worker':     60,    # [v10.9] 60s
     'alert_worker':           60,
@@ -736,19 +584,6 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'interlisted_scan_loop': 300,
     'dividend_arb_scan_loop': 600,
     'vol_arb_scan_loop': 300,
-    # [v10.38] New futures-arbitrage strategies
-    'ibov_basis_scan_loop': 300,
-    'di_calendar_scan_loop': 300,
-    'interlisted_hedged_scan_loop': 300,
-    # [v10.35] Derivatives paper monitoring loop (beats every ~15s)
-    'deriv_monitor_loop': 120,
-    # [v10.52] Workers de cadencia longa — heartbeats raros por design
-    'brain_hourly_reminder': 3900,   # roda 1x/hora + beat a cada minuto
-    'monthly_picks_worker':  7200,   # 2h — loop external com logica mensal/semanal
-    'arbi_learning_loop':    600,    # 10min — sleep de 5min entre passes
-    'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
-    # [v11] Portfolio Accounting — shadow comparator (60s interval + margem)
-    'portfolio_shadow_comparator': 180,
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -768,9 +603,9 @@ SHADOW_TRACK_REASONS   = {'confidence_low','market_closed','risk_blocked','symbo
 DAILY_DD_STOCKS_PCT   = float(os.environ.get('DAILY_DD_STOCKS_PCT', 1.5))   # max 1.5% drawdown diário em stocks
 DAILY_DD_CRYPTO_PCT   = float(os.environ.get('DAILY_DD_CRYPTO_PCT', 2.0))   # max 2.0% drawdown diário em crypto (mais volátil)
 # ── [v10.16] Auto-blacklist: suspende símbolo com histórico ruim ──────────
-BLACKLIST_MIN_TRADES    = int(os.environ.get('BLACKLIST_MIN_TRADES', 9999))   # [v10.47] DESLIGADO — v3 discrimina por score, não por histórico por símbolo
+BLACKLIST_MIN_TRADES    = int(os.environ.get('BLACKLIST_MIN_TRADES', 20))     # mínimo de trades para avaliar
 BLACKLIST_MAX_AVG_PNL   = float(os.environ.get('BLACKLIST_MAX_AVG_PNL', -40)) # avg PnL < -$40 = blacklist
-BLACKLIST_MAX_WR        = float(os.environ.get('BLACKLIST_MAX_WR', 0))        # [v10.47] 0 = nunca blacklist (v3 decide)
+BLACKLIST_MAX_WR        = float(os.environ.get('BLACKLIST_MAX_WR', 42))       # WR < 42% = blacklist
 BLACKLIST_REVIEW_H      = float(os.environ.get('BLACKLIST_REVIEW_H', 24))     # reavaliar a cada 24h
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
 ATR_SL_MULTIPLIER_STOCK  = float(os.environ.get('ATR_SL_MULTIPLIER_STOCK', 2.5))  # SL = ATR * 2.5 para stocks
@@ -800,43 +635,41 @@ DYNAMIC_TIMEOUT_MAX_H     = float(os.environ.get('DYNAMIC_TIMEOUT_MAX_H', 6.0)) 
 CALIBRATION_PERSIST_INTERVAL = int(os.environ.get('CALIBRATION_PERSIST_INTERVAL', 300))  # 5 min
 # ── [v10.18] Reconciliation ─────────────────────────────────────────────
 RECONCILIATION_INTERVAL_S    = int(os.environ.get('RECONCILIATION_INTERVAL_S', 600))     # 10 min
-RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))    # alertar se >2% desvio (camada 1: formula)
-# [v10.52] Threshold dedicado para camada 2 (ledger replay). Ledger foi
-# introduzido em v10.20 — trades anteriores NAO foram retroativamente
-# registrados no ledger, entao replay sempre diverge da memoria por
-# historico incompleto (falso positivo). Default 100% = nao alerta
-# enquanto nao tiver ferramenta de rehidratacao. Camada 1 continua
-# estrita em 2% para alertas reais.
-RECONCILIATION_LEDGER_ALERT_PCT = float(os.environ.get('RECONCILIATION_LEDGER_ALERT_PCT', 100.0))
+RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))    # alertar se >2% desvio
 # ── [v10.18] Crypto conviction filter ───────────────────────────────────
 CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 52))        # [v10.24] era 58 — muito restritivo, bloqueava quase tudo em mercado lateral
-CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 180))         # [v10.46.6] 15→180min — era muito agressivo, matava trades boas do v3
+
+# [v10.26] New execution constants
+MAX_ENTRIES_PER_MINUTE_STOCKS  = _TC_MAX_ENTRIES_PER_MINUTE_STOCKS if '_TC_MAX_ENTRIES_PER_MINUTE_STOCKS' in dir() else 5
+MAX_ENTRIES_PER_MINUTE_CRYPTO  = _TC_MAX_ENTRIES_PER_MINUTE_CRYPTO if '_TC_MAX_ENTRIES_PER_MINUTE_CRYPTO' in dir() else 3
+REVERSAL_RSI_OB               = _TC_REVERSAL_RSI_OB if '_TC_REVERSAL_RSI_OB' in dir() else 72
+REVERSAL_RSI_OS               = _TC_REVERSAL_RSI_OS if '_TC_REVERSAL_RSI_OS' in dir() else 28
+REVERSAL_VOLUME_SPIKE_MULT    = _TC_REVERSAL_VOLUME_SPIKE_MULT if '_TC_REVERSAL_VOLUME_SPIKE_MULT' in dir() else 2.0
+REVERSAL_MIN_SIGNALS          = _TC_REVERSAL_MIN_SIGNALS if '_TC_REVERSAL_MIN_SIGNALS' in dir() else 2
+REVERSAL_BLOCK_COUNTER_TREND  = _TC_REVERSAL_BLOCK_COUNTER_TREND if '_TC_REVERSAL_BLOCK_COUNTER_TREND' in dir() else True
+REVERSAL_CLOSE_LOSING         = _TC_REVERSAL_CLOSE_LOSING if '_TC_REVERSAL_CLOSE_LOSING' in dir() else True
+POLYGON_CONFIRM_ENABLED       = _TC_POLYGON_CONFIRM_ENABLED if '_TC_POLYGON_CONFIRM_ENABLED' in dir() else True
+BRAPI_CONFIRM_ENABLED         = _TC_BRAPI_CONFIRM_ENABLED if '_TC_BRAPI_CONFIRM_ENABLED' in dir() else True
+CONFIRM_TIMEOUT_S             = _TC_CONFIRM_TIMEOUT_S if '_TC_CONFIRM_TIMEOUT_S' in dir() else 3.0
+CONFIRM_MIN_AGREEMENT         = _TC_CONFIRM_MIN_AGREEMENT if '_TC_CONFIRM_MIN_AGREEMENT' in dir() else 1
+
+# [v10.26] Monthly Picks LONG allocation
+MONTHLY_PICKS_OWNS_LONG = os.environ.get('MONTHLY_PICKS_OWNS_LONG', 'true').lower() != 'false'
+CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 15))          # hold mínimo (min) para flat exit
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [v10.47] Universo de 20 cryptos (expansão via v3 regime-aware)
-    # Filosofia: v3 decide COMPRA ou VENDA por símbolo — downtrend vira SHORT.
-    # MAX_POSITIONS_CRYPTO=20 | Blacklist OFF | Score sizing 2.0x em score 85+
-    'BTCUSDT',   # Bitcoin — referência de mercado
-    'ETHUSDT',   # Ethereum — histórico melhor WR 55%
-    'BNBUSDT',   # BNB — exchange coin
-    'SOLUSDT',   # Solana — V3 SHORT WR 91%
-    'XRPUSDT',   # XRP — alta liquidez
-    'ADAUSDT',   # Cardano
-    'DOGEUSDT',  # Dogecoin — meme coin
-    'AVAXUSDT',  # Avalanche
-    'TRXUSDT',   # TRON — V3 LONG WR 85%
-    'DOTUSDT',   # Polkadot
-    'LINKUSDT',  # Chainlink
-    'MATICUSDT', # Polygon
-    'LTCUSDT',   # Litecoin
-    'UNIUSDT',   # Uniswap
-    'ATOMUSDT',  # Cosmos
-    'XLMUSDT',   # Stellar
-    'BCHUSDT',   # Bitcoin Cash
-    'NEARUSDT',  # NEAR
-    'APTUSDT',   # Aptos
-    'ARBUSDT',   # Arbitrum
+    # [v10.14] Corte cirúrgico para 5 melhores por P&L real (análise 30/03/2026)
+    # REMOVIDOS por P&L negativo acumulado:
+    # ADAUSDT  -$5.515 (WR 48%), AVAXUSDT -$3.885 (WR 49%), SOLUSDT -$3.583 (WR 47%)
+    # DOGEUSDT -$3.037 (WR 54%!), XRPUSDT -$1.243, DOTUSDT -$5.897, UNIUSDT -$427
+    # LTCUSDT -$240, APTUSDT -$297, MATICUSDT -N/A, TRXUSDT -$1.372
+    # MANTIDOS (únicos lucrativos + neutros):
+    'ETHUSDT',   # +$5.723  WR 55% — melhor de todos
+    'ARBUSDT',   # +$2.455  WR 54% — segundo melhor
+    'NEARUSDT',  # +$964    WR 55% — terceiro
+    'BTCUSDT',   # +$242    WR 53% — quase neutro, referência de mercado
+    'BNBUSDT',   # +$191    WR 50% — quase neutro, exchange coin estável
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',
@@ -877,11 +710,15 @@ def _get_pool():
             pool_cfg = dict(db_config)
             pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
             pool_cfg.pop('connection_timeout', None)
+            # [FORENSIC] pool_size 30→32 (limite MySQL connector). Falha de pool é
+            # principal suspeita do sumiço de trades arbi: get_db retornava None,
+            # _db_save_arbi_trade abortava silenciosamente, restart perdia memória.
             _db_pool = MySQLConnectionPool(
-                pool_name='egreja', pool_size=30,
+                pool_name='egreja', pool_size=32,
+                pool_reset_session=False,
                 autocommit=True, connection_timeout=10,
                 **pool_cfg)
-            log.info('[v10.7] MySQL connection pool inicializado (size=30)')
+            log.info('[FORENSIC] MySQL connection pool inicializado (size=32, reset=False)')
         except Exception as e:
             log.error(f'MySQL pool init: {e}')
     return _db_pool
@@ -999,7 +836,29 @@ _reconciliation_log: list = []    # últimas N reconciliações
 def gen_id(prefix='TRD'):
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
+# [FIX-ZOMBIE] Registry of current thread per loop name.
+# When watchdog restarts a frozen loop the old thread may eventually wake up
+# and keep running — that's a zombie. On its next beat() it raises SystemExit
+# and the zombie dies cleanly.
+_thread_current = {}
+_thread_current_lock = threading.Lock()
+
+def _register_current_thread(name, thread_obj):
+    with _thread_current_lock:
+        _thread_current[name] = thread_obj
+
 def beat(name):
+    # [FIX-ZOMBIE] kill zombies at their next beat
+    try:
+        owner = _thread_current.get(name)
+        cur   = threading.current_thread()
+        if owner is not None and owner is not cur:
+            log.warning(f'[ZOMBIE-KILL] {name}: thread {cur.name} is not current owner → exiting')
+            raise SystemExit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
     thread_heartbeat[name] = time.time()
 
 # ═══════════════════════════════════════════════════════════════
@@ -1094,38 +953,8 @@ def enqueue_persist(kind, data=None, **kwargs):
     # [BUG-1] seq garante ordem FIFO dentro de mesma prioridade e NUNCA compara dicts
     urgent_queue.put((priority, next(_urgent_seq), item))
 
-_whatsapp_dedup_cache: dict = {}  # fingerprint -> last_sent_ts
-_WHATSAPP_DEDUP_WINDOW_S = int(os.environ.get('WHATSAPP_DEDUP_WINDOW_S', '1800'))  # 30 min
-
 def send_whatsapp(message):
-    """Enfileira alerta WhatsApp com de-duplicacao por fingerprint.
-
-    Evita spam de alertas identicos (ex: 'CRITICO: thread starvation! N
-    threads ativos' disparando a cada ciclo do watchdog). Msgs com mesmo
-    texto base (normalizando numeros) sao silenciadas por
-    WHATSAPP_DEDUP_WINDOW_S segundos (default 1800s = 30 min).
-
-    Alertas legitimamente NOVOS (com texto diferente) passam normalmente.
-    """
     try:
-        import re as _re
-        # Fingerprint = primeiros 100 chars com numeros normalizados para 'N'.
-        # Isso agrupa 'stocks_ledger delta=-2,095,833' e
-        # 'stocks_ledger delta=-2,095,999' como mesma mensagem.
-        fp = _re.sub(r'[-+]?\d[\d,._]*', 'N', message[:100])
-        now = time.time()
-        last = _whatsapp_dedup_cache.get(fp, 0)
-        if now - last < _WHATSAPP_DEDUP_WINDOW_S:
-            # Silenciado — ja enviado recentemente. Log apenas.
-            log.info(f'[whatsapp-dedup] silenced (last {int(now-last)}s ago): {message[:60]}')
-            return
-        _whatsapp_dedup_cache[fp] = now
-        # Limpa entradas antigas para nao crescer indefinidamente
-        if len(_whatsapp_dedup_cache) > 500:
-            cutoff = now - _WHATSAPP_DEDUP_WINDOW_S
-            for k in [k for k, ts in _whatsapp_dedup_cache.items() if ts < cutoff]:
-                _whatsapp_dedup_cache.pop(k, None)
-
         alert_queue.put_nowait({'kind': 'whatsapp', 'message': message})
     except queue.Full:
         log.warning(f'alert_queue full — alert dropped: {message[:60]}')
@@ -1207,7 +1036,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/monthly-picks') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -1640,10 +1469,8 @@ def _db_save_order(order):
 # ═══════════════════════════════════════════════════════════════
 def take_portfolio_snapshot():
     with state_lock:
-        _now_utc = datetime.utcnow()
         snap = {
-            'timestamp':        _now_utc.strftime('%Y-%m-%d %H:%M:%S'),
-            'ts_epoch':         int(_now_utc.timestamp()),
+            'timestamp':        datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
             'stocks_capital':   round(stocks_capital,2),
             'crypto_capital':   round(crypto_capital,2),
             'arbi_capital':     round(arbi_capital,2),
@@ -1664,15 +1491,12 @@ def _db_save_snapshot(snap):
     if not conn: return
     try:
         cursor=conn.cursor()
-        # [FIX 17abr] ts é BIGINT (unix epoch), snapshot_at é TIMESTAMP.
-        # Antes estava gravando string formatada em 'ts' → truncated desde 12/mar.
         cursor.execute("""INSERT INTO portfolio_snapshots (
-            ts,snapshot_at,stocks_capital,crypto_capital,arbi_capital,
+            ts,stocks_capital,crypto_capital,arbi_capital,
             stocks_open_pnl,crypto_open_pnl,arbi_open_pnl,total_open_pnl,
             open_positions,arbi_positions,kill_switch,arbi_kill_switch,market_regime)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (snap.get('ts_epoch') or int(time.time()), snap['timestamp'],
-             snap['stocks_capital'],snap['crypto_capital'],snap['arbi_capital'],
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (snap['timestamp'],snap['stocks_capital'],snap['crypto_capital'],snap['arbi_capital'],
              snap['stocks_open_pnl'],snap['crypto_open_pnl'],snap['arbi_open_pnl'],
              snap['total_open_pnl'],snap['open_positions'],snap['arbi_positions'],
              snap['kill_switch'],snap['arbi_kill_switch'],snap['market_regime']))
@@ -1761,16 +1585,16 @@ CRYPTO_HOUR_SCORE = {
     16: -8, 17: -8, 18: -15, 19: -15, 20: -15, 21: -15, 22: -8, 23: 0
 }
 
-# [v10.29] Score por dia da semana para crypto (0=Seg, 6=Dom)
-# Dados Manus confirmam: Quarta 0% WR, Sexta 8.7% WR, Domingo 100% WR
+# Score por dia da semana para crypto (0=Seg, 6=Dom)
+# [v10.29] Score por dia — Manus data: Quarta 0% WR, Sexta 8.7% WR, Domingo 100% WR
 CRYPTO_DOW_SCORE = {
     0: +8,   # Segunda: 53.7% WR Egreja | Manus: gap opportunities → reforçado
-    1: -10,  # Terça:   43.9% WR — pior dia Egreja, -$37.9K total
-    2: -25,  # [v10.29] Quarta: 40.3% WR Egreja | Manus: 0% WR → hard penalty (era -8)
+    1: -10,  # Terça:   43.9% WR — pior dia Egreja
+    2: -25,  # [v10.29] Quarta: 40.3% WR Egreja | Manus: 0% WR → hard penalty
     3: +2,   # Quinta:  48.7% WR — neutro-positivo
-    4: -20,  # [v10.29] Sexta: 42.0% WR Egreja | Manus: 8.7% WR → heavy penalty (era -8)
+    4: -20,  # [v10.29] Sexta: 42.0% WR Egreja | Manus: 8.7% WR → heavy penalty
     5: -6,   # Sábado:  43.3% WR
-    6: +20,  # [v10.29] Domingo: 64.7% WR Egreja | Manus: 100% WR → max boost (era +15)
+    6: +20,  # [v10.29] Domingo: 64.7% WR Egreja | Manus: 100% WR → max boost
 }
 
 # [v10.15] CRYPTO_BLOCKED_WINDOWS agora é DINÂMICO — calculado a partir do factor_stats real.
@@ -1920,15 +1744,14 @@ def get_cross_market_crypto_adj() -> int:
     elif usdbrl_chg < -1.5: adj -= 3  # dólar fraco → menos fluxo para cripto
     
     # [v10.29] BTC sentimento reforçado (Manus usa BTC como proxy cross-market)
-    # BTC caindo > 3% = altcoins em risco severo → penalidade forte
     btc_chg = s.get('btc_change_24h', 0.0)
-    if btc_chg > 5.0:    adj += 8   # BTC em forte alta → mercado muito bullish
+    if btc_chg > 5.0:    adj += 8   # BTC em forte alta → muito bullish
     elif btc_chg > 3.0:  adj += 5   # BTC em alta → mercado bullish
-    elif btc_chg < -5.0: adj -= 15  # [v10.29] BTC em queda forte → altcoins em perigo severo (era -8)
-    elif btc_chg < -3.0: adj -= 10  # [v10.29] BTC em queda → mercado bearish (era -8)
+    elif btc_chg < -5.0: adj -= 15  # [v10.29] BTC queda forte → altcoins em perigo severo
+    elif btc_chg < -3.0: adj -= 10  # [v10.29] BTC queda → bearish
     elif btc_chg < -1.5: adj -= 4   # [v10.29] BTC levemente negativo → cautela
 
-    return max(-25, min(+20, adj))  # [v10.29] cap expandido ±25/+20 pts (era ±20/+15)
+    return max(-25, min(+20, adj))  # [v10.29] cap expandido
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2667,10 +2490,7 @@ def _reconcile_via_ledger(strategy: str, initial: float, memory_capital: float) 
         'source': source,
         'delta': round(delta, 2),
         'delta_pct': round(delta_pct, 4),
-        # [v10.52] Usa threshold dedicado da camada 2 (ledger). Menos
-        # estrito que camada 1 para evitar falsos positivos de historico
-        # pre-v10.20 nao rehidratado.
-        'ok': delta_pct < RECONCILIATION_LEDGER_ALERT_PCT,
+        'ok': delta_pct < RECONCILIATION_ALERT_PCT,
         'ts': datetime.utcnow().isoformat(),
     }
 
@@ -2909,18 +2729,9 @@ def get_symbol_wr_sizing_mult(symbol: str, asset_type: str = 'crypto') -> float:
     """[v10.29] Dynamic position sizing multiplier based on per-symbol WR.
     Inspired by Manus report: allocate more to high-WR assets, less to low-WR.
     Returns multiplier: 0.6x to 1.3x (default 1.0 if insufficient data).
-
-    Rules:
-    - WR > 58%: 1.3x (proven winner)
-    - WR > 53%: 1.15x (above average)
-    - WR 48-53%: 1.0x (neutral)
-    - WR 45-48%: 0.8x (underperformer)
-    - WR < 45%: 0.6x (poor performer — near blacklist territory)
-    - Minimum 10 closed trades required for adjustment.
     """
     with state_lock:
         closed_list = list(crypto_closed) if asset_type == 'crypto' else list(stocks_closed)
-    # Count wins/losses for this symbol
     n = 0; wins = 0
     for t in closed_list:
         if t.get('symbol', '') == symbol:
@@ -2935,7 +2746,6 @@ def get_symbol_wr_sizing_mult(symbol: str, asset_type: str = 'crypto') -> float:
     if wr >= 48:  return 1.00
     if wr >= 45:  return 0.80
     return 0.60
-
 
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
 def get_adaptive_sl_pct(trade: dict) -> float:
@@ -3022,18 +2832,7 @@ def is_trade_flat(trade: dict, now: datetime) -> bool:
     - |pnl_pct| < FLAT_EXIT_MAX_VARIATION (quase zero)
     - Peak nunca passou de 0.5% (nunca teve momentum real)
     - Últimos 3 pontos de pnl_history ~iguais (sem tendência)
-    [v10.46.6] NUNCA aplica flat exit em trade com tese V3 válida
-    (regime=TRENDING + signal COMPRA/VENDA). Essas têm momentum esperado
-    pela arquitetura e devem esperar stop/take_profit normal.
-    [v10.46.7] Ampliado: qualquer signal_v2 decisivo (COMPRA/VENDA)
-    tem tese v3 válida — v3 só emite signal quando há convergência
-    mínima. Trades sem convicção ficam com signal_v2=MANTER.
     """
-    # [v10.46.7] Pular flat exit se trade tem tese v3 decisiva
-    signal_v2 = trade.get('signal_v2')
-    if signal_v2 in ('COMPRA', 'VENDA'):
-        return False  # tese v3 — deixar stop/TP/timeout decidir
-
     age_min = (now - datetime.fromisoformat(trade['opened_at'])).total_seconds() / 60
     # [v10.18] Min hold time for crypto — evitar flat exit prematuro
     _min_age = CRYPTO_MIN_HOLD_MIN if trade.get('asset_type') == 'crypto' else FLAT_EXIT_MIN_AGE_MIN
@@ -3056,75 +2855,6 @@ def is_trade_flat(trade: dict, now: datetime) -> bool:
 
 
 # ── [v10.17] Directional Exposure Check ───────────────────────────────────
-def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
-    """[v10.48] Reavalia v3 em trade aberta.
-    Retorna (should_close: bool, new_regime: str, new_signal: str, reason_detail: str)
-
-    Critérios para fechar (reversão de tese):
-    - Signal virou MANTER (convicção se perdeu)
-    - Signal virou oposto do da abertura (LONG com signal VENDA ou SHORT com signal COMPRA)
-    - Regime saiu de TRENDING para RANGING/CHOPPY (tendência acabou)
-
-    Se dados insuficientes ou v3 falha, retorna (False, None, None, 'data_insufficient') —
-    não fecha em dúvida.
-    """
-    opened_signal = trade.get('signal_v2')
-    opened_regime = trade.get('regime_v2')
-    direction = trade.get('direction', 'LONG')
-    if not opened_signal or opened_signal == 'MANTER':
-        return False, None, None, 'no_v3_thesis'  # trade não tem tese v3, não reavaliar
-
-    try:
-        from modules.score_engine_v2 import compute_score_v3
-        # Puxar dados de mercado atuais
-        if asset_type == 'crypto':
-            sym = trade['symbol'] + 'USDT'
-            klines = _get_cached_candles(f'klines:{sym}', ttl_min=5) or {}  # [v10.49] 60→5min
-            if not klines or len(klines.get('closes', [])) < 30:
-                return False, None, None, 'crypto_no_klines'
-            r = compute_score_v3(klines['closes'], klines.get('highs', []),
-                                 klines.get('lows', []), klines.get('volumes', []),
-                                 factor_stats_cache=factor_stats_cache,
-                                 pattern_stats_cache=pattern_stats_cache)
-        else:  # stock
-            sym = trade['symbol']
-            with state_lock:
-                pd_data = stock_prices.get(sym, {})
-            c = pd_data.get('closes_series', [])
-            h = pd_data.get('highs_series', [])
-            l = pd_data.get('lows_series', [])
-            v = pd_data.get('volumes_series', [])
-            if len(c) < 30:
-                return False, None, None, 'stock_no_series'
-            r = compute_score_v3(c, h, l, v,
-                                 factor_stats_cache=factor_stats_cache,
-                                 pattern_stats_cache=pattern_stats_cache)
-
-        new_regime = r.get('regime')
-        new_signal = r.get('signal')
-
-        # Critério 1: signal virou MANTER (convicção se perdeu)
-        if new_signal == 'MANTER':
-            return True, new_regime, new_signal, 'signal_to_hold'
-
-        # Critério 2: signal virou oposto (COMPRA→VENDA ou VENDA→COMPRA)
-        # LONG aberto com signal=COMPRA: sair se virou VENDA (tendência inverteu)
-        # SHORT aberto com signal=VENDA: sair se virou COMPRA
-        if direction == 'LONG' and new_signal == 'VENDA':
-            return True, new_regime, new_signal, 'signal_reversed_long_to_venda'
-        if direction == 'SHORT' and new_signal == 'COMPRA':
-            return True, new_regime, new_signal, 'signal_reversed_short_to_compra'
-
-        # Critério 3: regime saiu de TRENDING (tendência acabou)
-        if opened_regime == 'TRENDING' and new_regime != 'TRENDING':
-            return True, new_regime, new_signal, f'trend_ended_{opened_regime}_to_{new_regime}'
-
-        return False, new_regime, new_signal, 'thesis_valid'
-    except Exception as e:
-        log.debug(f"check_v3_reversal {trade.get('symbol')}: {e}")
-        return False, None, None, f'exception:{str(e)[:40]}'
-
-
 def check_directional_exposure(direction: str, strategy: str = 'stocks') -> tuple:
     """[v10.17] Verifica se abrir mais uma posição nesta direção excede o limite.
     Retorna (blocked: bool, reason: str, stats: dict).
@@ -3220,7 +2950,7 @@ def validate_settings_on_boot():
         errors.append(f'MAX_POSITIONS_STOCKS={MAX_POSITIONS_STOCKS} fora de range [1,100]')
     if MIN_SCORE_AUTO < 50 or MIN_SCORE_AUTO > 95:
         errors.append(f'MIN_SCORE_AUTO={MIN_SCORE_AUTO} fora de range [50,95]')
-    if MIN_SCORE_AUTO_CRYPTO < 40 or MIN_SCORE_AUTO_CRYPTO > 90:
+    if MIN_SCORE_AUTO_CRYPTO < 40 or MIN_SCORE_AUTO_CRYPTO > 95:
         errors.append(f'MIN_SCORE_AUTO_CRYPTO={MIN_SCORE_AUTO_CRYPTO} fora de range [40,90]')
     if RISK_MULT_MIN >= RISK_MULT_MAX:
         errors.append(f'RISK_MULT_MIN={RISK_MULT_MIN} >= RISK_MULT_MAX={RISK_MULT_MAX}')
@@ -4416,9 +4146,18 @@ def init_all_tables():
             status VARCHAR(10) DEFAULT 'OPEN', close_reason VARCHAR(20),
             opened_at DATETIME, closed_at DATETIME, extensions INT DEFAULT 0)""")
         # [v10.23] Colunas de custo de aluguel
+        # [FORENSIC-SELF-HEAL] DBs antigos não tinham as colunas de custo do INSERT
+        # do motor. Sem elas, TODA trade Arbi era perdida com ProgrammingError 1054.
+        # Lista idempotente — ALTER falha silencioso se coluna já existir.
         for _col_sql in [
             "ALTER TABLE arbi_trades ADD COLUMN lending_cost DECIMAL(10,2) DEFAULT 0",
             "ALTER TABLE arbi_trades ADD COLUMN lending_rate_annual DECIMAL(6,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_cost DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN slippage_cost_a DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN slippage_cost_b DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN exchange_fee_a DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN exchange_fee_b DECIMAL(12,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN total_cost_estimated DECIMAL(12,2) DEFAULT 0",
         ]:
             try: cursor.execute(_col_sql); conn.commit()
             except: pass  # coluna já existe
@@ -4679,28 +4418,6 @@ def init_all_tables():
             log.info('[v10.25] Derivatives tables created/verified')
         except Exception as e:
             log.warning(f'[v10.25] Derivatives tables: {e}')
-        # [v10.38] Audit columns for strategy_master_trades (instrument_type, audit trail)
-        for _col_sql in [
-            "ALTER TABLE strategy_master_trades ADD COLUMN instrument_type VARCHAR(16) DEFAULT 'option'",
-            "ALTER TABLE strategy_master_trades ADD COLUMN theoretical_price DECIMAL(14,4) NULL",
-            "ALTER TABLE strategy_master_trades ADD COLUMN deviation_bps DECIMAL(8,2) NULL",
-            "ALTER TABLE strategy_master_trades ADD COLUMN brain_confidence DECIMAL(5,4) NULL",
-            "ALTER TABLE strategy_master_trades ADD COLUMN brain_adjustment DECIMAL(5,4) NULL",
-            "ALTER TABLE strategy_master_trades ADD COLUMN borrow_fee_estimate DECIMAL(12,4) NULL DEFAULT 0",
-            "ALTER TABLE strategy_master_trades ADD COLUMN hedge_trade_id VARCHAR(64) NULL",
-            "ALTER TABLE strategy_master_trades ADD COLUMN fair_value_inputs TEXT NULL",
-            "ALTER TABLE strategy_master_trades ADD COLUMN audit_notes TEXT NULL",
-        ]:
-            try: cursor.execute(_col_sql); conn.commit()
-            except Exception as e:
-                if 'Duplicate column' not in str(e):
-                    log.debug(f'[v10.38] strategy_master_trades migration: {e}')
-        # [v10.36] Top opportunities daily audit table
-        try:
-            create_top_opps_audit_table(conn)
-            log.info('[v10.36] top_opportunities_audit table created/verified')
-        except Exception as e:
-            log.warning(f'[v10.36] top_opportunities_audit table: {e}')
         conn.commit(); cursor.close(); conn.close()
         log.info('All tables created/verified')
     except Exception as e: log.error(f'init_all_tables: {e}')
@@ -4751,12 +4468,6 @@ def init_trades_tables():
             if not at.get('fee_estimated'):
                 at['market']='ARBI'; apply_fee_to_trade(at)
             arbi_closed.append(at)
-            # [v10.52-FIX] Arbi capital nao estava recebendo PnL realizado
-            # ao recarregar do DB — linhas 4722 (stocks) e 4727 (crypto)
-            # faziam isso, mas arbi foi esquecido. Por isso RECON-ALERT
-            # disparava com memory=$3M (baseline) vs calc=$3M+realized_pnl.
-            # Ajusta capital para refletir historico de trades fechados.
-            arbi_capital += float(at.get('pnl') or 0)
         # [v10.9] Carregar runtime settings do banco
         try:
             global MIN_SCORE_AUTO, TRAILING_TRIGGER_PCT, STOCK_SL_PCT  # [FIX] declarar globals antes de atribuir
@@ -4859,9 +4570,8 @@ def _db_save_trade(trade):
             entry_price,exit_price,current_price,quantity,position_value,
             pnl,pnl_pct,peak_pnl_pct,score,`signal`,status,close_reason,
             from_watchlist,order_id,opened_at,closed_at,extensions,
-            signal_id,feature_hash,learning_confidence,insight_summary,learning_version,features_json,
-            score_v2,regime_v2,signal_v2)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            signal_id,feature_hash,learning_confidence,insight_summary,learning_version,features_json)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_price=VALUES(current_price),pnl=VALUES(pnl),
             pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
             status=VALUES(status),close_reason=VALUES(close_reason),
@@ -4873,26 +4583,68 @@ def _db_save_trade(trade):
              t.get('close_reason'),1 if t.get('from_watchlist') else 0,
              t.get('order_id'),t.get('opened_at'),t.get('closed_at'),t.get('extensions',0),
              t.get('signal_id'),t.get('feature_hash'),t.get('learning_confidence'),
-             t.get('insight_summary'),t.get('learning_version'),features_json,
-             t.get('score_v2'),t.get('regime_v2'),t.get('signal_v2')))
+             t.get('insight_summary'),t.get('learning_version'),features_json))
         conn.commit(); cursor.close(); conn.close()
     except Exception as e: log.error(f'db_save_trade: {e}')
 
+ARBI_FORENSIC_FILE = '/tmp/arbi_forensic.jsonl'
+ARBI_LOST_FILE     = '/tmp/arbi_lost_trades.jsonl'
+_arbi_persist_stats = {'attempts':0,'success':0,'lost_no_conn':0,'lost_exception':0,'last_error':None,'last_lost':None}
+
+def _arbi_forensic_write(path, payload):
+    try:
+        import json as _j
+        with open(path, 'a') as _f:
+            _f.write(_j.dumps({'ts':datetime.utcnow().isoformat(), **payload}, default=str) + '\n')
+    except Exception as _e:
+        log.error(f'forensic write {path}: {_e}')
+
 def _db_save_arbi_trade(trade):
+    _arbi_persist_stats['attempts'] += 1
+    # [FORENSIC] write-ahead-log: SEMPRE grava em disco antes de tentar DB.
+    # Se DB falhar, ainda temos rastro. Arquivo é truncado por rotation simples.
+    _arbi_forensic_write(ARBI_FORENSIC_FILE, {'event':'persist_attempt','trade':trade})
     conn=get_db()
-    if not conn: return
+    if not conn:
+        _arbi_persist_stats['lost_no_conn'] += 1
+        _arbi_persist_stats['last_lost'] = datetime.utcnow().isoformat()
+        log.error(f"[ARBI-LOST] _db_save_arbi_trade: get_db()=None. trade_id={trade.get('id')} pair={trade.get('pair_id')} status={trade.get('status')} pnl={trade.get('pnl')}")
+        _arbi_forensic_write(ARBI_LOST_FILE, {'reason':'get_db_none','trade':trade})
+        try: send_whatsapp(f"[ARBI-LOST] persist falhou (no conn) {trade.get('id')} {trade.get('pair_id')}")
+        except: pass
+        return
     try:
         cursor=conn.cursor(); t=trade
         cursor.execute("""INSERT INTO arbi_trades (id,pair_id,name,leg_a,leg_b,mkt_a,mkt_b,
             direction,buy_leg,buy_mkt,short_leg,short_mkt,entry_spread,current_spread,
             position_size,pnl,pnl_pct,peak_pnl_pct,fx_rate,status,close_reason,opened_at,closed_at,extensions,
             fx_cost,slippage_cost_a,slippage_cost_b,exchange_fee_a,exchange_fee_b,
-            lending_cost,lending_rate_annual,total_cost_estimated)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            lending_cost,lending_rate_annual,total_cost_estimated,
+            price_a_entry,price_b_entry,price_a_exit,price_b_exit,
+            price_a_usd_norm_entry,price_b_usd_norm_entry,
+            price_a_usd_norm_exit,price_b_usd_norm_exit,
+            fx_rate_entry,fx_rate_exit,
+            bid_a_entry,ask_a_entry,bid_b_entry,ask_b_entry,
+            bid_a_exit,ask_a_exit,bid_b_exit,ask_b_exit,
+            spread_bps_a_entry,spread_bps_b_entry,spread_bps_a_exit,spread_bps_b_exit,
+            qty_a,qty_b)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE current_spread=VALUES(current_spread),pnl=VALUES(pnl),
             pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
             status=VALUES(status),close_reason=VALUES(close_reason),
-            closed_at=VALUES(closed_at),extensions=VALUES(extensions)""",
+            closed_at=VALUES(closed_at),extensions=VALUES(extensions),
+            price_a_exit=COALESCE(VALUES(price_a_exit),price_a_exit),
+            price_b_exit=COALESCE(VALUES(price_b_exit),price_b_exit),
+            price_a_usd_norm_exit=COALESCE(VALUES(price_a_usd_norm_exit),price_a_usd_norm_exit),
+            price_b_usd_norm_exit=COALESCE(VALUES(price_b_usd_norm_exit),price_b_usd_norm_exit),
+            fx_rate_exit=COALESCE(VALUES(fx_rate_exit),fx_rate_exit),
+            bid_a_exit=COALESCE(VALUES(bid_a_exit),bid_a_exit),
+            ask_a_exit=COALESCE(VALUES(ask_a_exit),ask_a_exit),
+            bid_b_exit=COALESCE(VALUES(bid_b_exit),bid_b_exit),
+            ask_b_exit=COALESCE(VALUES(ask_b_exit),ask_b_exit),
+            spread_bps_a_exit=COALESCE(VALUES(spread_bps_a_exit),spread_bps_a_exit),
+            spread_bps_b_exit=COALESCE(VALUES(spread_bps_b_exit),spread_bps_b_exit)""",
             (t.get('id'),t.get('pair_id'),t.get('name'),t.get('leg_a'),t.get('leg_b'),
              t.get('mkt_a'),t.get('mkt_b'),t.get('direction'),t.get('buy_leg'),t.get('buy_mkt'),
              t.get('short_leg'),t.get('short_mkt'),t.get('entry_spread'),t.get('current_spread'),
@@ -4901,9 +4653,30 @@ def _db_save_arbi_trade(trade):
              t.get('opened_at'),t.get('closed_at'),t.get('extensions',0),
              t.get('fx_cost',0),t.get('slippage_cost_a',0),t.get('slippage_cost_b',0),
              t.get('exchange_fee_a',0),t.get('exchange_fee_b',0),
-             t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0)))
+             t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0),
+             t.get('price_a_entry'),t.get('price_b_entry'),
+             t.get('price_a_exit'),t.get('price_b_exit'),
+             t.get('price_a_usd_norm'),t.get('price_b_usd_norm'),
+             t.get('price_a_usd_norm_exit'),t.get('price_b_usd_norm_exit'),
+             t.get('fx_rate_entry',t.get('fx_rate')),t.get('fx_rate_exit'),
+             t.get('bid_a'),t.get('ask_a'),t.get('bid_b'),t.get('ask_b'),
+             t.get('bid_a_exit'),t.get('ask_a_exit'),t.get('bid_b_exit'),t.get('ask_b_exit'),
+             t.get('spread_bps_a'),t.get('spread_bps_b'),
+             t.get('spread_bps_a_exit'),t.get('spread_bps_b_exit'),
+             t.get('qty_a'),t.get('qty_b')))
         conn.commit(); cursor.close(); conn.close()
-    except Exception as e: log.error(f'db_save_arbi_trade: {e}')
+        _arbi_persist_stats['success'] += 1
+        _arbi_forensic_write(ARBI_FORENSIC_FILE, {'event':'persist_ok','id':trade.get('id'),'status':trade.get('status')})
+    except Exception as e:
+        _arbi_persist_stats['lost_exception'] += 1
+        _arbi_persist_stats['last_error'] = f'{type(e).__name__}: {e}'
+        _arbi_persist_stats['last_lost'] = datetime.utcnow().isoformat()
+        log.error(f"[ARBI-LOST] db_save_arbi_trade EXCEPTION: {e}. trade_id={trade.get('id')} pair={trade.get('pair_id')}")
+        _arbi_forensic_write(ARBI_LOST_FILE, {'reason':f'exception:{type(e).__name__}','error':str(e),'trade':trade})
+        try: send_whatsapp(f"[ARBI-LOST] persist exception {trade.get('id')} {type(e).__name__}")
+        except: pass
+        try: conn.close()
+        except: pass
 
 def _db_save_cooldown(symbol, ts):
     conn=get_db()
@@ -4956,18 +4729,6 @@ STOCK_SYMBOLS_US = [
     'PLTR','OKLO','TGT',               # watchlist usuário
 ]
 ALL_STOCK_SYMBOLS = STOCK_SYMBOLS_B3 + STOCK_SYMBOLS_US
-
-# [v10.31] Warm Cedro socket cache — subscribe all B3 symbols + indices/futures
-try:
-    if _cedro_socket and _cedro_socket.enabled:
-        _b3_clean = [s.replace('.SA', '') for s in STOCK_SYMBOLS_B3]
-        _extras = ['IBOV', 'WINFUT', 'INDFUT', 'DOLFUT', 'WDOFUT',
-                   'DI1F26', 'DI1F27', 'DI1F28', 'DI1F29', 'DI1F30',  # [v10.42] DI futures for DI_CALENDAR
-                   'PETR4F', 'VALE3F']  # [v10.42] synthetic single-stock futures
-        _cedro_socket.subscribe(_b3_clean + _extras)
-        log.info(f'[v10.31] Cedro socket pre-subscribed {len(_b3_clean)+len(_extras)} symbols')
-except Exception as _cedro_sub_err:
-    log.warning(f'[v10.31] Cedro pre-subscribe failed: {_cedro_sub_err}')
 
 # [v10.28] Phase 3: _ema and _rsi are pure math — use module versions when available
 if _PURE_MODULES_LOADED:
@@ -5206,12 +4967,6 @@ def _fetch_single_stock(sym: str) -> tuple:
     """
     is_b3 = sym.endswith('.SA') or any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3)
     display = sym.replace('.SA', '')
-
-    # 0. [v10.31] Cedro socket (real-time, primary for B3)
-    if is_b3 and _cedro_socket and _cedro_socket.enabled:
-        result, lat = _fetch_cedro_stock(display)
-        if result:
-            return result, lat
 
     # 1. brapi para B3
     if is_b3 and BRAPI_TOKEN:
@@ -5472,16 +5227,14 @@ def _fetch_binance_ticker(symbol: str) -> dict:
         return {}
 
 def _fetch_binance_klines(symbol: str, period: int = 20) -> dict:
-    """[v10.4][v10.5-2] Binance klines para ATR e volume médio.
-    [v10.50] interval='1h' em vez de '1d' — trades duram horas, não meses.
-    Score_engine_v2 calcula sobre estes candles; com 1d a visão era de 3 meses.
+    """[v10.4][v10.5-2] Binance klines diárias para ATR e volume médio.
     Usa b[7] (quoteAssetVolume, em USDT) — compatível com vol_quote do allTickers.
     b[5] é volume em moeda base (BTC, ETH…) — não comparável com quoteVolume.
     """
     try:
         r = requests.get(
             'https://api.binance.com/api/v3/klines',
-            params={'symbol': symbol, 'interval': '1h', 'limit': period + 2},
+            params={'symbol': symbol, 'interval': '1d', 'limit': period + 2},
             timeout=6)
         if r.status_code != 200: return {}
         bars = r.json()
@@ -5590,10 +5343,9 @@ def fetch_crypto_prices():
                 # Feito APÓS o bulk para não bloquear a atualização de preço.
                 # Usa cache _candles_cache para evitar excesso de chamadas.
                 for sym in CRYPTO_SYMBOLS:
-                    cached_klines = _get_cached_candles(f'klines:{sym}', ttl_min=5)  # [v10.49] 60→5min
-                    # [v10.46] 22→100 barras para score_engine_v2 (Ichimoku precisa 52+, RSI 14+)
-                    if cached_klines is None or len(cached_klines.get('closes', [])) < 60:
-                        klines = _fetch_binance_klines(sym, 100)
+                    cached_klines = _get_cached_candles(f'klines:{sym}', ttl_min=60)  # [v10.6.3-Fix2]
+                    if cached_klines is None:
+                        klines = _fetch_binance_klines(sym, 22)
                         if klines:
                             _set_cached_candles(f'klines:{sym}', klines)
                     else:
@@ -5788,20 +5540,10 @@ def monitor_trades():
                     _regime_sm, _regime_sl_m, _regime_r = get_regime_multiplier()  # [v10.17]
                     _eff_sl_s = round(_adaptive_sl_s * _regime_sl_m, 2)  # [v10.17] SL ajustado por regime
                     _timeout_s = get_dynamic_timeout_h(sym, 2.0)  # [v10.17] timeout dinâmico (default 2h)
-                    # [v10.48] Trade com tese v3 válida ignora TIMEOUT — só fecha se tendência reverter
-                    _has_v3_thesis = trade.get('signal_v2') in ('COMPRA', 'VENDA')
                     if peak>=TRAILING_PEAK_STOCKS and trade['pnl_pct']<=peak-TRAILING_DROP_STOCKS:
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.0%, drop≥0.4% (era 1.5/0.5)
                     elif trade['pnl_pct']<=-_eff_sl_s:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime (era fixo -2.0%)
-                    elif _has_v3_thesis:
-                        _should_close, _new_reg, _new_sig, _rdet = check_v3_reversal(trade, 'stock')
-                        if _should_close:
-                            reason='V3_REVERSAL'
-                            trade['_v3_reversal_detail'] = _rdet
-                            trade['_v3_new_regime'] = _new_reg
-                            trade['_v3_new_signal'] = _new_sig
-                            log.info(f"V3_REVERSAL {trade['symbol']}: {trade.get('regime_v2')}/{trade.get('signal_v2')} → {_new_reg}/{_new_sig} ({_rdet})")
                     elif is_trade_flat(trade, now):
                         reason='FLAT_EXIT'  # [v10.17] trade estagnada — liberar capital
                     elif age_h>=_timeout_s:
@@ -5881,21 +5623,10 @@ def monitor_trades():
                     _regime_cm, _regime_csl_m, _regime_cr = get_regime_multiplier()  # [v10.17]
                     _eff_sl_c = round(_adaptive_sl_c * _regime_csl_m, 2)  # [v10.17] SL ajustado por regime
                     _timeout_c = get_dynamic_timeout_h(trade['symbol'], 4.0)  # [v10.17] timeout dinâmico (default 4h)
-                    # [v10.48] Trade com tese v3 válida ignora TIMEOUT — só fecha se tendência reverter
-                    _has_v3_thesis = trade.get('signal_v2') in ('COMPRA', 'VENDA')
                     if peak>=TRAILING_PEAK_CRYPTO and trade['pnl_pct']<=peak-TRAILING_DROP_CRYPTO:
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.5%, drop≥0.7% (era 2.0/1.0)
                     elif trade['pnl_pct']<=-_eff_sl_c:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime
-                    elif _has_v3_thesis:
-                        # [v10.48] Trade com tese v3: só fecha se v3 reverter
-                        _should_close, _new_reg, _new_sig, _rdet = check_v3_reversal(trade, 'crypto')
-                        if _should_close:
-                            reason='V3_REVERSAL'
-                            trade['_v3_reversal_detail'] = _rdet
-                            trade['_v3_new_regime'] = _new_reg
-                            trade['_v3_new_signal'] = _new_sig
-                            log.info(f"V3_REVERSAL {trade['symbol']}: {trade.get('regime_v2')}/{trade.get('signal_v2')} → {_new_reg}/{_new_sig} ({_rdet})")
                     elif is_trade_flat(trade, now):
                         reason='FLAT_EXIT'  # [v10.17] trade estagnada — liberar capital
                     elif age_h>=_timeout_c:
@@ -5982,10 +5713,6 @@ def stock_execution_worker():
         beat('stock_execution_worker')
         time.sleep(60)
         beat('stock_execution_worker')
-        # [v10.47] Emergency stop: pula tudo se env var setada
-        if V3_EMERGENCY_STOP:
-            log.info('[STOCK-LOOP] V3_EMERGENCY_STOP ativo — pulando iteração')
-            continue
         try:
             # [v10.9] Gerar sinais inline do stock_prices em memória
             # (não depende mais do market_signals no banco — igual ao crypto)
@@ -6124,36 +5851,10 @@ def stock_execution_worker():
                     log.debug(f"COMPOSITE_ADJ stock {sym}: {_disc_adj:+d} via {_disc_key}")
                 if abs(_st_adj) >= 5:
                     log.debug(f"STOCK_SCORE_ADJ: {sym} {_score_before_t}→{score} ({_st_reason})")
-                # [v10.47] SISTEMA APENAS V3 — score v1 acima é ignorado, só v3 decide
-                # Se v3 falhar para este símbolo, skip (não abrir trade)
-                regime_v2_val = None; signal_v2_val = None
-                try:
-                    from modules.score_engine_v2 import compute_score_v3 as _csv3
-                    _c = pd_data.get('closes_series', [])
-                    _h = pd_data.get('highs_series', [])
-                    _l = pd_data.get('lows_series', [])
-                    _v = pd_data.get('volumes_series', [])
-                    if len(_c) < 30 or len(_h) != len(_c) or len(_l) != len(_c):
-                        log.debug(f"V3_STOCK_SKIP {sym}: séries insuficientes (closes={len(_c)})")
-                        continue
-                    _r = _csv3(_c, _h, _l, _v,
-                               factor_stats_cache=factor_stats_cache,
-                               pattern_stats_cache=pattern_stats_cache,
-                               temporal_adj=float(_st_adj_effective or 0))
-                    score = _r['score']
-                    regime_v2_val = _r['regime']
-                    signal_v2_val = _r['signal']
-                    log.info(f"V3_STOCK {sym}: score={score} regime={regime_v2_val} signal={signal_v2_val}")
-                except Exception as _e:
-                    log.warning(f"V3_STOCK_FAIL {sym}: {_e} — símbolo pulado")
-                    continue
-                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')  # [v10.24-FIX] was MIN_SCORE_AUTO_CRYPTO
+                signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')  # [v10.24-FIX] was MIN_SCORE_AUTO_CRYPTO — bug: stock signals used crypto threshold
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),
                     'score': score, 'signal': signal_val,
-                    'score_v2': score,  # [v10.47] sempre v3
-                    'regime_v2': regime_v2_val,
-                    'signal_v2': signal_v2_val,
                     'market_type': mkt_type, 'asset_type': 'stock',
                     'rsi': rsi, 'ema9': ema9, 'ema21': ema21,
                     'ema50': pd_data.get('ema50', 0) or 0,
@@ -6361,11 +6062,7 @@ def stock_execution_worker():
                 _stocks_port_total = s.get('stocks_portfolio_value', INITIAL_CAPITAL_STOCKS) if False else                     max(stocks_capital + sum(t.get('position_value',0) for t in stocks_open), INITIAL_CAPITAL_STOCKS)
                 _regime_size_m, _regime_sl_tmp, _regime_info = get_regime_multiplier()  # [v10.17]
                 _pos_target = _stocks_port_total / MAX_POSITIONS_STOCKS * (0.8 + score_factor * 0.4)
-                # [v10.47] Score sizing multiplier — mais capital em scores altos
-                _score_mult = get_score_sizing_mult(score)
-                desired_pos = min(max(_pos_target * risk_mult * _regime_size_m * _score_mult, 50_000), MAX_POSITION_STOCKS)
-                if _score_mult != 1.0:
-                    log.info(f'[STK-SCORE-SIZE] {sym}: score={score} mult={_score_mult:.1f}x desired={desired_pos:,.0f}')
+                desired_pos = min(max(_pos_target * risk_mult * _regime_size_m, 50_000), MAX_POSITION_STOCKS)  # [v10.17] regime sizing
                 # [v10.16] Strategy daily drawdown check
                 _dd_blocked_s, _dd_reason_s = check_strategy_daily_dd('stocks')
                 if _dd_blocked_s:
@@ -6430,10 +6127,7 @@ def stock_execution_worker():
                     if not ks_ok:
                         log.warning(f'[KILL-SWITCH] Stock blocked: {ks_reason}')
                         continue
-                    # [v10.51] Portfolio TOTAL para stocks também
-                    _total_stocks_portfolio = stocks_capital + sum(t.get('position_value', 0) for t in stocks_open)
-                    _total_stocks_portfolio = max(_total_stocks_portfolio, INITIAL_CAPITAL_STOCKS)
-                    risk_ok, risk_reason = risk_manager.check_can_open('stocks', sym, price*qty, _total_stocks_portfolio)
+                    risk_ok, risk_reason = risk_manager.check_can_open('stocks', sym, price*qty, stocks_capital)
                     if not risk_ok:
                         log.warning(f'[RISK-BLOCK] Stock {sym}: {risk_reason}')
                         continue
@@ -6462,10 +6156,6 @@ def stock_execution_worker():
                             # [v10.16] Score snapshot + ATR para SL adaptativo
                             '_score_snapshot':     make_score_snapshot(sig_enriched, features, conf),
                             '_atr_pct':            sig.get('atr_pct', 0),
-                            # [v10.46] Score v3 fields
-                            'score_v2':            sig.get('score_v2'),
-                            'regime_v2':           sig.get('regime_v2'),
-                            'signal_v2':           sig.get('signal_v2'),
                         }
                         stocks_open.append(trade)
                     else:
@@ -6511,10 +6201,6 @@ def auto_trade_crypto():
         beat('auto_trade_crypto')
         time.sleep(90)
         beat('auto_trade_crypto')
-        # [v10.47] Emergency stop: pula tudo se env var setada
-        if V3_EMERGENCY_STOP:
-            log.info('[CRYPTO-LOOP] V3_EMERGENCY_STOP ativo — pulando iteração')
-            continue
         try:
             if market_regime.get('mode')=='HIGH_VOL':
                 log.info('[CRYPTO] HIGH_VOL regime — sizing reduced 0.6x via get_regime_multiplier')  # [v10.24.1] não bloquear mais — sizing já é reduzido
@@ -6533,33 +6219,17 @@ def auto_trade_crypto():
                     # [v10.6.2-Fix4] Cache unificado: usa _candles_cache com TTL=60min (klines diários).
                     # Elimina o segundo cache privado auto_trade_crypto._klines_cache — fonte única.
                     kline_cache_key = f'klines:{sym}'
-                    klines_data = _get_cached_candles(kline_cache_key, ttl_min=5) or {}  # [v10.49] 60→5min
+                    klines_data = _get_cached_candles(kline_cache_key, ttl_min=60) or {}
                     if not klines_data:
-                        # [v10.46] Aumentado 22→100 barras para suportar score_engine_v2 (Ichimoku precisa 52+)
-                        klines_data = _fetch_binance_klines(sym, 100)
+                        klines_data = _fetch_binance_klines(sym, 22)
                         if klines_data:
                             _set_cached_candles(kline_cache_key, klines_data)
-                    # [v10.47] SISTEMA APENAS V3 — crypto score vem direto do v3
+                    score = _crypto_composite_score(ticker_data, klines_data, direction)
+                    # ATR pct e volume_ratio vindos dos klines
                     closes_k = klines_data.get('closes', [])
                     highs_k  = klines_data.get('highs', [])
                     lows_k   = klines_data.get('lows', [])
                     vols_k   = klines_data.get('volumes', [])
-                    regime_v2_c = None; signal_v2_c = None
-                    try:
-                        from modules.score_engine_v2 import compute_score_v3 as _csv3c
-                        if len(closes_k) < 30:
-                            log.debug(f"V3_CRYPTO_SKIP {sym}: closes={len(closes_k)} < 30")
-                            continue
-                        _rc = _csv3c(closes_k, highs_k, lows_k, vols_k,
-                                     factor_stats_cache=factor_stats_cache,
-                                     pattern_stats_cache=pattern_stats_cache)
-                        score = _rc['score']
-                        regime_v2_c = _rc['regime']
-                        signal_v2_c = _rc['signal']
-                        log.info(f"V3_CRYPTO {sym}: score={score} regime={regime_v2_c} sig={signal_v2_c}")
-                    except Exception as _e:
-                        log.warning(f"V3_CRYPTO_FAIL {sym}: {_e} — símbolo pulado")
-                        continue
                     atr_c    = _calc_atr(closes_k, highs_k, lows_k, 14) if len(closes_k) >= 15 else 0.0
                     atr_pct_c = round((atr_c / price) * 100, 3) if price > 0 and atr_c > 0 else 0.0
                     avg_vol20_c = sum(vols_k[-20:]) / len(vols_k[-20:]) if len(vols_k) >= 20 else 0
@@ -6579,15 +6249,14 @@ def auto_trade_crypto():
                 _cm_adj = get_cross_market_crypto_adj()
                 _score_before = score
                 # [v10.29] Limitar penalidade temporal — caps ajustados para Quarta/Sexta
-                # Se crypto se move >3%, o mercado está em tendência — limitar mas não ignorar
                 _raw_change = float(ticker_data.get('change_pct', 0))
-                _strong_signal = abs(_raw_change) > 3.0  # [v10.29] era 2.0 — mais restritivo para override temporal
+                _strong_signal = abs(_raw_change) > 3.0  # [v10.29] era 2.0 — mais restritivo
                 if _strong_signal and (_t_adj + _cm_adj) < 0:
-                    # Sinal forte: penalidade máxima -12 (era -8) — mesmo sinais fortes respeitam dias ruins
+                    # Sinal forte: penalidade máxima -12 (era -8)
                     _capped_t = max(_t_adj + _cm_adj, -12)
                     score = max(0, min(100, score + _capped_t))
                 else:
-                    # [v10.29] Sinal normal: penalidade máxima -20 (era -12) — Quarta/Sexta pesam mais
+                    # [v10.29] Sinal normal: penalidade máxima -20 (era -12)
                     _total_t = _t_adj + _cm_adj
                     _capped_t = max(_total_t, -20) if _total_t < 0 else _total_t
                     score = max(0, min(100, score + _capped_t))
@@ -6708,30 +6377,21 @@ def auto_trade_crypto():
                     with learning_lock: processed_signal_ids[ms_key_c] = {'sig_id': _csig_id, 'reason': 'learning_dead_zone'}
                     continue
 
-                # [v10.29] Crypto sizing — capital distribuído entre MAX_POSITIONS_CRYPTO slots
-                # + dynamic WR-based sizing multiplier (Manus insight)
+                # [v10.29] Crypto sizing — capital distribuído + WR-based dynamic sizing
                 _sym_max = CRYPTO_MAX_POSITION_BY_SYM.get(sym, MAX_POSITION_CRYPTO)
-                # [v10.14] Posição baseada no portfolio TOTAL de crypto
                 _crypto_port_total = max(
                     crypto_capital + sum(t.get('position_value',0) for t in crypto_open),
                     INITIAL_CAPITAL_CRYPTO)
-                _regime_csize_m, _regime_csl_tmp, _regime_cinfo = get_regime_multiplier()  # [v10.17]
-                # [v10.28] Crypto regime floor: crypto é naturalmente volátil, regime
-                # HIGH_VOL não deve penalizar tanto — floor 0.75x (era 0.6x sem floor)
+                _regime_csize_m, _regime_csl_tmp, _regime_cinfo = get_regime_multiplier()
                 _regime_csize_m = max(_regime_csize_m, 0.75)
-                # [v10.28] Score factor mais agressivo para crypto: 0.80 base (era 0.70)
                 _crypto_pos_target = _crypto_port_total / MAX_POSITIONS_CRYPTO * (0.80 + score_factor * 0.20)
-                # [v10.28] Risk mult floor para crypto: mínimo 0.6 (era 0.3 global)
                 _risk_mult_crypto = max(risk_mult_c, 0.6)
                 # [v10.29] Dynamic WR-based sizing: allocate more to proven winners
                 _wr_sizing_mult = get_symbol_wr_sizing_mult(display, 'crypto')
-                # [v10.47] Score sizing multiplier — mais capital em scores altos
-                _score_mult_c = get_score_sizing_mult(score)
-                # [v10.28] Mínimo por posição: 15% do slot (era 50K fixo)
                 _min_crypto_pos = max(80_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.12)
-                desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m * _wr_sizing_mult * _score_mult_c, _min_crypto_pos), _sym_max)
-                if _wr_sizing_mult != 1.0 or _score_mult_c != 1.0:
-                    log.info(f'[CRYPTO-SIZE] {display}: wr_mult={_wr_sizing_mult:.2f} score_mult={_score_mult_c:.1f}x score={score} desired={desired_pos:,.0f}')
+                desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m * _wr_sizing_mult, _min_crypto_pos), _sym_max)
+                if _wr_sizing_mult != 1.0:
+                    log.info(f'[CRYPTO-WR-SIZE] {display}: wr_mult={_wr_sizing_mult:.2f} desired={desired_pos:,.0f}')
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')
 
                 if not risk_ok:
@@ -6774,14 +6434,7 @@ def auto_trade_crypto():
                     if not ks_ok:
                         log.warning(f'[KILL-SWITCH] Crypto blocked: {ks_reason}')
                         continue
-                    # [v10.51] Passar portfolio TOTAL (livre + alocado), não só o livre.
-                    # Bug: conforme mais trades abrem, capital livre diminui → concentração
-                    # aparente de uma trade nova cresce artificialmente. Ex: 13 abertas × 75k = 975k
-                    # alocado; livre = 472k; trade 84k / 472k = 17.86% > 15% limite.
-                    # Correto: 84k / 1.500k (portfolio total) = 5.6% (dentro do limite).
-                    _total_crypto_portfolio = crypto_capital + sum(t.get('position_value', 0) for t in crypto_open)
-                    _total_crypto_portfolio = max(_total_crypto_portfolio, INITIAL_CAPITAL_CRYPTO)
-                    risk_ok_pre, risk_reason_pre = risk_manager.check_can_open('crypto', display, approved_size, _total_crypto_portfolio)
+                    risk_ok_pre, risk_reason_pre = risk_manager.check_can_open('crypto', display, approved_size, crypto_capital)
                     if not risk_ok_pre:
                         log.warning(f'[RISK-BLOCK] Crypto {display}: {risk_reason_pre}')
                         continue
@@ -6809,10 +6462,6 @@ def auto_trade_crypto():
                             # [v10.16] Score snapshot + ATR para SL adaptativo
                             '_score_snapshot':     make_score_snapshot(sig_enriched_c, features_c, conf_c),
                             '_atr_pct':            atr_pct_c,
-                            # [v10.47] Score v3 fields — sempre v3
-                            'score_v2':            score,
-                            'regime_v2':           locals().get('regime_v2_c'),
-                            'signal_v2':           locals().get('signal_v2_c'),
                         }
                         crypto_open.append(trade)
                     else:
@@ -7071,28 +6720,13 @@ def run_arbi_pattern_learning():
         except: pass
 
 def arbi_learning_loop():
-    """[v10.14] Loop de aprendizado de arbi — roda a cada 5 minutos.
-
-    [v10.52] Startup sleep 120s e gap de 5min entre passes eram maiores
-    que o heartbeat timeout (120s default) — watchdog considerava
-    frozen. Agora sleep e quebrado em chunks de 30s com beat em cada,
-    mantendo vigilancia continua.
-    """
-    # Startup delay em chunks com beat
-    for _ in range(4):  # 4 x 30s = 120s total
-        beat('arbi_learning_loop')
-        time.sleep(30)
+    """[v10.14] Loop de aprendizado de arbi — roda a cada 30 minutos."""
+    time.sleep(120)  # aguardar startup
     beat('arbi_learning_loop')
-    try:
-        run_arbi_pattern_learning()
-    except Exception as e:
-        log.error(f'arbi_learning_loop initial: {e}')
-
+    run_arbi_pattern_learning()
     while True:
-        # Sleep 5min em chunks de 30s com beat — watchdog vigilante
-        for _ in range(10):  # 10 x 30s = 300s = 5min
-            beat('arbi_learning_loop')
-            time.sleep(30)
+        beat('arbi_learning_loop')
+        time.sleep(5 * 60)   # [v10.14] a cada 5 minutos — detecta padrões rápido
         beat('arbi_learning_loop')
         try:
             run_arbi_pattern_learning()
@@ -7219,12 +6853,6 @@ def _fetch_arbi_price(symbol: str) -> float:
                 p = float(r.json().get('price', 0))
                 if p > 0: return p
         except: pass
-
-    # [v10.31] Cedro socket primário para B3 (real-time streaming)
-    if is_b3_sym and _cedro_socket and _cedro_socket.enabled:
-        p = _cedro_socket.get_price(display, wait_ms=800)
-        if p and p > 0:
-            return float(p)
 
     # brapi primário para B3 (snapshot, usa cache)
     if is_b3_sym and BRAPI_TOKEN:
@@ -7598,7 +7226,7 @@ def arbi_scan_loop():
                             'current_spread':spread['spread_pct'],
                             'position_size':round(pos,2),
                             'pnl':0,'pnl_pct':0,'peak_pnl_pct':0,
-                            'fx_rate':spread['fx_rate'],'fx_ts':spread.get('fx_ts',_entry_ts),
+                            'fx_rate':spread['fx_rate'],'fx_rate_entry':spread['fx_rate'],'fx_ts':spread.get('fx_ts',_entry_ts),
                             # Timestamps Sprint 1
                             'entry_ts':_entry_ts,
                             'signal_ts_a':spread.get('signal_ts_a',_entry_ts),
@@ -7686,6 +7314,20 @@ def arbi_monitor_loop():
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else: reason='TIMEOUT'
                     if reason:
+                        # [FORENSIC] Snapshot de saída — preços, FX, bid/ask no momento do close
+                        _sd_exit = arbi_spreads.get(trade['pair_id']) or {}
+                        if _sd_exit:
+                            trade['price_a_exit'] = _sd_exit.get('price_a')
+                            trade['price_b_exit'] = _sd_exit.get('price_b')
+                            trade['price_a_usd_norm_exit'] = _sd_exit.get('price_a_usd')
+                            trade['price_b_usd_norm_exit'] = _sd_exit.get('price_b_usd')
+                            trade['fx_rate_exit'] = _sd_exit.get('fx_rate')
+                            trade['bid_a_exit'] = _sd_exit.get('bid_a')
+                            trade['ask_a_exit'] = _sd_exit.get('ask_a')
+                            trade['bid_b_exit'] = _sd_exit.get('bid_b')
+                            trade['ask_b_exit'] = _sd_exit.get('ask_b')
+                            trade['spread_bps_a_exit'] = _sd_exit.get('spread_bps_a')
+                            trade['spread_bps_b_exit'] = _sd_exit.get('spread_bps_b')
                         # [v10.20] Ledger: RELEASE + PNL_CREDIT arbi (ordem contábil correta)
                         arbi_capital += trade['position_size']
                         ledger_record('arbi', 'RELEASE', trade.get('name', trade.get('pair_id', '')),
@@ -7809,33 +7451,19 @@ def watchdog():
             fn=thread_fns.get(name)
             if fn:
                 try:
-                    # [v10.52] Thread limit — era 45 (falso alarme).
-                    # O daemon tem ~32 workers legitimos (21 main + 11
-                    # derivatives). Flask/waitress + Cedro socket reader +
-                    # pool MySQL + threads de IO somam ~15 extras.
-                    # Total saudavel ~47. Limite de 45 disparava alerta
-                    # em estado NORMAL do sistema. Comentario antigo
-                    # 'padrao Python = 50' estava errado — Python nao tem
-                    # limite inerente, Linux permite 4000+ threads/processo.
-                    # Novo limite: 150 (acomoda 3x saudavel, ainda bloqueia
-                    # runaway legitimo). Configuravel via env var.
+                    # [v10.14-FIX] Verificar limite de threads antes de criar novo
                     import threading as _th
                     active = _th.active_count()
-                    thread_limit = int(os.environ.get('WATCHDOG_THREAD_LIMIT', '150'))
-                    if active > thread_limit:
-                        # Lista threads ativas para diagnostico
-                        try:
-                            names = sorted([t.name for t in _th.enumerate() if t.is_alive()])
-                            names_sample = ', '.join(names[:10]) + (f', +{len(names)-10} mais' if len(names) > 10 else '')
-                        except Exception:
-                            names_sample = '(erro listando)'
-                        log.error(f'WATCHDOG: {name} NAO reiniciada — threads ativos={active}/{thread_limit} (limite). Amostra: {names_sample}')
-                        send_whatsapp(f'CRITICO: thread starvation! {active}/{thread_limit} threads ativos. Reiniciar o serviço.')
+                    if active > 200:  # [FORENSIC] era 45 — bloqueava arbi_learning_loop
+                        _names = sorted([t.name for t in _th.enumerate()])
+                        log.error(f'WATCHDOG: {name} NÃO reiniciada — threads ativos={active} (limite 200). Threads: {_names[:60]}')
+                        send_whatsapp(f'CRITICO: thread starvation! {active} threads ativos. Reiniciar o serviço.')
                         # Marcar heartbeat para não tentar de novo em loop
                         thread_heartbeat[name] = time.time()
                     else:
-                        new_t=threading.Thread(target=fn,daemon=True,name=f'wdg-{name}'); new_t.start()
+                        new_t=threading.Thread(target=fn,daemon=True,name=name); new_t.start()
                         thread_health[name]=new_t
+                        _register_current_thread(name, new_t)  # [FIX-ZOMBIE] old thread dies on next beat
                         thread_restart_count[name]=count+1
                         thread_last_restart[name]=now
                         thread_heartbeat[name]=now
@@ -7896,163 +7524,7 @@ def network_sync_loop():
             time.sleep(60)
 
 
-# ═══ [v10.35] Derivatives boot reconciliation + monitoring loop ═══
-def _rehydrate_derivatives_state():
-    """
-    Rehydrate DerivativesExecutionEngine.active_trades and
-    DerivativesCapitalManager.active_allocations from DB after every restart.
-
-    Without this, the engine loses all knowledge of previously opened paper trades
-    when Railway restarts the process, so the monitor never generates exits and
-    PnL never gets marked. Called once during start_background_threads().
-    """
-    from datetime import datetime as _dt_fix
-    if _deriv_exec is None or _deriv_cap_mgr is None:
-        log.warning('[v10.35] Rehydrate skipped — execution/capital not initialized')
-        return
-
-    conn = None
-    try:
-        conn = get_db()
-        if conn is None:
-            log.warning('[v10.35] Rehydrate skipped — no DB connection')
-            return
-
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(
-            """SELECT trade_id, strategy_type, symbol, strike, expiry,
-                      structure_type, expected_edge, notional,
-                      liquidity_score, active_status, opened_at, status
-               FROM strategy_master_trades
-               WHERE status = 'OPEN'
-               ORDER BY opened_at ASC
-               LIMIT 2000"""
-        )
-        trade_rows = cursor.fetchall()
-
-        # Index legs per trade_id
-        legs_by_trade = {}
-        if trade_rows:
-            tids = [r['trade_id'] for r in trade_rows]
-            placeholders = ','.join(['%s'] * len(tids))
-            cursor.execute(
-                f"""SELECT trade_id, leg_type, symbol, qty, side,
-                           intended_price, executed_price, fill_status,
-                           slippage, latency_ms, timestamp
-                    FROM strategy_trade_legs
-                    WHERE trade_id IN ({placeholders})""",
-                tids,
-            )
-            for row in cursor.fetchall():
-                legs_by_trade.setdefault(row['trade_id'], []).append(row)
-        cursor.close()
-
-        restored_trades = 0
-        restored_capital = 0
-        for row in trade_rows:
-            try:
-                # Rebuild TradeLeg objects
-                trade_legs = []
-                for i, lrow in enumerate(legs_by_trade.get(row['trade_id'], [])):
-                    try:
-                        lstatus = LegStatus(lrow['fill_status'])
-                    except Exception:
-                        lstatus = LegStatus.FILLED
-                    leg = TradeLeg(
-                        leg_id=f"{row['trade_id']}-L{i}",
-                        leg_type=lrow['leg_type'],
-                        symbol=lrow['symbol'],
-                        qty=int(lrow['qty'] or 0),
-                        side=lrow['side'],
-                        intended_price=float(lrow['intended_price'] or 0),
-                        executed_price=float(lrow['executed_price'] or 0),
-                        slippage=float(lrow['slippage'] or 0),
-                        latency_ms=int(lrow['latency_ms'] or 0),
-                        status=lstatus,
-                        timestamp=lrow['timestamp'] or _dt_fix.utcnow(),
-                    )
-                    trade_legs.append(leg)
-
-                trade = DerivativesTrade(
-                    trade_id=row['trade_id'],
-                    strategy=(row['strategy_type'] or '').lower(),
-                    symbol=row['symbol'] or '',
-                    structure_type=row['structure_type'] or '',
-                    strike=float(row['strike'] or 0),
-                    expiry=row['expiry'] or '',
-                    expected_edge=float(row['expected_edge'] or 0),
-                    notional=float(row['notional'] or 0),
-                    legs=trade_legs,
-                    status=TradeStatus.OPEN,
-                    opened_at=row['opened_at'] or _dt_fix.utcnow(),
-                    liquidity_score=float(row['liquidity_score'] or 0),
-                    active_status=row['active_status'] or '',
-                )
-
-                _deriv_exec.active_trades[trade.trade_id] = trade
-                restored_trades += 1
-
-                # Rebuild capital allocation (margin ~15% of notional)
-                try:
-                    margin_amt = float(row['notional'] or 0) * 0.15
-                    from modules.derivatives.capital import AllocationRecord as _AR
-                    rec = _AR(
-                        trade_id=trade.trade_id,
-                        strategy=trade.strategy,
-                        symbol=trade.symbol,
-                        amount=margin_amt,
-                        direction='ALLOCATE',
-                        timestamp=trade.opened_at,
-                    )
-                    _deriv_cap_mgr.active_allocations[trade.trade_id] = rec
-                    _deriv_cap_mgr.allocated += margin_amt
-                    _deriv_cap_mgr.strategy_allocated[trade.strategy] += margin_amt
-                    restored_capital += 1
-                except Exception as _cap_err:
-                    log.debug(f'[v10.35] Capital restore failed for {trade.trade_id}: {_cap_err}')
-            except Exception as _trow_err:
-                log.debug(f"[v10.35] Trade restore failed for {row.get('trade_id')}: {_trow_err}")
-
-        log.info(
-            f'[v10.35] Rehydrated {restored_trades} open trades into exec.active_trades, '
-            f'{restored_capital} into capital.active_allocations '
-            f'(allocated=R${_deriv_cap_mgr.allocated:,.0f})'
-        )
-    except Exception as e:
-        log.warning(f'[v10.35] Rehydrate error: {e}')
-        import traceback as _tb
-        _tb.print_exc()
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def deriv_monitor_loop():
-    """Derivatives monitoring background loop — mark-to-market + exit triggers."""
-    loop_name = 'deriv_monitor_loop'
-    if _deriv_monitor is None:
-        log.warning(f'[v10.35] {loop_name} skipped — monitor not initialized')
-        # Keep thread alive but idle so watchdog doesn't churn
-        while True:
-            beat(loop_name)
-            time.sleep(60)
-    try:
-        _deriv_monitor.monitoring_loop(beat, log)
-    except Exception as e:
-        log.error(f'[v10.35] {loop_name} crashed: {e}')
-        import traceback; traceback.print_exc()
-
-
 def start_background_threads():
-    # [v10.35] Rehydrate paper trades from DB BEFORE threads start so monitor sees them
-    try:
-        _rehydrate_derivatives_state()
-    except Exception as _rh_err:
-        log.warning(f'[v10.35] Rehydrate call failed: {_rh_err}')
-
     defs = {
         'stock_price_loop':       stock_price_loop,
         'crypto_price_loop':      crypto_price_loop,
@@ -8072,7 +7544,6 @@ def start_background_threads():
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
         'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
         'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
-        'deriv_monitor_loop':     deriv_monitor_loop,        # [v10.35] paper MTM + exits (stop/target/expiry)
     }
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
     _deriv_loop_args = dict(
@@ -8091,10 +7562,6 @@ def start_background_threads():
         'interlisted_scan_loop': interlisted_scan_loop,
         'dividend_arb_scan_loop': dividend_arb_scan_loop,
         'vol_arb_scan_loop': vol_arb_scan_loop,
-        # [v10.38] New arbitrage strategies
-        'ibov_basis_scan_loop': ibov_basis_scan_loop,
-        'di_calendar_scan_loop': di_calendar_scan_loop,
-        'interlisted_hedged_scan_loop': interlisted_hedged_scan_loop,
     }
     for dname, dfn in _deriv_loops.items():
         if dfn is None:
@@ -8114,8 +7581,9 @@ def start_background_threads():
     for name,fn in defs.items():
         thread_fns[name]=fn; thread_restart_count[name]=0
         thread_last_restart[name]=0; thread_heartbeat[name]=now
-        t=threading.Thread(target=fn,daemon=True); t.start()
+        t=threading.Thread(target=fn,daemon=True,name=name); t.start()
         thread_health[name]=t
+        _register_current_thread(name, t)  # [FIX-ZOMBIE]
         log.info(f'Thread started: {name} (hb_timeout={THREAD_HEARTBEAT_TIMEOUT.get(name,DEFAULT_HB_TIMEOUT)}s)')
 
 # ═══════════════════════════════════════════════════════════════
@@ -8253,42 +7721,6 @@ def fix_corrupted_arbi_trade():
 def derivatives_dashboard():
     """Serve the standalone derivatives trading dashboard."""
     return send_from_directory('static', 'derivatives.html')
-
-@app.route('/cedro/health')
-def cedro_health():
-    """[v10.31] Cedro socket provider status."""
-    if not _cedro_socket:
-        return jsonify({'enabled': False, 'reason': 'provider_not_loaded'}), 503
-    return jsonify(_cedro_socket.healthcheck())
-
-
-@app.route('/cedro/analysis/<symbol>')
-def cedro_analysis(symbol):
-    """[v10.31] Full Cedro real-time analysis for a symbol:
-    price, prev, day/week/month/year high-low, market cap, sector, bid/ask, volume, variations."""
-    if not _cedro_socket or not _cedro_socket.enabled:
-        return jsonify({'error': 'cedro_disabled'}), 503
-    data = _cedro_socket.get_analysis(symbol)
-    if not data.get('price'):
-        return jsonify({'error': 'no_data', 'symbol': symbol.upper()}), 404
-    return jsonify(data)
-
-
-@app.route('/cedro/quotes')
-def cedro_quotes():
-    """[v10.31] Bulk Cedro snapshots. Query: ?symbols=PETR4,VALE3,ITUB4"""
-    if not _cedro_socket or not _cedro_socket.enabled:
-        return jsonify({'error': 'cedro_disabled'}), 503
-    raw = request.args.get('symbols', '')
-    syms = [s.strip().upper() for s in raw.split(',') if s.strip()]
-    if not syms:
-        return jsonify({'error': 'no_symbols'}), 400
-    batch = _cedro_socket.get_batch(syms, wait_ms=2000)
-    return jsonify({
-        'count': len(batch),
-        'quotes': {k: _cedro_socket.get_analysis(k) for k in batch.keys()},
-    })
-
 
 @app.route('/health')
 def health():
@@ -8457,260 +7889,6 @@ def admin_audit():
     return jsonify(audit_logger.get_recent(limit, get_db))
 
 # ── [v10.22] Data quality endpoint ──────────────────────────────────
-
-
-def _fetch_yahoo_history_cached(yahoo_symbol, days=60):
-    """Busca histórico diário do Yahoo Finance para um símbolo (IBOV=^BVSP, SPY=SPY).
-    Cacheia em memória por 1h para não martelar o Yahoo.
-    Retorna dict {iso_date: close_price} ou {} se falhar.
-    """
-    import requests, time as _t, json as _j
-    cache_key = f'_yahoo_hist_{yahoo_symbol}_{days}'
-    g = globals()
-    if cache_key in g:
-        ts, data = g[cache_key]
-        if _t.time() - ts < 3600:
-            return data
-    try:
-        url = f'https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}?interval=1d&range={days}d'
-        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-        if r.status_code != 200: return {}
-        j = r.json()
-        result = (j.get('chart') or {}).get('result') or []
-        if not result: return {}
-        timestamps = result[0].get('timestamp') or []
-        indicators = result[0].get('indicators') or {}
-        quote = (indicators.get('quote') or [{}])[0]
-        closes = quote.get('close') or []
-        from datetime import datetime as _dt
-        out = {}
-        for ts, cl in zip(timestamps, closes):
-            if cl is None: continue
-            d = _dt.utcfromtimestamp(ts).strftime('%Y-%m-%d')
-            out[d] = float(cl)
-        g[cache_key] = (_t.time(), out)
-        return out
-    except Exception as e:
-        log.debug(f'yahoo history {yahoo_symbol}: {e}')
-        return {}
-
-
-@app.route('/performance/benchmark')
-def benchmark_comparison():
-    """[v10.44] Benchmark comparison — system returns vs IBOV/SPY com alpha/beta real.
-
-    Query params:
-      days (int, default=30, max=180) - janela temporal
-      market (str: 'B3', 'NYSE', 'CRYPTO', 'ALL', default='ALL')
-
-    Retorna:
-      summary: retornos acumulados + vs benchmarks
-      series: lista de pontos {date, system_cum_pct, ibov_cum_pct, spy_cum_pct, alpha_day}
-      alpha_beta: por mercado (alpha, beta, sharpe, max_dd, wins/losses)
-    """
-    conn = get_db()
-    if not conn: return jsonify({'error': 'DB unavailable'}), 503
-    try:
-        days = min(int(request.args.get('days', 30)), 180)
-        market_filter = request.args.get('market', 'ALL').upper()
-        cursor = conn.cursor(dictionary=True)
-
-        where_market = "" if market_filter == 'ALL' else "AND market = %s"
-        params = (days,) if market_filter == 'ALL' else (days, market_filter)
-        cursor.execute(f"""
-            SELECT DATE(closed_at) AS dia, market,
-                   SUM(pnl) AS pnl_dia,
-                   SUM(position_value) AS capital_dia,
-                   SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
-                   COUNT(*) AS trades
-            FROM trades
-            WHERE status='closed'
-              AND closed_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-              AND pnl IS NOT NULL
-              {where_market}
-            GROUP BY DATE(closed_at), market
-            ORDER BY dia ASC
-        """, params)
-        daily_rows = cursor.fetchall()
-
-        from collections import defaultdict
-        daily_pnl = defaultdict(float)
-        daily_cap = defaultdict(float)
-        daily_trades = defaultdict(int)
-        daily_wins = defaultdict(int)
-        market_daily = defaultdict(lambda: defaultdict(lambda: {'pnl': 0, 'cap': 0, 'n': 0, 'w': 0}))
-
-        for r in daily_rows:
-            d = r['dia'].isoformat() if r['dia'] else None
-            if not d: continue
-            pnl_d = float(r['pnl_dia'] or 0)
-            cap_d = float(r['capital_dia'] or 0)
-            trades_d = int(r['trades'] or 0)
-            wins_d = int(r['wins'] or 0)
-            daily_pnl[d] += pnl_d
-            daily_cap[d] += cap_d
-            daily_trades[d] += trades_d
-            daily_wins[d] += wins_d
-            md = market_daily[r['market']][d]
-            md['pnl'] += pnl_d; md['cap'] += cap_d
-            md['n'] += trades_d; md['w'] += wins_d
-
-        sorted_dates = sorted(daily_pnl.keys())
-        if not sorted_dates:
-            return jsonify({'error': 'no_data', 'days': days, 'market': market_filter}), 404
-
-        # Buscar IBOV e SPY
-        ibov_hist = _fetch_yahoo_history_cached('^BVSP', days=days + 10)
-        spy_hist = _fetch_yahoo_history_cached('SPY', days=days + 10)
-
-        def _cum_return_from_hist(hist, dates):
-            """Calcula retorno acumulado a partir de dict {date: close}."""
-            if not hist or not dates: return [0] * len(dates)
-            first_date = None
-            for d in sorted(hist.keys()):
-                if d >= dates[0]:
-                    first_date = d; break
-            if not first_date: return [0] * len(dates)
-            base = hist[first_date]
-            out = []
-            last_price = base
-            for d in dates:
-                if d in hist:
-                    last_price = hist[d]
-                ret = (last_price / base - 1) * 100
-                out.append(round(ret, 4))
-            return out
-
-        ibov_cum = _cum_return_from_hist(ibov_hist, sorted_dates)
-        spy_cum = _cum_return_from_hist(spy_hist, sorted_dates)
-
-        # Retorno do sistema
-        series = []
-        cum_system = 0.0
-        for i, d in enumerate(sorted_dates):
-            cap = daily_cap.get(d, 0)
-            pnl = daily_pnl.get(d, 0)
-            ret_day = (pnl / cap * 100) if cap > 0 else 0
-            cum_system += ret_day
-            series.append({
-                'date': d,
-                'system_daily_pct': round(ret_day, 4),
-                'system_cum_pct': round(cum_system, 4),
-                'ibov_cum_pct': ibov_cum[i] if i < len(ibov_cum) else 0,
-                'spy_cum_pct': spy_cum[i] if i < len(spy_cum) else 0,
-                'alpha_vs_ibov': round(cum_system - (ibov_cum[i] if i < len(ibov_cum) else 0), 4),
-                'alpha_vs_spy': round(cum_system - (spy_cum[i] if i < len(spy_cum) else 0), 4),
-                'trades': daily_trades.get(d, 0),
-                'wins': daily_wins.get(d, 0),
-                'pnl': round(pnl, 2),
-                'capital': round(cap, 2),
-            })
-
-        # Alpha/Beta por mercado
-        def _compute_stats(date_to_market, benchmark_cum, dates):
-            """Calcula retornos diários do mercado e compara com benchmark."""
-            sys_rets = []
-            bench_rets = [benchmark_cum[i] - (benchmark_cum[i-1] if i > 0 else 0) for i in range(len(benchmark_cum))]
-            for i, d in enumerate(dates):
-                mdata = date_to_market.get(d, {'pnl': 0, 'cap': 0})
-                r = (mdata['pnl'] / mdata['cap'] * 100) if mdata['cap'] > 0 else 0
-                sys_rets.append(r)
-            n = len(sys_rets)
-            if n < 2:
-                return None
-            mean_s = sum(sys_rets) / n
-            mean_b = sum(bench_rets) / n
-            var_s = sum((r - mean_s) ** 2 for r in sys_rets) / n
-            var_b = sum((r - mean_b) ** 2 for r in bench_rets) / n
-            cov = sum((sys_rets[i] - mean_s) * (bench_rets[i] - mean_b) for i in range(n)) / n
-            beta = (cov / var_b) if var_b > 0 else 0
-            alpha = mean_s - beta * mean_b  # daily alpha
-            std_s = var_s ** 0.5
-            sharpe = (mean_s / std_s * (252 ** 0.5)) if std_s > 0 else 0  # annualized
-            cum_s = sum(sys_rets)
-            cum_b = sum(bench_rets)
-            peak = 0; max_dd = 0; cum = 0
-            for r in sys_rets:
-                cum += r
-                if cum > peak: peak = cum
-                dd = peak - cum
-                if dd > max_dd: max_dd = dd
-            total_trades = sum(market_daily[mkt][d]['n'] for d in dates for mkt in market_daily if d in market_daily[mkt])
-            return {
-                'alpha_daily': round(alpha, 4),
-                'alpha_annualized_pct': round(alpha * 252, 2),
-                'beta': round(beta, 3),
-                'sharpe_annualized': round(sharpe, 3),
-                'max_drawdown_pct': round(max_dd, 2),
-                'cum_return_pct': round(cum_s, 2),
-                'benchmark_cum_pct': round(cum_b, 2),
-                'alpha_absolute_pct': round(cum_s - cum_b, 2),
-            }
-
-        alpha_beta = {}
-        for mkt, bench_cum in [('B3', ibov_cum), ('NYSE', spy_cum)]:
-            if mkt in market_daily:
-                stats = _compute_stats(market_daily[mkt], bench_cum, sorted_dates)
-                if stats:
-                    n_mkt = sum(market_daily[mkt][d]['n'] for d in sorted_dates if d in market_daily[mkt])
-                    w_mkt = sum(market_daily[mkt][d]['w'] for d in sorted_dates if d in market_daily[mkt])
-                    stats['trades'] = n_mkt
-                    stats['wins'] = w_mkt
-                    stats['win_rate_pct'] = round(w_mkt / n_mkt * 100, 2) if n_mkt > 0 else 0
-                    stats['benchmark'] = 'IBOV' if mkt == 'B3' else 'SPY'
-                    alpha_beta[mkt] = stats
-
-        # Crypto (sem benchmark padrão, apenas métricas absolutas)
-        if 'CRYPTO' in market_daily:
-            crypto_rets = []
-            for d in sorted_dates:
-                mdata = market_daily['CRYPTO'].get(d, {'pnl': 0, 'cap': 0})
-                crypto_rets.append((mdata['pnl'] / mdata['cap'] * 100) if mdata['cap'] > 0 else 0)
-            n = len(crypto_rets)
-            if n > 1:
-                mean = sum(crypto_rets) / n
-                std = (sum((r - mean) ** 2 for r in crypto_rets) / n) ** 0.5
-                n_crypto = sum(market_daily['CRYPTO'][d]['n'] for d in sorted_dates if d in market_daily['CRYPTO'])
-                w_crypto = sum(market_daily['CRYPTO'][d]['w'] for d in sorted_dates if d in market_daily['CRYPTO'])
-                alpha_beta['CRYPTO'] = {
-                    'cum_return_pct': round(sum(crypto_rets), 2),
-                    'sharpe_annualized': round((mean / std * (252 ** 0.5)) if std > 0 else 0, 3),
-                    'trades': n_crypto,
-                    'wins': w_crypto,
-                    'win_rate_pct': round(w_crypto / n_crypto * 100, 2) if n_crypto > 0 else 0,
-                    'benchmark': 'none',
-                }
-
-        summary = {
-            'period_days': days,
-            'market_filter': market_filter,
-            'start_date': sorted_dates[0],
-            'end_date': sorted_dates[-1],
-            'total_trades': sum(daily_trades.values()),
-            'total_wins': sum(daily_wins.values()),
-            'win_rate_pct': round(sum(daily_wins.values()) / sum(daily_trades.values()) * 100, 2) if sum(daily_trades.values()) > 0 else 0,
-            'total_pnl': round(sum(daily_pnl.values()), 2),
-            'system_cum_return_pct': round(cum_system, 4),
-            'ibov_cum_return_pct': ibov_cum[-1] if ibov_cum else None,
-            'spy_cum_return_pct': spy_cum[-1] if spy_cum else None,
-            'alpha_vs_ibov_pct': round(cum_system - (ibov_cum[-1] if ibov_cum else 0), 2),
-            'alpha_vs_spy_pct': round(cum_system - (spy_cum[-1] if spy_cum else 0), 2),
-            'trading_days': len(sorted_dates),
-        }
-
-        cursor.close(); conn.close()
-        return jsonify({
-            'status': 'success',
-            'summary': summary,
-            'series': series,
-            'alpha_beta': alpha_beta,
-        }), 200
-    except Exception as e:
-        import traceback as _tb
-        log.error(f'/performance/benchmark: {e}\n{_tb.format_exc()}')
-        return jsonify({'error': str(e)}), 500
-
-
 @app.route('/data/quality')
 @require_auth
 def data_quality_v1022():
@@ -8777,486 +7955,6 @@ def ops_alerts_v1023():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-# ── [v10.52] Proxy endpoints para o Egreja Brain ─────────────────
-# Frontend nao chama o brain direto (evita expor BRAIN_API_KEY no
-# browser). Proxy roda aqui com a key server-side.
-_BRAIN_URL = os.environ.get('BRAIN_URL', '').rstrip('/')
-_BRAIN_API_KEY = os.environ.get('BRAIN_API_KEY', '')
-
-def _brain_request(method: str, path: str, **kwargs):
-    """Chama o brain com auth, retorna (status_code, json_body)."""
-    if not _BRAIN_URL or not _BRAIN_API_KEY:
-        return 503, {'error': 'brain not configured (BRAIN_URL/BRAIN_API_KEY)'}
-    url = f'{_BRAIN_URL}{path}'
-    headers = kwargs.pop('headers', {}) or {}
-    headers['X-API-Key'] = _BRAIN_API_KEY
-    try:
-        r = requests.request(method, url, headers=headers, timeout=15, **kwargs)
-        try: body = r.json()
-        except Exception: body = {'raw': r.text[:500]}
-        return r.status_code, body
-    except Exception as e:
-        return 502, {'error': f'{type(e).__name__}: {e}'}
-
-
-@app.route('/api/brain/proposals', methods=['GET'])
-def brain_proposals_list():
-    """Lista propostas do Nightly Analyst (passthrough do brain)."""
-    status_arg = request.args.get('status', 'pending')
-    limit = request.args.get('limit', '50')
-    code, body = _brain_request('GET', f'/llm/proposals?status={status_arg}&limit={limit}')
-    return jsonify(body), code
-
-
-@app.route('/api/brain/proposals/<int:pid>/approve', methods=['POST'])
-@require_auth
-def brain_proposal_approve(pid):
-    data = request.get_json(silent=True) or {}
-    code, body = _brain_request('POST', f'/llm/proposals/{pid}/approve', json=data)
-    return jsonify(body), code
-
-
-@app.route('/api/brain/proposals/<int:pid>/reject', methods=['POST'])
-@require_auth
-def brain_proposal_reject(pid):
-    data = request.get_json(silent=True) or {}
-    code, body = _brain_request('POST', f'/llm/proposals/{pid}/reject', json=data)
-    return jsonify(body), code
-
-
-@app.route('/api/brain/nightly/run', methods=['POST'])
-@require_auth
-def brain_nightly_run():
-    """Dispara Nightly Analyst manualmente (passthrough)."""
-    code, body = _brain_request('POST', '/llm/nightly/run')
-    return jsonify(body), code
-
-
-@app.route('/api/brain/status', methods=['GET'])
-def brain_status():
-    """Status dos workers do brain (passthrough)."""
-    code, body = _brain_request('GET', '/llm/status')
-    return jsonify(body), code
-
-
-# ═══════════════════════════════════════════════════════════════════
-# [v11 PORTFOLIO ACCOUNTING] Fase 1/2 — SHADOW MODE
-# ═══════════════════════════════════════════════════════════════════
-
-_v11_engine = None
-_v11_shadow_thread = None
-
-
-def _portfolio_v11_boot():
-    """Migration + boot do PortfolioEngine em shadow. Idempotente.
-
-    Não flipa nada no caminho crítico. Apenas materializa o estado v11
-    em memória e inicia thread de comparação com variáveis globais.
-    """
-    global _v11_engine, _v11_shadow_thread
-
-    # 1. Migration idempotente (CREATE IF NOT EXISTS + ALTER IF NOT EXISTS)
-    try:
-        _run_v11_migration_if_needed()
-    except Exception as e:
-        log.warning(f'[v11] migration skipped/failed: {e}')
-        return
-
-    # 2. Boot engine
-    from modules.portfolio import PortfolioEngine, ConfigLoader
-    from modules.portfolio.shadow_comparator import ShadowComparator
-    engine = PortfolioEngine.instance()
-    config_loader = ConfigLoader(db_fn=get_db, ttl_s=60)
-    engine.boot(db_fn=get_db, config_loader=config_loader)
-    _v11_engine = engine
-    log.info('[v11] PortfolioEngine booted in SHADOW mode')
-
-    # 3. Registrar thread de comparação com globals legacy
-    def _legacy_state_snapshot():
-        # Lê as variáveis globais do módulo
-        return {
-            'stocks': stocks_capital,
-            'crypto': crypto_capital,
-            'arbi':   arbi_capital,
-        }
-
-    comparator = ShadowComparator(
-        db_fn=get_db,
-        legacy_state_fn=_legacy_state_snapshot,
-        interval_s=int(os.environ.get('V11_SHADOW_INTERVAL_S', '60')),
-        alert_threshold_usd=float(os.environ.get('V11_ALERT_THRESHOLD_USD', '10.0')),
-        warn_threshold_usd=float(os.environ.get('V11_WARN_THRESHOLD_USD', '0.50')),
-        beat_fn=beat,
-    )
-    _v11_shadow_thread = threading.Thread(
-        target=comparator.run_forever,
-        daemon=True,
-        name='v11-shadow-comparator',
-    )
-    _v11_shadow_thread.start()
-    thread_health['portfolio_shadow_comparator'] = _v11_shadow_thread
-    thread_heartbeat['portfolio_shadow_comparator'] = time.time()
-    thread_fns['portfolio_shadow_comparator'] = comparator.run_forever
-    log.info('[v11] ShadowComparator thread started')
-
-
-_V11_MIGRATIONS_DIR = 'migrations'
-_V11_MIGRATIONS_FILES = [
-    '011_portfolio_v11.sql',
-    '012_portfolio_v11_configs_real.sql',
-]
-
-
-def _run_v11_migration_if_needed():
-    """Aplica todas as migrations v11 em ordem. Cada uma idempotente.
-
-    Migration 011 cria tabelas/colunas.
-    Migration 012 atualiza configs para capital_fraction nas 3 strats.
-    """
-    import os as _os
-    conn = get_db()
-    if conn is None:
-        return
-    try:
-        # Roda TODAS as migrations em ordem. Cada UPDATE/INSERT é
-        # idempotente ou tolerante a já-existe.
-        for migration_file in _V11_MIGRATIONS_FILES:
-            migration_path = _os.path.join(
-                _os.path.dirname(__file__), _V11_MIGRATIONS_DIR, migration_file
-            )
-            if not _os.path.exists(migration_path):
-                log.error(f'[v11] migration file não encontrado: {migration_path}')
-                continue
-            _apply_sql_file(conn, migration_path, migration_file)
-        return
-    finally:
-        try: conn.close()
-        except Exception: pass
-
-
-def _apply_sql_file(conn, migration_path: str, label: str) -> None:
-    """Aplica um arquivo SQL statement-por-statement com tolerância a
-    erros idempotentes (duplicate/already-exists)."""
-    import os as _os
-    try:
-        with open(migration_path) as f:
-            sql_text_raw = f.read()
-
-        # Remove comentários (linhas iniciadas com --) ANTES de splitar — caso
-        # contrário ';' dentro de texto em português quebra o parser.
-        sql_lines = []
-        for ln in sql_text_raw.split('\n'):
-            stripped = ln.lstrip()
-            if stripped.startswith('--'):
-                continue
-            sql_lines.append(ln)
-        sql_text = '\n'.join(sql_lines)
-        cur = conn.cursor()
-        stmts = [s.strip() for s in sql_text.split(';') if s.strip()]
-        applied = 0
-        skipped = 0
-        for stmt in stmts:
-            try:
-                cur.execute(stmt)
-                applied += 1
-            except Exception as se:
-                msg = str(se).lower()
-                if any(k in msg for k in ('duplicate', 'already exists',
-                                           'check that column', 'check that key')):
-                    skipped += 1
-                    continue
-                if 'if not exists' in stmt.lower():
-                    stmt_fallback = stmt.replace('IF NOT EXISTS ', '').replace('if not exists ', '')
-                    try:
-                        cur.execute(stmt_fallback)
-                        applied += 1
-                        continue
-                    except Exception as se2:
-                        msg2 = str(se2).lower()
-                        if any(k in msg2 for k in ('duplicate', 'already exists',
-                                                    'check that column', 'check that key')):
-                            skipped += 1
-                            continue
-                        log.warning(f'[v11] {label} fallback falhou: {se2}')
-                        continue
-                log.warning(f'[v11] {label} stmt falhou: {str(se)[:200]}')
-        conn.commit()
-        cur.close()
-        log.info(f'[v11] {label}: {applied} aplicados, {skipped} idempotentes')
-    except Exception as e:
-        log.error(f'[v11] {label} erro geral: {e}')
-
-
-# ── Endpoints read-only (shadow, não exigem auth pra facilitar dash) ──
-
-@app.route('/portfolio/state', methods=['GET'])
-def portfolio_v11_state():
-    """Estado canônico de todas as 3 strategies (shadow mode)."""
-    if _v11_engine is None or not _v11_engine.booted:
-        return jsonify({'error': 'engine not booted', 'v11_active': False}), 503
-    out = {}
-    for strat in ('stocks', 'crypto', 'arbi'):
-        try:
-            s = _v11_engine.get_state(strat)
-            out[strat] = s.to_dict()
-        except Exception as e:
-            out[strat] = {'error': str(e)}
-    return jsonify({
-        'v11_active': _v11_engine.active,
-        'strategies': out,
-    })
-
-
-@app.route('/portfolio/state/<strategy>', methods=['GET'])
-def portfolio_v11_state_one(strategy):
-    if _v11_engine is None or not _v11_engine.booted:
-        return jsonify({'error': 'engine not booted'}), 503
-    if strategy not in ('stocks', 'crypto', 'arbi'):
-        return jsonify({'error': 'strategy inválida'}), 400
-    try:
-        s = _v11_engine.get_state(strategy)
-        return jsonify(s.to_dict())
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/portfolio/integrity', methods=['GET'])
-def portfolio_v11_integrity():
-    """Compara replay(ledger) vs canonical em memória."""
-    if _v11_engine is None or not _v11_engine.booted:
-        return jsonify({'error': 'engine not booted'}), 503
-    return jsonify(_v11_engine.integrity_check())
-
-
-@app.route('/portfolio/rebuild/<strategy>', methods=['POST'])
-@require_auth
-def portfolio_v11_rebuild(strategy):
-    """Força rebuild do snapshot de uma strategy a partir do ledger."""
-    if _v11_engine is None:
-        return jsonify({'error': 'engine not booted'}), 503
-    try:
-        new_state = _v11_engine.rebuild(strategy)
-        return jsonify({'rebuilt': True, 'state': new_state.to_dict()})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/portfolio/config/<strategy>', methods=['GET'])
-def portfolio_v11_config(strategy):
-    if _v11_engine is None:
-        return jsonify({'error': 'engine not booted'}), 503
-    try:
-        cfg = _v11_engine.config_loader.get(strategy)
-        return jsonify({
-            'strategy': cfg.strategy,
-            'initial_capital': float(cfg.initial_capital),
-            'risk_per_trade_pct': float(cfg.risk_per_trade_pct),
-            'max_gross_exposure_pct': float(cfg.max_gross_exposure_pct),
-            'configured_max_positions': cfg.configured_max_positions,
-            'min_capital_per_trade': float(cfg.min_capital_per_trade),
-            'position_hard_cap': float(cfg.position_hard_cap) if cfg.position_hard_cap else None,
-            'sizing_mode': cfg.sizing_mode,
-            'drawdown_hard_stop_pct': float(cfg.drawdown_hard_stop_pct),
-            'kill_switch_active': cfg.kill_switch_active,
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 404
-
-
-# ═══════════════════════════════════════════════════════════════════
-# [/v11]
-# ═══════════════════════════════════════════════════════════════════
-
-
-@app.route('/ops/rehydrate-ledger', methods=['POST'])
-@require_auth
-def ops_rehydrate_ledger():
-    """[v10.52] Rehidrata capital_ledger retroativamente a partir das tabelas
-    de trades. Resolve o problema onde ledger foi introduzido em v10.20 e
-    trades anteriores nao foram instrumentados — replay divergia da memoria.
-
-    Query params:
-      commit=1       : commita; sem isso roda em dry-run (default)
-      strategy=X     : stocks|crypto|arbi|all (default all)
-
-    Algoritmo por strategy:
-      1. Ler trades ordenados por opened_at
-      2. BASELINE no timestamp do primeiro trade com amount=initial
-      3. Para cada trade OPEN: RESERVE em opened_at
-      4. Para cada trade CLOSED: RESERVE em opened_at + RELEASE + PNL_CREDIT em closed_at
-      5. Validar: balance replay deve bater com memory_capital (tolerancia 0.01%)
-      6. Se commit=1 e validacao passa: DELETE ledger rows dessa strategy + INSERT eventos novos
-      7. Limpa _capital_ledger em memoria (eventos runtime pos-deploy) para nao duplicar
-    """
-    commit_mode = request.args.get('commit', '0') == '1'
-    strategy_filter = request.args.get('strategy', 'all').lower()
-
-    if strategy_filter not in ('all', 'stocks', 'crypto', 'arbi'):
-        return jsonify({'error': 'strategy deve ser all|stocks|crypto|arbi'}), 400
-
-    conn = get_db()
-    if not conn:
-        return jsonify({'error': 'db unavailable'}), 503
-
-    strategies = []
-    if strategy_filter in ('all', 'stocks'):
-        strategies.append(('stocks', INITIAL_CAPITAL_STOCKS, stocks_capital))
-    if strategy_filter in ('all', 'crypto'):
-        strategies.append(('crypto', INITIAL_CAPITAL_CRYPTO, crypto_capital))
-    if strategy_filter in ('all', 'arbi'):
-        strategies.append(('arbi', ARBI_CAPITAL, arbi_capital))
-
-    results = {}
-    with state_lock:
-        for strat_name, initial, memory_cap in strategies:
-            try:
-                results[strat_name] = _rehydrate_ledger_one(
-                    conn, strat_name, initial, memory_cap, commit_mode)
-            except Exception as e:
-                results[strat_name] = {'error': f'{type(e).__name__}: {e}'}
-                log.error(f'rehydrate {strat_name}: {e}')
-                import traceback; log.error(traceback.format_exc())
-
-    return jsonify({
-        'commit_mode': commit_mode,
-        'hint': 'Use ?commit=1 para aplicar. Sem isso, apenas simula (dry-run).',
-        'strategies': results,
-    })
-
-
-def _rehydrate_ledger_one(conn, strategy: str, initial: float,
-                           memory_capital: float, commit_mode: bool) -> dict:
-    """Rehidrata ledger de uma strategy. Retorna resumo com validacao."""
-    # Determina tabela e coluna de tamanho
-    if strategy == 'arbi':
-        table = 'arbi_trades'
-        size_col = 'position_size'
-        asset_filter = ''
-    elif strategy == 'stocks':
-        table = 'trades'
-        size_col = 'position_value'
-        asset_filter = "WHERE asset_type='stock'"
-    elif strategy == 'crypto':
-        table = 'trades'
-        size_col = 'position_value'
-        asset_filter = "WHERE asset_type='crypto'"
-    else:
-        return {'error': f'strategy invalida: {strategy}'}
-
-    cur = conn.cursor(dictionary=True)
-    cur.execute(
-        f"SELECT id, status, opened_at, closed_at, {size_col} AS amt, pnl "
-        f"FROM {table} {asset_filter} "
-        f"ORDER BY opened_at ASC, id ASC"
-    )
-    trades = cur.fetchall()
-    cur.close()
-
-    if not trades:
-        return {'strategy': strategy, 'trades': 0, 'events_generated': 0,
-                'message': 'sem trades — ledger fica vazio'}
-
-    # Construir eventos
-    events = []
-    balance = float(initial)
-    first_ts = trades[0]['opened_at']
-
-    # BASELINE (idempotencia: trade_id='BASELINE', unique constraint pega)
-    events.append({
-        'ts': first_ts, 'event': 'BASELINE', 'symbol': 'SYSTEM',
-        'amount': balance, 'balance_after': balance, 'trade_id': 'BASELINE'
-    })
-
-    for t in trades:
-        amt = float(t.get('amt') or 0)
-        pnl = float(t.get('pnl') or 0)
-        tid = str(t.get('id', ''))
-        opened_at = t.get('opened_at')
-        closed_at = t.get('closed_at')
-        status = (t.get('status') or '').upper()
-
-        # RESERVE na abertura
-        balance -= amt
-        events.append({
-            'ts': opened_at, 'event': 'RESERVE', 'symbol': tid[:20],
-            'amount': amt, 'balance_after': balance, 'trade_id': tid
-        })
-
-        # Se fechado: RELEASE + PNL_CREDIT
-        if status == 'CLOSED' and closed_at is not None:
-            balance += amt
-            events.append({
-                'ts': closed_at, 'event': 'RELEASE', 'symbol': tid[:20],
-                'amount': amt, 'balance_after': balance, 'trade_id': tid
-            })
-            if pnl != 0:
-                balance += pnl
-                events.append({
-                    'ts': closed_at, 'event': 'PNL_CREDIT', 'symbol': tid[:20],
-                    'amount': pnl, 'balance_after': balance, 'trade_id': tid
-                })
-
-    # Validacao: balance deve bater com memory_capital (tolerancia absoluta)
-    delta = memory_capital - balance
-    delta_pct = abs(delta) / max(abs(initial), 1) * 100
-    ok = abs(delta) < 1.0  # 1 USD de tolerancia (arredondamento)
-
-    summary = {
-        'strategy': strategy,
-        'initial': round(float(initial), 2),
-        'trades_scanned': len(trades),
-        'events_generated': len(events),
-        'replayed_balance': round(balance, 2),
-        'memory_capital': round(float(memory_capital), 2),
-        'delta': round(delta, 2),
-        'delta_pct': round(delta_pct, 4),
-        'ok': ok,
-    }
-
-    if not commit_mode:
-        summary['action'] = 'DRY_RUN'
-        return summary
-
-    if not ok:
-        summary['action'] = 'ABORTED'
-        summary['reason'] = (
-            f'replay balance ({balance:.2f}) nao bate com memory '
-            f'({memory_capital:.2f}); delta={delta:.2f}. '
-            f'Nao foi commitado — capital em memoria pode ter drift real.'
-        )
-        return summary
-
-    # Commit: DELETE + INSERT batch
-    cur2 = conn.cursor()
-    try:
-        cur2.execute("DELETE FROM capital_ledger WHERE strategy=%s", (strategy,))
-        deleted = cur2.rowcount
-        for e in events:
-            cur2.execute(
-                """INSERT INTO capital_ledger
-                   (ts, strategy, event, symbol, amount, balance_after, trade_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                (e['ts'], strategy, e['event'], e['symbol'],
-                 e['amount'], e['balance_after'], e['trade_id'])
-            )
-        conn.commit()
-        # Limpar memoria do strategy — proximo replay vai do DB
-        with _ledger_lock:
-            _capital_ledger[:] = [ev for ev in _capital_ledger
-                                   if ev.get('strategy') != strategy]
-        summary['action'] = 'COMMITTED'
-        summary['events_deleted'] = deleted
-    except Exception as e:
-        try: conn.rollback()
-        except Exception: pass
-        summary['action'] = 'FAILED'
-        summary['error'] = f'{type(e).__name__}: {e}'
-    finally:
-        cur2.close()
-
-    return summary
-
 
 @app.route('/kill-switch/safe-resume', methods=['POST'])
 @require_auth
@@ -9326,24 +8024,12 @@ def modules_debug():
     return jsonify({
         'registered_blueprints': bp_names,
         'long_horizon_loaded': 'long_horizon' in bp_names,
+        'monthly_picks_loaded': any('monthly' in n for n in bp_names),
         'brain_loaded': 'brain' in bp_names or 'unified_brain' in bp_names,
         'lh_error': _lh_load_error,
+        'mp_error': _mp_load_error,
         'brain_error': _brain_load_error,
     })
-
-@app.route('/api/fx-rates')
-def fx_rates_endpoint():
-    """[v2] Public endpoint: cotações de câmbio para exibição no header do dashboard."""
-    # fx_rates é populado por fetch_fx_rates() (arbi_scan_loop, a cada ~6min)
-    # Valores: USDBRL (BRL por USD), EURUSD (USD por EUR), GBPUSD, HKDUSD, CADUSD
-    out = dict(fx_rates) if isinstance(fx_rates, dict) else {}
-    # Derivar EURBRL para conveniência do frontend (EUR em BRL)
-    if out.get('EURUSD') and out.get('USDBRL'):
-        out['EURBRL'] = round(out['EURUSD'] * out['USDBRL'], 4)
-    if out.get('GBPUSD') and out.get('USDBRL'):
-        out['GBPBRL'] = round(out['GBPUSD'] * out['USDBRL'], 4)
-    return jsonify({'fx': out, 'ts': datetime.utcnow().isoformat()})
-
 
 @app.route('/api/ticker-tape')
 def ticker_tape():
@@ -9517,20 +8203,13 @@ def signals():
                 ticker_data = crypto_tickers.get(sym, {})
                 kline_cache_key = f'klines:{sym}'
                 # [v10.6.2-Fix4] Mesma fonte única de klines — _candles_cache TTL=60min
-                klines_data = _get_cached_candles(kline_cache_key, ttl_min=5) or {}  # [v10.49] 60→5min
-                # [v10.47] SISTEMA APENAS V3
-                if klines_data and len(klines_data.get('closes', [])) >= 30:
-                    try:
-                        from modules.score_engine_v2 import compute_score_v3 as _csv3e
-                        _re = _csv3e(klines_data['closes'], klines_data.get('highs', []),
-                                    klines_data.get('lows', []), klines_data.get('volumes', []))
-                        score = _re['score']
-                    except Exception:
-                        # v3 falhou — usar neutro (signal MANTER)
-                        score = 50
+                klines_data = _get_cached_candles(kline_cache_key, ttl_min=60) or {}
+                if ticker_data and klines_data:
+                    score = _crypto_composite_score(ticker_data, klines_data, direction_str)
                 else:
                     # fallback se klines ainda não carregadas (startup)
-                    score = 50
+                    base  = min(50 + int(strength * 5), 95)
+                    score = base if change_24h > 0 else (100 - base)
                 signal = 'COMPRA' if score >= MIN_SCORE_AUTO_CRYPTO else ('VENDA' if score <= (100 - MIN_SCORE_AUTO_CRYPTO) else 'MANTER')  # [v10.24-FIX] era 70/30 hardcoded — deve usar mesmo threshold do motor
 
             crypto_signals.append({
@@ -10352,6 +9031,46 @@ def arbi_fix_trade():
     finally:
         try: cur.close(); conn.close()
         except: pass
+
+@app.route('/arbitrage/forensic')
+def arbi_forensic_route():
+    """[FORENSIC] Diagnóstico ao vivo do motor de Arbi. Auth bypass via /arbitrage."""
+    import threading as _th, os as _os
+    with state_lock:
+        open_t=list(arbi_open); closed_t_count=len(arbi_closed); cap=arbi_capital
+    th_names = sorted([t.name for t in _th.enumerate()])
+    arbi_thread_state = {}
+    for n in ('arbi_scan_loop','arbi_monitor_loop','arbi_learning_loop'):
+        hb = thread_heartbeat.get(n)
+        arbi_thread_state[n] = {
+            'last_beat_iso': datetime.utcfromtimestamp(hb).isoformat() if hb else None,
+            'seconds_ago': round(time.time()-hb,1) if hb else None,
+            'restart_count': thread_restart_count.get(n,0),
+            'alive': any(t.name==n for t in _th.enumerate()),
+        }
+    lost_tail=[]; forensic_tail=[]
+    try:
+        if _os.path.exists(ARBI_LOST_FILE):
+            with open(ARBI_LOST_FILE) as _f:
+                lost_tail = _f.readlines()[-30:]
+    except: pass
+    try:
+        if _os.path.exists(ARBI_FORENSIC_FILE):
+            with open(ARBI_FORENSIC_FILE) as _f:
+                forensic_tail = _f.readlines()[-30:]
+    except: pass
+    return jsonify({
+        'persist_stats': _arbi_persist_stats,
+        'arbi_open_in_memory': len(open_t),
+        'arbi_closed_in_memory': closed_t_count,
+        'arbi_capital': round(cap,2),
+        'urgent_queue_size': urgent_queue.qsize(),
+        'thread_count_total': _th.active_count(),
+        'arbi_threads': arbi_thread_state,
+        'all_thread_names': th_names,
+        'lost_trades_tail': lost_tail,
+        'forensic_log_tail': forensic_tail,
+    })
 
 @app.route('/arbitrage/trades')
 def arbi_trades_route():
@@ -11294,27 +10013,7 @@ def report_send(period):
 def _monthly_picks_worker():
     """[v3.2] Monthly Picks Sleeve — scan mensal + review semanal + discovery.
     Delega para scheduler_hooks.monthly_picks_worker() (modular).
-
-    [v10.52] O worker externo nao chama beat(). Rodamos um thread
-    batedor paralelo que sinaliza heartbeat a cada 60s, evitando
-    falso-frozen no watchdog. O worker externo em si continua
-    gerenciando seu proprio schedule interno.
     """
-    import threading as _th
-
-    # Thread batedor: bate heartbeat continuamente enquanto o worker
-    # externo roda. Daemon=True para nao segurar shutdown.
-    _stop = _th.Event()
-    def _heartbeat_pinger():
-        while not _stop.is_set():
-            try: beat('monthly_picks_worker')
-            except Exception: pass
-            _stop.wait(60)
-    pinger = _th.Thread(target=_heartbeat_pinger,
-                        daemon=True,
-                        name='mp-pinger')
-    pinger.start()
-
     try:
         from modules.long_horizon.monthly_picks.scheduler_hooks import monthly_picks_worker
         monthly_picks_worker(
@@ -11326,8 +10025,6 @@ def _monthly_picks_worker():
         log.error(f'[MonthlyPicks] Worker import/start error: {e}')
         import traceback
         log.error(traceback.format_exc())
-    finally:
-        _stop.set()
 
 
 def _brain_hourly_reminder():
@@ -11366,10 +10063,6 @@ def _brain_hourly_reminder():
     brt = pytz.timezone('America/Sao_Paulo')
     last_hour = -1
     while True:
-        # [v10.52] Faltava beat — watchdog considerava worker frozen apos
-        # 120s (default HB timeout) mesmo o worker estando vivo, apenas
-        # dormindo entre lembretes horarios.
-        beat('brain_hourly_reminder')
         try:
             now = datetime.now(brt)
             if now.hour != last_hour:
@@ -11385,8 +10078,7 @@ def _brain_hourly_reminder():
         time.sleep(60)
 
 def _report_scheduler():
-    """Scheduler automatico: diario 20h BRT, semanal sextas, mensal ultimo dia.
-    [v10.36] Também dispara o snapshot EOD de top opportunities às 17:30 BRT (seg-sex)."""
+    """Scheduler automatico: diario 20h BRT, semanal sextas, mensal ultimo dia."""
     import pytz, calendar as _cal
     brt = pytz.timezone('America/Sao_Paulo')
     sent = set()
@@ -11395,20 +10087,8 @@ def _report_scheduler():
             beat('report_scheduler')
             now_brt = datetime.now(brt)
             key_d  = now_brt.strftime('%Y-%m-%d')
-            hour   = now_brt.hour; minute = now_brt.minute; wd = now_brt.weekday()
+            hour   = now_brt.hour; wd = now_brt.weekday()
             last_d = _cal.monthrange(now_brt.year, now_brt.month)[1]
-            # [v10.36] EOD Top Opportunities snapshot — 17:30 BRT, seg-sex
-            if wd < 5 and hour == 17 and minute >= 30:
-                topk = key_d + '-TOPOPPS'
-                if topk not in sent:
-                    sent.add(topk)
-                    try:
-                        _res = snapshot_top_opportunities(get_db, log=log,
-                                                         snapshot_date=now_brt.date(),
-                                                         top_n=10)
-                        log.info(f'[v10.36] top-opps snapshot: {_res}')
-                    except Exception as _e:
-                        log.error(f'[v10.36] top-opps snapshot error: {_e}')
             if hour == 20:
                 if key_d not in sent:
                     sent.add(key_d)
@@ -11636,27 +10316,43 @@ if __name__ == '__main__':
     except Exception as _be:
         log.warning(f'[v3.0] Brain tables creation warning: {_be}')
 
-    # [v10.27] Long Horizon tables (lh_assets, lh_scores, etc.)
+    # [v3.2] Long Horizon + Monthly Picks tables
     try:
         _lh_conn = get_db()
         if _lh_conn:
             from modules.long_horizon.schema import create_long_horizon_tables
             create_long_horizon_tables(_lh_conn)
             _lh_conn.close()
-            log.info('[v10.27] Long Horizon tables created/verified (10 tables)')
+            log.info('[v3.2] Long Horizon tables created/verified (10 tables)')
     except Exception as _lhe:
-        log.warning(f'[v10.27] Long Horizon tables warning: {_lhe}')
+        log.warning(f'[v3.2] Long Horizon tables warning: {_lhe}')
 
-    # [v3.2] Monthly Picks tables (8 tables — modular sleeve)
     try:
         _mp_conn = get_db()
         if _mp_conn:
             from modules.long_horizon.monthly_picks.repositories import create_monthly_picks_tables
             create_monthly_picks_tables(_mp_conn)
             _mp_conn.close()
-            log.info('[v3.2] Monthly Picks tables created/verified (8 tables — modular sleeve)')
+            log.info('[v3.2] Monthly Picks tables created/verified (8 tables)')
     except Exception as _mpe:
         log.warning(f'[v3.2] Monthly Picks tables warning: {_mpe}')
+
+    # [v10.27] Seed sleeve_status = paper_full in mp_config
+    try:
+        _cfg_conn = get_db()
+        if _cfg_conn:
+            _cfg_cur = _cfg_conn.cursor()
+            _cfg_cur.execute("""
+                INSERT INTO mp_config (config_key, config_value)
+                VALUES ('sleeve_status', 'paper_full')
+                ON DUPLICATE KEY UPDATE config_value = 'paper_full'
+            """)
+            _cfg_conn.commit()
+            _cfg_cur.close()
+            _cfg_conn.close()
+            log.info('[v10.27] mp_config sleeve_status seeded to paper_full')
+    except Exception as _cfe:
+        log.warning(f'[v10.27] mp_config seed warning: {_cfe}')
 
     fetch_fx_rates()          # [v10.6-P1-4] FX carregado ANTES de stock — ADR usa USDBRL
     fetch_crypto_prices()
@@ -11664,14 +10360,6 @@ if __name__ == '__main__':
     init_watchlist_table()
     init_trades_tables()
     _record_baseline_if_needed()  # [v10.21] registra BASELINE formal para strategies sem histórico no ledger
-
-    # [v11 Portfolio Accounting — Fase 1/2 SHADOW] -----------------------
-    # Roda migration idempotente + boota engine. SEM afetar caminho crítico.
-    # Flag PORTFOLIO_ENGINE_ACTIVE continua False até Fase 3.
-    try:
-        _portfolio_v11_boot()
-    except Exception as _e:
-        log.error(f'[v11] boot falhou (shadow mode, não afeta critical path): {_e}')
 
     # [v10.22] Initialize institutional modules
     ext_kill_switch.init_table(get_db)

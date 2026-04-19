@@ -368,6 +368,7 @@ function renderTabs() {
   const el = document.getElementById('tabs-bar');
   const allTabs = [
     { key:'overview', label:'Visão Geral' },
+    { key:'proposals', label:'Propostas 🌙' },
     { key:'learning', label:'Aprendizado' },
     { key:'patterns', label:'Padrões' },
     { key:'regime', label:'Regime' },
@@ -391,6 +392,7 @@ function renderTabContent() {
   const el = document.getElementById('tab-content');
   switch(state.activeTab) {
     case 'overview': el.innerHTML = renderOverview(); break;
+    case 'proposals': renderProposals(el); break;
     case 'learning': el.innerHTML = renderLearning(); break;
     case 'patterns': el.innerHTML = renderPatterns(); break;
     case 'regime': el.innerHTML = renderRegime(); break;
@@ -1009,6 +1011,178 @@ function statCard(label, value, sub, color) {
     <div class="stat-value" style="color:${color}">${value}</div>
     <div class="stat-sub">${sub}</div>
   </div>`;
+}
+
+// ─── Proposals Tab (Nightly Analyst) ────────────────────────────
+const _PROP_API = 'https://diligent-spirit-production.up.railway.app';
+
+async function renderProposals(container) {
+  container.innerHTML = '<div style="padding:40px;text-align:center;color:#8fa3be;font-family:monospace">Carregando propostas do Nightly Analyst…</div>';
+  try {
+    const resp = await fetch(`${_PROP_API}/api/brain/proposals?status=pending&limit=50`);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const props = data.proposals || data.items || data || [];
+    container.innerHTML = _buildProposalsUI(Array.isArray(props) ? props : []);
+  } catch (err) {
+    container.innerHTML = `<div style="padding:40px;text-align:center;color:#e74c3c">
+      <div style="font-size:14px;margin-bottom:12px">Falha ao carregar propostas</div>
+      <div style="font-family:monospace;font-size:11px">${err.message}</div>
+      <button onclick="renderProposals(document.getElementById('tab-content'))"
+              style="margin-top:16px;padding:8px 16px;background:rgba(184,151,58,0.15);
+                     border:1px solid rgba(184,151,58,0.4);color:#b8973a;
+                     cursor:pointer;font-family:monospace;font-size:11px">Tentar de novo</button>
+    </div>`;
+  }
+}
+
+function _buildProposalsUI(props) {
+  const header = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;padding:16px 20px;background:var(--navy2);border:1px solid var(--line);border-radius:4px">
+      <div>
+        <div style="font-family:'EB Garamond',serif;font-size:22px;color:var(--white)">Propostas do Nightly Analyst</div>
+        <div style="font-family:monospace;font-size:10px;color:var(--text3);letter-spacing:.15em;text-transform:uppercase;margin-top:4px">
+          ${props.length} aguardando aprovação · Gerado por Claude Opus 4.7 às 23h BRT
+        </div>
+      </div>
+      <button onclick="_triggerNightly()"
+              style="padding:10px 20px;background:linear-gradient(180deg,rgba(184,151,58,0.15),rgba(184,151,58,0.08));
+                     border:1px solid rgba(184,151,58,0.4);color:#b8973a;cursor:pointer;
+                     font-family:monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase">
+        🌙 Disparar Nightly Agora
+      </button>
+    </div>`;
+
+  if (props.length === 0) {
+    return header + `<div style="padding:60px;text-align:center;color:var(--text3);font-family:monospace;font-size:12px">
+      Nenhuma proposta pendente no momento.<br>
+      <span style="opacity:0.7">Próxima execução automática: 23:02 BRT</span>
+    </div>`;
+  }
+
+  const sevIcon = { CRITICAL:'🔴', HIGH:'🟠', MEDIUM:'🟡', LOW:'🟢' };
+  const sevColor = { CRITICAL:'#e74c3c', HIGH:'#e67e22', MEDIUM:'#f1c40f', LOW:'#2ecc71' };
+
+  const cards = props.map(p => {
+    const sev = p.severity || 'MEDIUM';
+    const icon = sevIcon[sev] || '⚪';
+    const color = sevColor[sev] || '#8fa3be';
+    const cat = p.category || 'tuning';
+    const createdAt = p.created_at ? new Date(p.created_at).toLocaleString('pt-BR') : '—';
+    const evidenceStr = p.evidence ? JSON.stringify(p.evidence, null, 2) : '';
+    return `
+    <div style="background:var(--navy2);border:1px solid var(--line);border-left:3px solid ${color};
+                border-radius:4px;padding:20px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:16px;margin-bottom:12px">
+        <div style="flex:1">
+          <div style="font-family:'EB Garamond',serif;font-size:17px;color:var(--white);margin-bottom:4px">
+            ${icon} ${_esc(p.title || '(sem título)')}
+          </div>
+          <div style="font-family:monospace;font-size:9px;color:var(--text3);letter-spacing:.15em;text-transform:uppercase">
+            #${p.id} · ${cat} · severidade ${sev} · criado ${createdAt}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-shrink:0">
+          <button onclick="_approveProposal(${p.id}, this)"
+                  style="padding:8px 16px;background:rgba(46,204,113,0.12);border:1px solid rgba(46,204,113,0.4);
+                         color:#2ecc71;cursor:pointer;font-family:monospace;font-size:10px;
+                         letter-spacing:.1em;text-transform:uppercase">✓ Aprovar</button>
+          <button onclick="_rejectProposal(${p.id}, this)"
+                  style="padding:8px 16px;background:rgba(231,76,60,0.12);border:1px solid rgba(231,76,60,0.4);
+                         color:#e74c3c;cursor:pointer;font-family:monospace;font-size:10px;
+                         letter-spacing:.1em;text-transform:uppercase">✗ Rejeitar</button>
+        </div>
+      </div>
+      ${_propField('Estado atual', p.current_state)}
+      ${_propField('Mudança proposta', p.proposed_change)}
+      ${_propField('Racional', p.rationale)}
+      ${_propField('Impacto esperado', p.expected_impact)}
+      ${evidenceStr && evidenceStr !== '{}' ? `
+        <details style="margin-top:12px">
+          <summary style="cursor:pointer;font-family:monospace;font-size:10px;color:var(--text3);letter-spacing:.1em;text-transform:uppercase">Evidence (dados)</summary>
+          <pre style="background:rgba(0,0,0,0.3);padding:12px;margin-top:8px;font-size:10px;
+                      color:var(--text2);overflow:auto;max-height:200px;border-radius:3px">${_esc(evidenceStr)}</pre>
+        </details>
+      ` : ''}
+    </div>`;
+  }).join('');
+
+  return header + cards;
+}
+
+function _propField(label, value) {
+  if (!value) return '';
+  return `<div style="margin-top:10px">
+    <div style="font-family:monospace;font-size:9px;color:var(--text3);letter-spacing:.15em;text-transform:uppercase;margin-bottom:4px">${label}</div>
+    <div style="color:var(--text);font-size:13px;line-height:1.5">${_esc(value)}</div>
+  </div>`;
+}
+
+function _esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+async function _approveProposal(id, btn) {
+  const key = prompt('Cole sua X-API-Key para aprovar (necessária para autenticar):');
+  if (!key) return;
+  btn.disabled = true; btn.textContent = '…aprovando';
+  try {
+    const r = await fetch(`${_PROP_API}/api/brain/proposals/${id}/approve`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'X-API-Key': key},
+      body: JSON.stringify({approved_by: 'dashboard'})
+    });
+    const j = await r.json();
+    if (r.ok) {
+      alert('✓ Proposta #' + id + ' aprovada.');
+      renderProposals(document.getElementById('tab-content'));
+    } else {
+      alert('Falha: ' + (j.error || r.status));
+      btn.disabled = false; btn.textContent = '✓ Aprovar';
+    }
+  } catch (e) {
+    alert('Erro: ' + e.message);
+    btn.disabled = false; btn.textContent = '✓ Aprovar';
+  }
+}
+
+async function _rejectProposal(id, btn) {
+  const key = prompt('Cole sua X-API-Key para rejeitar:');
+  if (!key) return;
+  const reason = prompt('Motivo da rejeição (opcional):') || '';
+  btn.disabled = true; btn.textContent = '…rejeitando';
+  try {
+    const r = await fetch(`${_PROP_API}/api/brain/proposals/${id}/reject`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'X-API-Key': key},
+      body: JSON.stringify({rejected_by: 'dashboard', reason})
+    });
+    const j = await r.json();
+    if (r.ok) {
+      alert('✗ Proposta #' + id + ' rejeitada.');
+      renderProposals(document.getElementById('tab-content'));
+    } else {
+      alert('Falha: ' + (j.error || r.status));
+      btn.disabled = false; btn.textContent = '✗ Rejeitar';
+    }
+  } catch (e) {
+    alert('Erro: ' + e.message);
+    btn.disabled = false; btn.textContent = '✗ Rejeitar';
+  }
+}
+
+async function _triggerNightly() {
+  const key = prompt('Cole sua X-API-Key para disparar o Nightly (demora ~60s):');
+  if (!key) return;
+  alert('Disparado. Relatório + novas propostas vão aparecer em ~1-2 min. Recarregue esta tela.');
+  try {
+    await fetch(`${_PROP_API}/api/brain/nightly/run`, {
+      method: 'POST', headers: {'X-API-Key': key}
+    });
+  } catch (e) { /* fire and forget */ }
 }
 
 // ─── Init ───────────────────────────────────────────────────────

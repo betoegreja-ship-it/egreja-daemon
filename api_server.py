@@ -8776,6 +8776,68 @@ def ops_alerts_v1023():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# ── [v10.52] Proxy endpoints para o Egreja Brain ─────────────────
+# Frontend nao chama o brain direto (evita expor BRAIN_API_KEY no
+# browser). Proxy roda aqui com a key server-side.
+_BRAIN_URL = os.environ.get('BRAIN_URL', '').rstrip('/')
+_BRAIN_API_KEY = os.environ.get('BRAIN_API_KEY', '')
+
+def _brain_request(method: str, path: str, **kwargs):
+    """Chama o brain com auth, retorna (status_code, json_body)."""
+    if not _BRAIN_URL or not _BRAIN_API_KEY:
+        return 503, {'error': 'brain not configured (BRAIN_URL/BRAIN_API_KEY)'}
+    url = f'{_BRAIN_URL}{path}'
+    headers = kwargs.pop('headers', {}) or {}
+    headers['X-API-Key'] = _BRAIN_API_KEY
+    try:
+        r = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+        try: body = r.json()
+        except Exception: body = {'raw': r.text[:500]}
+        return r.status_code, body
+    except Exception as e:
+        return 502, {'error': f'{type(e).__name__}: {e}'}
+
+
+@app.route('/api/brain/proposals', methods=['GET'])
+def brain_proposals_list():
+    """Lista propostas do Nightly Analyst (passthrough do brain)."""
+    status_arg = request.args.get('status', 'pending')
+    limit = request.args.get('limit', '50')
+    code, body = _brain_request('GET', f'/llm/proposals?status={status_arg}&limit={limit}')
+    return jsonify(body), code
+
+
+@app.route('/api/brain/proposals/<int:pid>/approve', methods=['POST'])
+@require_auth
+def brain_proposal_approve(pid):
+    data = request.get_json(silent=True) or {}
+    code, body = _brain_request('POST', f'/llm/proposals/{pid}/approve', json=data)
+    return jsonify(body), code
+
+
+@app.route('/api/brain/proposals/<int:pid>/reject', methods=['POST'])
+@require_auth
+def brain_proposal_reject(pid):
+    data = request.get_json(silent=True) or {}
+    code, body = _brain_request('POST', f'/llm/proposals/{pid}/reject', json=data)
+    return jsonify(body), code
+
+
+@app.route('/api/brain/nightly/run', methods=['POST'])
+@require_auth
+def brain_nightly_run():
+    """Dispara Nightly Analyst manualmente (passthrough)."""
+    code, body = _brain_request('POST', '/llm/nightly/run')
+    return jsonify(body), code
+
+
+@app.route('/api/brain/status', methods=['GET'])
+def brain_status():
+    """Status dos workers do brain (passthrough)."""
+    code, body = _brain_request('GET', '/llm/status')
+    return jsonify(body), code
+
+
 @app.route('/ops/rehydrate-ledger', methods=['POST'])
 @require_auth
 def ops_rehydrate_ledger():

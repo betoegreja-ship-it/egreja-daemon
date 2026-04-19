@@ -8776,6 +8776,195 @@ def ops_alerts_v1023():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/ops/rehydrate-ledger', methods=['POST'])
+@require_auth
+def ops_rehydrate_ledger():
+    """[v10.52] Rehidrata capital_ledger retroativamente a partir das tabelas
+    de trades. Resolve o problema onde ledger foi introduzido em v10.20 e
+    trades anteriores nao foram instrumentados — replay divergia da memoria.
+
+    Query params:
+      commit=1       : commita; sem isso roda em dry-run (default)
+      strategy=X     : stocks|crypto|arbi|all (default all)
+
+    Algoritmo por strategy:
+      1. Ler trades ordenados por opened_at
+      2. BASELINE no timestamp do primeiro trade com amount=initial
+      3. Para cada trade OPEN: RESERVE em opened_at
+      4. Para cada trade CLOSED: RESERVE em opened_at + RELEASE + PNL_CREDIT em closed_at
+      5. Validar: balance replay deve bater com memory_capital (tolerancia 0.01%)
+      6. Se commit=1 e validacao passa: DELETE ledger rows dessa strategy + INSERT eventos novos
+      7. Limpa _capital_ledger em memoria (eventos runtime pos-deploy) para nao duplicar
+    """
+    commit_mode = request.args.get('commit', '0') == '1'
+    strategy_filter = request.args.get('strategy', 'all').lower()
+
+    if strategy_filter not in ('all', 'stocks', 'crypto', 'arbi'):
+        return jsonify({'error': 'strategy deve ser all|stocks|crypto|arbi'}), 400
+
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'db unavailable'}), 503
+
+    strategies = []
+    if strategy_filter in ('all', 'stocks'):
+        strategies.append(('stocks', INITIAL_CAPITAL_STOCKS, stocks_capital))
+    if strategy_filter in ('all', 'crypto'):
+        strategies.append(('crypto', INITIAL_CAPITAL_CRYPTO, crypto_capital))
+    if strategy_filter in ('all', 'arbi'):
+        strategies.append(('arbi', ARBI_CAPITAL, arbi_capital))
+
+    results = {}
+    with state_lock:
+        for strat_name, initial, memory_cap in strategies:
+            try:
+                results[strat_name] = _rehydrate_ledger_one(
+                    conn, strat_name, initial, memory_cap, commit_mode)
+            except Exception as e:
+                results[strat_name] = {'error': f'{type(e).__name__}: {e}'}
+                log.error(f'rehydrate {strat_name}: {e}')
+                import traceback; log.error(traceback.format_exc())
+
+    return jsonify({
+        'commit_mode': commit_mode,
+        'hint': 'Use ?commit=1 para aplicar. Sem isso, apenas simula (dry-run).',
+        'strategies': results,
+    })
+
+
+def _rehydrate_ledger_one(conn, strategy: str, initial: float,
+                           memory_capital: float, commit_mode: bool) -> dict:
+    """Rehidrata ledger de uma strategy. Retorna resumo com validacao."""
+    # Determina tabela e coluna de tamanho
+    if strategy == 'arbi':
+        table = 'arbi_trades'
+        size_col = 'position_size'
+        asset_filter = ''
+    elif strategy == 'stocks':
+        table = 'trades'
+        size_col = 'position_value'
+        asset_filter = "WHERE asset_type='stock'"
+    elif strategy == 'crypto':
+        table = 'trades'
+        size_col = 'position_value'
+        asset_filter = "WHERE asset_type='crypto'"
+    else:
+        return {'error': f'strategy invalida: {strategy}'}
+
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        f"SELECT id, status, opened_at, closed_at, {size_col} AS amt, pnl "
+        f"FROM {table} {asset_filter} "
+        f"ORDER BY opened_at ASC, id ASC"
+    )
+    trades = cur.fetchall()
+    cur.close()
+
+    if not trades:
+        return {'strategy': strategy, 'trades': 0, 'events_generated': 0,
+                'message': 'sem trades — ledger fica vazio'}
+
+    # Construir eventos
+    events = []
+    balance = float(initial)
+    first_ts = trades[0]['opened_at']
+
+    # BASELINE (idempotencia: trade_id='BASELINE', unique constraint pega)
+    events.append({
+        'ts': first_ts, 'event': 'BASELINE', 'symbol': 'SYSTEM',
+        'amount': balance, 'balance_after': balance, 'trade_id': 'BASELINE'
+    })
+
+    for t in trades:
+        amt = float(t.get('amt') or 0)
+        pnl = float(t.get('pnl') or 0)
+        tid = str(t.get('id', ''))
+        opened_at = t.get('opened_at')
+        closed_at = t.get('closed_at')
+        status = (t.get('status') or '').upper()
+
+        # RESERVE na abertura
+        balance -= amt
+        events.append({
+            'ts': opened_at, 'event': 'RESERVE', 'symbol': tid[:20],
+            'amount': amt, 'balance_after': balance, 'trade_id': tid
+        })
+
+        # Se fechado: RELEASE + PNL_CREDIT
+        if status == 'CLOSED' and closed_at is not None:
+            balance += amt
+            events.append({
+                'ts': closed_at, 'event': 'RELEASE', 'symbol': tid[:20],
+                'amount': amt, 'balance_after': balance, 'trade_id': tid
+            })
+            if pnl != 0:
+                balance += pnl
+                events.append({
+                    'ts': closed_at, 'event': 'PNL_CREDIT', 'symbol': tid[:20],
+                    'amount': pnl, 'balance_after': balance, 'trade_id': tid
+                })
+
+    # Validacao: balance deve bater com memory_capital (tolerancia absoluta)
+    delta = memory_capital - balance
+    delta_pct = abs(delta) / max(abs(initial), 1) * 100
+    ok = abs(delta) < 1.0  # 1 USD de tolerancia (arredondamento)
+
+    summary = {
+        'strategy': strategy,
+        'initial': round(float(initial), 2),
+        'trades_scanned': len(trades),
+        'events_generated': len(events),
+        'replayed_balance': round(balance, 2),
+        'memory_capital': round(float(memory_capital), 2),
+        'delta': round(delta, 2),
+        'delta_pct': round(delta_pct, 4),
+        'ok': ok,
+    }
+
+    if not commit_mode:
+        summary['action'] = 'DRY_RUN'
+        return summary
+
+    if not ok:
+        summary['action'] = 'ABORTED'
+        summary['reason'] = (
+            f'replay balance ({balance:.2f}) nao bate com memory '
+            f'({memory_capital:.2f}); delta={delta:.2f}. '
+            f'Nao foi commitado — capital em memoria pode ter drift real.'
+        )
+        return summary
+
+    # Commit: DELETE + INSERT batch
+    cur2 = conn.cursor()
+    try:
+        cur2.execute("DELETE FROM capital_ledger WHERE strategy=%s", (strategy,))
+        deleted = cur2.rowcount
+        for e in events:
+            cur2.execute(
+                """INSERT INTO capital_ledger
+                   (ts, strategy, event, symbol, amount, balance_after, trade_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (e['ts'], strategy, e['event'], e['symbol'],
+                 e['amount'], e['balance_after'], e['trade_id'])
+            )
+        conn.commit()
+        # Limpar memoria do strategy — proximo replay vai do DB
+        with _ledger_lock:
+            _capital_ledger[:] = [ev for ev in _capital_ledger
+                                   if ev.get('strategy') != strategy]
+        summary['action'] = 'COMMITTED'
+        summary['events_deleted'] = deleted
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        summary['action'] = 'FAILED'
+        summary['error'] = f'{type(e).__name__}: {e}'
+    finally:
+        cur2.close()
+
+    return summary
+
+
 @app.route('/kill-switch/safe-resume', methods=['POST'])
 @require_auth
 def kill_switch_safe_resume_v1023():

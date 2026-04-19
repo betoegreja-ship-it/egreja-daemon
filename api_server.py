@@ -742,6 +742,11 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'interlisted_hedged_scan_loop': 300,
     # [v10.35] Derivatives paper monitoring loop (beats every ~15s)
     'deriv_monitor_loop': 120,
+    # [v10.52] Workers de cadencia longa — heartbeats raros por design
+    'brain_hourly_reminder': 3900,   # roda 1x/hora + beat a cada minuto
+    'monthly_picks_worker':  7200,   # 2h — loop external com logica mensal/semanal
+    'arbi_learning_loop':    600,    # 10min — sleep de 5min entre passes
+    'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -7064,13 +7069,28 @@ def run_arbi_pattern_learning():
         except: pass
 
 def arbi_learning_loop():
-    """[v10.14] Loop de aprendizado de arbi — roda a cada 30 minutos."""
-    time.sleep(120)  # aguardar startup
-    beat('arbi_learning_loop')
-    run_arbi_pattern_learning()
-    while True:
+    """[v10.14] Loop de aprendizado de arbi — roda a cada 5 minutos.
+
+    [v10.52] Startup sleep 120s e gap de 5min entre passes eram maiores
+    que o heartbeat timeout (120s default) — watchdog considerava
+    frozen. Agora sleep e quebrado em chunks de 30s com beat em cada,
+    mantendo vigilancia continua.
+    """
+    # Startup delay em chunks com beat
+    for _ in range(4):  # 4 x 30s = 120s total
         beat('arbi_learning_loop')
-        time.sleep(5 * 60)   # [v10.14] a cada 5 minutos — detecta padrões rápido
+        time.sleep(30)
+    beat('arbi_learning_loop')
+    try:
+        run_arbi_pattern_learning()
+    except Exception as e:
+        log.error(f'arbi_learning_loop initial: {e}')
+
+    while True:
+        # Sleep 5min em chunks de 30s com beat — watchdog vigilante
+        for _ in range(10):  # 10 x 30s = 300s = 5min
+            beat('arbi_learning_loop')
+            time.sleep(30)
         beat('arbi_learning_loop')
         try:
             run_arbi_pattern_learning()
@@ -10792,7 +10812,27 @@ def report_send(period):
 def _monthly_picks_worker():
     """[v3.2] Monthly Picks Sleeve — scan mensal + review semanal + discovery.
     Delega para scheduler_hooks.monthly_picks_worker() (modular).
+
+    [v10.52] O worker externo nao chama beat(). Rodamos um thread
+    batedor paralelo que sinaliza heartbeat a cada 60s, evitando
+    falso-frozen no watchdog. O worker externo em si continua
+    gerenciando seu proprio schedule interno.
     """
+    import threading as _th
+
+    # Thread batedor: bate heartbeat continuamente enquanto o worker
+    # externo roda. Daemon=True para nao segurar shutdown.
+    _stop = _th.Event()
+    def _heartbeat_pinger():
+        while not _stop.is_set():
+            try: beat('monthly_picks_worker')
+            except Exception: pass
+            _stop.wait(60)
+    pinger = _th.Thread(target=_heartbeat_pinger,
+                        daemon=True,
+                        name='mp-pinger')
+    pinger.start()
+
     try:
         from modules.long_horizon.monthly_picks.scheduler_hooks import monthly_picks_worker
         monthly_picks_worker(
@@ -10804,6 +10844,8 @@ def _monthly_picks_worker():
         log.error(f'[MonthlyPicks] Worker import/start error: {e}')
         import traceback
         log.error(traceback.format_exc())
+    finally:
+        _stop.set()
 
 
 def _brain_hourly_reminder():
@@ -10842,6 +10884,10 @@ def _brain_hourly_reminder():
     brt = pytz.timezone('America/Sao_Paulo')
     last_hour = -1
     while True:
+        # [v10.52] Faltava beat — watchdog considerava worker frozen apos
+        # 120s (default HB timeout) mesmo o worker estando vivo, apenas
+        # dormindo entre lembretes horarios.
+        beat('brain_hourly_reminder')
         try:
             now = datetime.now(brt)
             if now.hour != last_hour:

@@ -793,7 +793,14 @@ DYNAMIC_TIMEOUT_MAX_H     = float(os.environ.get('DYNAMIC_TIMEOUT_MAX_H', 6.0)) 
 CALIBRATION_PERSIST_INTERVAL = int(os.environ.get('CALIBRATION_PERSIST_INTERVAL', 300))  # 5 min
 # ── [v10.18] Reconciliation ─────────────────────────────────────────────
 RECONCILIATION_INTERVAL_S    = int(os.environ.get('RECONCILIATION_INTERVAL_S', 600))     # 10 min
-RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))    # alertar se >2% desvio
+RECONCILIATION_ALERT_PCT     = float(os.environ.get('RECONCILIATION_ALERT_PCT', 2.0))    # alertar se >2% desvio (camada 1: formula)
+# [v10.52] Threshold dedicado para camada 2 (ledger replay). Ledger foi
+# introduzido em v10.20 — trades anteriores NAO foram retroativamente
+# registrados no ledger, entao replay sempre diverge da memoria por
+# historico incompleto (falso positivo). Default 100% = nao alerta
+# enquanto nao tiver ferramenta de rehidratacao. Camada 1 continua
+# estrita em 2% para alertas reais.
+RECONCILIATION_LEDGER_ALERT_PCT = float(os.environ.get('RECONCILIATION_LEDGER_ALERT_PCT', 100.0))
 # ── [v10.18] Crypto conviction filter ───────────────────────────────────
 CRYPTO_MIN_CONVICTION        = float(os.environ.get('CRYPTO_MIN_CONVICTION', 52))        # [v10.24] era 58 — muito restritivo, bloqueava quase tudo em mercado lateral
 CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 180))         # [v10.46.6] 15→180min — era muito agressivo, matava trades boas do v3
@@ -2653,7 +2660,10 @@ def _reconcile_via_ledger(strategy: str, initial: float, memory_capital: float) 
         'source': source,
         'delta': round(delta, 2),
         'delta_pct': round(delta_pct, 4),
-        'ok': delta_pct < RECONCILIATION_ALERT_PCT,
+        # [v10.52] Usa threshold dedicado da camada 2 (ledger). Menos
+        # estrito que camada 1 para evitar falsos positivos de historico
+        # pre-v10.20 nao rehidratado.
+        'ok': delta_pct < RECONCILIATION_LEDGER_ALERT_PCT,
         'ts': datetime.utcnow().isoformat(),
     }
 
@@ -4734,6 +4744,12 @@ def init_trades_tables():
             if not at.get('fee_estimated'):
                 at['market']='ARBI'; apply_fee_to_trade(at)
             arbi_closed.append(at)
+            # [v10.52-FIX] Arbi capital nao estava recebendo PnL realizado
+            # ao recarregar do DB — linhas 4722 (stocks) e 4727 (crypto)
+            # faziam isso, mas arbi foi esquecido. Por isso RECON-ALERT
+            # disparava com memory=$3M (baseline) vs calc=$3M+realized_pnl.
+            # Ajusta capital para refletir historico de trades fechados.
+            arbi_capital += float(at.get('pnl') or 0)
         # [v10.9] Carregar runtime settings do banco
         try:
             global MIN_SCORE_AUTO, TRAILING_TRIGGER_PCT, STOCK_SL_PCT  # [FIX] declarar globals antes de atribuir
@@ -7771,16 +7787,32 @@ def watchdog():
             fn=thread_fns.get(name)
             if fn:
                 try:
-                    # [v10.14-FIX] Verificar limite de threads antes de criar novo
+                    # [v10.52] Thread limit — era 45 (falso alarme).
+                    # O daemon tem ~32 workers legitimos (21 main + 11
+                    # derivatives). Flask/waitress + Cedro socket reader +
+                    # pool MySQL + threads de IO somam ~15 extras.
+                    # Total saudavel ~47. Limite de 45 disparava alerta
+                    # em estado NORMAL do sistema. Comentario antigo
+                    # 'padrao Python = 50' estava errado — Python nao tem
+                    # limite inerente, Linux permite 4000+ threads/processo.
+                    # Novo limite: 150 (acomoda 3x saudavel, ainda bloqueia
+                    # runaway legitimo). Configuravel via env var.
                     import threading as _th
                     active = _th.active_count()
-                    if active > 45:  # limite seguro (padrão Python = 50)
-                        log.error(f'WATCHDOG: {name} NÃO reiniciada — threads ativos={active} (limite atingido)')
-                        send_whatsapp(f'CRITICO: thread starvation! {active} threads ativos. Reiniciar o serviço.')
+                    thread_limit = int(os.environ.get('WATCHDOG_THREAD_LIMIT', '150'))
+                    if active > thread_limit:
+                        # Lista threads ativas para diagnostico
+                        try:
+                            names = sorted([t.name for t in _th.enumerate() if t.is_alive()])
+                            names_sample = ', '.join(names[:10]) + (f', +{len(names)-10} mais' if len(names) > 10 else '')
+                        except Exception:
+                            names_sample = '(erro listando)'
+                        log.error(f'WATCHDOG: {name} NAO reiniciada — threads ativos={active}/{thread_limit} (limite). Amostra: {names_sample}')
+                        send_whatsapp(f'CRITICO: thread starvation! {active}/{thread_limit} threads ativos. Reiniciar o serviço.')
                         # Marcar heartbeat para não tentar de novo em loop
                         thread_heartbeat[name] = time.time()
                     else:
-                        new_t=threading.Thread(target=fn,daemon=True); new_t.start()
+                        new_t=threading.Thread(target=fn,daemon=True,name=f'wdg-{name}'); new_t.start()
                         thread_health[name]=new_t
                         thread_restart_count[name]=count+1
                         thread_last_restart[name]=now

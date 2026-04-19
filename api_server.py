@@ -8927,24 +8927,54 @@ def _run_v11_migration_if_needed():
             return
 
         with open(migration_path) as f:
-            sql_text = f.read()
+            sql_text_raw = f.read()
+        # Remove comentários (linhas iniciadas com --) ANTES de splitar — caso
+        # contrário ';' dentro de texto em português quebra o parser.
+        sql_lines = []
+        for ln in sql_text_raw.split('\n'):
+            stripped = ln.lstrip()
+            if stripped.startswith('--'):
+                continue
+            sql_lines.append(ln)
+        sql_text = '\n'.join(sql_lines)
         cur = conn.cursor()
-        # Executa statements separados por ; (excluindo comentários e vazios)
-        stmts = [s.strip() for s in sql_text.split(';') if s.strip() and not s.strip().startswith('--')]
+        stmts = [s.strip() for s in sql_text.split(';') if s.strip()]
         applied = 0
+        skipped = 0
         for stmt in stmts:
             try:
                 cur.execute(stmt)
                 applied += 1
             except Exception as se:
                 msg = str(se).lower()
-                # Ignora erros de already-exists (migração idempotente)
-                if 'duplicate' in msg or 'exists' in msg or 'check that column' in msg:
+                # Ignora erros esperados em migração idempotente:
+                # - duplicate column/index/key
+                # - table already exists
+                # - check that column/key exists
+                # - 'IF NOT EXISTS' não suportado em versão antiga → retry sem
+                if any(k in msg for k in ('duplicate', 'already exists',
+                                           'check that column', 'check that key')):
+                    skipped += 1
                     continue
-                log.warning(f'[v11] migration stmt falhou: {se}')
+                if 'if not exists' in stmt.lower():
+                    # Versão MySQL antiga — remove IF NOT EXISTS e tenta de novo
+                    stmt_fallback = stmt.replace('IF NOT EXISTS ', '').replace('if not exists ', '')
+                    try:
+                        cur.execute(stmt_fallback)
+                        applied += 1
+                        continue
+                    except Exception as se2:
+                        msg2 = str(se2).lower()
+                        if any(k in msg2 for k in ('duplicate', 'already exists',
+                                                    'check that column', 'check that key')):
+                            skipped += 1
+                            continue
+                        log.warning(f'[v11] migration fallback falhou: {se2}')
+                        continue
+                log.warning(f'[v11] migration stmt falhou: {str(se)[:200]}')
         conn.commit()
         cur.close()
-        log.info(f'[v11] migration 011 aplicada: {applied} statements')
+        log.info(f'[v11] migration 011: {applied} aplicados, {skipped} idempotentes')
     finally:
         try: conn.close()
         except Exception: pass

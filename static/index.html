@@ -3242,67 +3242,17 @@ function toggleVal(id) {
 
 
 
-<!-- ═══ [tv] TRADINGVIEW TICKER TAPE (widget oficial) ═══ -->
-<style id="tv-ticker-styles">
-  /* Container do ticker TradingView: primeira linha, topo absoluto */
-  #tv-ticker-wrap{position:fixed;left:0;right:0;top:0;z-index:250;
-    height:44px;background:#0a1628;border-bottom:1px solid rgba(184,151,58,0.35);
-    overflow:hidden}
-  #tv-ticker-wrap .tradingview-widget-container{height:44px !important}
-  #tv-ticker-wrap .tradingview-widget-container__widget{height:44px !important}
-  #tv-ticker-wrap iframe{height:44px !important}
-</style>
+<!-- ═══ [tv] TICKER TAPE DUPLICADO REMOVIDO ═══
+  Havia dois blocos <div id="tv-ticker-wrap"> neste arquivo — este
+  aqui (32 símbolos, commit 9fe1015) e outro mais abaixo (31 símbolos,
+  commit f3ab579). IDs duplicados: ambos os widgets TradingView
+  carregavam, um caía no fluxo normal do body e aparecia no RODAPÉ
+  (com NVDA, XRP, BBAS3, TSLA, ADA visíveis), empurrando o body pra
+  baixo e quebrando o scroll da overview.
 
-<div id="tv-ticker-wrap">
-  <div class="tradingview-widget-container">
-    <div class="tradingview-widget-container__widget"></div>
-  </div>
-</div>
-
-<script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
-{
-  "symbols": [
-    {"description":"BTC","proName":"BINANCE:BTCUSDT"},
-    {"description":"PETR4","proName":"BMFBOVESPA:PETR4"},
-    {"description":"ETH","proName":"BINANCE:ETHUSDT"},
-    {"description":"VALE3","proName":"BMFBOVESPA:VALE3"},
-    {"description":"AAPL","proName":"NASDAQ:AAPL"},
-    {"description":"ITUB4","proName":"BMFBOVESPA:ITUB4"},
-    {"description":"SOL","proName":"BINANCE:SOLUSDT"},
-    {"description":"BBDC4","proName":"BMFBOVESPA:BBDC4"},
-    {"description":"MSFT","proName":"NASDAQ:MSFT"},
-    {"description":"ABEV3","proName":"BMFBOVESPA:ABEV3"},
-    {"description":"BNB","proName":"BINANCE:BNBUSDT"},
-    {"description":"WEGE3","proName":"BMFBOVESPA:WEGE3"},
-    {"description":"NVDA","proName":"NASDAQ:NVDA"},
-    {"description":"XRP","proName":"BINANCE:XRPUSDT"},
-    {"description":"BBAS3","proName":"BMFBOVESPA:BBAS3"},
-    {"description":"TSLA","proName":"NASDAQ:TSLA"},
-    {"description":"ADA","proName":"BINANCE:ADAUSDT"},
-    {"description":"RENT3","proName":"BMFBOVESPA:RENT3"},
-    {"description":"AMZN","proName":"NASDAQ:AMZN"},
-    {"description":"DOGE","proName":"BINANCE:DOGEUSDT"},
-    {"description":"LREN3","proName":"BMFBOVESPA:LREN3"},
-    {"description":"GOOGL","proName":"NASDAQ:GOOGL"},
-    {"description":"AVAX","proName":"BINANCE:AVAXUSDT"},
-    {"description":"META","proName":"NASDAQ:META"},
-    {"description":"USD/BRL","proName":"FX_IDC:USDBRL"},
-    {"description":"EUR/BRL","proName":"FX_IDC:EURBRL"},
-    {"description":"IBOV","proName":"BMFBOVESPA:IBOV"},
-    {"description":"SPY","proName":"AMEX:SPY"},
-    {"description":"LINK","proName":"BINANCE:LINKUSDT"},
-    {"description":"DOT","proName":"BINANCE:DOTUSDT"},
-    {"description":"MATIC","proName":"BINANCE:MATICUSDT"},
-    {"description":"LTC","proName":"BINANCE:LTCUSDT"}
-  ],
-  "showSymbolLogo": true,
-  "isTransparent": false,
-  "displayMode": "adaptive",
-  "colorTheme": "dark",
-  "locale": "br"
-}
-</script>
-<!-- ═══ fim [tv] TRADINGVIEW TICKER ═══ -->
+  Mantido o bloco v5 mais abaixo (com Dow Jones/Nasdaq 100/Ibov/USD/BRL
+  que é o que aparece no topo funcionando). Este bloco foi removido.
+═══ -->
 
 <!-- ═══ v4 scroll-lock-css REMOVIDO — duplicava v5 e causava cascade ambíguo ═══ -->
 
@@ -3329,11 +3279,19 @@ function toggleVal(id) {
 html, body { margin: 0 }
 body {
   padding-top: 150px;
-  /* SEM overflow:hidden — precisamos deixar body rolar nas páginas que
-     não são overview. min-height:100% apenas para preencher viewport
-     mesmo com pouco conteúdo. */
+  /* SEM overflow:hidden global — precisamos deixar body rolar nas
+     páginas que não são overview. min-height:100% apenas para preencher
+     viewport mesmo com pouco conteúdo. */
   min-height: 100vh;
 }
+
+/* EXCEÇÃO: quando a overview está ativa, body não rola — o scroll é
+   interno do tab-panel. Seletor :has() é suportado em Safari 15.4+
+   e Chrome 105+ (ambos de 2022), então funciona em qualquer browser
+   moderno. Sem isto, se o conteúdo da overview exceder 100vh por
+   qualquer motivo (ex: ticker duplicado, elemento extra), body
+   começa a rolar E tab-panel também, duplicando scroll e confundindo. */
+body:has(#page-overview.active) { overflow: hidden; height: 100vh }
 
 .subbar { border-bottom: 2px solid rgba(184,151,58,0.35) !important }
 

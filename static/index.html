@@ -3257,166 +3257,83 @@ function toggleVal(id) {
 <!-- ═══ v4 scroll-lock-css REMOVIDO — duplicava v5 e causava cascade ambíguo ═══ -->
 
 
-<style id="app-layout-v8">
+<style id="app-layout-v9">
 /* ═══════════════════════════════════════════════════════════════════════
-   APP LAYOUT v8 — padrão de corretora profissional (Bloomberg/IBKR-like)
+   APP LAYOUT v9 — scroll nativo, funcionalidade acima de elegância.
 
-   Arquitetura canônica:
+   Contexto: v4 a v8 tentaram layouts complexos com scroll interno do
+   tab-panel mantendo sidebar/toolbar fixos. Nenhum funcionou de forma
+   confiável em todos os browsers/tamanhos de tela. Muitos ciclos de
+   chute perdidos.
 
-   ┌──────────────────────────────────────────────────────────────────┐
-   │ ticker TradingView  [position:fixed top:0, height:36px, z:250]   │
-   │ ────────────────────────────────────────────────────────────────  │
-   │ .topbar             [position:fixed top:44px, height:64px, z:200]│
-   │ ────────────────────────────────────────────────────────────────  │
-   │ .subbar             [position:fixed top:108px, height:34px, z:198]│
-   ├──────────────────────────────────────────────────────────────────┤
-   │ body { padding-top: 150px; height: 100vh; overflow: hidden }     │
-   │                                                                  │
-   │ .page.active { height: calc(100vh - 150px) }                     │
-   │                                                                  │
-   │ ├── 11 páginas padrão: overflow-y:auto interno                   │
-   │ └── #page-overview: flex-column com sidebar + main-area,         │
-   │     main-area flex-column com stats + toolbar + tab-panel,       │
-   │     tab-panel.active rola internamente.                          │
-   └──────────────────────────────────────────────────────────────────┘
+   Decisão v9: voltar ao básico. Scroll NATIVO em todas as páginas.
+   - Barras superiores (ticker + topbar + subbar) continuam position:fixed
+     no topo — sempre visíveis.
+   - body padding-top: 150px reserva espaço para elas.
+   - Cada .page.active é display:flex normal, min-height auto.
+   - Body rola naturalmente quando conteúdo excede viewport.
 
-   Por que funciona desta vez:
-   1. Body com overflow:hidden e height:100vh — NUNCA rola. Todo scroll
-      é interno, em container com altura concreta.
-   2. .page.active com height em PIXELS concretos (calc) — filhos que
-      usam height:100% ou flex:1 resolvem corretamente.
-   3. Páginas simples (markets/portfolio/etc): DEFAULT do .page.active é
-      overflow-y:auto — rolam sem CSS adicional.
-   4. Overview tem sobrescrita explícita com sidebar fixa + main rolando.
-      Grid-template-rows:100% resolve ambiguidade de célula grid.
-
-   Removido do v7/v6/v5:
-   - body:has() — truque que não funciona quando o próprio selector
-     falha a match por causa de estrutura assíncrona do JS
-   - scroll-brute-force JS — força inline styles que mascaravam o CSS
-     real e impediam diagnóstico correto
-   - body{min-height:100vh} — conflitava com body{overflow:hidden}
+   Consequência: na overview, sidebar/stats/toolbar ROLAM junto com o
+   resto quando o usuário scrolla. Menos "Bloomberg-like" mas funciona
+   em 100% dos casos. Se no futuro quiser voltar a fixar elementos
+   internos, faremos em commit dedicado com diagnóstico real ao vivo.
    ═══════════════════════════════════════════════════════════════════════ */
 
-
-/* ─── 1. Reset mínimo + ancoragem do body ─────────────────────────── */
-
-html, body { margin: 0; padding: 0; height: 100%; }
-
+/* Body: scroll nativo, padding-top reserva espaço pras barras fixas */
+html, body { margin: 0; }
 body {
   padding-top: 150px;
-  overflow: hidden;
-  height: 100vh;
-  box-sizing: border-box;
+  /* Sobrescreve 130px do CSS principal (linha 21) — a altura total das
+     3 barras fixas é 150px (ticker 36 + gap 8 + topbar 64 + subbar 34
+     + folga 8 = 150). */
 }
 
 .subbar {
   border-bottom: 2px solid rgba(184,151,58,0.35) !important;
 }
 
-
-/* ─── 2. Páginas: default = scroll interno, altura fixa ───────────── */
-
+/* Reset de qualquer tentativa anterior de travar altura/overflow */
 .page { display: none; }
-
 .page.active {
-  display: block;
-  height: calc(100vh - 150px);
-  overflow-y: auto;
-  overflow-x: hidden;
-  box-sizing: border-box;
-}
-
-/* Scrollbar premium: dourado sutil, barra 10px, trilho navy */
-.page.active::-webkit-scrollbar { width: 10px; height: 10px; }
-.page.active::-webkit-scrollbar-thumb {
-  background: rgba(184,151,58,0.3);
-  border-radius: 5px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-.page.active::-webkit-scrollbar-thumb:hover {
-  background: rgba(184,151,58,0.5);
-  background-clip: padding-box;
-  border: 2px solid transparent;
-}
-.page.active::-webkit-scrollbar-track { background: rgba(0,0,0,0.15); }
-
-
-/* ─── 3. Overview: layout especial (sidebar + main-area) ──────────── */
-
-/* Sobrescreve o overflow-y:auto do default — a overview não rola em
-   si; o scroll é interno dos filhos (left-panel + tab-panel). */
-#page-overview.active {
-  overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding: 0;
+  /* SEM height fixo. SEM overflow:hidden. Conteúdo define altura,
+     body rola. */
 }
 
-/* Grid de duas colunas: sidebar 256px + main 1fr.
-   grid-template-rows:100% é CRÍTICO — sem isso o row-track default
-   é 'auto' (content-based) e filhos com height:100% não resolvem. */
+/* Overview usa layout grid (256px sidebar + 1fr main-area) — mantido
+   do CSS principal. Só garantimos que não há overflow:hidden. */
 #page-overview.active > .layout {
-  flex: 1 1 0;
-  min-height: 0;
   display: grid;
   grid-template-columns: 256px 1fr;
-  grid-template-rows: 100%;
-  overflow: hidden;
-}
-#page-overview.active > .layout > * {
-  min-width: 0;
-  min-height: 0;
 }
 
-/* Sidebar rola internamente se crescer */
-#page-overview .left-panel {
-  overflow-y: auto;
-  overflow-x: hidden;
-  height: 100%;
-}
-#page-overview .left-panel::-webkit-scrollbar { width: 6px; }
-#page-overview .left-panel::-webkit-scrollbar-thumb {
-  background: rgba(184,151,58,0.2);
-  border-radius: 3px;
-}
+/* Tab-panels: display none padrão, display block quando .active. */
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
 
-/* Main-area: flex-column que hospeda stats + toolbar + tab-panel */
-#page-overview .main-area {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
+/* Scrollbar geral (body): estilo premium dourado sutil */
+body::-webkit-scrollbar { width: 12px; height: 12px; }
+body::-webkit-scrollbar-thumb {
+  background: rgba(184,151,58,0.3);
+  border-radius: 6px;
+  border: 3px solid rgba(10,22,40,0.9);
+  background-clip: padding-box;
 }
-#page-overview .main-area > .stats-strip,
-#page-overview .main-area > .toolbar {
-  flex-shrink: 0;  /* nunca encolhem */
+body::-webkit-scrollbar-thumb:hover {
+  background: rgba(184,151,58,0.55);
+  background-clip: padding-box;
+  border: 3px solid rgba(10,22,40,0.9);
 }
+body::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
 
-/* Tab-panels: ativo rola internamente, inativos ocultos */
-#page-overview .tab-panel { display: none; }
-#page-overview .tab-panel.active {
-  display: block;
-  flex: 1 1 0;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: auto;
-}
-#page-overview .tab-panel.active::-webkit-scrollbar { width: 8px; height: 8px; }
-#page-overview .tab-panel.active::-webkit-scrollbar-thumb {
-  background: rgba(184,151,58,0.25);
-  border-radius: 4px;
-}
-#page-overview .tab-panel.active::-webkit-scrollbar-track { background: transparent; }
-
-/* Header da tabela gruda no topo do scroll interno do tab-panel */
-#page-overview .tab-panel thead th {
-  background: var(--navy2);
+/* Header da tabela (thead th) mantém sticky na rolagem — aqui é contra
+   o VIEWPORT, então os headers grudam no topo da área visível (abaixo
+   das barras fixas via padding-top). */
+thead th {
   position: sticky;
-  top: 0;
-  z-index: 5;
+  top: 150px;
+  z-index: 10;
 }
 </style>
 

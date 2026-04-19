@@ -3307,97 +3307,110 @@ function toggleVal(id) {
 <!-- ═══ v4 scroll-lock-css REMOVIDO — duplicava v5 e causava cascade ambíguo ═══ -->
 
 
-<style id="scroll-v6">
+<style id="scroll-v7">
 /* ═══════════════════════════════════════════════════════════════════════
-   SCROLL v6 — fonte única de verdade. Resolve Trade History/Open Trades/
-   Top Opportunities que não rolavam porque:
-   (a) v4 e v5 coexistiam com regras conflitantes — v5 droppou height da
-       .page.active; (b) .layout era grid sem grid-template-rows, então
-       .main-area{height:100%} não resolvia em altura concreta; (c) a
-       cadeia flex→grid→flex ficava circular sem ancoragem explícita.
-   Correção-chave: grid-template-rows: minmax(0, 1fr) no .layout — dá ao
-   track de grid altura flexível mas limitada ao container, permitindo
-   que .main-area{height:100%} resolva corretamente e cascateie até o
-   .tab-panel.active.
+   SCROLL v7 — ESCOPADO apenas em #page-overview.
+
+   Histórico do bug: v6 aplicava regras de scroll complexo em .page.active
+   global (height:calc, overflow:hidden, display:flex). Mas .tab-panel,
+   .layout e .main-area existem APENAS em #page-overview. Para as outras
+   10 páginas (markets, portfolio, analytics, arbitrage, watchlist,
+   performance, settings, network, crypto/stocks se existirem), o CSS
+   global travava altura e cortava conteúdo sem oferecer scroll interno
+   — efeito: páginas inteiras não rolavam e conteúdo ficava inacessível.
+
+   Regra desta vez: só a overview tem layout especial (sidebar fixa +
+   stats + toolbar de abas fixas + tab-panel rolando). Todas as outras
+   páginas usam scroll nativo do body abaixo das barras fixas.
    ═══════════════════════════════════════════════════════════════════════ */
 
-/* Body trava scroll externo; barras fixas (ticker 0-36, topbar 44-108,
-   subbar 108-142) ocupam os 150px reservados por padding-top. */
-html, body { height: 100%; overflow: hidden; margin: 0 }
-body { padding-top: 150px }
+/* Body com scroll nativo. Padding-top reserva espaço para as 3 barras
+   position:fixed no topo (ticker 0-36, topbar 44-108, subbar 108-142). */
+html, body { margin: 0 }
+body {
+  padding-top: 150px;
+  /* SEM overflow:hidden — precisamos deixar body rolar nas páginas que
+     não são overview. min-height:100% apenas para preencher viewport
+     mesmo com pouco conteúdo. */
+  min-height: 100vh;
+}
 
 .subbar { border-bottom: 2px solid rgba(184,151,58,0.35) !important }
 
-/* .page.active ocupa TODA a área abaixo das barras fixas. Altura
-   concreta em pixels é essencial — sem isto filhos não conseguem
-   resolver height:100%. */
-.page.active {
+/* Páginas genéricas: display natural + scroll natural do body.
+   Nada de altura travada, nada de overflow:hidden no .page. */
+.page { display: none }
+.page.active { display: block }
+
+/* ─────────── OVERVIEW — comportamento especial ───────────
+   Aqui e SÓ aqui temos:
+   - sidebar fixa (.left-panel) à esquerda
+   - stats-strip + toolbar fixos no topo
+   - tab-panel ativo ocupando espaço restante e rolando internamente
+   Ancoragem: #page-overview.active tem altura calculada exata (viewport
+   menos barras fixas), o que cascata pelos filhos até o tab-panel. */
+
+#page-overview.active {
   height: calc(100vh - 150px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-/* .layout é grid 256px + 1fr. A CHAVE é grid-template-rows: minmax(0,1fr):
-   sem isto, linhas de grid default para 'auto' (content-based) e filhos
-   com height:100% ficam indefinidos. minmax(0, 1fr) = ocupa todo espaço
-   disponível mas com mínimo 0 (pode encolher abaixo de content). */
-.page.active > .layout {
+/* .layout é grid 256px + 1fr. grid-template-rows: minmax(0, 1fr) é a
+   peça crítica — sem isto linhas de grid default para 'auto'
+   (content-based) e filhos com height:100% ficam indefinidos. */
+#page-overview.active > .layout {
   flex: 1;
   min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
 }
-.page.active > .layout > * { min-height: 0; min-width: 0 }
+#page-overview.active > .layout > * { min-height: 0; min-width: 0 }
 
-/* Sidebar rola internamente se crescer. */
-.left-panel { overflow-y: auto; overflow-x: hidden }
-.left-panel::-webkit-scrollbar { width: 6px }
-.left-panel::-webkit-scrollbar-thumb {
+/* Sidebar da overview rola internamente se crescer */
+#page-overview .left-panel { overflow-y: auto; overflow-x: hidden }
+#page-overview .left-panel::-webkit-scrollbar { width: 6px }
+#page-overview .left-panel::-webkit-scrollbar-thumb {
   background: rgba(184,151,58,0.2);
   border-radius: 3px;
 }
 
-/* Main-area: flex-column que ocupa toda a célula do grid. Stats + toolbar
-   ficam fixos (flex-shrink:0), tab-panel ocupa o resto (flex:1). */
-.main-area {
+/* Main-area da overview: flex-column, stats+toolbar fixos, tab cresce */
+#page-overview .main-area {
   display: flex;
   flex-direction: column;
   min-height: 0;
   height: 100%;
   overflow: hidden;
 }
-.main-area > .stats-strip,
-.main-area > .toolbar { flex-shrink: 0 }
+#page-overview .main-area > .stats-strip,
+#page-overview .main-area > .toolbar { flex-shrink: 0 }
 
-/* Tab-panel oculto quando inativo; ativo ocupa espaço restante e rola.
-   flex: 1 1 0 com min-height: 0 é a combinação canônica para flex-child
-   rolável dentro de flex-column-parent. */
-.tab-panel { display: none }
-.tab-panel.active {
+/* Tab-panel: oculto quando inativo; ativo ocupa espaço restante e rola */
+#page-overview .tab-panel { display: none }
+#page-overview .tab-panel.active {
   display: block;
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
   overflow-x: auto;
 }
-.tab-panel.active::-webkit-scrollbar { width: 8px; height: 8px }
-.tab-panel.active::-webkit-scrollbar-thumb {
+#page-overview .tab-panel.active::-webkit-scrollbar { width: 8px; height: 8px }
+#page-overview .tab-panel.active::-webkit-scrollbar-thumb {
   background: rgba(184,151,58,0.25);
   border-radius: 4px;
 }
-.tab-panel.active::-webkit-scrollbar-track { background: transparent }
+#page-overview .tab-panel.active::-webkit-scrollbar-track { background: transparent }
 
-/* Header da tabela gruda no topo do scroll do tab-panel. */
-.tab-panel thead th {
+/* Header da tabela gruda no topo do scroll do tab-panel */
+#page-overview .tab-panel thead th {
   background: var(--navy2);
   position: sticky;
   top: 0;
   z-index: 5;
 }
-
-.page:not(.active) { display: none }
 </style>
 
 <!-- ═══ [v5] TICKER TAPE — TradingView Widget oficial ═══ -->

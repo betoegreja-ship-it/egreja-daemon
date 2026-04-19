@@ -3327,13 +3327,16 @@ body::-webkit-scrollbar-thumb:hover {
 }
 body::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
 
-/* Header da tabela (thead th) mantém sticky na rolagem — aqui é contra
-   o VIEWPORT, então os headers grudam no topo da área visível (abaixo
-   das barras fixas via padding-top). */
+/* Header da tabela: ROLA junto com o conteúdo (sem sticky).
+   v8 e o CSS principal tinham thead sticky, o que fazia o cabeçalho
+   "flutuar" no meio da tela quando o user rolava entre tabelas
+   diferentes — user relatou como "subbarra aparece no meio dos
+   ativos". Solução: thead rola naturalmente com sua tabela. Se
+   quiser no futuro, fazemos sticky por tabela específica (ex: só
+   Trade History) com top calculado pela altura real das barras
+   fixas, em commit dedicado. */
 thead th {
-  position: sticky;
-  top: 150px;
-  z-index: 10;
+  position: static !important;
 }
 </style>
 

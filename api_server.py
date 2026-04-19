@@ -747,6 +747,8 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'monthly_picks_worker':  7200,   # 2h — loop external com logica mensal/semanal
     'arbi_learning_loop':    600,    # 10min — sleep de 5min entre passes
     'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
+    # [v11] Portfolio Accounting — shadow comparator (60s interval + margem)
+    'portfolio_shadow_comparator': 180,
 }
 DEFAULT_HB_TIMEOUT = int(os.environ.get('DEFAULT_HB_TIMEOUT', 120))
 WATCHDOG_RESET_STABLE_H = float(os.environ.get('WATCHDOG_RESET_STABLE_H', 6.0))
@@ -8838,6 +8840,197 @@ def brain_status():
     return jsonify(body), code
 
 
+# ═══════════════════════════════════════════════════════════════════
+# [v11 PORTFOLIO ACCOUNTING] Fase 1/2 — SHADOW MODE
+# ═══════════════════════════════════════════════════════════════════
+
+_v11_engine = None
+_v11_shadow_thread = None
+
+
+def _portfolio_v11_boot():
+    """Migration + boot do PortfolioEngine em shadow. Idempotente.
+
+    Não flipa nada no caminho crítico. Apenas materializa o estado v11
+    em memória e inicia thread de comparação com variáveis globais.
+    """
+    global _v11_engine, _v11_shadow_thread
+
+    # 1. Migration idempotente (CREATE IF NOT EXISTS + ALTER IF NOT EXISTS)
+    try:
+        _run_v11_migration_if_needed()
+    except Exception as e:
+        log.warning(f'[v11] migration skipped/failed: {e}')
+        return
+
+    # 2. Boot engine
+    from modules.portfolio import PortfolioEngine, ConfigLoader
+    from modules.portfolio.shadow_comparator import ShadowComparator
+    engine = PortfolioEngine.instance()
+    config_loader = ConfigLoader(db_fn=get_db, ttl_s=60)
+    engine.boot(db_fn=get_db, config_loader=config_loader)
+    _v11_engine = engine
+    log.info('[v11] PortfolioEngine booted in SHADOW mode')
+
+    # 3. Registrar thread de comparação com globals legacy
+    def _legacy_state_snapshot():
+        # Lê as variáveis globais do módulo
+        return {
+            'stocks': stocks_capital,
+            'crypto': crypto_capital,
+            'arbi':   arbi_capital,
+        }
+
+    comparator = ShadowComparator(
+        db_fn=get_db,
+        legacy_state_fn=_legacy_state_snapshot,
+        interval_s=int(os.environ.get('V11_SHADOW_INTERVAL_S', '60')),
+        alert_threshold_usd=float(os.environ.get('V11_ALERT_THRESHOLD_USD', '10.0')),
+        warn_threshold_usd=float(os.environ.get('V11_WARN_THRESHOLD_USD', '0.50')),
+        beat_fn=beat,
+    )
+    _v11_shadow_thread = threading.Thread(
+        target=comparator.run_forever,
+        daemon=True,
+        name='v11-shadow-comparator',
+    )
+    _v11_shadow_thread.start()
+    thread_health['portfolio_shadow_comparator'] = _v11_shadow_thread
+    thread_heartbeat['portfolio_shadow_comparator'] = time.time()
+    thread_fns['portfolio_shadow_comparator'] = comparator.run_forever
+    log.info('[v11] ShadowComparator thread started')
+
+
+def _run_v11_migration_if_needed():
+    """Aplica migrations/011_portfolio_v11.sql se não foi aplicada.
+    Verifica pela existência da tabela strategy_configs.
+    """
+    import os as _os
+    conn = get_db()
+    if conn is None:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute("SHOW TABLES LIKE 'strategy_configs'")
+        if cur.fetchone():
+            cur.close()
+            log.info('[v11] migration 011 já aplicada')
+            return
+        cur.close()
+
+        # Aplica o arquivo SQL
+        migration_path = _os.path.join(
+            _os.path.dirname(__file__), 'migrations', '011_portfolio_v11.sql'
+        )
+        if not _os.path.exists(migration_path):
+            log.error(f'[v11] migration file não encontrado: {migration_path}')
+            return
+
+        with open(migration_path) as f:
+            sql_text = f.read()
+        cur = conn.cursor()
+        # Executa statements separados por ; (excluindo comentários e vazios)
+        stmts = [s.strip() for s in sql_text.split(';') if s.strip() and not s.strip().startswith('--')]
+        applied = 0
+        for stmt in stmts:
+            try:
+                cur.execute(stmt)
+                applied += 1
+            except Exception as se:
+                msg = str(se).lower()
+                # Ignora erros de already-exists (migração idempotente)
+                if 'duplicate' in msg or 'exists' in msg or 'check that column' in msg:
+                    continue
+                log.warning(f'[v11] migration stmt falhou: {se}')
+        conn.commit()
+        cur.close()
+        log.info(f'[v11] migration 011 aplicada: {applied} statements')
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+# ── Endpoints read-only (shadow, não exigem auth pra facilitar dash) ──
+
+@app.route('/portfolio/state', methods=['GET'])
+def portfolio_v11_state():
+    """Estado canônico de todas as 3 strategies (shadow mode)."""
+    if _v11_engine is None or not _v11_engine.booted:
+        return jsonify({'error': 'engine not booted', 'v11_active': False}), 503
+    out = {}
+    for strat in ('stocks', 'crypto', 'arbi'):
+        try:
+            s = _v11_engine.get_state(strat)
+            out[strat] = s.to_dict()
+        except Exception as e:
+            out[strat] = {'error': str(e)}
+    return jsonify({
+        'v11_active': _v11_engine.active,
+        'strategies': out,
+    })
+
+
+@app.route('/portfolio/state/<strategy>', methods=['GET'])
+def portfolio_v11_state_one(strategy):
+    if _v11_engine is None or not _v11_engine.booted:
+        return jsonify({'error': 'engine not booted'}), 503
+    if strategy not in ('stocks', 'crypto', 'arbi'):
+        return jsonify({'error': 'strategy inválida'}), 400
+    try:
+        s = _v11_engine.get_state(strategy)
+        return jsonify(s.to_dict())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/portfolio/integrity', methods=['GET'])
+def portfolio_v11_integrity():
+    """Compara replay(ledger) vs canonical em memória."""
+    if _v11_engine is None or not _v11_engine.booted:
+        return jsonify({'error': 'engine not booted'}), 503
+    return jsonify(_v11_engine.integrity_check())
+
+
+@app.route('/portfolio/rebuild/<strategy>', methods=['POST'])
+@require_auth
+def portfolio_v11_rebuild(strategy):
+    """Força rebuild do snapshot de uma strategy a partir do ledger."""
+    if _v11_engine is None:
+        return jsonify({'error': 'engine not booted'}), 503
+    try:
+        new_state = _v11_engine.rebuild(strategy)
+        return jsonify({'rebuilt': True, 'state': new_state.to_dict()})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/portfolio/config/<strategy>', methods=['GET'])
+def portfolio_v11_config(strategy):
+    if _v11_engine is None:
+        return jsonify({'error': 'engine not booted'}), 503
+    try:
+        cfg = _v11_engine.config_loader.get(strategy)
+        return jsonify({
+            'strategy': cfg.strategy,
+            'initial_capital': float(cfg.initial_capital),
+            'risk_per_trade_pct': float(cfg.risk_per_trade_pct),
+            'max_gross_exposure_pct': float(cfg.max_gross_exposure_pct),
+            'configured_max_positions': cfg.configured_max_positions,
+            'min_capital_per_trade': float(cfg.min_capital_per_trade),
+            'position_hard_cap': float(cfg.position_hard_cap) if cfg.position_hard_cap else None,
+            'sizing_mode': cfg.sizing_mode,
+            'drawdown_hard_stop_pct': float(cfg.drawdown_hard_stop_pct),
+            'kill_switch_active': cfg.kill_switch_active,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 404
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [/v11]
+# ═══════════════════════════════════════════════════════════════════
+
+
 @app.route('/ops/rehydrate-ledger', methods=['POST'])
 @require_auth
 def ops_rehydrate_ledger():
@@ -11433,6 +11626,14 @@ if __name__ == '__main__':
     init_watchlist_table()
     init_trades_tables()
     _record_baseline_if_needed()  # [v10.21] registra BASELINE formal para strategies sem histórico no ledger
+
+    # [v11 Portfolio Accounting — Fase 1/2 SHADOW] -----------------------
+    # Roda migration idempotente + boota engine. SEM afetar caminho crítico.
+    # Flag PORTFOLIO_ENGINE_ACTIVE continua False até Fase 3.
+    try:
+        _portfolio_v11_boot()
+    except Exception as _e:
+        log.error(f'[v11] boot falhou (shadow mode, não afeta critical path): {_e}')
 
     # [v10.22] Initialize institutional modules
     ext_kill_switch.init_table(get_db)

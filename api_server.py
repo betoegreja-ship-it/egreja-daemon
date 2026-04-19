@@ -1080,8 +1080,38 @@ def enqueue_persist(kind, data=None, **kwargs):
     # [BUG-1] seq garante ordem FIFO dentro de mesma prioridade e NUNCA compara dicts
     urgent_queue.put((priority, next(_urgent_seq), item))
 
+_whatsapp_dedup_cache: dict = {}  # fingerprint -> last_sent_ts
+_WHATSAPP_DEDUP_WINDOW_S = int(os.environ.get('WHATSAPP_DEDUP_WINDOW_S', '1800'))  # 30 min
+
 def send_whatsapp(message):
+    """Enfileira alerta WhatsApp com de-duplicacao por fingerprint.
+
+    Evita spam de alertas identicos (ex: 'CRITICO: thread starvation! N
+    threads ativos' disparando a cada ciclo do watchdog). Msgs com mesmo
+    texto base (normalizando numeros) sao silenciadas por
+    WHATSAPP_DEDUP_WINDOW_S segundos (default 1800s = 30 min).
+
+    Alertas legitimamente NOVOS (com texto diferente) passam normalmente.
+    """
     try:
+        import re as _re
+        # Fingerprint = primeiros 100 chars com numeros normalizados para 'N'.
+        # Isso agrupa 'stocks_ledger delta=-2,095,833' e
+        # 'stocks_ledger delta=-2,095,999' como mesma mensagem.
+        fp = _re.sub(r'[-+]?\d[\d,._]*', 'N', message[:100])
+        now = time.time()
+        last = _whatsapp_dedup_cache.get(fp, 0)
+        if now - last < _WHATSAPP_DEDUP_WINDOW_S:
+            # Silenciado — ja enviado recentemente. Log apenas.
+            log.info(f'[whatsapp-dedup] silenced (last {int(now-last)}s ago): {message[:60]}')
+            return
+        _whatsapp_dedup_cache[fp] = now
+        # Limpa entradas antigas para nao crescer indefinidamente
+        if len(_whatsapp_dedup_cache) > 500:
+            cutoff = now - _WHATSAPP_DEDUP_WINDOW_S
+            for k in [k for k, ts in _whatsapp_dedup_cache.items() if ts < cutoff]:
+                _whatsapp_dedup_cache.pop(k, None)
+
         alert_queue.put_nowait({'kind': 'whatsapp', 'message': message})
     except queue.Full:
         log.warning(f'alert_queue full — alert dropped: {message[:60]}')

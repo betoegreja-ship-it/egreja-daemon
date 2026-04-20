@@ -261,6 +261,15 @@ class CedroSocketProvider:
         self._reader_thread: Optional[threading.Thread] = None
         self._started = False
 
+        # ── [2026-04-20 GCH] Get Candles History request/response tracking ──
+        # Cedro GCH response is async: H:<sym>:<id>:<candle>... / H:<sym>:<id>:E (end)
+        # Each request gets a unique id; parser accumulates candles into pending[id]
+        # and signals the event when end marker received.
+        self._gch_pending: dict = {}  # {req_id: {'candles': [...], 'event': Event, 'symbol': str}}
+        self._gch_pending_lock = threading.Lock()
+        self._gch_next_id: int = 1
+        self._gch_id_lock = threading.Lock()
+
         self.enabled = bool(self.user and self.password)
         if not self.enabled:
             log.warning('[cedro-socket] disabled — CEDRO_USER/CEDRO_PASSWORD not set')
@@ -810,9 +819,163 @@ class CedroSocketProvider:
         for k in syms:
             self._send_command(f'SQT {k.lower()}')
 
+    # ─── [2026-04-20 GCH] Get Candles History (command GCH) ──────────────────
+    #
+    # Cedro Socket GCH command (from API SOCKET - PRO PDF, p.14):
+    #   GCH <symbol> <type> <req_id> <period> [<n_candles>] <start_date> [<end_date>] [<after_market>]
+    #
+    # Query types:
+    #   H = history between dates (needs start + end)
+    #   I = next dates including start_date (needs only start)
+    #   N = last N candles (needs n_candles, start is ignored but required by API)
+    #
+    # Periods: 1, 15, D (daily), 30, 1W, 1M, 1Y, and composites 2,3,5
+    #
+    # Response format (async, multiple messages):
+    #   H:<symbol>:<req_id>:<close>:<open>:<high>:<low>:<prev_close>:<n_trades>:<vol_papers>:<vol_fin>:<YYYYMMDDHHMM>:<after_market>
+    #   ... (one message per candle)
+    #   H:<symbol>:<req_id>:E       (end-of-list marker)
+    #
+    # Messages are ordered by Date/Time ascending.
+
+    def _next_gch_id(self) -> int:
+        """Gera próximo request id único para GCH."""
+        with self._gch_id_lock:
+            rid = self._gch_next_id
+            self._gch_next_id = (self._gch_next_id % 99999) + 1  # wrap 1..99999
+            return rid
+
+    def _parse_candle_message(self, raw: str):
+        """Parse H:<sym>:<id>:<body> — either a candle row or end marker ':E'.
+
+        Atomically appends to self._gch_pending[req_id]['candles'], and signals
+        the event when the end marker arrives.
+        """
+        try:
+            parts = raw.split(':', 3)  # split only first 3 colons: ['H', sym, id, body]
+            if len(parts) < 4:
+                return
+            sym = parts[1].upper()
+            try:
+                req_id = int(parts[2])
+            except ValueError:
+                return
+            body = parts[3]
+
+            with self._gch_pending_lock:
+                pending = self._gch_pending.get(req_id)
+                if pending is None:
+                    # Late response for a request that already timed out
+                    return
+
+                # End marker: body is literally "E"
+                if body == 'E':
+                    pending['event'].set()
+                    return
+
+                # Candle row: close:open:high:low:prev_close:n_trades:vol_p:vol_f:YYYYMMDDHHMM:after
+                fields = body.split(':')
+                if len(fields) < 10:
+                    return
+                try:
+                    candle = {
+                        'close':       float(fields[0]),
+                        'open':        float(fields[1]),
+                        'high':        float(fields[2]),
+                        'low':         float(fields[3]),
+                        'prev_close':  float(fields[4]) if fields[4] else None,
+                        'n_trades':    int(fields[5]) if fields[5] else 0,
+                        'volume':      int(fields[6]) if fields[6] else 0,
+                        'volume_fin':  float(fields[7]) if fields[7] else 0.0,
+                        'datetime':    fields[8],     # YYYYMMDDHHMM
+                        'after_mkt':   fields[9] == '1' if fields[9] else False,
+                    }
+                    pending['candles'].append(candle)
+                except (ValueError, IndexError) as e:
+                    log.debug(f'[cedro-socket] GCH parse row error id={req_id} sym={sym}: {e} raw={raw[:120]!r}')
+        except Exception as e:
+            log.debug(f'[cedro-socket] _parse_candle_message error: {e} raw={raw[:200]!r}')
+
+    def get_candles_history(self,
+                            symbol: str,
+                            period: str = 'D',
+                            n_candles: int = 100,
+                            wait_ms: int = 5000) -> Optional[list]:
+        """Fetch historical candles via Cedro Socket GCH command.
+
+        Args:
+            symbol: ticker (e.g. 'PETR4', 'VALE3').
+            period: 'D' (daily), '1' (1-min), '15' (15-min), '30', '1W', '1M', '1Y'.
+            n_candles: number of most recent candles to fetch (query type 'N').
+            wait_ms: max time to wait for the full response.
+
+        Returns:
+            List of dicts [{open, high, low, close, volume, datetime, ...}, ...]
+            ordered chronologically (oldest first). None if failed/timeout.
+
+        Example:
+            candles = cedro.get_candles_history('PETR4', period='D', n_candles=60)
+            # -> [{'datetime':'202602200000','open':35.2,...}, ...]
+        """
+        if not self.enabled:
+            return None
+        if not self._connected.is_set():
+            log.debug(f'[cedro-socket] GCH skipped — not connected (symbol={symbol})')
+            return None
+
+        sym = symbol.strip().upper()
+        req_id = self._next_gch_id()
+        ev = threading.Event()
+
+        with self._gch_pending_lock:
+            self._gch_pending[req_id] = {
+                'candles': [],
+                'event':   ev,
+                'symbol':  sym,
+                'started': time.time(),
+            }
+
+        # Syntax: GCH <symbol> N <req_id> <period> <n_candles>
+        # Empirically validated: when start_date IS provided with N type, Cedro returns
+        # candles starting from that date (wrong behavior — docs say ignored). Omitting
+        # it gives the actual latest N candles.
+        cmd = f'GCH {sym.lower()} N {req_id} {period} {n_candles}'
+
+        if not self._send_command(cmd):
+            with self._gch_pending_lock:
+                self._gch_pending.pop(req_id, None)
+            return None
+
+        # Wait for end marker ':E' or timeout
+        got = ev.wait(timeout=wait_ms / 1000.0)
+
+        with self._gch_pending_lock:
+            entry = self._gch_pending.pop(req_id, None)
+
+        if entry is None:
+            return None
+        if not got:
+            # Timed out — return what we have if anything, else None
+            candles = entry.get('candles', [])
+            if candles:
+                log.warning(f'[cedro-socket] GCH {sym} period={period} partial: '
+                            f'got {len(candles)} candles before timeout {wait_ms}ms')
+                return candles
+            log.warning(f'[cedro-socket] GCH {sym} period={period} timeout {wait_ms}ms (0 candles)')
+            return None
+
+        return entry['candles']
+
     def _parse_message(self, raw: str):
-        """Parse a single message (without trailing '!'). T:<sym>:<hhmmss>:<idx>:<val>:<idx>:<val>..."""
+        """Parse a single message (without trailing '!'). T:<sym>:<hhmmss>:<idx>:<val>:<idx>:<val>...
+
+        Also handles H:<sym>:<id>:... (candle history response from GCH command).
+        """
         if not raw or len(raw) < 3:
+            return
+        # Candle history (GCH response): H:<sym>:<id>:<body> or H:<sym>:<id>:E (end marker)
+        if raw.startswith('H:'):
+            self._parse_candle_message(raw)
             return
         # Only handle quote messages (T:) for now
         if not raw.startswith('T:'):
@@ -878,13 +1041,27 @@ class CedroSocketProvider:
                         log.warning('[cedro-socket] EOF, will reconnect')
                         break
                     buf += d
-                    while b'!' in buf:
-                        msg, buf = buf.split(b'!', 1)
+                    # [2026-04-20 GCH fix] Split by both '!' (T: quote) and '\n' (H: candle).
+                    # GCH responses terminate with \n, not '!', so we need both delimiters.
+                    while True:
+                        # Find earliest delimiter
+                        i_excl = buf.find(b'!')
+                        i_nl   = buf.find(b'\n')
+                        if i_excl == -1 and i_nl == -1:
+                            break
+                        if i_excl == -1:
+                            idx = i_nl
+                        elif i_nl == -1:
+                            idx = i_excl
+                        else:
+                            idx = min(i_excl, i_nl)
+                        msg, buf = buf[:idx], buf[idx+1:]
                         try:
                             text = msg.decode('latin-1', errors='replace').strip('\r\n\t ')
                         except Exception:
                             continue
-                        self._parse_message(text)
+                        if text:
+                            self._parse_message(text)
                 except socket.timeout:
                     # periodic keepalive ping could go here; for now just loop
                     continue

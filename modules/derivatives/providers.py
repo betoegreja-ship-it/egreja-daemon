@@ -900,7 +900,39 @@ class CedroMarketDataProvider(MarketDataProviderBase):
     # ─── Price History ────────────────────────────────────────────
 
     def get_price_history(self, symbol: str, lookback_days: int = 60) -> Optional[list]:
-        """Fetch daily candle history from Cedro."""
+        """Fetch daily candle history from Cedro.
+
+        [2026-04-20] Socket-first: tries Cedro Crystal Socket GCH command first
+        (works with current plan for B3 stocks). Falls back to REST WebFeeder
+        only if socket returns nothing (REST requires a separate paid product).
+        """
+        # ── Socket-first path (works for B3 stocks on current plan) ──────
+        if self._socket is not None:
+            try:
+                candles = self._socket.get_candles_history(
+                    symbol, period='D', n_candles=lookback_days, wait_ms=5000
+                )
+                if candles:
+                    results = []
+                    for c in candles:
+                        # Socket returns: datetime=YYYYMMDDHHMM, open/high/low/close/volume
+                        dt_raw = c.get('datetime', '')
+                        # Convert to YYYY-MM-DD for consistency with REST format
+                        date_str = f"{dt_raw[0:4]}-{dt_raw[4:6]}-{dt_raw[6:8]}" if len(dt_raw) >= 8 else dt_raw
+                        results.append({
+                            'date':   date_str,
+                            'open':   float(c.get('open', 0) or 0),
+                            'high':   float(c.get('high', 0) or 0),
+                            'low':    float(c.get('low', 0) or 0),
+                            'close':  float(c.get('close', 0) or 0),
+                            'volume': int(c.get('volume', 0) or 0),
+                        })
+                    if results:
+                        return results
+            except Exception as e:
+                self.logger.debug(f"Cedro socket get_candles_history({symbol}) failed: {e}")
+
+        # ── REST fallback (only works if you have WebFeeder subscription) ──
         with self._lock:
             data = self._cached_get(
                 f'hist:{symbol}:{lookback_days}',

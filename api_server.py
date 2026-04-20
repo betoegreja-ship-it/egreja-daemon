@@ -5086,6 +5086,9 @@ def _fetch_polygon_stock(ticker: str) -> tuple:
             'ema9_real': n >= 9, 'ema21_real': n >= 21, 'ema50_real': n >= 50, 'rsi_real': n >= 15,
             'candles_available': n, 'market': market,
             '_avg_vol20': avg_vol20,   # guardado no cache para atualizar vol_ratio no snapshot
+            # [v10.48-HOTFIX] expor séries para compute_score_v3 (mesma razão do brapi)
+            'closes_series': closes, 'highs_series': highs,
+            'lows_series': lows, 'volumes_series': volumes,
             'source': 'Polygon', 'updated_at': datetime.utcnow().isoformat()
         }
         _set_cached_candles(f'polygon:{ticker}', result)
@@ -5194,6 +5197,11 @@ def _fetch_brapi_batch(tickers: list) -> dict:
                     'ema9_real': n >= 9, 'ema21_real': n >= 21,
                     'ema50_real': n >= 50, 'rsi_real': n >= 15,
                     'candles_available': n, 'market': 'B3',
+                    # [v10.48-HOTFIX] expor séries para compute_score_v3
+                    # Sem estas chaves, V3_STOCK_SKIP (log.debug invisível) bloqueia TODAS
+                    # as aberturas de stocks desde v10.47 (SISTEMA APENAS V3).
+                    'closes_series': closes, 'highs_series': highs,
+                    'lows_series': lows, 'volumes_series': volumes,
                     'source': 'brapi-batch-cold', 'updated_at': datetime.utcnow().isoformat()
                 }
                 _set_cached_candles(f'brapi:{sym}', entry)

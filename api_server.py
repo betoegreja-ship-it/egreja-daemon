@@ -9130,10 +9130,15 @@ def portfolio_v11_config(strategy):
 # (mas esta primeira versao mantem dual-write como salvaguarda).
 
 def _v11_enabled() -> bool:
-    """Engine ativo = hooks gravam no ledger v11. Sem flag, NOOP."""
+    """Engine ativo = hooks gravam no ledger v11.
+
+    [kill-switch 2026-04-20] Reducer conta RESERVE legacy + TRADE_OPEN_RESERVE
+    v11 como eventos separados (dual-count). Desligado via env var ate
+    reducer ser corrigido para dedup por trade_id. Default: FALSE (no-op).
+    """
     if _v11_engine is None or not _v11_engine.booted:
         return False
-    return True  # shadow-plus: sempre grava (idempotente via idem key)
+    return os.environ.get('V11_DUAL_WRITE', 'false').lower() == 'true'  # kill-switch v11 dual-write
 
 
 def _v11_on_trade_open(strategy: str, trade_id: str, reserved: float,

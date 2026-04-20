@@ -880,7 +880,8 @@ def _get_pool():
             pool_cfg = dict(db_config)
             pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
             pool_cfg.pop('connection_timeout', None)
-            _pool_sz = int(os.environ.get('MYSQL_POOL_SIZE', 100))
+            # mysql.connector pool size tem HARD CAP = 32
+            _pool_sz = min(int(os.environ.get('MYSQL_POOL_SIZE', 32)), 32)
             _db_pool = MySQLConnectionPool(
                 pool_name='egreja', pool_size=_pool_sz,
                 autocommit=True, connection_timeout=10,

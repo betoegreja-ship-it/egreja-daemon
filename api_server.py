@@ -9255,12 +9255,14 @@ def ops_void_trade(trade_id: str):
         if not has_col:
             # fallback (apenas stocks antigas podem não ter)
             reason_col = 'close_reason'
+        # Detalha motivo vai para o ledger (metadata_json); aqui so marker
+        # curto porque close_reason é VARCHAR(20) em trades antigas
         cur2.execute(
             f"""UPDATE {table}
                 SET pnl=0, pnl_pct=0,
                     {reason_col}=%s
                 WHERE id=%s""",
-            (f'VOIDED:{reason[:150]}', trade_id)
+            ('VOIDED', trade_id)
         )
         cur2.close()
 

@@ -828,7 +828,10 @@ CRYPTO_SYMBOLS = [
     'TRXUSDT',   # TRON — V3 LONG WR 85%
     'DOTUSDT',   # Polkadot
     'LINKUSDT',  # Chainlink
-    'MATICUSDT', # Polygon
+    # 'MATICUSDT', # Polygon — REMOVIDO 2026-04-20: bug de preco recorrente
+    #                (MATIC foi renomeado para POL pela Polygon Labs; Binance/
+    #                 Polygon mostram precos inconsistentes). Trade CRY-ec2fd...
+    #                teve P&L +$55K impossivel. Ver ops_void_trade + blacklist.
     'LTCUSDT',   # Litecoin
     'UNIUSDT',   # Uniswap
     'ATOMUSDT',  # Cosmos
@@ -9169,6 +9172,239 @@ v11_on_trade_close = _v11_on_trade_close
 # ═══════════════════════════════════════════════════════════════════
 # [/v11]
 # ═══════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [v11-ops] Void trade + blacklist persistente
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/ops/void-trade/<trade_id>', methods=['POST'])
+@require_auth
+def ops_void_trade(trade_id: str):
+    """Reverte uma trade fechada (ex: MATIC com PnL corrompido).
+
+    Abordagem institucional (auditável, não destrutiva):
+      1. NÃO deleta a row — mantém trilha original
+      2. Marca closed_reason='VOIDED' + status mantém CLOSED
+      3. Zera pnl/pnl_pct no trades row
+      4. Registra MANUAL_ADJUSTMENT no capital_ledger com valor oposto
+         ao pnl original (REVERTE o impacto no capital)
+      5. Atualiza variável global correspondente (stocks/crypto/arbi)
+      6. Hook v11: também grava MANUAL_ADJUSTMENT no engine se ativo
+
+    Body JSON (opcional):
+      { "reason": "descrição livre do motivo" }
+
+    Retorna JSON com resumo do void.
+    """
+    payload = request.get_json(silent=True) or {}
+    reason = (payload.get('reason') or 'void via endpoint')[:200]
+
+    conn = get_db()
+    if conn is None:
+        return jsonify({'error': 'db unavailable'}), 503
+
+    try:
+        cur = conn.cursor(dictionary=True)
+
+        # 1) Localizar trade (trades ou arbi_trades)
+        cur.execute("SELECT * FROM trades WHERE id=%s", (trade_id,))
+        row = cur.fetchone()
+        table = 'trades'
+        asset_type = None
+        if not row:
+            cur.execute("SELECT * FROM arbi_trades WHERE id=%s", (trade_id,))
+            row = cur.fetchone()
+            table = 'arbi_trades'
+        if not row:
+            cur.close()
+            return jsonify({'error': f'trade {trade_id} não encontrada'}), 404
+
+        if row.get('status') != 'CLOSED':
+            cur.close()
+            return jsonify({
+                'error': f'trade {trade_id} não está CLOSED (status={row.get("status")})',
+                'hint': 'void só aplicável em trades já fechadas'
+            }), 400
+
+        existing_reason = row.get('close_reason') or row.get('closed_reason') or ''
+        if 'VOID' in str(existing_reason).upper():
+            cur.close()
+            return jsonify({'already_voided': True, 'trade_id': trade_id}), 200
+
+        symbol = row.get('symbol') or row.get('pair_id') or '?'
+        orig_pnl = float(row.get('pnl') or 0)
+        position_value_field = ('position_size' if table == 'arbi_trades'
+                                else 'position_value')
+        position_value = float(row.get(position_value_field) or 0)
+
+        # Determinar strategy (para ledger + portfolio engine)
+        if table == 'arbi_trades':
+            strategy = 'arbi'
+        else:
+            asset_type = row.get('asset_type') or 'stock'
+            strategy = 'crypto' if asset_type == 'crypto' else 'stocks'
+
+        # 2) Atualizar trades row — zera pnl, marca VOIDED
+        #    Usar close_reason (trades) ou closed_reason (arbi_trades)
+        reason_col = 'close_reason' if table == 'trades' else 'closed_reason'
+        # Checar se a coluna existe
+        cur2 = conn.cursor()
+        cur2.execute(f"SHOW COLUMNS FROM {table} LIKE %s", (reason_col,))
+        has_col = cur2.fetchone() is not None
+        if not has_col:
+            # fallback (apenas stocks antigas podem não ter)
+            reason_col = 'close_reason'
+        cur2.execute(
+            f"""UPDATE {table}
+                SET pnl=0, pnl_pct=0,
+                    {reason_col}=%s
+                WHERE id=%s""",
+            (f'VOIDED:{reason[:150]}', trade_id)
+        )
+        cur2.close()
+
+        # 3) Registrar MANUAL_ADJUSTMENT no capital_ledger que REVERTE
+        #    o PnL original. Se trade tinha pnl=+55K, adjustment=-55K.
+        #    Note: event 'MANUAL_ADJUSTMENT' é amount SIGNED (convenção v11).
+        adj_amount = -orig_pnl  # reverter impacto original
+        cur3 = conn.cursor()
+        cur3.execute(
+            """INSERT INTO capital_ledger
+               (ts, strategy, event, symbol, amount, balance_after,
+                trade_id, idempotency_key, metadata_json, created_by)
+               VALUES (NOW(3), %s, 'MANUAL_ADJUSTMENT', %s, %s, NULL,
+                       %s, %s, %s, 'void-trade-endpoint')""",
+            (strategy, symbol, adj_amount, trade_id,
+             f'VOID:{strategy}:{trade_id}',
+             json.dumps({
+                 'reason': reason,
+                 'original_pnl': orig_pnl,
+                 'original_position_value': position_value,
+                 'voided_at': datetime.utcnow().isoformat(),
+             }))
+        )
+        cur3.close()
+
+        # 4) Atualizar global legacy (stocks_capital / crypto_capital / arbi_capital)
+        global stocks_capital, crypto_capital, arbi_capital
+        if strategy == 'stocks':
+            with state_lock:
+                stocks_capital += adj_amount  # adj é negativo se reverter ganho
+        elif strategy == 'crypto':
+            with state_lock:
+                crypto_capital += adj_amount
+        elif strategy == 'arbi':
+            with state_lock:
+                arbi_capital += adj_amount
+
+        # 5) Hook v11 — se engine ativo, sincronizar mirror
+        try:
+            if _v11_engine is not None and _v11_engine.booted:
+                _v11_engine.apply_event(
+                    strategy=strategy,
+                    event_type='MANUAL_ADJUSTMENT',
+                    amount=adj_amount,
+                    trade_id=trade_id,
+                    symbol=symbol,
+                    metadata={'reason': reason, 'void_of_trade': trade_id},
+                    idempotency_key=f'VOID:{strategy}:{trade_id}',
+                )
+        except Exception as ve:
+            log.warning(f'[void-trade] v11 sync falhou (legacy OK): {ve}')
+
+        conn.commit()
+        cur.close()
+        log.warning(
+            f'[VOID-TRADE] {strategy}/{symbol} id={trade_id}: '
+            f'pnl_revertido={orig_pnl:+.2f} adj={adj_amount:+.2f} reason="{reason}"'
+        )
+        send_whatsapp(
+            f'⚠ Trade VOIDED: {strategy}/{symbol} id={trade_id}\n'
+            f'P&L revertido: ${orig_pnl:+,.2f}\n'
+            f'Motivo: {reason}'
+        )
+
+        return jsonify({
+            'voided': True,
+            'trade_id': trade_id,
+            'strategy': strategy,
+            'symbol': symbol,
+            'original_pnl': orig_pnl,
+            'adjustment_applied': adj_amount,
+            'reason': reason,
+        })
+
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        log.error(f'void-trade error: {e}')
+        import traceback; log.error(traceback.format_exc())
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+@app.route('/ops/blacklist-symbol', methods=['POST'])
+@require_auth
+def ops_blacklist_symbol():
+    """Adiciona símbolo ao symbol_blocked_persistent (bloqueio permanente).
+
+    Body JSON: { "symbol": "MATICUSDT", "reason": "motivo" }
+    Idempotente (INSERT IGNORE).
+    """
+    payload = request.get_json(silent=True) or {}
+    symbol = (payload.get('symbol') or '').upper().strip()
+    reason = (payload.get('reason') or 'manual blacklist')[:200]
+    if not symbol:
+        return jsonify({'error': 'symbol obrigatório no body JSON'}), 400
+
+    conn = get_db()
+    if conn is None:
+        return jsonify({'error': 'db unavailable'}), 503
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT IGNORE INTO symbol_blocked_persistent
+               (symbol, reason) VALUES (%s, %s)""",
+            (symbol, reason)
+        )
+        affected = cur.rowcount
+        conn.commit()
+        cur.close()
+        log.warning(f'[BLACKLIST] {symbol} bloqueado permanentemente: {reason}')
+        return jsonify({
+            'symbol': symbol,
+            'blacklisted': True,
+            'reason': reason,
+            'was_new': bool(affected),
+        })
+    except Exception as e:
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+@app.route('/ops/blacklist-symbol/<symbol>', methods=['DELETE'])
+@require_auth
+def ops_unblacklist_symbol(symbol: str):
+    """Remove símbolo da blacklist persistente."""
+    conn = get_db()
+    if conn is None:
+        return jsonify({'error': 'db unavailable'}), 503
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM symbol_blocked_persistent WHERE symbol=%s",
+                    (symbol.upper(),))
+        affected = cur.rowcount
+        conn.commit()
+        cur.close()
+        return jsonify({'symbol': symbol.upper(), 'removed': bool(affected)})
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/ops/rehydrate-ledger', methods=['POST'])

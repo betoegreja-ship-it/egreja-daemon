@@ -358,13 +358,25 @@ class DerivativesExecutionEngine:
 
     # ── Queries ──────────────────────────────────────────────────
 
-    def get_active_trades(self, strategy: str = None) -> List[DerivativesTrade]:
-        """Get all active trades, optionally filtered by strategy."""
-        with self._lock:
-            trades = list(self.active_trades.values())
-            if strategy:
-                trades = [t for t in trades if t.strategy == strategy]
-            return trades
+    def get_active_trades(self, strategy: str = None, lock_timeout: float = None) -> List[DerivativesTrade]:
+        """Get all active trades, optionally filtered by strategy.
+        [hotfix] lock_timeout: se especificado, retorna [] se lock nao disponivel."""
+        if lock_timeout is not None:
+            if not self._lock.acquire(timeout=lock_timeout):
+                return []  # lock preso -> retornar vazio em vez de travar
+            try:
+                trades = list(self.active_trades.values())
+                if strategy:
+                    trades = [t for t in trades if t.strategy == strategy]
+                return trades
+            finally:
+                self._lock.release()
+        else:
+            with self._lock:
+                trades = list(self.active_trades.values())
+                if strategy:
+                    trades = [t for t in trades if t.strategy == strategy]
+                return trades
 
     def get_trade(self, trade_id: str) -> Optional[DerivativesTrade]:
         """Get specific trade by ID."""

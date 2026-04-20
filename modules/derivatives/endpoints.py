@@ -1011,7 +1011,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
             if not exec_engine:
                 return jsonify({'error': 'Execution engine not initialized'}), 503
 
-            trades = exec_engine.get_active_trades(strategy or None) if hasattr(exec_engine, 'get_active_trades') else []
+            trades = exec_engine.get_active_trades(strategy or None, lock_timeout=2) if hasattr(exec_engine, 'get_active_trades') else []
             positions = []
 
             for trade in trades:
@@ -1031,7 +1031,7 @@ def create_strategies_blueprint(db_fn, log, provider_mgr, services_dict):
 
                 # Add snapshot data if monitor available
                 if monitor:
-                    snap = monitor.get_position_snapshot(trade.trade_id)
+                    snap = monitor.get_position_snapshot(trade.trade_id, lock_timeout=1)
                     if snap:
                         pos['unrealized_pnl'] = snap.unrealized_pnl
                         pos['unrealized_pnl_pct'] = snap.unrealized_pnl_pct

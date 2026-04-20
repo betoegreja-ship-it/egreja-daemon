@@ -538,11 +538,21 @@ class DerivativesMonitor:
 
     # ── Queries ──────────────────────────────────────────────────
 
-    def get_position_snapshot(self, trade_id: str) -> Optional[PositionSnapshot]:
-        """Get latest snapshot for a trade."""
-        with self._lock:
-            snaps = self.snapshots.get(trade_id, [])
-            return snaps[-1] if snaps else None
+    def get_position_snapshot(self, trade_id: str, lock_timeout: float = None) -> Optional[PositionSnapshot]:
+        """Get latest snapshot for a trade.
+        [hotfix] lock_timeout: se especificado, retorna None se lock nao disponivel."""
+        if lock_timeout is not None:
+            if not self._lock.acquire(timeout=lock_timeout):
+                return None
+            try:
+                snaps = self.snapshots.get(trade_id, [])
+                return snaps[-1] if snaps else None
+            finally:
+                self._lock.release()
+        else:
+            with self._lock:
+                snaps = self.snapshots.get(trade_id, [])
+                return snaps[-1] if snaps else None
 
     def get_all_snapshots(self) -> Dict[str, PositionSnapshot]:
         """Get latest snapshot for all active trades."""

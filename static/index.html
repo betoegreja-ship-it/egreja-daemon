@@ -908,6 +908,126 @@ tbody td:last-child{padding-right:28px;text-align:right}
       <div style="font-size:28px;font-family:'EB Garamond',serif;color:var(--white)">40</div>
     </div>
   </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       CAPITAL VIVO v11 — Portfolio Engine (Fase 1-2 SHADOW)
+       Alimentado por /portfolio/state (endpoint do daemon).
+       Mostra estado canônico calculado pelo engine: gross_equity,
+       free_capital, reserved, next_trade_size, integridade do ledger.
+       ═══════════════════════════════════════════════════════════════ -->
+  <div style="margin:28px 28px 6px;display:flex;align-items:center;gap:12px">
+    <div style="font-size:9px;color:var(--text3);letter-spacing:.2em;text-transform:uppercase">Capital Vivo (v11 Engine)</div>
+    <div id="v11-mode-badge" style="font-family:monospace;font-size:9px;padding:2px 8px;background:rgba(184,151,58,0.1);border:1px solid rgba(184,151,58,0.3);color:var(--gold2);letter-spacing:.1em">SHADOW</div>
+    <div id="v11-integrity-badge" style="font-family:monospace;font-size:9px;padding:2px 8px;background:rgba(128,128,128,0.1);color:var(--text3)">integrity —</div>
+    <div style="margin-left:auto">
+      <button onclick="refreshPortfolioV11()" style="font-family:monospace;font-size:9px;padding:3px 12px;background:transparent;border:1px solid var(--line);color:var(--text2);cursor:pointer;letter-spacing:.1em">↺ Refresh</button>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);margin:0 28px 16px">
+    <!-- ARBI -->
+    <div style="background:var(--navy2);padding:22px 24px;border-top:2px solid #00cec9">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px">
+        <div style="font-family:monospace;font-size:10px;letter-spacing:.2em;color:#00cec9">ARBITRAGE</div>
+        <div id="v11-arbi-equity-pct" style="font-family:monospace;font-size:11px">—</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px 20px">
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">GROSS EQUITY</div><div id="v11-arbi-equity" style="font-size:19px;font-family:'EB Garamond',serif;color:var(--white)">—</div></div>
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">REALIZED P&amp;L</div><div id="v11-arbi-pnl" style="font-size:19px;font-family:'EB Garamond',serif">—</div></div>
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">FREE CAPITAL</div><div id="v11-arbi-free" style="font-size:14px;font-family:monospace;color:var(--text2)">—</div></div>
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">RESERVED</div><div id="v11-arbi-reserved" style="font-size:14px;font-family:monospace;color:var(--text2)">—</div></div>
+      </div>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
+        <div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:5px">EXPOSURE</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:4px;background:rgba(0,206,201,0.15);border-radius:2px;overflow:hidden">
+            <div id="v11-arbi-exp-bar" style="height:100%;background:#00cec9;width:0%;transition:width .8s"></div>
+          </div>
+          <div id="v11-arbi-exp-pct" style="font-family:monospace;font-size:10px;color:var(--text2);min-width:36px;text-align:right">0%</div>
+        </div>
+      </div>
+      <div style="margin-top:14px;padding:10px 12px;background:rgba(0,206,201,0.06);border-left:2px solid #00cec9">
+        <div style="font-family:monospace;font-size:8px;color:var(--text3);letter-spacing:.15em;margin-bottom:4px">PRÓXIMA TRADE</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <div id="v11-arbi-next" style="font-size:17px;font-family:'EB Garamond',serif;color:#00cec9">—</div>
+          <div id="v11-arbi-slots" style="font-size:10px;font-family:monospace;color:var(--text3)">—/— slots</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CRYPTO -->
+    <div style="background:var(--navy2);padding:22px 24px;border-top:2px solid #c77dff">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px">
+        <div style="font-family:monospace;font-size:10px;letter-spacing:.2em;color:#c77dff">CRYPTO</div>
+        <div id="v11-crypto-equity-pct" style="font-family:monospace;font-size:11px">—</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px 20px">
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">GROSS EQUITY</div><div id="v11-crypto-equity" style="font-size:19px;font-family:'EB Garamond',serif;color:var(--white)">—</div></div>
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">REALIZED P&amp;L</div><div id="v11-crypto-pnl" style="font-size:19px;font-family:'EB Garamond',serif">—</div></div>
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">FREE CAPITAL</div><div id="v11-crypto-free" style="font-size:14px;font-family:monospace;color:var(--text2)">—</div></div>
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">RESERVED</div><div id="v11-crypto-reserved" style="font-size:14px;font-family:monospace;color:var(--text2)">—</div></div>
+      </div>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
+        <div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:5px">EXPOSURE</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:4px;background:rgba(199,125,255,0.15);border-radius:2px;overflow:hidden">
+            <div id="v11-crypto-exp-bar" style="height:100%;background:#c77dff;width:0%;transition:width .8s"></div>
+          </div>
+          <div id="v11-crypto-exp-pct" style="font-family:monospace;font-size:10px;color:var(--text2);min-width:36px;text-align:right">0%</div>
+        </div>
+      </div>
+      <div style="margin-top:14px;padding:10px 12px;background:rgba(199,125,255,0.06);border-left:2px solid #c77dff">
+        <div style="font-family:monospace;font-size:8px;color:var(--text3);letter-spacing:.15em;margin-bottom:4px">PRÓXIMA TRADE</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <div id="v11-crypto-next" style="font-size:17px;font-family:'EB Garamond',serif;color:#c77dff">—</div>
+          <div id="v11-crypto-slots" style="font-size:10px;font-family:monospace;color:var(--text3)">—/— slots</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STOCKS -->
+    <div style="background:var(--navy2);padding:22px 24px;border-top:2px solid var(--gold)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px">
+        <div style="font-family:monospace;font-size:10px;letter-spacing:.2em;color:var(--gold)">STOCKS</div>
+        <div id="v11-stocks-equity-pct" style="font-family:monospace;font-size:11px">—</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px 20px">
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">GROSS EQUITY</div><div id="v11-stocks-equity" style="font-size:19px;font-family:'EB Garamond',serif;color:var(--white)">—</div></div>
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">REALIZED P&amp;L</div><div id="v11-stocks-pnl" style="font-size:19px;font-family:'EB Garamond',serif">—</div></div>
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">FREE CAPITAL</div><div id="v11-stocks-free" style="font-size:14px;font-family:monospace;color:var(--text2)">—</div></div>
+        <div><div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:3px">RESERVED</div><div id="v11-stocks-reserved" style="font-size:14px;font-family:monospace;color:var(--text2)">—</div></div>
+      </div>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
+        <div style="font-size:8px;font-family:monospace;color:var(--text3);margin-bottom:5px">EXPOSURE</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:4px;background:rgba(184,151,58,0.15);border-radius:2px;overflow:hidden">
+            <div id="v11-stocks-exp-bar" style="height:100%;background:var(--gold);width:0%;transition:width .8s"></div>
+          </div>
+          <div id="v11-stocks-exp-pct" style="font-family:monospace;font-size:10px;color:var(--text2);min-width:36px;text-align:right">0%</div>
+        </div>
+      </div>
+      <div style="margin-top:14px;padding:10px 12px;background:rgba(184,151,58,0.06);border-left:2px solid var(--gold)">
+        <div style="font-family:monospace;font-size:8px;color:var(--text3);letter-spacing:.15em;margin-bottom:4px">PRÓXIMA TRADE</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <div id="v11-stocks-next" style="font-size:17px;font-family:'EB Garamond',serif;color:var(--gold)">—</div>
+          <div id="v11-stocks-slots" style="font-size:10px;font-family:monospace;color:var(--text3)">—/— slots</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Integridade + info -->
+  <div style="margin:0 28px 24px;padding:14px 20px;background:var(--navy2);border:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;font-family:monospace;font-size:10px;color:var(--text2)">
+    <div>
+      <span style="color:var(--text3)">Engine:</span>
+      <span id="v11-engine-status" style="color:var(--gold2)">SHADOW</span>
+      <span style="color:var(--text3);margin-left:20px">Sizing:</span>
+      <span style="color:var(--text2)">capital_fraction</span>
+      <span style="color:var(--text3);margin-left:20px">Última atualização:</span>
+      <span id="v11-updated" style="color:var(--text2)">—</span>
+    </div>
+    <div id="v11-integrity-detail" style="color:var(--text3)">—</div>
+  </div>
 </div>
 
 <!-- ═══ ANALYTICS ═══ -->

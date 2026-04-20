@@ -5825,6 +5825,11 @@ def monitor_trades():
                         if trade['pnl'] != 0:
                             ledger_record('stocks', 'PNL_CREDIT', trade['symbol'],
                                           trade['pnl'], stocks_capital, trade['id'])
+                        # [v11-hook] dual-write
+                        _v11_on_trade_close('stocks', trade['id'],
+                                             float(trade['position_value']),
+                                             float(trade['pnl'] or 0),
+                                             fees=float(trade.get('fees', 0) or 0))
                         # [v10.22] Record to institutional modules
                         risk_manager.record_trade_result('stocks', trade['symbol'], trade['pnl'], trade['position_value'], stocks_capital)
                         perf_stats.record_trade({
@@ -5905,6 +5910,11 @@ def monitor_trades():
                     if reason:
                         # [v10.18] Ledger: RELEASE margin first, then PNL_CREDIT
                         crypto_capital += trade['position_value']
+                        # [v11-hook] dual-write crypto close
+                        _v11_on_trade_close('crypto', trade['id'],
+                                             float(trade['position_value']),
+                                             float(trade['pnl'] or 0),
+                                             fees=float(trade.get('fees', 0) or 0))
                         ledger_record('crypto', 'RELEASE', trade['symbol'],
                                       trade['position_value'], crypto_capital, trade['id'])
                         crypto_capital += trade['pnl']
@@ -6442,6 +6452,13 @@ def stock_execution_worker():
                     if ok2 and stocks_capital>=price*qty:
                         stocks_capital -= price*qty
                         # [v10.18] Ledger: RESERVE
+                        # [v11-hook] dual-write stocks open — trade_id calc antes do INSERT
+                        try:
+                            _v11_open_tmp_id = locals().get('new_trade_id') or locals().get('trade_id') or sym + ':' + str(int(time.time()))
+                            _v11_on_trade_open('stocks', _v11_open_tmp_id,
+                                                float(price * qty),
+                                                metadata={'symbol': sym})
+                        except Exception: pass
                         ledger_record('stocks', 'RESERVE', sym,
                                       round(price*qty, 2), stocks_capital, pre_trade_id)
                         # [V91-1] order_id já está no trade dentro do lock
@@ -6790,6 +6807,13 @@ def auto_trade_crypto():
                     if ok2 and crypto_capital>=approved_size:
                         qty=approved_size/price; crypto_capital-=approved_size
                         # [v10.18] Ledger: RESERVE
+                        # [v11-hook] dual-write crypto open
+                        try:
+                            _v11_open_tmp_id = locals().get('new_trade_id') or locals().get('trade_id') or display + ':' + str(int(time.time()))
+                            _v11_on_trade_open('crypto', _v11_open_tmp_id,
+                                                float(pos),
+                                                metadata={'symbol': display})
+                        except Exception: pass
                         ledger_record('crypto', 'RESERVE', display,
                                       round(approved_size, 2), crypto_capital, pre_trade_id)
                         trade={
@@ -7565,6 +7589,9 @@ def arbi_scan_loop():
                         pos=min(approved_size,arbi_capital); arbi_capital-=pos
                         # [v10.20] Ledger: RESERVE arbi
                         ledger_record('arbi', 'RESERVE', pair['name'], round(pos, 2), arbi_capital, trade_id)
+                        # [v11-hook] dual-write arbi open
+                        _v11_on_trade_open('arbi', trade_id, float(pos),
+                                            metadata={'pair': pair.get('name', '')})
                         _entry_ts = datetime.utcnow().isoformat()
                         # [v10.14-Audit] Preço de entrada por lado
                         # LONG_A: compra leg_a (ask) e vende leg_b (bid)
@@ -7688,6 +7715,11 @@ def arbi_monitor_loop():
                     if reason:
                         # [v10.20] Ledger: RELEASE + PNL_CREDIT arbi (ordem contábil correta)
                         arbi_capital += trade['position_size']
+                        # [v11-hook] dual-write arbi close
+                        _v11_on_trade_close('arbi', trade['id'],
+                                             float(trade.get('position_size', 0) or 0),
+                                             float(trade.get('pnl', 0) or 0),
+                                             fees=float(trade.get('fees', 0) or 0))
                         ledger_record('arbi', 'RELEASE', trade.get('name', trade.get('pair_id', '')),
                                       trade['position_size'], arbi_capital, trade['id'])
                         arbi_capital += trade['pnl']
@@ -8905,6 +8937,7 @@ _V11_MIGRATIONS_DIR = 'migrations'
 _V11_MIGRATIONS_FILES = [
     '011_portfolio_v11.sql',
     '012_portfolio_v11_configs_real.sql',
+    '013_crypto_refinement.sql',
 ]
 
 
@@ -9062,6 +9095,75 @@ def portfolio_v11_config(strategy):
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 404
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [v11] Hooks dual-write para integrar com fluxo de trades existente
+# ═══════════════════════════════════════════════════════════════════
+# Estes hooks sao chamados pelos pontos de open/close trades no daemon
+# (ainda nao integrados automaticamente — caller deve chamar
+# explicitamente onde fizer sentido).
+#
+# Modo: shadow-plus (default) = engine recebe eventos em paralelo ao
+#       fluxo legacy. Globals legacy continuam fonte autoritativa no
+#       caminho critico. Engine acumula estado correto, detectavel via
+#       /portfolio/integrity.
+#
+# Quando PORTFOLIO_ENGINE_ACTIVE=true: engine vira fonte autoritativa
+# (mas esta primeira versao mantem dual-write como salvaguarda).
+
+def _v11_enabled() -> bool:
+    """Engine ativo = hooks gravam no ledger v11. Sem flag, NOOP."""
+    if _v11_engine is None or not _v11_engine.booted:
+        return False
+    return True  # shadow-plus: sempre grava (idempotente via idem key)
+
+
+def _v11_on_trade_open(strategy: str, trade_id: str, reserved: float,
+                       metadata: dict = None) -> None:
+    """Hook: trade abriu — registra TRADE_OPEN_RESERVE no ledger v11.
+    Idempotente. Nao afeta globals legacy."""
+    if not _v11_enabled():
+        return
+    try:
+        from modules.portfolio import (
+            InsufficientCapitalError, DuplicateIdempotencyError
+        )
+        try:
+            _v11_engine.reserve_on_open(
+                strategy=strategy, trade_id=str(trade_id),
+                reserve_amount=reserved, metadata=metadata or {}
+            )
+        except DuplicateIdempotencyError:
+            pass  # já registrado, OK
+        except InsufficientCapitalError as e:
+            # Interessante: caminho legacy abriu mas engine diz que
+            # nao deveria. Apenas loga — nao bloqueia legacy.
+            log.warning(f'[v11-hook] {strategy}/{trade_id} engine rejeitaria: {e}')
+    except Exception as e:
+        log.error(f'[v11-hook] on_open {strategy}/{trade_id}: {e}')
+
+
+def _v11_on_trade_close(strategy: str, trade_id: str, reserved: float,
+                        realized_pnl: float, fees: float = 0,
+                        metadata: dict = None) -> None:
+    """Hook: trade fechou — libera reserva + credita PnL + deduz fees.
+    Idempotente. Nao afeta globals legacy."""
+    if not _v11_enabled():
+        return
+    try:
+        _v11_engine.release_and_realize(
+            strategy=strategy, trade_id=str(trade_id),
+            reserved_amount=reserved, realized_pnl=realized_pnl,
+            fees_total=fees, metadata=metadata or {}
+        )
+    except Exception as e:
+        log.error(f'[v11-hook] on_close {strategy}/{trade_id}: {e}')
+
+
+# Expose hooks como módulo-level para chamada fora do file
+v11_on_trade_open = _v11_on_trade_open
+v11_on_trade_close = _v11_on_trade_close
 
 
 # ═══════════════════════════════════════════════════════════════════

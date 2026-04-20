@@ -1136,3 +1136,153 @@ setInterval(loadAll,10*1000);
 setInterval(loadLivePrices,3000);
 setInterval(updateFxChips, 30000);         // [v2] FX a cada 30s
 
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Portfolio v11 — Capital Vivo (dashboard da aba Portfolio)
+   Consome /portfolio/state + /portfolio/integrity (daemon, require auth)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+function _v11_fmtUSD(v) {
+  if (v == null) return '—';
+  var n = Number(v);
+  var sign = n >= 0 ? '+' : '-';
+  var abs = Math.abs(n);
+  if (abs >= 1e6) return sign + '$' + (abs / 1e6).toFixed(2) + 'M';
+  if (abs >= 1e3) return sign + '$' + (abs / 1e3).toFixed(1) + 'K';
+  return sign + '$' + abs.toFixed(0);
+}
+function _v11_fmtUSDPlain(v) {
+  if (v == null) return '—';
+  var n = Number(v);
+  if (Math.abs(n) >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1e3) return '$' + (n / 1e3).toFixed(0) + 'K';
+  return '$' + n.toFixed(0);
+}
+function _v11_paint(el, text, color) {
+  if (!el) return;
+  el.textContent = text;
+  if (color) el.style.color = color;
+}
+
+async function refreshPortfolioV11() {
+  try {
+    // IMPORTANTE: /portfolio/state exige X-API-Key. Reusa apiFetch.
+    var resp = await apiFetch(API_BASE + '/portfolio/state');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var data = await resp.json();
+    var strats = data.strategies || {};
+
+    var modeBadge = document.getElementById('v11-mode-badge');
+    if (modeBadge) {
+      modeBadge.textContent = data.v11_active ? 'LIVE' : 'SHADOW';
+      modeBadge.style.color = data.v11_active ? '#2ecc71' : 'var(--gold2)';
+      modeBadge.style.borderColor = data.v11_active
+        ? 'rgba(46,204,113,0.4)' : 'rgba(184,151,58,0.3)';
+    }
+    var engineStatus = document.getElementById('v11-engine-status');
+    if (engineStatus) {
+      engineStatus.textContent = data.v11_active ? 'LIVE (flipped)' : 'SHADOW (paralelo)';
+      engineStatus.style.color = data.v11_active ? '#2ecc71' : 'var(--gold2)';
+    }
+
+    var now = new Date().toLocaleTimeString('pt-BR', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+    _v11_paint(document.getElementById('v11-updated'), now);
+
+    ['arbi', 'crypto', 'stocks'].forEach(function (key) {
+      var s = strats[key];
+      if (!s) return;
+      var prefix = 'v11-' + key + '-';
+
+      // Equity + pct
+      _v11_paint(document.getElementById(prefix + 'equity'), _v11_fmtUSDPlain(s.gross_equity));
+      var pnlPct = (s.realized_pnl && s.initial_capital)
+        ? ((s.realized_pnl / s.initial_capital) * 100) : 0;
+      var pnlColor = s.realized_pnl >= 0 ? '#2ecc71' : '#e74c3c';
+      _v11_paint(document.getElementById(prefix + 'equity-pct'),
+        (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(2) + '%', pnlColor);
+      _v11_paint(document.getElementById(prefix + 'pnl'),
+        _v11_fmtUSD(s.realized_pnl), pnlColor);
+
+      _v11_paint(document.getElementById(prefix + 'free'), _v11_fmtUSDPlain(s.free_capital));
+      _v11_paint(document.getElementById(prefix + 'reserved'), _v11_fmtUSDPlain(s.reserved_capital));
+
+      // Exposure bar
+      var expPct = (s.max_gross_exposure > 0)
+        ? (s.current_gross_exposure / s.max_gross_exposure) * 100 : 0;
+      expPct = Math.max(0, Math.min(100, expPct));
+      var expBar = document.getElementById(prefix + 'exp-bar');
+      if (expBar) expBar.style.width = expPct.toFixed(1) + '%';
+      _v11_paint(document.getElementById(prefix + 'exp-pct'), expPct.toFixed(1) + '%');
+
+      // Next trade size (capital_fraction: free / slots_livres)
+      var slotsLivres = (s.max_positions_allowed || 0) - (s.open_positions_count || 0);
+      var nextSize = slotsLivres > 0 ? (s.free_capital / slotsLivres) : 0;
+      var nextEl = document.getElementById(prefix + 'next');
+      if (slotsLivres <= 0) {
+        _v11_paint(nextEl, 'BLOCKED (sem slots)', 'var(--text3)');
+      } else {
+        _v11_paint(nextEl, _v11_fmtUSDPlain(nextSize));
+      }
+      _v11_paint(document.getElementById(prefix + 'slots'),
+        (s.open_positions_count || 0) + '/' + (s.max_positions_allowed || 0) + ' slots');
+    });
+
+    // Integrity (fire-and-forget)
+    try {
+      var ri = await apiFetch(API_BASE + '/portfolio/integrity');
+      if (ri.ok) {
+        var intg = await ri.json();
+        var allOk = ['arbi', 'crypto', 'stocks'].every(function (k) {
+          return intg[k] && intg[k].ok;
+        });
+        var badge = document.getElementById('v11-integrity-badge');
+        if (badge) {
+          badge.textContent = allOk ? 'integrity ✓ OK' : 'integrity ⚠ DRIFT';
+          badge.style.background = allOk ? 'rgba(46,204,113,0.1)' : 'rgba(231,76,60,0.1)';
+          badge.style.color = allOk ? '#2ecc71' : '#e74c3c';
+        }
+        var worstDelta = 0;
+        ['arbi', 'crypto', 'stocks'].forEach(function (k) {
+          if (intg[k] && typeof intg[k].delta === 'number') {
+            if (Math.abs(intg[k].delta) > Math.abs(worstDelta)) worstDelta = intg[k].delta;
+          }
+        });
+        _v11_paint(document.getElementById('v11-integrity-detail'),
+          'max delta replay vs canonical: ' + _v11_fmtUSD(worstDelta));
+      }
+    } catch (e) { /* ignore */ }
+
+  } catch (err) {
+    console.warn('refreshPortfolioV11:', err);
+  }
+}
+
+// Auto-refresh quando a aba Portfolio ficar visível
+(function () {
+  var v11Interval = null;
+  function _v11_watchTab() {
+    var portfolioPage = document.getElementById('page-portfolio');
+    if (!portfolioPage) return;
+    var isActive = portfolioPage.classList.contains('active');
+    if (isActive && !v11Interval) {
+      refreshPortfolioV11();
+      v11Interval = setInterval(refreshPortfolioV11, 15000);
+    } else if (!isActive && v11Interval) {
+      clearInterval(v11Interval);
+      v11Interval = null;
+    }
+  }
+  // Observa mudança de aba
+  if (typeof MutationObserver !== 'undefined') {
+    setTimeout(function () {
+      var p = document.getElementById('page-portfolio');
+      if (p) {
+        new MutationObserver(_v11_watchTab).observe(p, { attributes: true, attributeFilter: ['class'] });
+        _v11_watchTab();
+      }
+    }, 500);
+  }
+})();

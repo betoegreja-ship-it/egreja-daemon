@@ -10732,16 +10732,10 @@ def arbi_fix_trade():
 
 @app.route('/arbitrage/trades')
 def arbi_trades_route():
-    # [hotfix] state_lock com timeout 2s — evita travar frontend (loadAll Promise.all)
-    open_t = []; closed_t = []; cap = 0.0; c_pnl = 0.0; o_pnl = 0.0; winners = 0
-    if state_lock.acquire(timeout=2):
-        try:
-            open_t=list(arbi_open); closed_t=list(arbi_closed); cap=arbi_capital
-            c_pnl=sum(t.get('pnl',0) for t in arbi_closed); o_pnl=sum(t.get('pnl',0) for t in arbi_open)
-            winners=sum(1 for t in arbi_closed if t.get('pnl',0)>0)
-        finally: state_lock.release()
-    else:
-        log.warning('[/arbitrage/trades] state_lock timeout - servindo dados vazios')
+    with state_lock:
+        open_t=list(arbi_open); closed_t=list(arbi_closed); cap=arbi_capital
+        c_pnl=sum(t.get('pnl',0) for t in arbi_closed); o_pnl=sum(t.get('pnl',0) for t in arbi_open)
+        winners=sum(1 for t in arbi_closed if t.get('pnl',0)>0)
     return jsonify({'open_trades':open_t,'closed_trades':closed_t,'capital':round(cap,2),
         'initial_capital':ARBI_CAPITAL,'open_pnl':round(o_pnl,2),
         'closed_pnl':round(c_pnl,2),'total_pnl':round(o_pnl+c_pnl,2),

@@ -8329,7 +8329,11 @@ def cedro_quotes():
 
 @app.route('/health')
 def health():
-    with state_lock: open_count=len(stocks_open)+len(crypto_open)
+    # [hotfix] timeout defensivo: se scan loop segura lock, não trava HTTP
+    open_count = -1
+    if state_lock.acquire(timeout=2):
+        try: open_count = len(stocks_open) + len(crypto_open)
+        finally: state_lock.release()
     now=time.time()
     hb_status={}
     for k,t in thread_health.items():
@@ -9771,10 +9775,18 @@ def signals():
             for k,v in row.items():
                 if isinstance(v,datetime): row[k]=v.isoformat()
             row['asset_type']='stock'
-        with state_lock:
-            open_stock_syms  = {t['symbol'] for t in stocks_open}
-            open_crypto_syms = {t['symbol'] for t in crypto_open}
-            sp_snap          = dict(stock_prices)
+        # [hotfix] state_lock com timeout 2s — se travado, segue sem trade_open flags
+        open_stock_syms = set()
+        open_crypto_syms = set()
+        sp_snap = {}
+        if state_lock.acquire(timeout=2):
+            try:
+                open_stock_syms  = {t['symbol'] for t in stocks_open}
+                open_crypto_syms = {t['symbol'] for t in crypto_open}
+                sp_snap          = dict(stock_prices)
+            finally: state_lock.release()
+        else:
+            log.warning('[/signals] state_lock timeout — servindo sem trade_open flags')
         for sig in rows:
             sig['trade_open']=sig['symbol'] in open_stock_syms
             sig['market_open']=market_open_for(sig.get('market_type',''))
@@ -9919,29 +9931,48 @@ def signals():
 
 @app.route('/prices/live')
 def prices_live():
-    with state_lock:
-        trades=[{'id':t['id'],'symbol':t['symbol'],
-            'current_price':t.get('current_price',t.get('entry_price',0)),
-            'pnl':t.get('pnl',0),'pnl_pct':t.get('pnl_pct',0),
-            'peak_pnl_pct':t.get('peak_pnl_pct',0),'direction':t.get('direction','LONG')}
-            for t in stocks_open+crypto_open]
-        crypto_snap={k.replace('USDT',''):v for k,v in crypto_prices.items()}
+    # [hotfix] state_lock com timeout 2s
+    trades = []
+    crypto_snap = {}
+    if state_lock.acquire(timeout=2):
+        try:
+            trades=[{'id':t['id'],'symbol':t['symbol'],
+                'current_price':t.get('current_price',t.get('entry_price',0)),
+                'pnl':t.get('pnl',0),'pnl_pct':t.get('pnl_pct',0),
+                'peak_pnl_pct':t.get('peak_pnl_pct',0),'direction':t.get('direction','LONG')}
+                for t in stocks_open+crypto_open]
+            crypto_snap={k.replace('USDT',''):v for k,v in crypto_prices.items()}
+        finally: state_lock.release()
+    else:
+        log.warning('[/prices/live] state_lock timeout')
     return jsonify({'timestamp':datetime.utcnow().isoformat(),'trades':trades,'crypto_prices':crypto_snap})
 
 @app.route('/trades/open')
 def trades_open():
-    with state_lock: data=stocks_open+crypto_open
+    # [hotfix] timeout 2s
+    data = []
+    if state_lock.acquire(timeout=2):
+        try: data = stocks_open + crypto_open
+        finally: state_lock.release()
     return jsonify({'trades':data,'total':len(data)})
 
 @app.route('/trades/closed')
 def trades_closed():
-    with state_lock:
-        data=sorted(stocks_closed+crypto_closed,key=lambda x:x.get('closed_at',''),reverse=True)
+    # [hotfix] timeout 2s
+    data = []
+    if state_lock.acquire(timeout=2):
+        try:
+            data=sorted(stocks_closed+crypto_closed,key=lambda x:x.get('closed_at',''),reverse=True)
+        finally: state_lock.release()
     return jsonify({'trades':data,'total':len(data)})
 
 @app.route('/trades')
 def trades():
-    with state_lock: all_t=stocks_open+crypto_open+stocks_closed+crypto_closed  # [v10.9] sem limite
+    # [hotfix] timeout 2s
+    all_t = []
+    if state_lock.acquire(timeout=2):
+        try: all_t = stocks_open+crypto_open+stocks_closed+crypto_closed
+        finally: state_lock.release()
     return jsonify({'trades':all_t,'total':len(all_t)})
 
 

@@ -3093,8 +3093,11 @@ def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
                                  pattern_stats_cache=pattern_stats_cache)
         else:  # stock
             sym = trade['symbol']
-            with state_lock:
-                pd_data = stock_prices.get(sym, {})
+            # [2026-04-20 deadlock fix] state_lock removido: esta função é
+            # chamada apenas por monitor_trades (api_server.py:5811, :5910),
+            # que já detém state_lock. threading.Lock() não é reentrante —
+            # re-adquirir travava a thread. dict.get() é atômico no CPython.
+            pd_data = stock_prices.get(sym, {})
             c = pd_data.get('closes_series', [])
             h = pd_data.get('highs_series', [])
             l = pd_data.get('lows_series', [])

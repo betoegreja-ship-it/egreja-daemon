@@ -38,13 +38,19 @@ def ensure_advisor_schema(db_fn, log) -> bool:
                 return False
             with open(SCHEMA_PATH, 'r') as f:
                 sql_text = f.read()
-            # MySQL não aceita múltiplas statements num execute; split
-            statements = [s.strip() for s in sql_text.split(';') if s.strip()]
+            # Remove comentários line-by-line ANTES de split(';')
+            # (senão '-- ...' no topo faz toda a statement virar comentário)
+            clean_lines = []
+            for line in sql_text.split('\n'):
+                stripped = line.strip()
+                if stripped.startswith('--') or not stripped:
+                    continue
+                clean_lines.append(line)
+            clean_sql = '\n'.join(clean_lines)
+            statements = [s.strip() for s in clean_sql.split(';') if s.strip()]
             c = conn.cursor()
             created = 0
             for stmt in statements:
-                if stmt.lstrip().startswith('--'):
-                    continue
                 try:
                     c.execute(stmt)
                     created += 1

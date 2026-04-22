@@ -5806,7 +5806,55 @@ def monitor_trades():
                     _timeout_s = get_dynamic_timeout_h(sym, 2.0)  # [v10.17] timeout dinâmico (default 2h)
                     # [v10.48] Trade com tese v3 válida ignora TIMEOUT — só fecha se tendência reverter
                     _has_v3_thesis = trade.get('signal_v2') in ('COMPRA', 'VENDA')
-                    if peak>=TRAILING_PEAK_STOCKS and trade['pnl_pct']<=peak-TRAILING_DROP_STOCKS:
+
+                    # ═══ EXIT ADVISOR V4 — stocks ═══════════════════════
+                    # Consulta advisor ANTES do chain de exit do motor.
+                    # Hierarquia: hard trailing/stop do motor > ADVISOR > resto do chain.
+                    # Em shadow mode: só grava, NUNCA aplica.
+                    _exit_adv_stk = None
+                    try:
+                        from modules.unified_brain.advisor_exit import evaluate_exit as _exadv_s
+                        from modules.unified_brain.advisor_shadow import log_exit_decision as _exlog_s
+                        _hold_min = int((now - datetime.fromisoformat(trade['opened_at'].replace('Z',''))).total_seconds() / 60)
+                        _exit_adv_stk = _exadv_s(
+                            get_db, log,
+                            trade_id=trade.get('id','?'),
+                            symbol=sym, asset_type='stock',
+                            strategy='day_trade',
+                            entry_price=trade.get('entry_price'),
+                            current_price=price,
+                            current_pnl=trade.get('pnl', 0),
+                            current_pnl_pct=trade['pnl_pct'],
+                            peak_pnl_pct=peak,
+                            holding_minutes=_hold_min,
+                            score_v3_entry=trade.get('score_v2'),
+                            score_v3_current=None,
+                            regime_v3_entry=trade.get('regime_v2'),
+                            regime_v3_current=None,
+                            direction=trade.get('direction'),
+                            portfolio_state={'open_positions': len(stocks_open)})
+                        if _exit_adv_stk and not _exit_adv_stk.get('bypassed'):
+                            try:
+                                _exlog_s(get_db, log,
+                                          trade_id=trade.get('id','?'),
+                                          symbol=sym, asset_type='stock', strategy='day_trade',
+                                          entry_price=trade.get('entry_price'), current_price=price,
+                                          current_pnl=trade.get('pnl',0), current_pnl_pct=trade['pnl_pct'],
+                                          peak_pnl_pct=peak, holding_minutes=_hold_min,
+                                          score_v3_current=None, regime_v3_current=None,
+                                          decision=_exit_adv_stk, motor_action=None, motor_applied=False)
+                            except Exception: pass
+                            # Só age se NÃO em shadow
+                            if not _exit_adv_stk.get('shadow'):
+                                _ea_action = _exit_adv_stk.get('action')
+                                if _ea_action == 'close':
+                                    reason = 'ADVISOR_CLOSE'
+                                    log.info(f"[EXIT-ADV] {sym}: CLOSE {_exit_adv_stk.get('reason','')}")
+                    except Exception as _ea_e_s:
+                        log.debug(f'[EXIT-ADV] stock {sym}: {_ea_e_s}')
+                    # ═══ FIM EXIT ADVISOR ════════════════════════════════
+
+                    if reason is None and peak>=TRAILING_PEAK_STOCKS and trade['pnl_pct']<=peak-TRAILING_DROP_STOCKS:
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.0%, drop≥0.4% (era 1.5/0.5)
                     elif trade['pnl_pct']<=-_eff_sl_s:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime (era fixo -2.0%)
@@ -5904,7 +5952,55 @@ def monitor_trades():
                     _timeout_c = get_dynamic_timeout_h(trade['symbol'], 4.0)  # [v10.17] timeout dinâmico (default 4h)
                     # [v10.48] Trade com tese v3 válida ignora TIMEOUT — só fecha se tendência reverter
                     _has_v3_thesis = trade.get('signal_v2') in ('COMPRA', 'VENDA')
-                    if peak>=TRAILING_PEAK_CRYPTO and trade['pnl_pct']<=peak-TRAILING_DROP_CRYPTO:
+
+                    # ═══ EXIT ADVISOR V4 — crypto ═══════════════════════
+                    # REGRA INTOCÁVEL: advisor NUNCA fecha crypto em zona trailing.
+                    # (enforced em advisor_exit.is_crypto_in_trailing_protection)
+                    # Trailing do motor V3 continua sendo o dono da captura de lucro.
+                    _exit_adv_cry = None
+                    try:
+                        from modules.unified_brain.advisor_exit import evaluate_exit as _exadv_c
+                        from modules.unified_brain.advisor_shadow import log_exit_decision as _exlog_c
+                        _hold_min_c = int((now - datetime.fromisoformat(trade['opened_at'].replace('Z',''))).total_seconds() / 60)
+                        _exit_adv_cry = _exadv_c(
+                            get_db, log,
+                            trade_id=trade.get('id','?'),
+                            symbol=trade['symbol'], asset_type='crypto',
+                            strategy='day_trade',
+                            entry_price=trade.get('entry_price'),
+                            current_price=price,
+                            current_pnl=trade.get('pnl', 0),
+                            current_pnl_pct=trade['pnl_pct'],
+                            peak_pnl_pct=peak,
+                            holding_minutes=_hold_min_c,
+                            score_v3_entry=trade.get('score_v2'),
+                            score_v3_current=None,
+                            regime_v3_entry=trade.get('regime_v2'),
+                            regime_v3_current=None,
+                            direction=trade.get('direction'),
+                            portfolio_state={'open_positions': len(crypto_open)})
+                        if _exit_adv_cry and not _exit_adv_cry.get('bypassed'):
+                            try:
+                                _exlog_c(get_db, log,
+                                          trade_id=trade.get('id','?'),
+                                          symbol=trade['symbol'], asset_type='crypto', strategy='day_trade',
+                                          entry_price=trade.get('entry_price'), current_price=price,
+                                          current_pnl=trade.get('pnl',0), current_pnl_pct=trade['pnl_pct'],
+                                          peak_pnl_pct=peak, holding_minutes=_hold_min_c,
+                                          score_v3_current=None, regime_v3_current=None,
+                                          decision=_exit_adv_cry, motor_action=None, motor_applied=False)
+                            except Exception: pass
+                            if not _exit_adv_cry.get('shadow'):
+                                _ea_action = _exit_adv_cry.get('action')
+                                # close só é possível se advisor_exit permitir (regra intocável garante que NÃO é close em trailing)
+                                if _ea_action == 'close':
+                                    reason = 'ADVISOR_CLOSE'
+                                    log.info(f"[EXIT-ADV] {trade['symbol']}: CLOSE {_exit_adv_cry.get('reason','')}")
+                    except Exception as _ea_e_c:
+                        log.debug(f'[EXIT-ADV] crypto {trade["symbol"]}: {_ea_e_c}')
+                    # ═══ FIM EXIT ADVISOR ════════════════════════════════
+
+                    if reason is None and peak>=TRAILING_PEAK_CRYPTO and trade['pnl_pct']<=peak-TRAILING_DROP_CRYPTO:
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.5%, drop≥0.7% (era 2.0/1.0)
                     elif trade['pnl_pct']<=-_eff_sl_c:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime
@@ -6464,8 +6560,54 @@ def stock_execution_worker():
                         log.warning(f'[RISK-BLOCK] Stock {sym}: {risk_reason}')
                         continue
 
+                    # ═══ BRAIN ADVISOR V4 — Entry (stocks) ═══════════════
+                    # IA propõe, motor decide. Shadow mode por padrão.
+                    _adv_decision_stk = None
+                    _adv_qty_stk = qty
+                    try:
+                        from modules.unified_brain.advisor_entry import evaluate_entry as _adv_eval_e
+                        _adv_decision_stk = _adv_eval_e(
+                            get_db, log,
+                            symbol=sym, asset_type='stock',
+                            strategy='day_trade',
+                            score_v3=sig.get('score_v2') or score,
+                            regime_v3=sig.get('regime_v2'),
+                            direction=direction, atr_pct=sig.get('atr_pct', 0),
+                            market_type=mkt,
+                            hour_of_day=datetime.utcnow().hour,
+                            weekday=datetime.utcnow().weekday(),
+                            portfolio_state={'open_positions': len(stocks_open),
+                                             'max_positions': 20})
+                        if _adv_decision_stk and not _adv_decision_stk.get('bypassed'):
+                            if not _adv_decision_stk.get('shadow') and not _adv_decision_stk.get('approve'):
+                                log.info(f"[ADVISOR-ENTRY] {sym}: BLOCK {_adv_decision_stk.get('reason','')}")
+                                try:
+                                    from modules.unified_brain.advisor_shadow import log_entry_decision as _adv_log_e
+                                    _adv_log_e(get_db, log,
+                                              symbol=sym, asset_type='stock', strategy='day_trade',
+                                              market_type=mkt, direction=direction,
+                                              score_v3=sig.get('score_v2') or score,
+                                              regime_v3=sig.get('regime_v2'),
+                                              atr_pct=sig.get('atr_pct', 0),
+                                              hour_of_day=datetime.utcnow().hour,
+                                              weekday=datetime.utcnow().weekday(),
+                                              decision=_adv_decision_stk,
+                                              motor_opened=False, motor_size_used=None)
+                                except Exception: pass
+                                record_shadow_decision(signal_id, sig_enriched,
+                                    f"advisor_block_{_adv_decision_stk.get('reason','')}"[:60])
+                                continue
+                            if not _adv_decision_stk.get('shadow'):
+                                _sm = float(_adv_decision_stk.get('size_multiplier', 1.0))
+                                _adv_qty_stk = max(1, int(qty * _sm))
+                    except Exception as _adv_e_stk:
+                        log.debug(f'[ADVISOR-ENTRY] stock {sym}: {_adv_e_stk}')
+                        _adv_decision_stk = None
+                    # ═══ FIM BRAIN ADVISOR ════════════════════════════════
+
                     ok2,reason2=_second_validation(sym,mkt,'stocks')
-                    if ok2 and stocks_capital>=price*qty:
+                    if ok2 and stocks_capital>=price*_adv_qty_stk:
+                        qty = _adv_qty_stk  # advisor pode ter ajustado qty
                         stocks_capital -= price*qty
                         # [v10.18] Ledger: RESERVE
                         # [v11-hook] dual-write stocks open — trade_id calc antes do INSERT
@@ -6819,8 +6961,55 @@ def auto_trade_crypto():
                         log.warning(f'[RISK-BLOCK] Crypto {display}: {risk_reason_pre}')
                         continue
 
+                    # ═══ BRAIN ADVISOR V4 — Entry (crypto) ═══════════════
+                    # IA propõe, motor decide. Shadow mode por padrão.
+                    # REGRA INTOCÁVEL: advisor NUNCA altera TRAILING_PEAK_CRYPTO nem TRAILING_DROP_CRYPTO.
+                    _adv_decision_cry = None
+                    _adv_size_cry = approved_size
+                    try:
+                        from modules.unified_brain.advisor_entry import evaluate_entry as _adv_eval_c
+                        _adv_decision_cry = _adv_eval_c(
+                            get_db, log,
+                            symbol=display, asset_type='crypto',
+                            strategy='day_trade',
+                            score_v3=score,
+                            regime_v3=locals().get('regime_v2_c'),
+                            direction=direction, atr_pct=atr_pct_c,
+                            market_type='CRYPTO',
+                            hour_of_day=datetime.utcnow().hour,
+                            weekday=datetime.utcnow().weekday(),
+                            portfolio_state={'open_positions': len(crypto_open),
+                                             'max_positions': MAX_POSITIONS_CRYPTO})
+                        if _adv_decision_cry and not _adv_decision_cry.get('bypassed'):
+                            if not _adv_decision_cry.get('shadow') and not _adv_decision_cry.get('approve'):
+                                log.info(f"[ADVISOR-ENTRY] {display}: BLOCK {_adv_decision_cry.get('reason','')}")
+                                try:
+                                    from modules.unified_brain.advisor_shadow import log_entry_decision as _adv_log_c
+                                    _adv_log_c(get_db, log,
+                                              symbol=display, asset_type='crypto', strategy='day_trade',
+                                              market_type='CRYPTO', direction=direction,
+                                              score_v3=score,
+                                              regime_v3=locals().get('regime_v2_c'),
+                                              atr_pct=atr_pct_c,
+                                              hour_of_day=datetime.utcnow().hour,
+                                              weekday=datetime.utcnow().weekday(),
+                                              decision=_adv_decision_cry,
+                                              motor_opened=False, motor_size_used=None)
+                                except Exception: pass
+                                record_shadow_decision(sig_id_c, sig_enriched_c,
+                                    f"advisor_block_{_adv_decision_cry.get('reason','')}"[:60])
+                                continue
+                            if not _adv_decision_cry.get('shadow'):
+                                _sm = float(_adv_decision_cry.get('size_multiplier', 1.0))
+                                _adv_size_cry = max(10.0, approved_size * _sm)
+                    except Exception as _adv_e_cry:
+                        log.debug(f'[ADVISOR-ENTRY] crypto {display}: {_adv_e_cry}')
+                        _adv_decision_cry = None
+                    # ═══ FIM BRAIN ADVISOR ════════════════════════════════
+
                     ok2,reason2=_second_validation(display,'CRYPTO','crypto')
-                    if ok2 and crypto_capital>=approved_size:
+                    if ok2 and crypto_capital>=_adv_size_cry:
+                        approved_size = _adv_size_cry  # advisor pode ter ajustado size
                         qty=approved_size/price; crypto_capital-=approved_size
                         # [v10.18] Ledger: RESERVE
                         # [v11-hook] dual-write crypto open
@@ -12028,6 +12217,21 @@ if __name__ == '__main__':
             log.info('[v3.0] Unified Brain tables created/verified (8 tables — persistent memory)')
     except Exception as _be:
         log.warning(f'[v3.0] Brain tables creation warning: {_be}')
+
+    # [v4.0] Brain Advisor V4 schema + workers (shadow mode padrão)
+    try:
+        from modules.unified_brain.advisor_shadow import (
+            ensure_advisor_schema as _adv_schema,
+            start_resolution_worker as _adv_reso_w,
+        )
+        from modules.unified_brain.advisor_metrics import start_metrics_worker as _adv_met_w
+        if _adv_schema(get_db, log):
+            log.info('[v4.0] Brain Advisor V4 schema created/verified (3 tables)')
+            _adv_reso_w(get_db, log, interval_sec=3600)
+            _adv_met_w(get_db, log, interval_sec=3600*6)
+            log.info('[v4.0] Brain Advisor workers started (resolution + metrics)')
+    except Exception as _av4e:
+        log.warning(f'[v4.0] Brain Advisor V4 init warning: {_av4e}')
 
     # [v10.27] Long Horizon tables (lh_assets, lh_scores, etc.)
     try:

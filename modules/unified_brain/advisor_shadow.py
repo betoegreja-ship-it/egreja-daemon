@@ -22,6 +22,11 @@ SCHEMA_PATH = os.path.join(os.path.dirname(__file__), 'advisor_schema.sql')
 _schema_lock = threading.Lock()
 _schema_done = False
 
+# Throttle do Exit Advisor: 1 log por trade a cada N segundos
+_exit_log_throttle = {}  # trade_id -> last_log_ts
+_exit_log_lock = threading.Lock()
+EXIT_LOG_THROTTLE_SEC = 300  # 5 minutos entre logs da mesma trade
+
 
 def ensure_advisor_schema(db_fn, log) -> bool:
     """Cria as 3 tabelas do advisor se ainda não existem.
@@ -134,8 +139,21 @@ def log_exit_decision(db_fn, log, *,
                       score_v3_current, regime_v3_current,
                       decision: Dict[str, Any],
                       motor_action: Optional[str] = None,
-                      motor_applied: bool = False) -> Optional[int]:
-    """Grava 1 linha em brain_shadow_exit_advisor."""
+                      motor_applied: bool = False,
+                      force_log: bool = False) -> Optional[int]:
+    """Grava 1 linha em brain_shadow_exit_advisor.
+    Throttled: só grava 1x a cada EXIT_LOG_THROTTLE_SEC por trade,
+    EXCETO se action != 'hold' ou force_log=True (decisões significativas sempre gravam)."""
+    # Throttle: pular se for HOLD e já gravou recentemente
+    _action = decision.get('action', 'hold')
+    if _action == 'hold' and not force_log:
+        now_ts = time.time()
+        with _exit_log_lock:
+            last = _exit_log_throttle.get(trade_id, 0)
+            if now_ts - last < EXIT_LOG_THROTTLE_SEC:
+                return None
+            _exit_log_throttle[trade_id] = now_ts
+
     conn = None
     try:
         conn = db_fn()

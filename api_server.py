@@ -6579,24 +6579,30 @@ def stock_execution_worker():
                             portfolio_state={'open_positions': len(stocks_open),
                                              'max_positions': 20})
                         if _adv_decision_stk and not _adv_decision_stk.get('bypassed'):
+                            # SEMPRE logar a decisão (shadow ou não, block ou não)
+                            try:
+                                from modules.unified_brain.advisor_shadow import log_entry_decision as _adv_log_e
+                                _would_block_active = (not _adv_decision_stk.get('shadow')
+                                                        and not _adv_decision_stk.get('approve'))
+                                _adv_log_e(get_db, log,
+                                          symbol=sym, asset_type='stock', strategy='day_trade',
+                                          market_type=mkt, direction=direction,
+                                          score_v3=sig.get('score_v2') or score,
+                                          regime_v3=sig.get('regime_v2'),
+                                          atr_pct=sig.get('atr_pct', 0),
+                                          hour_of_day=datetime.utcnow().hour,
+                                          weekday=datetime.utcnow().weekday(),
+                                          decision=_adv_decision_stk,
+                                          motor_opened=(not _would_block_active),
+                                          motor_size_used=None)
+                            except Exception: pass
+                            # Aplicar BLOCK apenas se NÃO shadow
                             if not _adv_decision_stk.get('shadow') and not _adv_decision_stk.get('approve'):
                                 log.info(f"[ADVISOR-ENTRY] {sym}: BLOCK {_adv_decision_stk.get('reason','')}")
-                                try:
-                                    from modules.unified_brain.advisor_shadow import log_entry_decision as _adv_log_e
-                                    _adv_log_e(get_db, log,
-                                              symbol=sym, asset_type='stock', strategy='day_trade',
-                                              market_type=mkt, direction=direction,
-                                              score_v3=sig.get('score_v2') or score,
-                                              regime_v3=sig.get('regime_v2'),
-                                              atr_pct=sig.get('atr_pct', 0),
-                                              hour_of_day=datetime.utcnow().hour,
-                                              weekday=datetime.utcnow().weekday(),
-                                              decision=_adv_decision_stk,
-                                              motor_opened=False, motor_size_used=None)
-                                except Exception: pass
                                 record_shadow_decision(signal_id, sig_enriched,
                                     f"advisor_block_{_adv_decision_stk.get('reason','')}"[:60])
                                 continue
+                            # Aplicar size_multiplier se NÃO shadow
                             if not _adv_decision_stk.get('shadow'):
                                 _sm = float(_adv_decision_stk.get('size_multiplier', 1.0))
                                 _adv_qty_stk = max(1, int(qty * _sm))
@@ -6981,24 +6987,30 @@ def auto_trade_crypto():
                             portfolio_state={'open_positions': len(crypto_open),
                                              'max_positions': MAX_POSITIONS_CRYPTO})
                         if _adv_decision_cry and not _adv_decision_cry.get('bypassed'):
+                            # SEMPRE logar a decisão (shadow ou não, block ou não)
+                            try:
+                                from modules.unified_brain.advisor_shadow import log_entry_decision as _adv_log_c
+                                _would_block_c = (not _adv_decision_cry.get('shadow')
+                                                  and not _adv_decision_cry.get('approve'))
+                                _adv_log_c(get_db, log,
+                                          symbol=display, asset_type='crypto', strategy='day_trade',
+                                          market_type='CRYPTO', direction=direction,
+                                          score_v3=score,
+                                          regime_v3=locals().get('regime_v2_c'),
+                                          atr_pct=atr_pct_c,
+                                          hour_of_day=datetime.utcnow().hour,
+                                          weekday=datetime.utcnow().weekday(),
+                                          decision=_adv_decision_cry,
+                                          motor_opened=(not _would_block_c),
+                                          motor_size_used=None)
+                            except Exception: pass
+                            # Aplicar BLOCK apenas se NÃO shadow
                             if not _adv_decision_cry.get('shadow') and not _adv_decision_cry.get('approve'):
                                 log.info(f"[ADVISOR-ENTRY] {display}: BLOCK {_adv_decision_cry.get('reason','')}")
-                                try:
-                                    from modules.unified_brain.advisor_shadow import log_entry_decision as _adv_log_c
-                                    _adv_log_c(get_db, log,
-                                              symbol=display, asset_type='crypto', strategy='day_trade',
-                                              market_type='CRYPTO', direction=direction,
-                                              score_v3=score,
-                                              regime_v3=locals().get('regime_v2_c'),
-                                              atr_pct=atr_pct_c,
-                                              hour_of_day=datetime.utcnow().hour,
-                                              weekday=datetime.utcnow().weekday(),
-                                              decision=_adv_decision_cry,
-                                              motor_opened=False, motor_size_used=None)
-                                except Exception: pass
                                 record_shadow_decision(sig_id_c, sig_enriched_c,
                                     f"advisor_block_{_adv_decision_cry.get('reason','')}"[:60])
                                 continue
+                            # Aplicar size_multiplier se NÃO shadow
                             if not _adv_decision_cry.get('shadow'):
                                 _sm = float(_adv_decision_cry.get('size_multiplier', 1.0))
                                 _adv_size_cry = max(10.0, approved_size * _sm)

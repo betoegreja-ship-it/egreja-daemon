@@ -6006,8 +6006,9 @@ def monitor_trades():
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.5%, drop≥0.7% (era 2.0/1.0)
                     elif trade['pnl_pct']<=-_eff_sl_c:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime
-                    elif _has_v3_thesis:
+                    elif _has_v3_thesis and os.environ.get('V3_REVERSAL_CRYPTO_ENABLED', 'true').lower() != 'false':
                         # [v10.48] Trade com tese v3: só fecha se v3 reverter
+                        # [adaptive-v1] Guard: V3_REVERSAL crypto pode ser desabilitado via env var
                         _should_close, _new_reg, _new_sig, _rdet = check_v3_reversal(trade, 'crypto')
                         if _should_close:
                             reason='V3_REVERSAL'
@@ -6304,6 +6305,11 @@ def stock_execution_worker():
                         elif _pat_wr >= 0.70: _eff_min = MIN_SCORE_AUTO            # padrão ok
                 is_long=score>=_eff_min and signal_val=='COMPRA'
                 is_short=score<=(100-_eff_min) and signal_val=='VENDA'
+                # [adaptive-v1] Guard: bloquear SHORT stocks se env var dizer
+                _allow_short = os.environ.get('ALLOW_SHORT_STOCKS', 'true').lower() != 'false'
+                if is_short and not _allow_short:
+                    log.info(f'[SHORT-BLOCK] {sym}: ALLOW_SHORT_STOCKS=false — trade vetada')
+                    is_short = False
                 if is_short:
                     log.info(f'[SHORT-DBG] {sym} score={score} _eff_min={_eff_min} is_short={is_short} signal_val={signal_val}')
                 if not (is_long or is_short): continue
@@ -6579,7 +6585,9 @@ def stock_execution_worker():
                             hour_of_day=datetime.utcnow().hour,
                             weekday=datetime.utcnow().weekday(),
                             portfolio_state={'open_positions': len(stocks_open),
-                                             'max_positions': 20})
+                                             'max_positions': 20},
+                            feature_hash=feat_hash,
+                            learning_confidence=conf.get('final_confidence'))
                         if _adv_decision_stk and not _adv_decision_stk.get('bypassed'):
                             # SEMPRE logar a decisão (shadow ou não, block ou não)
                             try:
@@ -6988,7 +6996,9 @@ def auto_trade_crypto():
                             hour_of_day=datetime.utcnow().hour,
                             weekday=datetime.utcnow().weekday(),
                             portfolio_state={'open_positions': len(crypto_open),
-                                             'max_positions': MAX_POSITIONS_CRYPTO})
+                                             'max_positions': MAX_POSITIONS_CRYPTO},
+                            feature_hash=feat_hash_c,
+                            learning_confidence=conf_c.get('final_confidence'))
                         if _adv_decision_cry and not _adv_decision_cry.get('bypassed'):
                             # SEMPRE logar a decisão (shadow ou não, block ou não)
                             try:

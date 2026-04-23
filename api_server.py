@@ -5857,7 +5857,28 @@ def monitor_trades():
 
                     if reason is None and peak>=TRAILING_PEAK_STOCKS and trade['pnl_pct']<=peak-TRAILING_DROP_STOCKS:
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.0%, drop≥0.4% (era 1.5/0.5)
-                    elif trade['pnl_pct']<=-_eff_sl_s:
+
+                    # ═══ [adaptive-v1] EARLY STOP STOCK ═══════════════════
+                    # Corta trades stock afundando ANTES de virar STOP_LOSS catastrao.
+                    # So ativa se peak < 0.4 (trade nunca foi lucrativa — trailing cuida do resto).
+                    # Env vars: EARLY_STOP_STOCK_ENABLED/PCT, EARLY_ALERT_STOCK_PCT
+                    if reason is None and os.environ.get('EARLY_STOP_STOCK_ENABLED','true').lower()!='false':
+                        _early_stop_pct_s = float(os.environ.get('EARLY_STOP_STOCK_PCT', -0.6))
+                        _early_alert_pct_s = float(os.environ.get('EARLY_ALERT_STOCK_PCT', -0.4))
+                        _peak_pos_s = float(trade.get('peak_pnl_pct', 0) or 0)
+                        _min_pnl_s = trade.setdefault('min_pnl_pct', trade['pnl_pct'])
+                        trade['min_pnl_pct'] = round(min(_min_pnl_s, trade['pnl_pct']), 2)
+                        if _peak_pos_s < 0.4:
+                            if trade['pnl_pct'] <= _early_stop_pct_s:
+                                reason = 'EARLY_STOP'
+                                log.info(f"[EARLY-STOP] {trade['symbol']}(stock): pnl={trade['pnl_pct']:+.2f}% "
+                                         f"peak={_peak_pos_s:+.2f}% — cortando antes de STOP_LOSS")
+                            elif trade['pnl_pct'] <= _early_alert_pct_s:
+                                if not trade.get('_early_alerted'):
+                                    trade['_early_alerted'] = True
+                                    log.info(f"[EARLY-ALERT] {trade['symbol']}(stock): pnl={trade['pnl_pct']:+.2f}% "
+                                             f"peak={_peak_pos_s:+.2f}% — zona alerta")
+                    if reason is None and trade['pnl_pct']<=-_eff_sl_s:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime (era fixo -2.0%)
                     elif _has_v3_thesis and market_open_for(mkt):
                         # [v10.49-fix] V3_REVERSAL só pode disparar se mercado estiver aberto.

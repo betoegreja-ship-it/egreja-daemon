@@ -5858,7 +5858,9 @@ def monitor_trades():
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.0%, drop≥0.4% (era 1.5/0.5)
                     elif trade['pnl_pct']<=-_eff_sl_s:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime (era fixo -2.0%)
-                    elif _has_v3_thesis:
+                    elif _has_v3_thesis and market_open_for(mkt):
+                        # [v10.49-fix] V3_REVERSAL só pode disparar se mercado estiver aberto.
+                        # Sem esse guard, trades fechavam com preço stale pre-pregão.
                         _should_close, _new_reg, _new_sig, _rdet = check_v3_reversal(trade, 'stock')
                         if _should_close:
                             reason='V3_REVERSAL'

@@ -56,6 +56,7 @@ Herdado e preservado da v10.3.4 (F1..F5) e ancestrais.
 
 
 import decimal   # [v10.7] movido do interior de funções para o nível de módulo
+import re        # [adaptive-v1] pattern matching B3 ticker classification
 import os, sys, time, queue, json, uuid, threading, itertools, requests, logging, hashlib, math
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo

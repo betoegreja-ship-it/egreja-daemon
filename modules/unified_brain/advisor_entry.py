@@ -144,7 +144,9 @@ def evaluate_entry(db_fn, log, *,
                    weekday: Optional[int] = None,
                    portfolio_state: Optional[Dict] = None,
                    pattern_stats: Optional[Dict] = None,
-                   factor_stats: Optional[Dict] = None) -> Dict[str, Any]:
+                   factor_stats: Optional[Dict] = None,
+                   feature_hash: Optional[str] = None,
+                   learning_confidence: Optional[float] = None) -> Dict[str, Any]:
     """Avalia uma potencial entrada. Retorna decisão estruturada.
 
     Se advisor desligado OU derivatives → decisão neutra 'pass' (bypass).
@@ -195,6 +197,34 @@ def evaluate_entry(db_fn, log, *,
         return _bypass_decision('zero_weights')
     agg = sum(votes[k] * w.get(k, 0) for k in votes) / total_w
     agg = max(0.0, min(1.0, agg))
+
+    # [adaptive-v1-bridge] Consultar Adaptive Learning Brain
+    adaptive_overlay = {}
+    try:
+        from modules.adaptive_learning.advisor_bridge import (
+            get_pattern_verdict as _get_verdict,
+            get_confidence_penalty as _get_conf_pen,
+        )
+        verdict = _get_verdict(db_fn, log, feature_hash, asset_type)
+        conf_pen = _get_conf_pen(db_fn, log, asset_type, learning_confidence)
+        adaptive_overlay['pattern_verdict'] = verdict
+        adaptive_overlay['confidence_penalty'] = conf_pen
+
+        # RED pattern → força block independente de votos
+        if verdict == 'RED':
+            agg = min(agg, 0.25)
+            adaptive_overlay['override'] = 'red_pattern_forced_block'
+        # GOLD pattern → mini boost
+        elif verdict == 'GOLD':
+            agg = min(1.0, agg + 0.05)
+            adaptive_overlay['override'] = 'gold_pattern_boost'
+
+        # Confidence penalty (negativo) — converte de pontos pra agg (divide por 100)
+        if conf_pen < 0:
+            agg = max(0.0, agg + (conf_pen / 100.0))
+            adaptive_overlay['confidence_penalty_applied'] = conf_pen
+    except Exception as _ae:
+        log.debug(f'[ADVISOR:entry] adaptive bridge err: {_ae}')
 
     # 5) Decisão
     if agg < ENTRY_BLOCK_MAX:
@@ -251,5 +281,6 @@ def evaluate_entry(db_fn, log, *,
         'aggregate_score': round(agg, 3),
         'shadow': shadow,
         'bypassed': False,
+        'adaptive_overlay': adaptive_overlay,
     }
 

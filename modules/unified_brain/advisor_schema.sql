@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS brain_shadow_entry_advisor (
     motor_opened TINYINT(1) NOT NULL,          -- 1 = trade abriu, 0 = não
     motor_size_used INT NULL,                  -- qty efetivamente usada
 
+    -- [adaptive-v1] Overlay do Adaptive Learning Brain
+    adaptive_overlay_json JSON NULL,
+
     -- Ground truth (preenchido pelo worker quando trade fechar)
     trade_id VARCHAR(64) NULL,
     actual_pnl DECIMAL(14,4) NULL,
@@ -89,6 +92,9 @@ CREATE TABLE IF NOT EXISTS brain_shadow_exit_advisor (
     -- O que o motor V3 fez de fato nesse tick (pode ser HOLD ou fechamento)
     motor_action VARCHAR(64) NULL,             -- 'HOLD','TRAILING_STOP','STOP_LOSS','V3_REVERSAL' etc
     motor_applied TINYINT(1) DEFAULT 0,        -- 1 = advisor decision foi aplicada
+
+    -- [adaptive-v1] Overlay do Adaptive Learning Brain
+    adaptive_overlay_json JSON NULL,
 
     -- Ground truth (preenchido quando trade fecha)
     final_pnl DECIMAL(14,4) NULL,

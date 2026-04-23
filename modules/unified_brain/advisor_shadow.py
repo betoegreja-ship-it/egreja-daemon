@@ -93,15 +93,18 @@ def log_entry_decision(db_fn, log, *,
         if not conn:
             return None
         c = conn.cursor()
+        # [adaptive-v1] Persistir adaptive_overlay se Advisor consultou o bridge
+        _overlay = decision.get('adaptive_overlay') or {}
+        _overlay_json = json.dumps(_overlay) if _overlay else None
         c.execute("""
             INSERT INTO brain_shadow_entry_advisor
               (symbol, asset_type, strategy, market_type, direction,
                score_v3, regime_v3, atr_pct, hour_of_day, weekday,
                would_action, would_size_mult, would_score_delta, would_threshold_delta,
                aggregate_score, votes_json, reason, shadow_mode,
-               motor_opened, motor_size_used, trade_id)
+               motor_opened, motor_size_used, adaptive_overlay_json, trade_id)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             symbol, asset_type, strategy, market_type, direction,
             score_v3, regime_v3, atr_pct, hour_of_day, weekday,
@@ -115,6 +118,7 @@ def log_entry_decision(db_fn, log, *,
             1 if decision.get('shadow', True) else 0,
             1 if motor_opened else 0,
             motor_size_used,
+            _overlay_json,
             trade_id,
         ))
         inserted_id = c.lastrowid
@@ -160,6 +164,9 @@ def log_exit_decision(db_fn, log, *,
         if not conn:
             return None
         c = conn.cursor()
+        # [adaptive-v1] Persistir adaptive_overlay se Advisor consultou o bridge
+        _overlay_x = decision.get('adaptive_overlay') or {}
+        _overlay_x_json = json.dumps(_overlay_x) if _overlay_x else None
         c.execute("""
             INSERT INTO brain_shadow_exit_advisor
               (trade_id, symbol, asset_type, strategy,
@@ -168,9 +175,9 @@ def log_exit_decision(db_fn, log, *,
                score_v3_current, regime_v3_current,
                would_action, would_size_reduction_pct, would_stop_adjustment_pct,
                confidence, aggregate_score, votes_json, reason, shadow_mode,
-               motor_action, motor_applied)
+               motor_action, motor_applied, adaptive_overlay_json)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             trade_id, symbol, asset_type, strategy,
             entry_price, current_price, current_pnl, current_pnl_pct,
@@ -186,6 +193,7 @@ def log_exit_decision(db_fn, log, *,
             1 if decision.get('shadow', True) else 0,
             motor_action,
             1 if motor_applied else 0,
+            _overlay_x_json,
         ))
         inserted_id = c.lastrowid
         conn.commit()

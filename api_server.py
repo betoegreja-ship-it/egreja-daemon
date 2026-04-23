@@ -6585,6 +6585,7 @@ def stock_execution_worker():
                                 _would_block_active = (not _adv_decision_stk.get('shadow')
                                                         and not _adv_decision_stk.get('approve'))
                                 _adv_log_e(get_db, log,
+                                          trade_id=pre_trade_id,
                                           symbol=sym, asset_type='stock', strategy='day_trade',
                                           market_type=mkt, direction=direction,
                                           score_v3=sig.get('score_v2') or score,
@@ -6993,6 +6994,7 @@ def auto_trade_crypto():
                                 _would_block_c = (not _adv_decision_cry.get('shadow')
                                                   and not _adv_decision_cry.get('approve'))
                                 _adv_log_c(get_db, log,
+                                          trade_id=pre_trade_id,
                                           symbol=display, asset_type='crypto', strategy='day_trade',
                                           market_type='CRYPTO', direction=direction,
                                           score_v3=score,

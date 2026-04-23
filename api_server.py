@@ -6004,7 +6004,33 @@ def monitor_trades():
 
                     if reason is None and peak>=TRAILING_PEAK_CRYPTO and trade['pnl_pct']<=peak-TRAILING_DROP_CRYPTO:
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.5%, drop≥0.7% (era 2.0/1.0)
-                    elif trade['pnl_pct']<=-_eff_sl_c:
+
+                    # ═══ [adaptive-v1] EARLY STOP CRYPTO ═══════════════════
+                    # Corta trades que estão afundando ANTES de virar STOP_LOSS catastrão.
+                    # Só ativa se peak < 0.4% (trade nunca foi lucrativa — trailing cuida do resto).
+                    # Env vars:
+                    #   EARLY_STOP_CRYPTO_ENABLED (default true)
+                    #   EARLY_STOP_CRYPTO_PCT     (default -0.6)
+                    #   EARLY_ALERT_CRYPTO_PCT    (default -0.4)  — só loga, não fecha
+                    if reason is None and os.environ.get('EARLY_STOP_CRYPTO_ENABLED','true').lower()!='false':
+                        _early_stop_pct = float(os.environ.get('EARLY_STOP_CRYPTO_PCT', -0.6))
+                        _early_alert_pct = float(os.environ.get('EARLY_ALERT_CRYPTO_PCT', -0.4))
+                        _peak_pos = float(trade.get('peak_pnl_pct', 0) or 0)
+                        _min_pnl = trade.setdefault('min_pnl_pct', trade['pnl_pct'])
+                        trade['min_pnl_pct'] = round(min(_min_pnl, trade['pnl_pct']), 2)
+                        # Só considera stop se peak NUNCA passou de 0.4 (senão trailing cuida)
+                        if _peak_pos < 0.4:
+                            if trade['pnl_pct'] <= _early_stop_pct:
+                                reason = 'EARLY_STOP'
+                                log.info(f"[EARLY-STOP] {trade['symbol']}: pnl={trade['pnl_pct']:+.2f}% "
+                                         f"peak={_peak_pos:+.2f}% — cortando antes de virar STOP_LOSS")
+                            elif trade['pnl_pct'] <= _early_alert_pct:
+                                # Throttle: alerta 1x por trade (usa _early_alerted flag)
+                                if not trade.get('_early_alerted'):
+                                    trade['_early_alerted'] = True
+                                    log.info(f"[EARLY-ALERT] {trade['symbol']}: pnl={trade['pnl_pct']:+.2f}% "
+                                             f"peak={_peak_pos:+.2f}% — zona de alerta (-0.4%)")
+                    if reason is None and trade['pnl_pct']<=-_eff_sl_c:
                         reason='STOP_LOSS'  # [v10.17] ATR × regime
                     elif _has_v3_thesis and os.environ.get('V3_REVERSAL_CRYPTO_ENABLED', 'true').lower() != 'false':
                         # [v10.48] Trade com tese v3: só fecha se v3 reverter

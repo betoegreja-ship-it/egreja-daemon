@@ -5220,7 +5220,7 @@ def _fetch_single_stock(sym: str) -> tuple:
     """[v10.4] Camada de dados: Polygon (US) → brapi (B3) → FMP → Yahoo.
     Sempre retorna atr_pct e volume_ratio quando disponível.
     """
-    is_b3 = sym.endswith('.SA') or any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3)
+    is_b3 = sym.endswith('.SA') or bool(re.match(r'^[A-Z]{4}[0-9]+$', sym))
     display = sym.replace('.SA', '')
 
     # 0. [v10.31] Cedro socket (real-time, primary for B3)
@@ -6146,7 +6146,7 @@ def stock_execution_worker():
             rows = []
             for sym, pd_data in sp_snap.items():
                 if not pd_data or pd_data.get('price', 0) <= 0: continue
-                mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
+                mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
                 rsi  = pd_data.get('rsi', 50) or 50
                 ema9 = pd_data.get('ema9', 0)  or 0
                 ema21= pd_data.get('ema21',0)  or 0
@@ -6229,7 +6229,8 @@ def stock_execution_worker():
                     continue  # bloquear sinal fraco de padrão ruim
                 # [v10.13] Ajuste temporal para stocks
                 _now_s = datetime.utcnow()
-                _mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
+                # [adaptive-v1] B3 pattern CODE+NUMBER
+                _mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'
                 _st_adj, _st_blocked, _st_reason = get_temporal_stock_score(_now_s.hour, _now_s.weekday(), _mkt_type)
                 # [v10.14-FIX] Temporal block NÃO bloqueia SHORTs — foi calibrado só com LONGs
                 # SHORTs têm comportamento diferente em janelas ruins para LONGs
@@ -10065,7 +10066,7 @@ def signals():
         for sym, pd in sp_snap.items():
             if not pd or pd.get('price', 0) <= 0: continue
             if sym in syms_in_rows: continue  # já veio do banco, não duplicar
-            mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
+            mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
             mkt_open = b3_open if mkt_type == 'B3' else nyse_open
             rsi  = pd.get('rsi', 50) or 50
             ema9 = pd.get('ema9', 0)  or 0
@@ -10163,7 +10164,7 @@ def signals():
             for sym, pd in sp_snap.items():
                 if not pd or pd.get('price', 0) <= 0: continue
                 # Determinar mercado pelo símbolo
-                mkt_type = 'B3' if any(sym == s.replace('.SA','') for s in STOCK_SYMBOLS_B3) else 'NYSE'
+                mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
                 rows.append({
                     'symbol': sym, 'price': pd.get('price', 0),
                     'signal': 'MANTER', 'score': 50,

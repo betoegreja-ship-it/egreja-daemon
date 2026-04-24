@@ -601,8 +601,30 @@ tbody td:last-child{padding-right:28px;text-align:right}
         </div>
       </div>
       <div id="tab-open-trades" class="tab-panel">
+        <div style="padding:12px 0 14px 0;display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--line);margin-bottom:10px">
+          <span style="color:var(--text3);font-size:10px;letter-spacing:.15em;margin-right:8px">FILTER:</span>
+          <button onclick="filterOpenTrades('all',this)" id="otab-all" class="ot-filter-btn" style="padding:6px 14px;background:var(--blue);color:var(--white);border:none;cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px">ALL</button>
+          <button onclick="filterOpenTrades('b3',this)" id="otab-b3" class="ot-filter-btn" style="padding:6px 14px;background:transparent;color:var(--text2);border:1px solid var(--line);cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px">B3</button>
+          <button onclick="filterOpenTrades('nyse',this)" id="otab-nyse" class="ot-filter-btn" style="padding:6px 14px;background:transparent;color:var(--text2);border:1px solid var(--line);cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px">NYSE</button>
+          <button onclick="filterOpenTrades('crypto',this)" id="otab-crypto" class="ot-filter-btn" style="padding:6px 14px;background:transparent;color:var(--text2);border:1px solid var(--line);cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px">CRYPTO</button>
+          <span style="width:1px;height:18px;background:var(--line);margin:0 6px"></span>
+          <button onclick="filterOpenTrades('long',this)" id="otab-long" class="ot-filter-btn" style="padding:6px 14px;background:transparent;color:var(--text2);border:1px solid var(--line);cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px">LONG</button>
+          <button onclick="filterOpenTrades('short',this)" id="otab-short" class="ot-filter-btn" style="padding:6px 14px;background:transparent;color:var(--text2);border:1px solid var(--line);cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px">SHORT</button>
+          <span style="flex:1"></span>
+          <span id="ot-count-visible" style="color:var(--text3);font-size:11px;font-family:monospace">—</span>
+        </div>
         <div class="table-container"><table>
-          <thead><tr><th>Asset</th><th>Direction</th><th>Entry Price</th><th>Current Price</th><th>Qty</th><th>Investido</th><th>P&amp;L</th><th>P&amp;L %</th><th>Abertura</th></tr></thead>
+          <thead><tr>
+            <th style="text-align:left;padding:10px 14px">Asset</th>
+            <th style="text-align:left;padding:10px 14px">Direction</th>
+            <th style="text-align:right;padding:10px 14px">Entry Price</th>
+            <th style="text-align:right;padding:10px 14px">Current Price</th>
+            <th style="text-align:right;padding:10px 14px">Qty</th>
+            <th style="text-align:right;padding:10px 14px">Investido</th>
+            <th style="text-align:right;padding:10px 14px">P&amp;L</th>
+            <th style="text-align:right;padding:10px 14px">P&amp;L %</th>
+            <th style="text-align:right;padding:10px 14px">Abertura</th>
+          </tr></thead>
           <tbody id="open-trades-body"><tr><td colspan="9"><div class="state-box"><div class="loader"></div><div class="state-text">Loading positions</div></div></td></tr></tbody>
         </table></div>
       </div>

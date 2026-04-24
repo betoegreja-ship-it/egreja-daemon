@@ -687,10 +687,41 @@ function renderOpps(sigs){
   if(sellEl){sellEl.innerHTML=sells.length?sells.map(function(s){return card(s,false);}).join(''):'<div style="padding:20px;text-align:center;color:var(--text3)">Nenhum alerta de venda</div>';}
 }
 
+var _allOpenTrades=[];var _otFilter='all';
+function _otCatOf(t){
+  var at=(t.asset_type||'').toLowerCase();
+  var mkt=(t.market||'').toUpperCase();
+  if(at==='crypto'||mkt==='CRYPTO') return 'crypto';
+  if(mkt==='B3') return 'b3';
+  if(mkt==='NYSE'||mkt==='NASDAQ') return 'nyse';
+  return 'other';
+}
+function filterOpenTrades(f,el){
+  _otFilter=f;
+  document.querySelectorAll('.ot-filter-btn').forEach(function(b){
+    b.style.background='transparent';b.style.color='var(--text2)';b.style.border='1px solid var(--line)';
+  });
+  if(el){el.style.background='var(--blue)';el.style.color='var(--white)';el.style.border='1px solid var(--blue)';}
+  _renderOpenTradesTable(_allOpenTrades);
+}
 function renderOpenTrades(trades){
+  _allOpenTrades=trades||[];
+  _renderOpenTradesTable(_allOpenTrades);
+}
+function _renderOpenTradesTable(trades){
   var tb=document.getElementById('open-trades-body');if(!tb)return;
-  if(!trades.length){tb.innerHTML='<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--text3)">Nenhuma posição aberta</td></tr>';return;}
-  tb.innerHTML=trades.map(function(t){
+  var list=trades;
+  if(_otFilter!=='all'){
+    list=trades.filter(function(t){
+      if(_otFilter==='long') return (t.direction||'').toUpperCase()==='LONG';
+      if(_otFilter==='short') return (t.direction||'').toUpperCase()==='SHORT';
+      return _otCatOf(t)===_otFilter;
+    });
+  }
+  var cntEl=document.getElementById('ot-count-visible');
+  if(cntEl) cntEl.textContent=list.length+' of '+trades.length;
+  if(!list.length){tb.innerHTML='<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--text3)">Nenhuma posição nesta categoria</td></tr>';return;}
+  tb.innerHTML=list.map(function(t){
     var dir=t.direction==='LONG'?'<span style="color:#2ecc71">LONG</span>':'<span style="color:#e74c3c">SHORT</span>';
     var pnl=t.pnl||0,pct=t.pnl_pct||0;
     var qty=parseFloat(t.quantity||0);

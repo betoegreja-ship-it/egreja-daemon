@@ -615,17 +615,18 @@ tbody td:last-child{padding-right:28px;text-align:right}
         </div>
         <div class="table-container"><table>
           <thead><tr>
-            <th style="text-align:left;padding:10px 14px">Asset</th>
-            <th style="text-align:left;padding:10px 14px">Direction</th>
-            <th style="text-align:right;padding:10px 14px">Entry Price</th>
-            <th style="text-align:right;padding:10px 14px">Current Price</th>
-            <th style="text-align:right;padding:10px 14px">Qty</th>
-            <th style="text-align:right;padding:10px 14px">Investido</th>
-            <th style="text-align:right;padding:10px 14px">P&amp;L</th>
-            <th style="text-align:right;padding:10px 14px">P&amp;L %</th>
-            <th style="text-align:right;padding:10px 14px">Abertura</th>
+            <th class="ot-sort" data-sort="symbol" style="text-align:left;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('symbol')">Asset <span class="ot-sort-ind" id="otind-symbol"></span></th>
+            <th class="ot-sort" data-sort="direction" style="text-align:left;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('direction')">Direction <span class="ot-sort-ind" id="otind-direction"></span></th>
+            <th class="ot-sort" data-sort="score" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('score')">Score <span class="ot-sort-ind" id="otind-score"></span></th>
+            <th class="ot-sort" data-sort="entry_price" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('entry_price')">Entry Price <span class="ot-sort-ind" id="otind-entry_price"></span></th>
+            <th class="ot-sort" data-sort="current_price" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('current_price')">Current Price <span class="ot-sort-ind" id="otind-current_price"></span></th>
+            <th class="ot-sort" data-sort="quantity" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('quantity')">Qty <span class="ot-sort-ind" id="otind-quantity"></span></th>
+            <th class="ot-sort" data-sort="position_value" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('position_value')">Investido <span class="ot-sort-ind" id="otind-position_value"></span></th>
+            <th class="ot-sort" data-sort="pnl" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('pnl')">P&amp;L <span class="ot-sort-ind" id="otind-pnl">▼</span></th>
+            <th class="ot-sort" data-sort="pnl_pct" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('pnl_pct')">P&amp;L % <span class="ot-sort-ind" id="otind-pnl_pct"></span></th>
+            <th class="ot-sort" data-sort="opened_at" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('opened_at')">Abertura <span class="ot-sort-ind" id="otind-opened_at"></span></th>
           </tr></thead>
-          <tbody id="open-trades-body"><tr><td colspan="9"><div class="state-box"><div class="loader"></div><div class="state-text">Loading positions</div></div></td></tr></tbody>
+          <tbody id="open-trades-body"><tr><td colspan="10"><div class="state-box"><div class="loader"></div><div class="state-text">Loading positions</div></div></td></tr></tbody>
         </table></div>
       </div>
       <div id="tab-history" class="tab-panel">

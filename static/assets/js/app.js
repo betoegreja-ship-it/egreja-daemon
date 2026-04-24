@@ -687,7 +687,7 @@ function renderOpps(sigs){
   if(sellEl){sellEl.innerHTML=sells.length?sells.map(function(s){return card(s,false);}).join(''):'<div style="padding:20px;text-align:center;color:var(--text3)">Nenhum alerta de venda</div>';}
 }
 
-var _allOpenTrades=[];var _otFilter='all';
+var _allOpenTrades=[];var _otFilter='all';var _otSortKey='pnl';var _otSortDir='desc';
 function _otCatOf(t){
   var at=(t.asset_type||'').toLowerCase();
   var mkt=(t.market||'').toUpperCase();
@@ -704,23 +704,54 @@ function filterOpenTrades(f,el){
   if(el){el.style.background='var(--blue)';el.style.color='var(--white)';el.style.border='1px solid var(--blue)';}
   _renderOpenTradesTable(_allOpenTrades);
 }
+function sortOpenTrades(key){
+  // Toggle direction se clicar na mesma coluna, senão reset pra desc (que é mais útil pra nums)
+  if(_otSortKey===key){_otSortDir=(_otSortDir==='desc'?'asc':'desc');}
+  else {_otSortKey=key;_otSortDir=(key==='symbol'||key==='direction'||key==='opened_at')?'asc':'desc';}
+  // Atualizar indicadores visuais: limpar todos, colocar só no ativo
+  document.querySelectorAll('.ot-sort-ind').forEach(function(s){s.textContent='';});
+  var ind=document.getElementById('otind-'+key);
+  if(ind) ind.textContent=(_otSortDir==='desc'?'▼':'▲');
+  _renderOpenTradesTable(_allOpenTrades);
+}
 function renderOpenTrades(trades){
   _allOpenTrades=trades||[];
   _renderOpenTradesTable(_allOpenTrades);
 }
-function _renderOpenTradesTable(trades){
+function _otSortValue(t,key){
+  // Extrai valor numérico/string pro sort de cada coluna
+  if(key==='symbol') return (t.symbol||'').toUpperCase();
+  if(key==='direction') return (t.direction||'').toUpperCase();
+  if(key==='score') return parseFloat(t.score||t.score_v2||0);
+  if(key==='entry_price') return parseFloat(t.entry_price||0);
+  if(key==='current_price') return parseFloat(t.current_price||t.entry_price||0);
+  if(key==='quantity') return parseFloat(t.quantity||0);
+  if(key==='position_value') return parseFloat(t.position_value||0);
+  if(key==='pnl') return parseFloat(t.pnl||0);
+  if(key==='pnl_pct') return parseFloat(t.pnl_pct||0);
+  if(key==='opened_at') return new Date(t.opened_at||0).getTime();
+  return 0;
+}
+function _renderOpenTradesTable(trades){ // [ot-sort-applied]
   var tb=document.getElementById('open-trades-body');if(!tb)return;
-  var list=trades;
+  var list=trades.slice(); // copy para não mutar original
   if(_otFilter!=='all'){
-    list=trades.filter(function(t){
+    list=list.filter(function(t){
       if(_otFilter==='long') return (t.direction||'').toUpperCase()==='LONG';
       if(_otFilter==='short') return (t.direction||'').toUpperCase()==='SHORT';
       return _otCatOf(t)===_otFilter;
     });
   }
+  // Aplicar sort
+  var mult=(_otSortDir==='desc'?-1:1);
+  list.sort(function(a,b){
+    var va=_otSortValue(a,_otSortKey), vb=_otSortValue(b,_otSortKey);
+    if(typeof va==='string'){return va.localeCompare(vb)*mult;}
+    return (va-vb)*mult;
+  });
   var cntEl=document.getElementById('ot-count-visible');
   if(cntEl) cntEl.textContent=list.length+' of '+trades.length;
-  if(!list.length){tb.innerHTML='<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--text3)">Nenhuma posição nesta categoria</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--text3)">Nenhuma posição nesta categoria</td></tr>';return;}
   tb.innerHTML=list.map(function(t){
     var dir=t.direction==='LONG'?'<span style="color:#2ecc71">LONG</span>':'<span style="color:#e74c3c">SHORT</span>';
     var pnl=t.pnl||0,pct=t.pnl_pct||0;
@@ -730,9 +761,18 @@ function _renderOpenTradesTable(trades){
     var isCrypto=t.market==='CRYPTO'||t.asset_type==='crypto';
     var ep=parseFloat(t.entry_price||0);
     var epStr=isCrypto&&ep<1?'$'+ep.toFixed(4):'$'+ep.toFixed(2);
+    var score=parseFloat(t.score||t.score_v2||0);
+    // Cor do score: verde >=80, amarelo 60-80, laranja 40-60, vermelho <40
+    var scoreColor='var(--text2)';
+    if(score>=80) scoreColor='#2ecc71';
+    else if(score>=60) scoreColor='#f1c40f';
+    else if(score>=40) scoreColor='#e67e22';
+    else if(score>0) scoreColor='#e74c3c';
+    var scoreStr=score>0?score.toFixed(0):'—';
     return '<tr style="border-bottom:1px solid var(--line)">'
       +'<td style="padding:10px 14px;font-weight:600">'+t.symbol+'<br><span style="color:var(--text3);font-size:10px">'+( t.market||'')+'</span></td>'
       +'<td style="padding:10px 14px">'+dir+'</td>'
+      +'<td style="padding:10px 14px;text-align:right;color:'+scoreColor+';font-family:monospace;font-weight:600">'+scoreStr+'</td>'
       +'<td style="padding:10px 14px;text-align:right;font-family:monospace">'+epStr+'</td>'
       +'<td style="padding:10px 14px;text-align:right;font-family:monospace" id="lp-'+t.id+'">$'+parseFloat(t.current_price||t.entry_price||0).toFixed(isCrypto&&ep<1?4:2)+'</td>'
       +'<td style="padding:10px 14px;text-align:right;color:var(--text2);font-family:monospace">'+qtyStr+'</td>'

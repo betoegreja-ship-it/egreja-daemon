@@ -885,6 +885,7 @@ def _get_pool():
             _pool_sz = min(int(os.environ.get('MYSQL_POOL_SIZE', 32)), 32)
             _db_pool = MySQLConnectionPool(
                 pool_name='egreja', pool_size=_pool_sz,
+                pool_reset_session=False,  # [28abr] mais leve, evita reset overhead
                 autocommit=True, connection_timeout=10,
                 **pool_cfg)
             log.info(f'[v10.7] MySQL connection pool inicializado (size={_pool_sz})')
@@ -1243,6 +1244,7 @@ def audit(event, data):
 def _db_insert_audit(entry):
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         cursor    = conn.cursor()
         event     = entry.get('event', '')
@@ -1252,9 +1254,16 @@ def _db_insert_audit(entry):
             "INSERT INTO audit_events (event_type, entity_type, entity_id, payload_json) "
             "VALUES (%s, %s, %s, %s)",
             (event, event.split('_')[0].lower(), entity_id, payload))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit()
     except Exception as e:
         log.error(f'_db_insert_audit: {e}')
+    finally:
+        try:
+            if cursor: cursor.close()
+        except: pass
+        try:
+            if conn: conn.close()
+        except: pass
 
 # ═══════════════════════════════════════════════════════════════
 # CALENDÁRIO DE FERIADOS 2025-2027
@@ -1617,6 +1626,7 @@ def update_order_status(order, new_status, fill_price=None, fill_qty=None):
 def _db_save_order(order):
     conn=get_db()
     if not conn: return
+    cursor=None
     try:
         cursor=conn.cursor()
         # [V91-2] status_history_json persiste a trilha completa da máquina de estados
@@ -1638,8 +1648,15 @@ def _db_save_order(order):
              order.get('sent_at'),order.get('filled_at'),
              order.get('created_at'),order.get('updated_at'),
              status_history_json))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit()
     except Exception as e: log.error(f'db_save_order: {e}')
+    finally:
+        try:
+            if cursor: cursor.close()
+        except: pass
+        try:
+            if conn: conn.close()
+        except: pass
 
 # ═══════════════════════════════════════════════════════════════
 # PORTFOLIO SNAPSHOT
@@ -1668,6 +1685,7 @@ def take_portfolio_snapshot():
 def _db_save_snapshot(snap):
     conn=get_db()
     if not conn: return
+    cursor=None
     try:
         cursor=conn.cursor()
         # [FIX 17abr] ts é BIGINT (unix epoch), snapshot_at é TIMESTAMP.
@@ -1682,8 +1700,15 @@ def _db_save_snapshot(snap):
              snap['stocks_open_pnl'],snap['crypto_open_pnl'],snap['arbi_open_pnl'],
              snap['total_open_pnl'],snap['open_positions'],snap['arbi_positions'],
              snap['kill_switch'],snap['arbi_kill_switch'],snap['market_regime']))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit()
     except Exception as e: log.error(f'db_save_snapshot: {e}')
+    finally:
+        try:
+            if cursor: cursor.close()
+        except: pass
+        try:
+            if conn: conn.close()
+        except: pass
 
 def snapshot_loop():
     while True:
@@ -2764,6 +2789,7 @@ def persist_calibration():
     _last_calibration_persist = now
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor()
         for band, data in _calibration_tracker.items():
@@ -2784,6 +2810,7 @@ def load_calibration():
     """[v10.18] Carrega _calibration_tracker do MySQL no boot — sobrevive a deploys."""
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor(dictionary=True)
         c.execute("SELECT band, wins, losses, total, sum_pnl_pct FROM calibration_tracker")
@@ -3434,6 +3461,7 @@ def _db_save_signal_event(event: dict):
     global signal_events_count
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor()
         c.execute("""INSERT INTO signal_events (
@@ -3499,6 +3527,7 @@ def _db_update_signal_attribution(upd: dict):
     """[FIX-2] Vincula trade_id/order_id ao signal_event existente."""
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor()
         c.execute("""UPDATE signal_events
@@ -3512,6 +3541,7 @@ def _db_update_signal_attribution(upd: dict):
 def _db_update_signal_outcome(upd: dict):
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor()
         c.execute("""UPDATE signal_events SET
@@ -3529,6 +3559,7 @@ def _db_update_signal_outcome(upd: dict):
 def _db_upsert_pattern_stats(s: dict):
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor()
         c.execute("""INSERT INTO pattern_stats (
@@ -3556,6 +3587,7 @@ def _db_upsert_pattern_stats(s: dict):
 def _db_upsert_factor_stats(s: dict):
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor()
         c.execute("""INSERT INTO factor_stats (
@@ -3580,6 +3612,7 @@ def _db_save_ledger_event(evt: dict):
     """[v10.18] Persiste evento do capital ledger no MySQL."""
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor()
         c.execute("""INSERT INTO capital_ledger (ts, strategy, event, symbol, amount, balance_after, trade_id)
@@ -3596,6 +3629,7 @@ def _db_save_ledger_event(evt: dict):
 def _db_save_shadow_decision(shadow: dict):
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor()
         c.execute("""INSERT IGNORE INTO shadow_decisions (
@@ -3710,6 +3744,7 @@ def enqueue_brain_decision(decision_type: str, module: str, recommendation: str,
 def _db_log_learning_audit(event_type: str, entity_id: str, payload: dict):
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor()
         c.execute("INSERT INTO learning_audit (event_type, entity_id, payload_json) VALUES (%s,%s,%s)",
@@ -4212,6 +4247,7 @@ def init_learning_cache():
     if not LEARNING_ENABLED: return
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         c = conn.cursor(dictionary=True)
 
@@ -4710,9 +4746,16 @@ def init_all_tables():
             log.info('[v10.36] top_opportunities_audit table created/verified')
         except Exception as e:
             log.warning(f'[v10.36] top_opportunities_audit table: {e}')
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit()
         log.info('All tables created/verified')
     except Exception as e: log.error(f'init_all_tables: {e}')
+    finally:
+        try:
+            if cursor: cursor.close()
+        except: pass
+        try:
+            if conn: conn.close()
+        except: pass
 
 def _row_to_trade(r):
     t = {}
@@ -4727,6 +4770,7 @@ def init_trades_tables():
     global stocks_capital, crypto_capital, arbi_capital
     conn=get_db()
     if not conn: return
+    cursor=None
     try:
         cursor=conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM trades WHERE status='OPEN'")
@@ -4856,6 +4900,7 @@ def _restore_missing_trades_from_backup():
 def _db_save_trade(trade):
     conn=get_db()
     if not conn: return
+    cursor=None
     try:
         cursor=conn.cursor(); t=trade
         # [FIX-4] features_json serializado para sobreviver restart
@@ -4884,12 +4929,20 @@ def _db_save_trade(trade):
              t.get('signal_id'),t.get('feature_hash'),t.get('learning_confidence'),
              t.get('insight_summary'),t.get('learning_version'),features_json,
              t.get('score_v2'),t.get('regime_v2'),t.get('signal_v2')))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit()
     except Exception as e: log.error(f'db_save_trade: {e}')
+    finally:
+        try:
+            if cursor: cursor.close()
+        except: pass
+        try:
+            if conn: conn.close()
+        except: pass
 
 def _db_save_arbi_trade(trade):
     conn=get_db()
     if not conn: return
+    cursor=None
     try:
         cursor=conn.cursor(); t=trade
         cursor.execute("""INSERT INTO arbi_trades (id,pair_id,name,leg_a,leg_b,mkt_a,mkt_b,
@@ -4911,19 +4964,34 @@ def _db_save_arbi_trade(trade):
              t.get('fx_cost',0),t.get('slippage_cost_a',0),t.get('slippage_cost_b',0),
              t.get('exchange_fee_a',0),t.get('exchange_fee_b',0),
              t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0)))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit()
     except Exception as e: log.error(f'db_save_arbi_trade: {e}')
+    finally:
+        try:
+            if cursor: cursor.close()
+        except: pass
+        try:
+            if conn: conn.close()
+        except: pass
 
 def _db_save_cooldown(symbol, ts):
     conn=get_db()
     if not conn: return
+    cursor=None
     try:
         cursor=conn.cursor()
         dt=datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute("INSERT INTO symbol_cooldowns (symbol,last_close_at) VALUES (%s,%s) "
                        "ON DUPLICATE KEY UPDATE last_close_at=%s,updated_at=NOW()",(symbol,dt,dt))
-        conn.commit(); cursor.close(); conn.close()
+        conn.commit()
     except Exception as e: log.error(f'db_save_cooldown: {e}')
+    finally:
+        try:
+            if cursor: cursor.close()
+        except: pass
+        try:
+            if conn: conn.close()
+        except: pass
 
 # ═══════════════════════════════════════════════════════════════
 # STOCK PRICE FEED — range=3mo para indicadores reais
@@ -7224,6 +7292,7 @@ def run_arbi_pattern_learning():
     """
     conn = get_db()
     if not conn: return
+    cursor=None
     try:
         cursor = conn.cursor(dictionary=True)
         # Buscar todas as trades de arbi fechadas
@@ -8440,6 +8509,7 @@ def init_watchlist_table():
     global watchlist_symbols
     conn=get_db()
     if not conn: return
+    cursor=None
     try:
         cursor=conn.cursor(dictionary=True)
         cursor.execute("SELECT symbol, market, added_at FROM watchlist")
@@ -8497,8 +8567,15 @@ def watchlist_add():
             try:
                 cursor=conn.cursor()
                 cursor.execute("INSERT IGNORE INTO watchlist (symbol,market) VALUES (%s,%s)",(symbol,market))
-                conn.commit(); cursor.close(); conn.close()
+                conn.commit()
             except Exception as e: log.error(f'Watchlist add DB: {e}')
+            finally:
+                try:
+                    if cursor: cursor.close()
+                except: pass
+                try:
+                    if conn: conn.close()
+                except: pass
         watchlist_symbols.append({'symbol':symbol,'market':market,'addedAt':datetime.utcnow().isoformat()})
     return jsonify({'ok':True,'total':len(watchlist_symbols)})
 
@@ -8512,8 +8589,15 @@ def watchlist_remove():
             try:
                 cursor=conn.cursor()
                 cursor.execute("DELETE FROM watchlist WHERE symbol=%s",(symbol,))
-                conn.commit(); cursor.close(); conn.close()
+                conn.commit()
             except Exception as e: log.error(f'Watchlist remove DB: {e}')
+            finally:
+                try:
+                    if cursor: cursor.close()
+                except: pass
+                try:
+                    if conn: conn.close()
+                except: pass
         watchlist_symbols=[w for w in watchlist_symbols if w['symbol']!=symbol]
     return jsonify({'ok':True,'total':len(watchlist_symbols)})
 

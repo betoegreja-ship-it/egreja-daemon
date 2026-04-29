@@ -796,38 +796,53 @@ def _detect_regime(adx_val: Optional[Dict], atr_pct_val: Optional[float],
     return 'RANGING'
 
 
-# Pesos regime-aware (somam 100 em cada regime)
-WEIGHTS_TRENDING = {
-    # [RECAL 29/abr/2026] Pesos recalibrados com base em 3548 trades reais.
-    # Em TRENDING + LONG, principais preditores empiricos:
-    #   1. Volume (NORMAL +$342/trade WR62%, VERY_LOW -$31/trade)
-    #   2. EMA alignment (BEARISH_CROSS +$801 reverso! BULLISH_STACK -$13)
-    #   3. RSI OVERSOLD em trend = +$151/trade (mean reversion contra-tendencia)
-    # Volume merece DOBRO de peso vs antes; osciladores reduzidos.
+# ═══════════════════════════════════════════════════════════════════
+# Pesos regime-aware SEPARADOS POR ASSET TYPE
+# [SEPARACAO 29/abr/2026] Stocks e crypto sao mercados COMPLETAMENTE
+# diferentes — 24/7 vs horario fixo, volatilidade base 5x maior, etc.
+# Aplicar pesos calibrados com 3548 trades stock em crypto era ERRO.
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── PESOS STOCK (calibrados com 3548 trades stock CLOSED) ──────────
+# Em TRENDING + LONG stock, dados mostram:
+#   - Volume é #1 preditivo (NORMAL +$342/trade)
+#   - EMA BEARISH_CROSS LONG = +$801 (reversao em trend)
+#   - Osciladores perdem peso em trend
+WEIGHTS_TRENDING_STOCK = {
     'ema_cross':   22, 'macd': 14, 'adx': 10, 'supertrend': 8,
-    'ichimoku':    4,  'obv':  10, 'vwap': 15,  # ← OBV+VWAP +13 pontos
-    # Osciladores so como "timing reverse" — peso reduzido
+    'ichimoku':    4,  'obv':  10, 'vwap': 15,
     'rsi':         3,  'stoch': 2, 'williams': 1, 'cci': 1, 'bollinger': 4,
-    # ATR como filtro de qualidade
     'atr':         6,
 }
 
-WEIGHTS_RANGING = {
-    # [RECAL 29/abr/2026] Em RANGING + LONG, dados mostram:
-    #   1. ATR EXTREME +$128/trade WR63% — volatilidade alta em range = oportunidade
-    #   2. Volume NORMAL +$94/trade WR56%
-    #   3. BULLISH_STACK +$23/trade (alinhamento em range funciona)
-    #   4. RSI WEAK +$26/trade (compras de fundo em range)
-    # Volume sobe peso; osciladores levemente reduzidos.
+WEIGHTS_RANGING_STOCK = {
+    # Em range + LONG stock, ATR EXTREME +$128, Volume NORMAL +$94
     'rsi':         12, 'stoch': 10, 'williams': 6, 'cci': 8, 'bollinger': 12,
-    # Trend-followers
     'ema_cross':   8,  'macd': 6,  'adx': 4, 'supertrend': 3,
-    'ichimoku':    2,  'obv':  6,  'vwap': 12,  # ← Volume tem mais peso
+    'ichimoku':    2,  'obv':  6,  'vwap': 12,
     'atr':         9,
 }
 
+# ─── PESOS CRYPTO (originais — pre-recalibracao 29/abr) ──────────────
+# Crypto opera 24/7 em mercado spot. Volatilidade base diferente.
+# Mantemos os pesos originais ate ter dados estatisticos especificos
+# de crypto pra recalibrar com seguranca.
+WEIGHTS_TRENDING_CRYPTO = {
+    'ema_cross':   18, 'macd': 16, 'adx': 14, 'supertrend': 10,
+    'ichimoku':    6,  'obv':  5,  'vwap': 7,
+    'rsi':         6,  'stoch': 4, 'williams': 3, 'cci': 3, 'bollinger': 4,
+    'atr':         4,
+}
+
+WEIGHTS_RANGING_CRYPTO = {
+    'rsi':         15, 'stoch': 12, 'williams': 8, 'cci': 10, 'bollinger': 14,
+    'ema_cross':   6,  'macd': 6,  'adx': 4, 'supertrend': 3,
+    'ichimoku':    2,  'obv':  3,  'vwap': 8,
+    'atr':         9,
+}
+
+# ─── MIXED e CHOPPY: iguais para ambos (pouca evidencia para diferenciar) ─
 WEIGHTS_MIXED = {
-    # Meio-termo
     'rsi':         10, 'stoch': 7, 'williams': 5, 'cci': 6, 'bollinger': 9,
     'ema_cross':   12, 'macd': 11, 'adx': 9, 'supertrend': 6,
     'ichimoku':    4,  'obv':  4,  'vwap': 7,
@@ -835,13 +850,17 @@ WEIGHTS_MIXED = {
 }
 
 WEIGHTS_CHOPPY = {
-    # Mercado caótico: tudo pesa menos, ATR e volume dominam filtro
     'rsi':         6,  'stoch': 5, 'williams': 4, 'cci': 5, 'bollinger': 6,
     'ema_cross':   6,  'macd': 6,  'adx': 5, 'supertrend': 4,
     'ichimoku':    2,  'obv':  3,  'vwap': 4,
-    'atr':         18,  # ATR alto = sinal para ficar fora
-    'volume_trend': 26,  # só entra se volume confirma claramente
+    'atr':         18,
+    'volume_trend': 26,
 }
+
+# Backwards compat: WEIGHTS_TRENDING/_RANGING genericos
+# (codigo legacy que nao passa asset_type cai aqui — ainda usa stock-style)
+WEIGHTS_TRENDING = WEIGHTS_TRENDING_STOCK
+WEIGHTS_RANGING  = WEIGHTS_RANGING_STOCK
 
 WEIGHTS_BY_REGIME = {
     'TRENDING': WEIGHTS_TRENDING,
@@ -850,6 +869,30 @@ WEIGHTS_BY_REGIME = {
     'CHOPPY':   WEIGHTS_CHOPPY,
     'UNKNOWN':  WEIGHTS_MIXED,
 }
+
+WEIGHTS_BY_REGIME_STOCK = {
+    'TRENDING': WEIGHTS_TRENDING_STOCK,
+    'RANGING':  WEIGHTS_RANGING_STOCK,
+    'MIXED':    WEIGHTS_MIXED,
+    'CHOPPY':   WEIGHTS_CHOPPY,
+    'UNKNOWN':  WEIGHTS_MIXED,
+}
+
+WEIGHTS_BY_REGIME_CRYPTO = {
+    'TRENDING': WEIGHTS_TRENDING_CRYPTO,
+    'RANGING':  WEIGHTS_RANGING_CRYPTO,
+    'MIXED':    WEIGHTS_MIXED,
+    'CHOPPY':   WEIGHTS_CHOPPY,
+    'UNKNOWN':  WEIGHTS_MIXED,
+}
+
+
+def get_weights_by_regime(regime: str, asset_type: str = 'stock') -> dict:
+    """Retorna pesos apropriados por (regime, asset_type).
+    asset_type: 'stock' (default), 'crypto'. ARBI nao usa V3."""
+    if asset_type == 'crypto':
+        return WEIGHTS_BY_REGIME_CRYPTO.get(regime, WEIGHTS_MIXED)
+    return WEIGHTS_BY_REGIME_STOCK.get(regime, WEIGHTS_MIXED)
 
 
 
@@ -1018,6 +1061,7 @@ def compute_score_v3(
     factor_stats_cache: Optional[Dict] = None,
     pattern_stats_cache: Optional[Dict] = None,
     temporal_adj: float = 0.0,
+    asset_type: str = 'stock',  # [SEPARACAO 29/abr] 'stock' ou 'crypto' — usa pesos diferentes
 ) -> Dict:
     """Score regime-aware — v3.
 
@@ -1119,7 +1163,7 @@ def compute_score_v3(
         votes['volume_trend'] = vt
 
     # ── Pesos regime-aware ──
-    weights = WEIGHTS_BY_REGIME.get(regime, WEIGHTS_MIXED)
+    weights = get_weights_by_regime(regime, asset_type=asset_type)
 
     # ── Score ponderado ──
     total_weight = 0

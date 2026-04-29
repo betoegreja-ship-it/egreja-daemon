@@ -6382,7 +6382,8 @@ def stock_execution_worker():
                     _r = _csv3(_c, _h, _l, _v,
                                factor_stats_cache=factor_stats_cache,
                                pattern_stats_cache=pattern_stats_cache,
-                               temporal_adj=float(_st_adj_effective or 0))
+                               temporal_adj=float(_st_adj_effective or 0),
+                               asset_type='stock')
                     score = _r['score']
                     regime_v2_val = _r['regime']
                     signal_v2_val = _r['signal']
@@ -6876,7 +6877,8 @@ def auto_trade_crypto():
                             continue
                         _rc = _csv3c(closes_k, highs_k, lows_k, vols_k,
                                      factor_stats_cache=factor_stats_cache,
-                                     pattern_stats_cache=pattern_stats_cache)
+                                     pattern_stats_cache=pattern_stats_cache,
+                                     asset_type='crypto')
                         score = _rc['score']
                         regime_v2_c = _rc['regime']
                         signal_v2_c = _rc['signal']
@@ -10286,7 +10288,8 @@ def signals():
                     try:
                         from modules.score_engine_v2 import compute_score_v3 as _csv3e
                         _re = _csv3e(klines_data['closes'], klines_data.get('highs', []),
-                                    klines_data.get('lows', []), klines_data.get('volumes', []))
+                                    klines_data.get('lows', []), klines_data.get('volumes', []),
+                                    asset_type='crypto')
                         score = _re['score']
                     except Exception:
                         # v3 falhou — usar neutro (signal MANTER)

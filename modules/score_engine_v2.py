@@ -553,6 +553,56 @@ GOLDEN_COMBOS_LONG = {
 }
 BAD_HOURS_B3_LONG_UTC = {14, 17}
 
+# ═══════════════════════════════════════════════════════════════════
+# [CRYPTO_CALIBRATION 29/abr/2026] Combos identificados em 3003 trades CLOSED
+# ═══════════════════════════════════════════════════════════════════
+
+# Horas TOXICAS UTC em crypto (avg <-150/trade, n>=85):
+#  3h UTC (00 BRT): -$153/trade (final do dia US)
+# 13h UTC (10 BRT): -$158/trade (sobreposicao US/EU abrindo)
+# 15h UTC (12 BRT): -$192/trade (algos meio-dia US)
+# 19h UTC (16 BRT): -$188/trade (close US chegando)
+# 20h UTC (17 BRT): -$173/trade
+BAD_HOURS_CRYPTO_UTC = {3, 13, 15, 19, 20}
+
+# Horas DOURADAS UTC (avg >+50/trade, WR >55%):
+#  5h UTC ( 2 BRT): +$122/trade WR66.5% (Asia ativa, EU acordando)
+#  6h UTC ( 3 BRT): +$58 WR58%
+#  7h UTC ( 4 BRT): +$74 WR58.3%
+#  8h UTC ( 5 BRT): +$21 WR63.9%
+GOLDEN_HOURS_CRYPTO_UTC = {5, 6, 7, 8}
+
+# Combos LETAIS (forçar score reduzido / bloquear):
+LETHAL_COMBOS_CRYPTO_LONG = {
+    # (regime, ema_alignment, volume_bucket): bloquear LONG
+    ('TRENDING', 'BULLISH_STACK', 'SURGE'),       # chase de pump em trend
+    ('TRENDING', 'BULLISH_CROSS', 'SURGE'),       # FOMO entry
+}
+
+LETHAL_COMBOS_CRYPTO_SHORT = {
+    # SHORT em RANGING crypto perde -$70/trade
+    ('RANGING',  'BEARISH_STACK', 'NORMAL'),
+    ('RANGING',  'BEARISH_CROSS', 'NORMAL'),
+    ('RANGING',  'MIXED',         'NORMAL'),
+    ('RANGING',  'MIXED',         'LOW'),
+}
+
+# Combos GOLDEN (bonus +5 a +12):
+GOLDEN_COMBOS_CRYPTO_LONG = {
+    # (regime, ema, volume): bonus
+    ('RANGING',  'MIXED',         'LOW'):      8,   # +$55 avg
+    ('RANGING',  'BULLISH_STACK', 'LOW'):      10,  # entrada calma em range
+    ('RANGING',  'BULLISH_CROSS', 'NORMAL'):   8,
+    # Volatility LOW LONG funciona em crypto (calmaria) +$51
+    # mas nao em ATR LOW (mercado morto) -$79 — distincao important
+}
+
+GOLDEN_COMBOS_CRYPTO_SHORT = {
+    # SHORT crypto so funciona em momentum negativo claro
+    ('TRENDING', 'BEARISH_STACK', 'HIGH'):    8,
+    ('TRENDING', 'BEARISH_STACK', 'SURGE'):   10,  # capitulation pump-fade
+}
+
 
 # ═══════════════════════════════════════════════════════════════════
 # 3) COMPUTE — função principal que o daemon chama
@@ -823,22 +873,34 @@ WEIGHTS_RANGING_STOCK = {
     'atr':         9,
 }
 
-# ─── PESOS CRYPTO (originais — pre-recalibracao 29/abr) ──────────────
-# Crypto opera 24/7 em mercado spot. Volatilidade base diferente.
-# Mantemos os pesos originais ate ter dados estatisticos especificos
-# de crypto pra recalibrar com seguranca.
+# ─── PESOS CRYPTO (calibrados 29/abr — analise de 3003 trades CLOSED) ────
+# DESCOBERTAS empiricas do historico crypto:
+#   1. TRENDING+LONG = catastrofe (-$68/trade) — crypto reverte tendencias
+#   2. RANGING+SHORT = catastrofe (-$70/trade) — crypto sai de range pra cima
+#   3. ATR LOW + LONG = ruim (-$79) — mercado morto sangra
+#   4. Volume SURGE + LONG = ruim (-$57) — chase de pump
+#   5. Volume LOW + LONG em RANGING = bom (+$55) — entrada calma
+#   6. Madrugada UTC (5-8h = 2-5 BRT) = OURO — WR 62%, +$73/trade
+# Crypto e CONTRARIAN — fade extremos, mean-reversion domina.
+
 WEIGHTS_TRENDING_CRYPTO = {
-    'ema_cross':   18, 'macd': 16, 'adx': 14, 'supertrend': 10,
-    'ichimoku':    6,  'obv':  5,  'vwap': 7,
-    'rsi':         6,  'stoch': 4, 'williams': 3, 'cci': 3, 'bollinger': 4,
+    # Trend-following NAO funciona em crypto — pesos reduzidos
+    'ema_cross':   12, 'macd': 10, 'adx': 8, 'supertrend': 8,
+    'ichimoku':    4,  'obv':  6,  'vwap': 8,
+    # Osciladores sao MAIS uteis em crypto trending (mean reversion)
+    'rsi':         12, 'stoch': 10, 'williams': 6, 'cci': 6, 'bollinger': 6,
+    # ATR como filtro de qualidade (HIGH/EXTREME bom, LOW ruim)
     'atr':         4,
 }
 
 WEIGHTS_RANGING_CRYPTO = {
-    'rsi':         15, 'stoch': 12, 'williams': 8, 'cci': 10, 'bollinger': 14,
-    'ema_cross':   6,  'macd': 6,  'adx': 4, 'supertrend': 3,
-    'ichimoku':    2,  'obv':  3,  'vwap': 8,
-    'atr':         9,
+    # Em RANGING crypto, osciladores DOMINAM (mean reversion classica)
+    'rsi':         18, 'stoch': 14, 'williams': 10, 'cci': 10, 'bollinger': 14,
+    # Trend-followers tem peso minimo
+    'ema_cross':   4,  'macd': 4,  'adx': 3, 'supertrend': 3,
+    'ichimoku':    2,  'obv':  4,  'vwap': 6,
+    # ATR + volume confirmam timing
+    'atr':         8,
 }
 
 # ─── MIXED e CHOPPY: iguais para ambos (pouca evidencia para diferenciar) ─
@@ -1221,116 +1283,173 @@ def compute_score_v3(
             learning_adj += max(-6, min(6, ewma * 8))
 
     # ═══════════════════════════════════════════════════════════════════
-    # [PATTERN_CALIBRATION 29/abr/2026] Padrões confirmados nas 3548 trades reais.
-    # Aplicado APENAS a stocks (asset_type detectado por presença de volumes).
-    # Cada combinação tem n>=50 e avg_pnl > $50 ou < -$50 (significância empírica).
+    # [PATTERN_CALIBRATION 29/abr/2026] Padrões confirmados em trades reais.
+    # Stock: 3548 trades. Crypto: 3003 trades. Cada um tem regras proprias.
     # ═══════════════════════════════════════════════════════════════════
     pattern_adj = 0.0
     pattern_notes = []
     direction_inferred = 'LONG' if raw_score >= 50 else 'SHORT'
-
-    # Detectar volume bucket pelo input
-    vol_bucket_real = None
-    if volumes and len(volumes) >= 20:
-        try:
-            recent5 = sum(volumes[-5:]) / 5
-            avg20 = sum(volumes[-20:]) / 20
-            if avg20 > 0:
-                ratio = recent5 / avg20
-                if ratio < 0.3: vol_bucket_real = 'VERY_LOW'
-                elif ratio < 0.6: vol_bucket_real = 'LOW'
-                elif ratio < 1.5: vol_bucket_real = 'NORMAL'
-                elif ratio < 2.5: vol_bucket_real = 'HIGH'
-                else: vol_bucket_real = 'VERY_HIGH'
-        except Exception:
-            pass
-
-    # Detectar atr bucket
-    atr_bucket_real = None
-    if atr_val is not None:
-        if atr_val < 0.5: atr_bucket_real = 'VERY_LOW'
-        elif atr_val < 1.0: atr_bucket_real = 'LOW'
-        elif atr_val < 2.0: atr_bucket_real = 'NORMAL'
-        elif atr_val < 3.5: atr_bucket_real = 'HIGH'
-        else: atr_bucket_real = 'EXTREME'
-
-    if direction_inferred == 'LONG':
-        # ✓ BULLISH (LONG) calibrações
-        # Volume NORMAL + LONG = melhor bucket (avg +$169, n=347)
-        if vol_bucket_real == 'NORMAL':
-            pattern_adj += 6
-            pattern_notes.append('VOL_NORMAL_LONG+6')
-        # Volume LOW/VERY_LOW + LONG = sinal fraco (sem convicção)
-        elif vol_bucket_real in ('LOW', 'VERY_LOW'):
-            pattern_adj -= 8
-            pattern_notes.append('VOL_LOW_LONG-8')
-
-        # BEARISH_CROSS + LONG = reversão de fundo (n=128, WR 57%, avg +$201) — counter-intuitivo!
-        if ema_val and ema_val.get('alignment') == 'BEAR':  # V3: BEAR == factor_stats BEARISH_CROSS
-            pattern_adj += 5
-            pattern_notes.append('EMA_BEAR_REV+5')
-
-        # Volatility LOW + LONG = mercado morto, perde (avg -$90, n=159)
-        if atr_bucket_real in ('VERY_LOW', 'LOW') and vol_bucket_real not in ('NORMAL', 'HIGH'):
-            pattern_adj -= 6
-            pattern_notes.append('ATR_LOW_NO_VOL-6')
-
-        # ATR HIGH + LONG = volátil, perde (avg -$30, n=474)
-        if atr_bucket_real == 'HIGH':
-            pattern_adj -= 3
-            pattern_notes.append('ATR_HIGH_LONG-3')
-
-        # TRENDING confirmado + LONG = bom (n=684, +$42k)
-        if regime == 'TRENDING' and trend_dir > 0:
-            pattern_adj += 4
-            pattern_notes.append('TRENDING_UP+4')
-        # TRENDING sem volume confirmado = NÃO é trend real
-        elif regime == 'TRENDING' and vol_bucket_real in ('LOW', 'VERY_LOW'):
-            pattern_adj -= 10
-            pattern_notes.append('FAKE_TRENDING-10')
-
-    else:  # SHORT
-        # ✗ SHORT calibrações — MAIORIA é negativa, manter SHORT em stocks geralmente bloqueado
-        # RSI STRONG + SHORT = perda (avg -$106, n=370)
-        rsi_check = 'OVERSOLD' if rsi_val and rsi_val < 30 else (
-                    'OVERBOUGHT' if rsi_val and rsi_val > 70 else (
-                    'WEAK' if rsi_val and rsi_val < 45 else (
-                    'STRONG' if rsi_val and rsi_val > 55 else 'NEUTRAL')))
-        if rsi_check == 'STRONG':
-            pattern_adj -= 6
-            pattern_notes.append('RSI_STRONG_SHORT-6')
-        # BEARISH_STACK + SHORT = sinal "obvio" mas perde (avg -$58, n=643)
-        if ema_val and ema_val.get('alignment') == 'STRONG_BEAR':
-            pattern_adj -= 4
-            pattern_notes.append('EMA_BEAR_STACK_SHORT-4')
-        # HIGH_VOL regime + SHORT = catástrofe (avg -$250, n=62)
-        if regime == 'CHOPPY':  # CHOPPY no V3 ~= HIGH_VOL no factor_stats
-            pattern_adj -= 8
-            pattern_notes.append('CHOPPY_SHORT-8')
-
-    # ═══════════════════════════════════════════════════════════════════
-    # [COMBO_RULES 29/abr] Combos especificos baseados em 3548 trades reais
-    # ═══════════════════════════════════════════════════════════════════
+    # Inicializar combos (usado depois em raw_score += combo_adj)
     combo_adj = 0
     combo_block = False
     combo_notes = []
 
-    ema_fs = None
-    if ema_val:
-        ema_fs = _translate_ema_alignment_for_fs(ema_val.get('alignment', ''))
+    # CRYPTO-specific patterns (asset_type='crypto')
+    if asset_type == 'crypto':
+        # Bonus +5 se hora UTC eh 'GOLDEN' (madrugada BRT 2-5h)
+        try:
+            from datetime import datetime
+            _h_now_utc = datetime.utcnow().hour
+            if _h_now_utc in GOLDEN_HOURS_CRYPTO_UTC:
+                pattern_adj += 5
+                pattern_notes.append(f'GOLDEN_HOUR_CRYPTO_{_h_now_utc}+5')
+            elif _h_now_utc in BAD_HOURS_CRYPTO_UTC:
+                pattern_adj -= 8
+                pattern_notes.append(f'BAD_HOUR_CRYPTO_{_h_now_utc}-8')
+        except Exception:
+            pass
 
-    if direction_inferred == 'LONG' and ema_fs and vol_bucket_real:
-        combo_key = (regime, ema_fs, vol_bucket_real)
-        if combo_key in LETHAL_COMBOS_LONG:
-            combo_block = True
-            combo_notes.append(f'LETHAL_{combo_key[0]}_{combo_key[1]}_{combo_key[2]}')
-        elif combo_key in GOLDEN_COMBOS_LONG:
-            bonus = GOLDEN_COMBOS_LONG[combo_key]
-            combo_adj += bonus
-            combo_notes.append(f'GOLDEN_{combo_key[0]}_{combo_key[1]}_{combo_key[2]}+{bonus}')
+        if direction_inferred == 'LONG':
+            # ATR LOW + LONG = mercado morto, sangra (-$79/trade em crypto)
+            atr_b = 'VERY_LOW' if atr_val and atr_val < 0.5 else (
+                    'LOW' if atr_val and atr_val < 1.0 else (
+                    'NORMAL' if atr_val and atr_val < 2.0 else (
+                    'HIGH' if atr_val and atr_val < 3.5 else 'EXTREME')))
+            if atr_b in ('VERY_LOW', 'LOW'):
+                pattern_adj -= 6
+                pattern_notes.append(f'ATR_DEAD_CRYPTO_LONG-6')
 
-    # Aplicar pattern_adj com clamp
-    pattern_adj = max(-15, min(15, pattern_adj))
+            # TRENDING + LONG em crypto = -$68 (crypto reverte trends)
+            if regime == 'TRENDING':
+                pattern_adj -= 5
+                pattern_notes.append('TRENDING_LONG_CRYPTO-5')
+
+            # Volume SURGE + LONG = chase pump (-$57)
+            # Inferir SURGE: ratio recent5/avg20 > 2.5
+            if volumes and len(volumes) >= 20:
+                try:
+                    r5 = sum(volumes[-5:])/5
+                    a20 = sum(volumes[-20:])/20
+                    if a20 > 0 and r5/a20 > 2.5:
+                        pattern_adj -= 5
+                        pattern_notes.append('VOL_SURGE_LONG_CRYPTO-5')
+                except Exception:
+                    pass
+
+        else:  # SHORT crypto
+            # SHORT em RANGING = -$70/trade (crypto sai de range pra cima)
+            if regime == 'RANGING':
+                pattern_adj -= 6
+                pattern_notes.append('RANGING_SHORT_CRYPTO-6')
+
+        pattern_adj = max(-15, min(15, pattern_adj))
+        # CRYPTO termina aqui — nao aplica regras stock
+
+    # ─── STOCK-specific patterns (asset_type='stock' ou nao especificado) ─
+    if asset_type != 'crypto':
+      # Detectar volume bucket pelo input
+      vol_bucket_real = None
+      if volumes and len(volumes) >= 20:
+          try:
+              recent5 = sum(volumes[-5:]) / 5
+              avg20 = sum(volumes[-20:]) / 20
+              if avg20 > 0:
+                  ratio = recent5 / avg20
+                  if ratio < 0.3: vol_bucket_real = 'VERY_LOW'
+                  elif ratio < 0.6: vol_bucket_real = 'LOW'
+                  elif ratio < 1.5: vol_bucket_real = 'NORMAL'
+                  elif ratio < 2.5: vol_bucket_real = 'HIGH'
+                  else: vol_bucket_real = 'VERY_HIGH'
+          except Exception:
+              pass
+
+      # Detectar atr bucket
+      atr_bucket_real = None
+      if atr_val is not None:
+          if atr_val < 0.5: atr_bucket_real = 'VERY_LOW'
+          elif atr_val < 1.0: atr_bucket_real = 'LOW'
+          elif atr_val < 2.0: atr_bucket_real = 'NORMAL'
+          elif atr_val < 3.5: atr_bucket_real = 'HIGH'
+          else: atr_bucket_real = 'EXTREME'
+
+      if direction_inferred == 'LONG':
+          # ✓ BULLISH (LONG) calibrações
+          # Volume NORMAL + LONG = melhor bucket (avg +$169, n=347)
+          if vol_bucket_real == 'NORMAL':
+              pattern_adj += 6
+              pattern_notes.append('VOL_NORMAL_LONG+6')
+          # Volume LOW/VERY_LOW + LONG = sinal fraco (sem convicção)
+          elif vol_bucket_real in ('LOW', 'VERY_LOW'):
+              pattern_adj -= 8
+              pattern_notes.append('VOL_LOW_LONG-8')
+
+          # BEARISH_CROSS + LONG = reversão de fundo (n=128, WR 57%, avg +$201) — counter-intuitivo!
+          if ema_val and ema_val.get('alignment') == 'BEAR':  # V3: BEAR == factor_stats BEARISH_CROSS
+              pattern_adj += 5
+              pattern_notes.append('EMA_BEAR_REV+5')
+
+          # Volatility LOW + LONG = mercado morto, perde (avg -$90, n=159)
+          if atr_bucket_real in ('VERY_LOW', 'LOW') and vol_bucket_real not in ('NORMAL', 'HIGH'):
+              pattern_adj -= 6
+              pattern_notes.append('ATR_LOW_NO_VOL-6')
+
+          # ATR HIGH + LONG = volátil, perde (avg -$30, n=474)
+          if atr_bucket_real == 'HIGH':
+              pattern_adj -= 3
+              pattern_notes.append('ATR_HIGH_LONG-3')
+
+          # TRENDING confirmado + LONG = bom (n=684, +$42k)
+          if regime == 'TRENDING' and trend_dir > 0:
+              pattern_adj += 4
+              pattern_notes.append('TRENDING_UP+4')
+          # TRENDING sem volume confirmado = NÃO é trend real
+          elif regime == 'TRENDING' and vol_bucket_real in ('LOW', 'VERY_LOW'):
+              pattern_adj -= 10
+              pattern_notes.append('FAKE_TRENDING-10')
+
+      else:  # SHORT
+          # ✗ SHORT calibrações — MAIORIA é negativa, manter SHORT em stocks geralmente bloqueado
+          # RSI STRONG + SHORT = perda (avg -$106, n=370)
+          rsi_check = 'OVERSOLD' if rsi_val and rsi_val < 30 else (
+                      'OVERBOUGHT' if rsi_val and rsi_val > 70 else (
+                      'WEAK' if rsi_val and rsi_val < 45 else (
+                      'STRONG' if rsi_val and rsi_val > 55 else 'NEUTRAL')))
+          if rsi_check == 'STRONG':
+              pattern_adj -= 6
+              pattern_notes.append('RSI_STRONG_SHORT-6')
+          # BEARISH_STACK + SHORT = sinal "obvio" mas perde (avg -$58, n=643)
+          if ema_val and ema_val.get('alignment') == 'STRONG_BEAR':
+              pattern_adj -= 4
+              pattern_notes.append('EMA_BEAR_STACK_SHORT-4')
+          # HIGH_VOL regime + SHORT = catástrofe (avg -$250, n=62)
+          if regime == 'CHOPPY':  # CHOPPY no V3 ~= HIGH_VOL no factor_stats
+              pattern_adj -= 8
+              pattern_notes.append('CHOPPY_SHORT-8')
+
+      # ═══════════════════════════════════════════════════════════════════
+      # [COMBO_RULES 29/abr] Combos especificos baseados em 3548 trades reais
+      # ═══════════════════════════════════════════════════════════════════
+      combo_adj = 0
+      combo_block = False
+      combo_notes = []
+
+      ema_fs = None
+      if ema_val:
+          ema_fs = _translate_ema_alignment_for_fs(ema_val.get('alignment', ''))
+
+      if direction_inferred == 'LONG' and ema_fs and vol_bucket_real:
+          combo_key = (regime, ema_fs, vol_bucket_real)
+          if combo_key in LETHAL_COMBOS_LONG:
+              combo_block = True
+              combo_notes.append(f'LETHAL_{combo_key[0]}_{combo_key[1]}_{combo_key[2]}')
+          elif combo_key in GOLDEN_COMBOS_LONG:
+              bonus = GOLDEN_COMBOS_LONG[combo_key]
+              combo_adj += bonus
+              combo_notes.append(f'GOLDEN_{combo_key[0]}_{combo_key[1]}_{combo_key[2]}+{bonus}')
+
+      # Aplicar pattern_adj com clamp
+      pattern_adj = max(-15, min(15, pattern_adj))
+
     raw_score += learning_adj
     raw_score += temporal_adj
     raw_score += pattern_adj

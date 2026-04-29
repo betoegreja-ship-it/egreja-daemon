@@ -798,21 +798,31 @@ def _detect_regime(adx_val: Optional[Dict], atr_pct_val: Optional[float],
 
 # Pesos regime-aware (somam 100 em cada regime)
 WEIGHTS_TRENDING = {
-    # Trend-followers dominam
-    'ema_cross':   18, 'macd': 16, 'adx': 14, 'supertrend': 10,
-    'ichimoku':    6,  'obv':  5,  'vwap': 7,
-    # Osciladores viram "timing de pullback", peso menor
-    'rsi':         6,  'stoch': 4, 'williams': 3, 'cci': 3, 'bollinger': 4,
-    # ATR continua filtro de risco
-    'atr':         4,
+    # [RECAL 29/abr/2026] Pesos recalibrados com base em 3548 trades reais.
+    # Em TRENDING + LONG, principais preditores empiricos:
+    #   1. Volume (NORMAL +$342/trade WR62%, VERY_LOW -$31/trade)
+    #   2. EMA alignment (BEARISH_CROSS +$801 reverso! BULLISH_STACK -$13)
+    #   3. RSI OVERSOLD em trend = +$151/trade (mean reversion contra-tendencia)
+    # Volume merece DOBRO de peso vs antes; osciladores reduzidos.
+    'ema_cross':   22, 'macd': 14, 'adx': 10, 'supertrend': 8,
+    'ichimoku':    4,  'obv':  10, 'vwap': 15,  # ← OBV+VWAP +13 pontos
+    # Osciladores so como "timing reverse" — peso reduzido
+    'rsi':         3,  'stoch': 2, 'williams': 1, 'cci': 1, 'bollinger': 4,
+    # ATR como filtro de qualidade
+    'atr':         6,
 }
 
 WEIGHTS_RANGING = {
-    # Osciladores dominam (mean-reversion)
-    'rsi':         15, 'stoch': 12, 'williams': 8, 'cci': 10, 'bollinger': 14,
-    # Trend-followers perdem peso
-    'ema_cross':   6,  'macd': 6,  'adx': 4, 'supertrend': 3,
-    'ichimoku':    2,  'obv':  3,  'vwap': 8,
+    # [RECAL 29/abr/2026] Em RANGING + LONG, dados mostram:
+    #   1. ATR EXTREME +$128/trade WR63% — volatilidade alta em range = oportunidade
+    #   2. Volume NORMAL +$94/trade WR56%
+    #   3. BULLISH_STACK +$23/trade (alinhamento em range funciona)
+    #   4. RSI WEAK +$26/trade (compras de fundo em range)
+    # Volume sobe peso; osciladores levemente reduzidos.
+    'rsi':         12, 'stoch': 10, 'williams': 6, 'cci': 8, 'bollinger': 12,
+    # Trend-followers
+    'ema_cross':   8,  'macd': 6,  'adx': 4, 'supertrend': 3,
+    'ichimoku':    2,  'obv':  6,  'vwap': 12,  # ← Volume tem mais peso
     'atr':         9,
 }
 

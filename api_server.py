@@ -6437,6 +6437,20 @@ def stock_execution_worker():
                     log.info(f'[SHORT-DBG] {sym} score={score} _eff_min={_eff_min} is_short={is_short} signal_val={signal_val}')
                 if not (is_long or is_short): continue
 
+                # [BAD-HOURS-BLOCK 29/abr/2026] Filtro de horarios catastroficos B3 LONG.
+                # Backtested em 3548 trades historicas:
+                #  10:30-11:00 BRT (UTC 13:30-14): n=202, WR 42.4%, avg -$155, total -$31k
+                #  14:00-15:00 BRT (UTC 17): n=211, WR 39.1%, avg -$86, total -$18k
+                # Filtro reduz n=2533 (-1015 trades) e ganha +$33k vs baseline.
+                if is_long and mkt_type == 'B3':
+                    from datetime import datetime
+                    _now_utc = datetime.utcnow()
+                    _h_utc = _now_utc.hour
+                    _m_utc = _now_utc.minute
+                    if (_h_utc == 13 and _m_utc >= 30) or _h_utc == 17:
+                        log.info(f'[BAD-HOURS-BLOCK] {sym} LONG B3 bloqueado: UTC {_h_utc:02d}:{_m_utc:02d} (BRT {(_h_utc-3)%24:02d}:{_m_utc:02d}) historicamente catastrofico')
+                        continue
+
                 # [v10.9-TrendFilter] Bloquear LONGs em ações com queda >5% nos últimos 5 preços
                 # Previne loops como RAIZ4 — ação em tendência de queda não deve receber COMPRA
                 if is_long:

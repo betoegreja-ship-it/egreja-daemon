@@ -884,23 +884,40 @@ WEIGHTS_RANGING_STOCK = {
 # Crypto e CONTRARIAN — fade extremos, mean-reversion domina.
 
 WEIGHTS_TRENDING_CRYPTO = {
-    # Trend-following NAO funciona em crypto — pesos reduzidos
-    'ema_cross':   12, 'macd': 10, 'adx': 8, 'supertrend': 8,
-    'ichimoku':    4,  'obv':  6,  'vwap': 8,
-    # Osciladores sao MAIS uteis em crypto trending (mean reversion)
-    'rsi':         12, 'stoch': 10, 'williams': 6, 'cci': 6, 'bollinger': 6,
-    # ATR como filtro de qualidade (HIGH/EXTREME bom, LOW ruim)
-    'atr':         4,
+    # [v2 — 29/abr/2026 + relatorio Sofia 12480 sinais]
+    # Sofia confirmou: Bollinger WR 66.7%, CCI 65.1%, Stoch 63.9%, RSI 62%
+    # MACD WR 51%, EMA WR 51%, ADX 100% NEUTRO em crypto.
+    # Nossos dados confirmam: ADX NULL em 100% das 3003 trades, ADX_value missing.
+    'bollinger':  12,                  # ↑ Sofia: WR 66.7% — melhor preditor crypto
+    'cci':        10,                  # ↑ Sofia: WR 65.1%
+    'stoch':      10,                  # ↑ Sofia: WR 63.9%
+    'williams':    8,                  # ↑ Sofia: WR 63.9%
+    'rsi':        12,                  # Sofia: WR 62.0% — mantem
+    'ema_cross':  10,                  # ↓ Sofia: WR 51.1% — reduzido
+    'macd':        8,                  # ↓ Sofia: WR 51.0% — reduzido
+    'supertrend':  6,
+    'obv':         6,
+    'vwap':        8,
+    'ichimoku':    4,
+    'adx':         0,                  # ★ ZERADO — Sofia: 100% neutro, nossos: 0/3003
+    'atr':         6,
 }
 
 WEIGHTS_RANGING_CRYPTO = {
-    # Em RANGING crypto, osciladores DOMINAM (mean reversion classica)
-    'rsi':         18, 'stoch': 14, 'williams': 10, 'cci': 10, 'bollinger': 14,
-    # Trend-followers tem peso minimo
-    'ema_cross':   4,  'macd': 4,  'adx': 3, 'supertrend': 3,
-    'ichimoku':    2,  'obv':  4,  'vwap': 6,
-    # ATR + volume confirmam timing
-    'atr':         8,
+    # Em RANGING crypto, osciladores DOMINAM ainda mais
+    'bollinger':  16,                  # mean reversion classica em range
+    'rsi':        18,
+    'cci':        12,
+    'stoch':      14,
+    'williams':   10,
+    'ema_cross':   4,
+    'macd':        4,
+    'supertrend':  3,
+    'obv':         4,
+    'vwap':        6,
+    'ichimoku':    2,
+    'adx':         0,                  # ★ ZERADO
+    'atr':         7,
 }
 
 # ─── MIXED e CHOPPY: iguais para ambos (pouca evidencia para diferenciar) ─
@@ -1296,16 +1313,32 @@ def compute_score_v3(
 
     # CRYPTO-specific patterns (asset_type='crypto')
     if asset_type == 'crypto':
-        # Bonus +5 se hora UTC eh 'GOLDEN' (madrugada BRT 2-5h)
+        # [v2 29/abr] Operacao 24/7 mantida. Logica:
+        # GOLDEN_HOURS = forca maxima (+8)
+        # BAD_HOURS LONG: -8 padrao, mas se trend_dir>0 confirmado: apenas -3
+        #   (deixa entrar LONG em BAD_HOUR se mercado realmente em alta)
+        # BAD_HOURS SHORT: -8 mantido
         try:
             from datetime import datetime
             _h_now_utc = datetime.utcnow().hour
             if _h_now_utc in GOLDEN_HOURS_CRYPTO_UTC:
-                pattern_adj += 5
-                pattern_notes.append(f'GOLDEN_HOUR_CRYPTO_{_h_now_utc}+5')
+                pattern_adj += 8  # ↑ era 5 — forca maxima nas horas boas
+                pattern_notes.append(f'GOLDEN_HOUR_CRYPTO_{_h_now_utc}+8')
             elif _h_now_utc in BAD_HOURS_CRYPTO_UTC:
-                pattern_adj -= 8
-                pattern_notes.append(f'BAD_HOUR_CRYPTO_{_h_now_utc}-8')
+                # LONG em hora ruim: so se uptrend confirmado
+                if direction_inferred == 'LONG' and trend_dir > 0:
+                    # ema BULLISH? cross ou stack
+                    ema_align = ema_val.get('alignment', '') if ema_val else ''
+                    if ema_align in ('STRONG_BULL', 'BULL'):
+                        pattern_adj -= 3  # penalty leve — uptrend confirmado
+                        pattern_notes.append(f'BAD_HOUR_CRYPTO_LONG_UPTREND_{_h_now_utc}-3')
+                    else:
+                        pattern_adj -= 8  # sem uptrend = penalty cheio
+                        pattern_notes.append(f'BAD_HOUR_CRYPTO_LONG_NO_UPTREND_{_h_now_utc}-8')
+                else:
+                    # SHORT em hora ruim: penalty cheio
+                    pattern_adj -= 8
+                    pattern_notes.append(f'BAD_HOUR_CRYPTO_{_h_now_utc}-8')
         except Exception:
             pass
 

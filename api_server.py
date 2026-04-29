@@ -4381,7 +4381,13 @@ def shadow_evaluator_loop():
                                     'market_type':      payload.get('market_type',''),
                                     'dq_bucket':        payload.get('dq_bucket',''),
                                 }
-                                if any(shadow_features.values()):
+                                # [FIX 29/abr/2026] Bloquear shadow FLAT (sem PnL real) de poluir factor_stats.
+                                # Bug histórico: 22.591 shadow FLATs (market_closed) inflaram total_samples ~13x
+                                # cada trade real, capando confidence_weight em 0.40 e cegando o cérebro V3.
+                                shadow_status = status if 'status' in dir() or 'status' in locals() else None
+                                _is_flat = (shadow_status == 'FLAT') or (abs(shadow_pnl_pct) < 0.1)
+                                _no_real_event = (dec.get('not_executed_reason') == 'market_closed')
+                                if any(shadow_features.values()) and not (_is_flat and _no_real_event):
                                     update_factor_stats(shadow_features, shadow_pnl, shadow_pnl_pct)
                                     alpha_keys = list(shadow_features.keys())
                                     with learning_lock:

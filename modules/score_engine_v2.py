@@ -724,14 +724,27 @@ def compute_score_v2(
 # e passam a votar "timing" (extremos só aceleram o sinal, não invertem).
 
 
-def _detect_regime(adx_val: Optional[Dict], atr_pct_val: Optional[float]) -> str:
-    """Detecta regime de mercado: TRENDING / MIXED / RANGING / CHOPPY."""
+def _detect_regime(adx_val: Optional[Dict], atr_pct_val: Optional[float],
+                   trend_dir: int = 0, volume_bucket: Optional[str] = None) -> str:
+    """Detecta regime de mercado: TRENDING / MIXED / RANGING / CHOPPY.
+
+    [FIX 29/abr/2026] Bug histórico: ADX>=25 era classificado TRENDING sem
+    confirmar direção nem volume. Em movimentos artificiais (abertura B3,
+    spike de leilão), ADX dispara mas sem trend real → V3 dava score 95
+    e perdia tudo. Agora exige trend_dir confirmado E volume não-baixo.
+    """
     if adx_val is None: return 'UNKNOWN'
     adx_v = adx_val['adx']
     atr_p = atr_pct_val or 0
-    # ATR muito alto = mercado caótico (não confiar em trend nem reversão)
+    # ATR muito alto = mercado caótico
     if atr_p > 5.0: return 'CHOPPY'
-    if adx_v >= 25: return 'TRENDING'
+    # Volume muito baixo = sem convicção, não pode ser TRENDING
+    if volume_bucket in ('LOW', 'VERY_LOW'):
+        if adx_v >= 25: return 'MIXED'  # rebaixar TRENDING -> MIXED
+        return 'RANGING'
+    # ADX alto exige trend_dir confirmado
+    if adx_v >= 25 and trend_dir != 0: return 'TRENDING'
+    if adx_v >= 25: return 'MIXED'  # ADX forte mas sem direção clara
     if adx_v >= 20: return 'MIXED'
     return 'RANGING'
 
@@ -987,8 +1000,25 @@ def compute_score_v3(
 
 
     # ── Detectar regime e direção ──
-    regime = _detect_regime(adx_val, atr_val)
+    # [FIX 29/abr] Calcular trend_dir + volume bucket ANTES do regime
     trend_dir = _detect_trend_direction(ema_val, macd_val, adx_val, super_val)
+    _vol_b_pre = 'LOW' if (atr_val is not None and atr_val < 1) else (
+                 'HIGH' if (atr_val is not None and atr_val > 3) else 'NORMAL')
+    # Volume real se disponível — tentar inferir bucket por OBV trend ou volumes input
+    _vbucket = None
+    try:
+        if volumes and len(volumes) >= 10:
+            recent_vol = sum(volumes[-5:]) / 5
+            avg_vol = sum(volumes[-20:]) / max(1, len(volumes[-20:]))
+            if avg_vol > 0:
+                ratio = recent_vol / avg_vol
+                if ratio < 0.3: _vbucket = 'VERY_LOW'
+                elif ratio < 0.6: _vbucket = 'LOW'
+                elif ratio < 1.5: _vbucket = 'NORMAL'
+                else: _vbucket = 'HIGH'
+    except Exception:
+        _vbucket = None
+    regime = _detect_regime(adx_val, atr_val, trend_dir, _vbucket)
 
     # ── Votos regime-aware ──
     # Em TRENDING ou MIXED (com tendência clara), osciladores viram "timing"
@@ -1055,28 +1085,39 @@ def compute_score_v3(
 
 
     # ── Learning adj (via factor_stats_cache do daemon) ──
+    # [FIX 29/abr/2026] Tradução de NAMES + uso de ewma_pnl_pct (info real)
+    # em vez de confidence_weight (capado em 0.40 por bug de incrementação).
     learning_adj = 0.0
     if factor_stats_cache:
+        # RSI — traduz LOW/HIGH -> WEAK/STRONG
         rsi_b = 'OVERSOLD' if rsi_val and rsi_val < 30 else (
                 'OVERBOUGHT' if rsi_val and rsi_val > 70 else (
                 'LOW' if rsi_val and rsi_val < 45 else (
                 'HIGH' if rsi_val and rsi_val > 55 else 'NEUTRAL')))
-        fs = factor_stats_cache.get(('rsi_bucket', rsi_b), {})
-        if fs.get('total_samples', 0) >= 10:
-            learning_adj += float(fs.get('confidence_weight', 0)) * 6
+        rsi_b_fs = _translate_rsi_bucket_for_fs(rsi_b)
+        fs = factor_stats_cache.get(('rsi_bucket', rsi_b_fs), {})
+        if fs.get('total_samples', 0) >= 30:
+            ewma = float(fs.get('ewma_pnl_pct', 0))
+            learning_adj += max(-12, min(12, ewma * 16))
+        # EMA — traduz STRONG_BULL -> BULLISH_STACK
         if ema_val:
-            fs = factor_stats_cache.get(('ema_alignment', ema_val['alignment']), {})
-            if fs.get('total_samples', 0) >= 10:
-                learning_adj += float(fs.get('confidence_weight', 0)) * 6
+            ema_align_fs = _translate_ema_alignment_for_fs(ema_val['alignment'])
+            fs = factor_stats_cache.get(('ema_alignment', ema_align_fs), {})
+            if fs.get('total_samples', 0) >= 30:
+                ewma = float(fs.get('ewma_pnl_pct', 0))
+                learning_adj += max(-12, min(12, ewma * 16))
+        # Volatility — factor_stats usa atr_bucket, não volatility_bucket
         vol_b = 'LOW' if atr_val and atr_val < 1 else (
                 'HIGH' if atr_val and atr_val > 3 else 'NORMAL')
-        fs = factor_stats_cache.get(('volatility_bucket', vol_b), {})
-        if fs.get('total_samples', 0) >= 10:
-            learning_adj += float(fs.get('confidence_weight', 0)) * 4
-        # Regime como feature de learning (NOVO)
+        fs = factor_stats_cache.get(('atr_bucket', vol_b), {})
+        if fs.get('total_samples', 0) >= 30:
+            ewma = float(fs.get('ewma_pnl_pct', 0))
+            learning_adj += max(-8, min(8, ewma * 10))
+        # Regime
         fs = factor_stats_cache.get(('regime_mode', regime), {})
-        if fs.get('total_samples', 0) >= 10:
-            learning_adj += float(fs.get('confidence_weight', 0)) * 5
+        if fs.get('total_samples', 0) >= 30:
+            ewma = float(fs.get('ewma_pnl_pct', 0))
+            learning_adj += max(-6, min(6, ewma * 8))
 
     raw_score += learning_adj
     raw_score += temporal_adj

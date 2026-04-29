@@ -815,32 +815,27 @@ CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 180))
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [v10.47] Universo de 20 cryptos (expansão via v3 regime-aware)
-    # Filosofia: v3 decide COMPRA ou VENDA por símbolo — downtrend vira SHORT.
-    # MAX_POSITIONS_CRYPTO=20 | Blacklist OFF | Score sizing 2.0x em score 85+
-    'BTCUSDT',   # Bitcoin — referência de mercado
-    'ETHUSDT',   # Ethereum — histórico melhor WR 55%
-    'BNBUSDT',   # BNB — exchange coin
-    'SOLUSDT',   # Solana — V3 SHORT WR 91%
-    'XRPUSDT',   # XRP — alta liquidez
-    'ADAUSDT',   # Cardano
-    'DOGEUSDT',  # Dogecoin — meme coin
-    'AVAXUSDT',  # Avalanche
-    'TRXUSDT',   # TRON — V3 LONG WR 85%
-    'DOTUSDT',   # Polkadot
-    'LINKUSDT',  # Chainlink
-    # 'MATICUSDT', # Polygon — REMOVIDO 2026-04-20: bug de preco recorrente
-    #                (MATIC foi renomeado para POL pela Polygon Labs; Binance/
-    #                 Polygon mostram precos inconsistentes). Trade CRY-ec2fd...
-    #                teve P&L +$55K impossivel. Ver ops_void_trade + blacklist.
-    'LTCUSDT',   # Litecoin
-    'UNIUSDT',   # Uniswap
-    'ATOMUSDT',  # Cosmos
-    'XLMUSDT',   # Stellar
-    'BCHUSDT',   # Bitcoin Cash
-    'NEARUSDT',  # NEAR
-    'APTUSDT',   # Aptos
-    'ARBUSDT',   # Arbitrum
+    # [CURATED 29/abr/2026] Whitelist baseada em 3003 trades historicas.
+    # Filtro: removidos 12 simbolos com PnL acumulado < -$5k (LINK, NEAR, AVAX,
+    # XLM, DOT, DOGE, BCH, ADA, ATOM, SOL, APT, XRP).
+    # Mantidos: top performers (TON, ARB, ETH) + core liquidez (BTC, BNB) +
+    # historicos negativos pequenos (UNI, TRX, BNB, BTC, LTC).
+    # Ranking historico:
+    #   TON: +$4.4k (WR 57%)         ARB: +$2.2k     ETH: +$1.8k
+    #   ENA: +$0.8k (n=20)           UNI: -$2.2k     TRX: -$2.3k
+    #   BNB: -$2.4k (n=225)          BTC: -$2.7k     LTC: -$4.0k
+    'TONUSDT',   # The Open Network — TOP performer (avg +$99/trade)
+    'ARBUSDT',   # Arbitrum — segundo melhor
+    'ETHUSDT',   # Ethereum — core liquidez
+    'BNBUSDT',   # BNB — core liquidez
+    'BTCUSDT',   # Bitcoin — core liquidez
+    'TRXUSDT',   # TRON — pequena perda mas alto WR
+    'UNIUSDT',   # Uniswap — pequena perda
+    'LTCUSDT',   # Litecoin — pequena perda
+    # Removidos por -$5k+ acumulado:
+    # 'XRPUSDT', 'APTUSDT', 'SOLUSDT', 'ATOMUSDT', 'ADAUSDT',
+    # 'BCHUSDT', 'DOGEUSDT', 'DOTUSDT', 'XLMUSDT', 'AVAXUSDT',
+    # 'NEARUSDT', 'LINKUSDT'
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',
@@ -6962,6 +6957,36 @@ def auto_trade_crypto():
                 _entry_ok = score >= MIN_SCORE_AUTO_CRYPTO
                 if not _entry_ok:
                     log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
+                    continue
+
+                # [CRYPTO-BAD-HOURS-BLOCK 29/abr/2026] Filtro de horarios catastroficos.
+                # Backtested em 3003 trades crypto:
+                #   13-22 UTC (10-19 BRT): n=988, acumulado -$108k em horario comercial
+                #   Janelas DOURADAS: 5-7 UTC (2-4 BRT) WR 58-67%, +$40k acumulado
+                # Crypto opera 24h mas SO ganha em horario asiatico.
+                from datetime import datetime as _dt_crypto
+                _h_utc_c = _dt_crypto.utcnow().hour
+                if 13 <= _h_utc_c <= 22:
+                    log.info(f'[CRYPTO-BAD-HOURS-BLOCK] {display}: UTC {_h_utc_c}h dentro de janela ruim 13-22h ({(_h_utc_c-3)%24}h BRT) — bloqueado')
+                    continue
+
+                # [CRYPTO-DAY-BLOCK 29/abr] Segunda+sabado piores dias (DAYOFWEEK MySQL: 1=dom,2=seg,7=sab)
+                # Segunda LONG: -$38.7k. Sabado: -$22k.
+                _dow_c = _dt_crypto.utcnow().isoweekday()  # 1=seg ... 7=dom
+                # Bloquear segunda (1) e sabado (6)
+                if _dow_c in (1, 6):
+                    log.info(f'[CRYPTO-DAY-BLOCK] {display}: dia da semana {_dow_c} (seg/sab) - historicamente catastrofico')
+                    continue
+
+                # [CRYPTO-REGIME-BLOCK 29/abr] Padroes mais destrutivos historicamente:
+                # LONG + TRENDING: n=641, -$44k (oposto de stocks!)
+                # SHORT + RANGING: n=712, -$49k
+                _regime_c = market_regime.get('mode', '')
+                if direction == 'LONG' and _regime_c == 'TRENDING':
+                    log.info(f'[CRYPTO-REGIME-BLOCK] {display} LONG+TRENDING bloqueado (historico -$44k)')
+                    continue
+                if direction == 'SHORT' and _regime_c == 'RANGING':
+                    log.info(f'[CRYPTO-REGIME-BLOCK] {display} SHORT+RANGING bloqueado (historico -$49k)')
                     continue
 
                 score_factor=min(abs(score-50)/50.0,1.0)

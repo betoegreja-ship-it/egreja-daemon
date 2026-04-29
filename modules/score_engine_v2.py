@@ -507,6 +507,53 @@ def _vote_ichimoku(ich: Optional[Dict]) -> float:
     return base
 
 
+
+# ═══════════════════════════════════════════════════════════════════
+# [FIX 29/abr/2026 HOTFIX] Compatibilidade NAMES V3 ↔ factor_stats
+# Bug: V3 usa STRONG_BULL, factor_stats armazena BULLISH_STACK → 0 matches
+# Estas funcoes traduzem antes de consultar factor_stats_cache.
+# ═══════════════════════════════════════════════════════════════════
+
+def _translate_ema_alignment_for_fs(v3_alignment):
+    """V3 (STRONG_BULL/BULL/NEUTRAL/BEAR/STRONG_BEAR) -> factor_stats names."""
+    return {
+        'STRONG_BULL': 'BULLISH_STACK',
+        'BULL':        'BULLISH_CROSS',
+        'NEUTRAL':     'MIXED',
+        'BEAR':        'BEARISH_CROSS',
+        'STRONG_BEAR': 'BEARISH_STACK',
+    }.get(v3_alignment, v3_alignment)
+
+
+def _translate_rsi_bucket_for_fs(v3_bucket):
+    """V3 (LOW/HIGH) -> factor_stats (WEAK/STRONG)."""
+    return {
+        'LOW':  'WEAK',
+        'HIGH': 'STRONG',
+    }.get(v3_bucket, v3_bucket)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PATTERN_CALIBRATION 29/abr/2026] Combos LETAIS e GOLDEN identificados
+# empiricamente em 3548 trades stock CLOSED (n>=30, |avg_pnl|>$50).
+# ═══════════════════════════════════════════════════════════════════
+LETHAL_COMBOS_LONG = {
+    ('RANGING',  'BULLISH_CROSS', 'VERY_LOW'),
+    ('TRENDING', 'BULLISH_CROSS', 'VERY_LOW'),
+    ('RANGING',  'BULLISH_CROSS', 'LOW'),
+    ('TRENDING', 'BULLISH_STACK', 'VERY_LOW'),
+}
+GOLDEN_COMBOS_LONG = {
+    ('TRENDING', 'BULLISH_CROSS', 'NORMAL'): 15,
+    ('RANGING',  'BULLISH_STACK', 'NORMAL'): 12,
+    ('RANGING',  'BULLISH_CROSS', 'NORMAL'): 10,
+    ('TRENDING', 'BULLISH_CROSS', 'LOW'):    8,
+    ('TRENDING', 'BULLISH_STACK', 'NORMAL'): 8,
+    ('RANGING',  'BULLISH_STACK', 'HIGH'):   8,
+}
+BAD_HOURS_B3_LONG_UTC = {14, 17}
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 3) COMPUTE — função principal que o daemon chama
 # ═══════════════════════════════════════════════════════════════════
@@ -1207,11 +1254,37 @@ def compute_score_v3(
             pattern_adj -= 8
             pattern_notes.append('CHOPPY_SHORT-8')
 
+    # ═══════════════════════════════════════════════════════════════════
+    # [COMBO_RULES 29/abr] Combos especificos baseados em 3548 trades reais
+    # ═══════════════════════════════════════════════════════════════════
+    combo_adj = 0
+    combo_block = False
+    combo_notes = []
+
+    ema_fs = None
+    if ema_val:
+        ema_fs = _translate_ema_alignment_for_fs(ema_val.get('alignment', ''))
+
+    if direction_inferred == 'LONG' and ema_fs and vol_bucket_real:
+        combo_key = (regime, ema_fs, vol_bucket_real)
+        if combo_key in LETHAL_COMBOS_LONG:
+            combo_block = True
+            combo_notes.append(f'LETHAL_{combo_key[0]}_{combo_key[1]}_{combo_key[2]}')
+        elif combo_key in GOLDEN_COMBOS_LONG:
+            bonus = GOLDEN_COMBOS_LONG[combo_key]
+            combo_adj += bonus
+            combo_notes.append(f'GOLDEN_{combo_key[0]}_{combo_key[1]}_{combo_key[2]}+{bonus}')
+
     # Aplicar pattern_adj com clamp
     pattern_adj = max(-15, min(15, pattern_adj))
     raw_score += learning_adj
     raw_score += temporal_adj
     raw_score += pattern_adj
+    raw_score += combo_adj
+
+    # Hard block para combos letais — score 49 (não passa em threshold 70)
+    if combo_block:
+        raw_score = min(raw_score, 49)
 
     final_score = int(max(0, min(100, raw_score)))
 
@@ -1281,6 +1354,9 @@ def compute_score_v3(
             'weighted_sum': round(weighted_sum, 3),
             'pattern_adj': round(pattern_adj, 2),
             'pattern_notes': pattern_notes,
+            'combo_adj': combo_adj,
+            'combo_notes': combo_notes,
+            'combo_block': combo_block,
             'learning_adj': round(learning_adj, 2),
             'temporal_adj': round(temporal_adj, 2),
             'raw_score_pre_clamp': round(raw_score, 2),

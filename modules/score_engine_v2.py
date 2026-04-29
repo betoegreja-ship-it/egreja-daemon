@@ -1119,8 +1119,99 @@ def compute_score_v3(
             ewma = float(fs.get('ewma_pnl_pct', 0))
             learning_adj += max(-6, min(6, ewma * 8))
 
+    # ═══════════════════════════════════════════════════════════════════
+    # [PATTERN_CALIBRATION 29/abr/2026] Padrões confirmados nas 3548 trades reais.
+    # Aplicado APENAS a stocks (asset_type detectado por presença de volumes).
+    # Cada combinação tem n>=50 e avg_pnl > $50 ou < -$50 (significância empírica).
+    # ═══════════════════════════════════════════════════════════════════
+    pattern_adj = 0.0
+    pattern_notes = []
+    direction_inferred = 'LONG' if raw_score >= 50 else 'SHORT'
+
+    # Detectar volume bucket pelo input
+    vol_bucket_real = None
+    if volumes and len(volumes) >= 20:
+        try:
+            recent5 = sum(volumes[-5:]) / 5
+            avg20 = sum(volumes[-20:]) / 20
+            if avg20 > 0:
+                ratio = recent5 / avg20
+                if ratio < 0.3: vol_bucket_real = 'VERY_LOW'
+                elif ratio < 0.6: vol_bucket_real = 'LOW'
+                elif ratio < 1.5: vol_bucket_real = 'NORMAL'
+                elif ratio < 2.5: vol_bucket_real = 'HIGH'
+                else: vol_bucket_real = 'VERY_HIGH'
+        except Exception:
+            pass
+
+    # Detectar atr bucket
+    atr_bucket_real = None
+    if atr_val is not None:
+        if atr_val < 0.5: atr_bucket_real = 'VERY_LOW'
+        elif atr_val < 1.0: atr_bucket_real = 'LOW'
+        elif atr_val < 2.0: atr_bucket_real = 'NORMAL'
+        elif atr_val < 3.5: atr_bucket_real = 'HIGH'
+        else: atr_bucket_real = 'EXTREME'
+
+    if direction_inferred == 'LONG':
+        # ✓ BULLISH (LONG) calibrações
+        # Volume NORMAL + LONG = melhor bucket (avg +$169, n=347)
+        if vol_bucket_real == 'NORMAL':
+            pattern_adj += 6
+            pattern_notes.append('VOL_NORMAL_LONG+6')
+        # Volume LOW/VERY_LOW + LONG = sinal fraco (sem convicção)
+        elif vol_bucket_real in ('LOW', 'VERY_LOW'):
+            pattern_adj -= 8
+            pattern_notes.append('VOL_LOW_LONG-8')
+
+        # BEARISH_CROSS + LONG = reversão de fundo (n=128, WR 57%, avg +$201) — counter-intuitivo!
+        if ema_val and ema_val.get('alignment') == 'BEAR':  # V3: BEAR == factor_stats BEARISH_CROSS
+            pattern_adj += 5
+            pattern_notes.append('EMA_BEAR_REV+5')
+
+        # Volatility LOW + LONG = mercado morto, perde (avg -$90, n=159)
+        if atr_bucket_real in ('VERY_LOW', 'LOW') and vol_bucket_real not in ('NORMAL', 'HIGH'):
+            pattern_adj -= 6
+            pattern_notes.append('ATR_LOW_NO_VOL-6')
+
+        # ATR HIGH + LONG = volátil, perde (avg -$30, n=474)
+        if atr_bucket_real == 'HIGH':
+            pattern_adj -= 3
+            pattern_notes.append('ATR_HIGH_LONG-3')
+
+        # TRENDING confirmado + LONG = bom (n=684, +$42k)
+        if regime == 'TRENDING' and trend_dir > 0:
+            pattern_adj += 4
+            pattern_notes.append('TRENDING_UP+4')
+        # TRENDING sem volume confirmado = NÃO é trend real
+        elif regime == 'TRENDING' and vol_bucket_real in ('LOW', 'VERY_LOW'):
+            pattern_adj -= 10
+            pattern_notes.append('FAKE_TRENDING-10')
+
+    else:  # SHORT
+        # ✗ SHORT calibrações — MAIORIA é negativa, manter SHORT em stocks geralmente bloqueado
+        # RSI STRONG + SHORT = perda (avg -$106, n=370)
+        rsi_check = 'OVERSOLD' if rsi_val and rsi_val < 30 else (
+                    'OVERBOUGHT' if rsi_val and rsi_val > 70 else (
+                    'WEAK' if rsi_val and rsi_val < 45 else (
+                    'STRONG' if rsi_val and rsi_val > 55 else 'NEUTRAL')))
+        if rsi_check == 'STRONG':
+            pattern_adj -= 6
+            pattern_notes.append('RSI_STRONG_SHORT-6')
+        # BEARISH_STACK + SHORT = sinal "obvio" mas perde (avg -$58, n=643)
+        if ema_val and ema_val.get('alignment') == 'STRONG_BEAR':
+            pattern_adj -= 4
+            pattern_notes.append('EMA_BEAR_STACK_SHORT-4')
+        # HIGH_VOL regime + SHORT = catástrofe (avg -$250, n=62)
+        if regime == 'CHOPPY':  # CHOPPY no V3 ~= HIGH_VOL no factor_stats
+            pattern_adj -= 8
+            pattern_notes.append('CHOPPY_SHORT-8')
+
+    # Aplicar pattern_adj com clamp
+    pattern_adj = max(-15, min(15, pattern_adj))
     raw_score += learning_adj
     raw_score += temporal_adj
+    raw_score += pattern_adj
 
     final_score = int(max(0, min(100, raw_score)))
 
@@ -1188,6 +1279,8 @@ def compute_score_v3(
             'n_bars': n,
             'total_weight_used': total_weight,
             'weighted_sum': round(weighted_sum, 3),
+            'pattern_adj': round(pattern_adj, 2),
+            'pattern_notes': pattern_notes,
             'learning_adj': round(learning_adj, 2),
             'temporal_adj': round(temporal_adj, 2),
             'raw_score_pre_clamp': round(raw_score, 2),

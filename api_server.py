@@ -635,7 +635,7 @@ ALERT_MIN_SCORE = int(os.environ.get('ALERT_MIN_SCORE', 80))
 
 MAX_CAPITAL_PCT_STOCKS   = float(os.environ.get('MAX_CAPITAL_PCT_STOCKS', 100.0))  # [v10.14] 100% do capital
 MAX_CAPITAL_PCT_CRYPTO   = float(os.environ.get('MAX_CAPITAL_PCT_CRYPTO', 100.0))  # [v10.14] 100% do capital
-MAX_POSITIONS_STOCKS     = 60  # [v10.14] 60 posições simultâneas (env var ignorada)
+MAX_POSITIONS_STOCKS     = int(os.environ.get('MAX_POSITIONS_STOCKS', 60))  # [v10.14] 60 padrao, configuravel para tickets maiores ([fix 30/abr] env var era ignorada)
 MAX_POSITIONS_CRYPTO     = int(os.environ.get('MAX_POSITIONS_CRYPTO', 20)) # [v10.47] 20 simultâneas — v3 discrimina, não deixar dinheiro parado
 MAX_POSITIONS_NYSE       = int(os.environ.get('MAX_POSITIONS_NYSE', 20)) # [v10.47]
 
@@ -6452,8 +6452,9 @@ def stock_execution_worker():
                 #  14:00-15:00 BRT (UTC 17): n=211, WR 39.1%, avg -$86, total -$18k
                 # Filtro reduz n=2533 (-1015 trades) e ganha +$33k vs baseline.
                 if is_long and mkt_type == 'B3':
-                    from datetime import datetime
-                    _now_utc = datetime.utcnow()
+                    # [FIX 30/abr] datetime ja importado no topo do modulo, NAO re-importar local
+                    import datetime as _dt_bh
+                    _now_utc = _dt_bh.datetime.utcnow()
                     _h_utc = _now_utc.hour
                     _m_utc = _now_utc.minute
                     if (_h_utc == 13 and _m_utc >= 30) or _h_utc == 17:

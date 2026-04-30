@@ -773,6 +773,19 @@ BLACKLIST_MIN_TRADES    = int(os.environ.get('BLACKLIST_MIN_TRADES', 9999))   # 
 BLACKLIST_MAX_AVG_PNL   = float(os.environ.get('BLACKLIST_MAX_AVG_PNL', -40)) # avg PnL < -$40 = blacklist
 BLACKLIST_MAX_WR        = float(os.environ.get('BLACKLIST_MAX_WR', 0))        # [v10.47] 0 = nunca blacklist (v3 decide)
 BLACKLIST_REVIEW_H      = float(os.environ.get('BLACKLIST_REVIEW_H', 24))     # reavaliar a cada 24h
+
+# [HARD_BLACKLIST 30/abr/2026] Destruidores confirmados em 3003 trades + relatorio Sofia (PDF)
+# LINK: -$13.592 (WR 44.8%) — Sofia tambem confirma destruidor
+# NEAR: -$11.094 (WR 51.2%) — perde dinheiro mesmo com WR>50%
+# AVAX: -$8.947  (WR 47.5%)
+# XLM:  -$8.017  (WR 57.4%) — anomalia: WR alto mas perdas grandes (stop_loss > take_profit)
+# Reativar 30 dias depois ou se virem positivos em paper testing.
+HARD_BLACKLIST_CRYPTO = set(
+    s.strip().upper() for s in os.environ.get(
+        'HARD_BLACKLIST_CRYPTO',
+        'LINK,NEAR,AVAX,XLM'
+    ).split(',') if s.strip()
+)
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
 ATR_SL_MULTIPLIER_STOCK  = float(os.environ.get('ATR_SL_MULTIPLIER_STOCK', 2.5))  # SL = ATR * 2.5 para stocks
 ATR_SL_MULTIPLIER_CRYPTO = float(os.environ.get('ATR_SL_MULTIPLIER_CRYPTO', 2.0)) # SL = ATR * 2.0 para crypto
@@ -6847,6 +6860,9 @@ def auto_trade_crypto():
             for sym in CRYPTO_SYMBOLS:
                 display=sym.replace('USDT',''); price=crypto_prices.get(sym,0)
                 change_24h=crypto_momentum.get(sym,0)
+                # [HARD_BLACKLIST 30/abr] Skip silencioso de destruidores comprovados
+                if display in HARD_BLACKLIST_CRYPTO:
+                    continue
                 if price<=0 or abs(change_24h)<0.3:  # [v10.24] era 0.5 — muito restritivo para mercado lateral
                     log.info(f'[CRYPTO-SKIP] {display}: price={price:.2f} change={change_24h:.2f}%')
                     continue

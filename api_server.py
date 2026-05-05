@@ -5433,12 +5433,21 @@ def _fetch_brapi_batch(tickers: list) -> dict:
                 price = float(q.get('regularMarketPrice') or 0)
                 prev  = float(q.get('regularMarketPreviousClose') or 0)
                 if price <= 0: continue
+                # [FIX 05/mai] brapi as vezes retorna regularMarketPreviousClose IGUAL ao
+                # regularMarketPrice (snapshot intraday em vez do fechamento real de ontem),
+                # fazendo (price/prev - 1) ficar em 0% mesmo com mercado se mexendo.
+                # Solucao: priorizar regularMarketChangePercent que a propria brapi calcula
+                # corretamente (compara contra close real do pregao anterior).
+                # Caso confirmado em 5/mai: ABEV3 prev=16.55 price=16.56 mas change real=14.68%.
+                _brapi_change = q.get('regularMarketChangePercent')
+                _change_pct = (round(float(_brapi_change), 2) if _brapi_change is not None
+                               else (round((price / prev - 1) * 100, 2) if prev > 0 else 0))
                 cached = _get_cached_candles(f'brapi:{sym}')
                 if cached:
                     entry = dict(cached)
                     entry['price']      = price
                     entry['prev']       = prev
-                    entry['change_pct'] = round((price / prev - 1) * 100, 2) if prev > 0 else 0
+                    entry['change_pct'] = _change_pct
                     entry['updated_at'] = datetime.utcnow().isoformat()
                     entry['source']     = 'brapi-batch-snapshot'
                     results[sym] = entry
@@ -5479,9 +5488,13 @@ def _fetch_brapi_batch(tickers: list) -> dict:
                 avg_vol20 = sum(volumes[-20:]) / len(volumes[-20:]) if len(volumes) >= 20 else 0
                 vol_ratio = round(vol_today / avg_vol20, 3) if avg_vol20 > 0 else 0.0
 
+                # [FIX 05/mai] mesmo problema do warm path: priorizar regularMarketChangePercent
+                _brapi_change_c = q.get('regularMarketChangePercent')
+                _change_pct_c = (round(float(_brapi_change_c), 2) if _brapi_change_c is not None
+                                  else (round((price / prev - 1) * 100, 2) if prev > 0 else 0))
                 entry = {
                     'price': price, 'prev': prev,
-                    'change_pct': round((price / prev - 1) * 100, 2) if prev > 0 else 0,
+                    'change_pct': _change_pct_c,
                     'ema9': round(ema9, 4), 'ema21': round(ema21, 4), 'ema50': round(ema50, 4),
                     'rsi': round(rsi, 1), 'atr_pct': atr_pct, 'volume_ratio': vol_ratio,
                     'ema9_real': n >= 9, 'ema21_real': n >= 21,

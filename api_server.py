@@ -5504,22 +5504,39 @@ def _fetch_brapi_batch(tickers: list) -> dict:
 
 
 def _fetch_single_stock(sym: str) -> tuple:
-    """[v10.4] Camada de dados: Polygon (US) → brapi (B3) → FMP → Yahoo.
+    """[v10.4] Camada de dados: brapi (B3) → Cedro (B3 fallback) → Polygon (US) → FMP → Yahoo.
     Sempre retorna atr_pct e volume_ratio quando disponível.
+
+    [SWITCH 05/mai/2026] brapi.dev (plano Pro = tempo real) vira primaria para B3.
+    Cedro Socket vira fallback. Motivacao: usuario reportou variacao 0.00% em
+    multiplas B3 no meio do pregao (NATU3, ODPV3, CASH3, PETR4, etc.) — causa
+    raiz era atualizacao incremental do socket Cedro: quando 'variation_pct' chega
+    como 0 na abertura, fica cacheado como 0; mensagens subsequentes atualizam
+    'price' mas nao reenviam 'variation_pct', resultando em 0.00% indefinidamente.
+    Brapi (REST) sempre retorna o snapshot completo com regularMarketPrice +
+    regularMarketPreviousClose, evitando o problema de cache parcial.
+    Para reverter ao comportamento anterior: setar env CEDRO_PRIMARY=true.
     """
     is_b3 = sym.endswith('.SA') or bool(re.match(r'^[A-Z]{4}[0-9]+$', sym))
     display = sym.replace('.SA', '')
+    _cedro_primary = os.environ.get('CEDRO_PRIMARY', 'false').lower() == 'true'
 
-    # 0. [v10.31] Cedro socket (real-time, primary for B3)
-    if is_b3 and _cedro_socket and _cedro_socket.enabled:
+    # 0a. [SWITCH 05/mai] Cedro APENAS se CEDRO_PRIMARY=true (default false)
+    if is_b3 and _cedro_primary and _cedro_socket and _cedro_socket.enabled:
         result, lat = _fetch_cedro_stock(display)
         if result:
             return result, lat
 
-    # 1. brapi para B3
+    # 1. [SWITCH 05/mai] brapi.dev primaria para B3 (Pro = real-time)
     if is_b3 and BRAPI_TOKEN:
         result, lat = _fetch_brapi_stock(display)
         if result: return result, lat
+
+    # 1b. [SWITCH 05/mai] Cedro vira fallback se brapi falhar e CEDRO_PRIMARY=false
+    if is_b3 and not _cedro_primary and _cedro_socket and _cedro_socket.enabled:
+        result, lat = _fetch_cedro_stock(display)
+        if result:
+            return result, lat
 
     # 2. Polygon para US (e ADR de B3 quando brapi indisponível)
     if POLYGON_API_KEY:

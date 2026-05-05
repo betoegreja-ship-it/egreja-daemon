@@ -779,11 +779,15 @@ BLACKLIST_REVIEW_H      = float(os.environ.get('BLACKLIST_REVIEW_H', 24))     # 
 # NEAR: -$11.094 (WR 51.2%) — perde dinheiro mesmo com WR>50%
 # AVAX: -$8.947  (WR 47.5%)
 # XLM:  -$8.017  (WR 57.4%) — anomalia: WR alto mas perdas grandes (stop_loss > take_profit)
-# Reativar 30 dias depois ou se virem positivos em paper testing.
+# [REATIVADO 04/mai/2026] Decisao do usuario: reativar as 4 moedas. Default do
+# blacklist agora vazio. O score_engine_v3 + brain advisor sao responsaveis
+# por aprender a evitar os padroes ruins via score (nao via hard block).
+# Para re-blacklistar quando quiser, basta setar a env var
+# HARD_BLACKLIST_CRYPTO=LINK,NEAR,AVAX,XLM no Railway.
 HARD_BLACKLIST_CRYPTO = set(
     s.strip().upper() for s in os.environ.get(
         'HARD_BLACKLIST_CRYPTO',
-        'LINK,NEAR,AVAX,XLM'
+        ''
     ).split(',') if s.strip()
 )
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
@@ -828,27 +832,36 @@ CRYPTO_MIN_HOLD_MIN          = float(os.environ.get('CRYPTO_MIN_HOLD_MIN', 180))
 LEARNING_ENABLED       = os.environ.get('LEARNING_ENABLED', 'true').lower() != 'false'
 
 CRYPTO_SYMBOLS = [
-    # [CURATED 29/abr/2026] Whitelist baseada em 3003 trades historicas.
-    # Filtro: removidos 12 simbolos com PnL acumulado < -$5k (LINK, NEAR, AVAX,
-    # XLM, DOT, DOGE, BCH, ADA, ATOM, SOL, APT, XRP).
-    # Mantidos: top performers (TON, ARB, ETH) + core liquidez (BTC, BNB) +
-    # historicos negativos pequenos (UNI, TRX, BNB, BTC, LTC).
-    # Ranking historico:
-    #   TON: +$4.4k (WR 57%)         ARB: +$2.2k     ETH: +$1.8k
-    #   ENA: +$0.8k (n=20)           UNI: -$2.2k     TRX: -$2.3k
-    #   BNB: -$2.4k (n=225)          BTC: -$2.7k     LTC: -$4.0k
-    'TONUSDT',   # The Open Network — TOP performer (avg +$99/trade)
-    'ARBUSDT',   # Arbitrum — segundo melhor
+    # [RESTAURADO 05/mai/2026] Decisao do usuario: voltar com as 20 moedas originais.
+    # O score_engine_v3 + brain advisor sao responsaveis por penalizar via score
+    # os simbolos historicamente ruins, nao por whitelist hardcoded.
+    # Para reduzir o universo via env var, setar CRYPTO_SYMBOLS=BTCUSDT,ETHUSDT,...
+    # no Railway (esta opcao nao esta cabeada — TODO se necessario).
+    # Historico v10.47 (3003 trades):
+    #   TON: +$4.4k (WR 57%)   ARB: +$2.2k   ETH: +$1.8k
+    #   ENA: +$0.8k            UNI: -$2.2k   TRX: -$2.3k
+    #   BNB: -$2.4k            BTC: -$2.7k   LTC: -$4.0k
+    #   LINK: -$13.6k          NEAR: -$11.1k AVAX: -$8.9k  XLM: -$8.0k
+    'BTCUSDT',   # Bitcoin — core liquidez
     'ETHUSDT',   # Ethereum — core liquidez
     'BNBUSDT',   # BNB — core liquidez
-    'BTCUSDT',   # Bitcoin — core liquidez
-    'TRXUSDT',   # TRON — pequena perda mas alto WR
-    'UNIUSDT',   # Uniswap — pequena perda
-    'LTCUSDT',   # Litecoin — pequena perda
-    # Removidos por -$5k+ acumulado:
-    # 'XRPUSDT', 'APTUSDT', 'SOLUSDT', 'ATOMUSDT', 'ADAUSDT',
-    # 'BCHUSDT', 'DOGEUSDT', 'DOTUSDT', 'XLMUSDT', 'AVAXUSDT',
-    # 'NEARUSDT', 'LINKUSDT'
+    'SOLUSDT',   # Solana
+    'XRPUSDT',   # XRP
+    'ADAUSDT',   # Cardano
+    'DOGEUSDT',  # Dogecoin
+    'AVAXUSDT',  # Avalanche
+    'TRXUSDT',   # TRON
+    'DOTUSDT',   # Polkadot
+    'LINKUSDT',  # Chainlink
+    'LTCUSDT',   # Litecoin
+    'UNIUSDT',   # Uniswap
+    'ATOMUSDT',  # Cosmos
+    'XLMUSDT',   # Stellar
+    'BCHUSDT',   # Bitcoin Cash
+    'NEARUSDT',  # NEAR
+    'APTUSDT',   # Aptos
+    'ARBUSDT',   # Arbitrum
+    'TONUSDT',   # The Open Network — TOP performer (avg +$99/trade)
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',
@@ -4475,9 +4488,60 @@ def init_all_tables():
             status VARCHAR(10) DEFAULT 'OPEN', close_reason VARCHAR(20),
             opened_at DATETIME, closed_at DATETIME, extensions INT DEFAULT 0)""")
         # [v10.23] Colunas de custo de aluguel
+        # [AUDIT-RESTORE 04/mai/2026] Reintroduzir todas as colunas de auditoria que
+        # foram perdidas no commit 8143f61 (16/abr) — INSERT só grava a união
+        # destas colunas + as do CREATE TABLE original. Idempotente.
         for _col_sql in [
             "ALTER TABLE arbi_trades ADD COLUMN lending_cost DECIMAL(10,2) DEFAULT 0",
             "ALTER TABLE arbi_trades ADD COLUMN lending_rate_annual DECIMAL(6,4) DEFAULT 0",
+            # Preços/qty/timestamps de ENTRADA (já estavam no CREATE TABLE original)
+            "ALTER TABLE arbi_trades ADD COLUMN entry_spread_raw DECIMAL(10,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN entry_spread_normalized DECIMAL(10,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN price_a_entry DECIMAL(18,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN price_b_entry DECIMAL(18,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN price_a_usd_norm DECIMAL(18,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN price_b_usd_norm DECIMAL(18,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN bid_a DECIMAL(18,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN ask_a DECIMAL(18,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN bid_b DECIMAL(18,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN ask_b DECIMAL(18,4) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN qty_a INT DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN qty_b INT DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN entry_ts DATETIME NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN signal_ts_a DATETIME NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN signal_ts_b DATETIME NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN delta_ts_between_legs_ms INT DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN slippage_bps_total DECIMAL(8,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN audit_flag VARCHAR(30) DEFAULT 'valid'",
+            "ALTER TABLE arbi_trades ADD COLUMN simulation_model_version VARCHAR(20) DEFAULT NULL",
+            # Metadados extras do trade dict (não estavam no CREATE TABLE)
+            "ALTER TABLE arbi_trades ADD COLUMN price_source_a VARCHAR(20) DEFAULT NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN price_source_b VARCHAR(20) DEFAULT NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN ratio_a DECIMAL(10,4) DEFAULT 1",
+            "ALTER TABLE arbi_trades ADD COLUMN ratio_b DECIMAL(10,4) DEFAULT 1",
+            "ALTER TABLE arbi_trades ADD COLUMN broker_fee_a DECIMAL(10,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN broker_fee_b DECIMAL(10,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN fee_model_version VARCHAR(20) DEFAULT NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN slippage_model_version VARCHAR(20) DEFAULT NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_ts DATETIME NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN spread_bps_a DECIMAL(8,2) DEFAULT 0",
+            "ALTER TABLE arbi_trades ADD COLUMN spread_bps_b DECIMAL(8,2) DEFAULT 0",
+            # Snapshot de SAÍDA (capturado por arbi_monitor_loop ao fechar)
+            "ALTER TABLE arbi_trades ADD COLUMN exit_ts DATETIME NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN price_a_exit DECIMAL(18,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN price_b_exit DECIMAL(18,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN price_a_usd_norm_exit DECIMAL(18,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN price_b_usd_norm_exit DECIMAL(18,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN bid_a_exit DECIMAL(18,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN ask_a_exit DECIMAL(18,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN bid_b_exit DECIMAL(18,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN ask_b_exit DECIMAL(18,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN spread_bps_a_exit DECIMAL(8,2) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN spread_bps_b_exit DECIMAL(8,2) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_rate_exit DECIMAL(10,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN exit_spread_pct DECIMAL(10,4) NULL",
+            # Catch-all JSON para garantir que NADA seja perdido em auditoria futura
+            "ALTER TABLE arbi_trades ADD COLUMN audit_json TEXT NULL",
         ]:
             try: cursor.execute(_col_sql); conn.commit()
             except: pass  # coluna já existe
@@ -4954,30 +5018,125 @@ def _db_save_trade(trade):
         except: pass
 
 def _db_save_arbi_trade(trade):
+    """[AUDIT-RESTORE 04/mai/2026] Persiste TODOS os dados de auditoria.
+
+    Restauracao do trail completo perdido no commit 8143f61 (16/abr).
+    Persiste:
+      - Identificacao: id, pair_id, name, pernas, mkt
+      - Direcao: direction, buy_leg/mkt, short_leg/mkt
+      - Spread: entry_spread (normalizado), entry_spread_raw, entry_spread_normalized,
+                current_spread, exit_spread_pct
+      - Tamanho: position_size, qty_a, qty_b
+      - Precos por perna: price_a/b_entry, price_a/b_exit (raw + USD-normalizado)
+      - Bid/Ask por perna entrada+saida: bid_a/b_entry, ask_a/b_entry, *_exit
+      - Spread bid/ask em bps: spread_bps_a/b (entrada+saida)
+      - Cambio: fx_rate (entrada), fx_rate_exit, fx_ts (timestamp do cambio)
+      - Custos: fx_cost, slippage_cost_a/b, slippage_bps_total,
+                exchange_fee_a/b, broker_fee_a/b, lending_cost, lending_rate_annual,
+                total_cost_estimated
+      - Timestamps: opened_at, closed_at, entry_ts, exit_ts,
+                    signal_ts_a/b, delta_ts_between_legs_ms
+      - Procedencia: price_source_a/b, ratio_a/b, ratio*_source
+      - Versionamento: simulation_model_version, fee_model_version, slippage_model_version
+      - Status: pnl, pnl_pct, peak_pnl_pct, status, close_reason, extensions, audit_flag
+      - Catch-all: audit_json (TODO o trade dict serializado em JSON)
+    """
     conn=get_db()
     if not conn: return
     cursor=None
     try:
         cursor=conn.cursor(); t=trade
-        cursor.execute("""INSERT INTO arbi_trades (id,pair_id,name,leg_a,leg_b,mkt_a,mkt_b,
-            direction,buy_leg,buy_mkt,short_leg,short_mkt,entry_spread,current_spread,
-            position_size,pnl,pnl_pct,peak_pnl_pct,fx_rate,status,close_reason,opened_at,closed_at,extensions,
-            fx_cost,slippage_cost_a,slippage_cost_b,exchange_fee_a,exchange_fee_b,
-            lending_cost,lending_rate_annual,total_cost_estimated)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON DUPLICATE KEY UPDATE current_spread=VALUES(current_spread),pnl=VALUES(pnl),
-            pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
-            status=VALUES(status),close_reason=VALUES(close_reason),
-            closed_at=VALUES(closed_at),extensions=VALUES(extensions)""",
+        # [AUDIT-RESTORE] audit_json captura TUDO, mesmo campos novos sem coluna propria
+        try:
+            _audit_payload = {k: v for k, v in t.items()
+                              if k not in ('_features',) and not k.startswith('_')
+                              and not callable(v)}
+            _audit_json = json.dumps(_audit_payload, default=str, ensure_ascii=False)[:65000]
+        except Exception:
+            _audit_json = None
+        cursor.execute("""INSERT INTO arbi_trades (
+            id,pair_id,name,leg_a,leg_b,mkt_a,mkt_b,
+            direction,buy_leg,buy_mkt,short_leg,short_mkt,
+            entry_spread,entry_spread_raw,entry_spread_normalized,current_spread,exit_spread_pct,
+            position_size,qty_a,qty_b,
+            price_a_entry,price_b_entry,price_a_exit,price_b_exit,
+            price_a_usd_norm,price_b_usd_norm,price_a_usd_norm_exit,price_b_usd_norm_exit,
+            bid_a,ask_a,bid_b,ask_b,bid_a_exit,ask_a_exit,bid_b_exit,ask_b_exit,
+            spread_bps_a,spread_bps_b,spread_bps_a_exit,spread_bps_b_exit,
+            fx_rate,fx_rate_exit,fx_ts,
+            fx_cost,slippage_cost_a,slippage_cost_b,slippage_bps_total,
+            exchange_fee_a,exchange_fee_b,broker_fee_a,broker_fee_b,
+            lending_cost,lending_rate_annual,total_cost_estimated,
+            opened_at,closed_at,entry_ts,exit_ts,signal_ts_a,signal_ts_b,delta_ts_between_legs_ms,
+            price_source_a,price_source_b,ratio_a,ratio_b,
+            simulation_model_version,fee_model_version,slippage_model_version,
+            pnl,pnl_pct,peak_pnl_pct,status,close_reason,extensions,audit_flag,audit_json)
+            VALUES (
+            %s,%s,%s,%s,%s,%s,%s,
+            %s,%s,%s,%s,%s,
+            %s,%s,%s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,%s,
+            %s,%s,%s,%s,
+            %s,%s,%s,%s,%s,%s,%s,%s,
+            %s,%s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,%s,
+            %s,%s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,%s,%s,%s,%s,
+            %s,%s,%s,%s,
+            %s,%s,%s,
+            %s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+              current_spread=VALUES(current_spread),
+              exit_spread_pct=COALESCE(VALUES(exit_spread_pct),exit_spread_pct),
+              pnl=VALUES(pnl),pnl_pct=VALUES(pnl_pct),peak_pnl_pct=VALUES(peak_pnl_pct),
+              status=VALUES(status),close_reason=VALUES(close_reason),
+              closed_at=VALUES(closed_at),exit_ts=COALESCE(VALUES(exit_ts),exit_ts),
+              extensions=VALUES(extensions),
+              price_a_exit=COALESCE(VALUES(price_a_exit),price_a_exit),
+              price_b_exit=COALESCE(VALUES(price_b_exit),price_b_exit),
+              price_a_usd_norm_exit=COALESCE(VALUES(price_a_usd_norm_exit),price_a_usd_norm_exit),
+              price_b_usd_norm_exit=COALESCE(VALUES(price_b_usd_norm_exit),price_b_usd_norm_exit),
+              bid_a_exit=COALESCE(VALUES(bid_a_exit),bid_a_exit),
+              ask_a_exit=COALESCE(VALUES(ask_a_exit),ask_a_exit),
+              bid_b_exit=COALESCE(VALUES(bid_b_exit),bid_b_exit),
+              ask_b_exit=COALESCE(VALUES(ask_b_exit),ask_b_exit),
+              spread_bps_a_exit=COALESCE(VALUES(spread_bps_a_exit),spread_bps_a_exit),
+              spread_bps_b_exit=COALESCE(VALUES(spread_bps_b_exit),spread_bps_b_exit),
+              fx_rate_exit=COALESCE(VALUES(fx_rate_exit),fx_rate_exit),
+              audit_flag=VALUES(audit_flag),audit_json=VALUES(audit_json)""",
             (t.get('id'),t.get('pair_id'),t.get('name'),t.get('leg_a'),t.get('leg_b'),
-             t.get('mkt_a'),t.get('mkt_b'),t.get('direction'),t.get('buy_leg'),t.get('buy_mkt'),
-             t.get('short_leg'),t.get('short_mkt'),t.get('entry_spread'),t.get('current_spread'),
-             t.get('position_size'),t.get('pnl',0),t.get('pnl_pct',0),t.get('peak_pnl_pct',0),
-             t.get('fx_rate'),t.get('status','OPEN'),t.get('close_reason'),
-             t.get('opened_at'),t.get('closed_at'),t.get('extensions',0),
+             t.get('mkt_a'),t.get('mkt_b'),
+             t.get('direction'),t.get('buy_leg'),t.get('buy_mkt'),t.get('short_leg'),t.get('short_mkt'),
+             t.get('entry_spread'),t.get('entry_spread_raw',t.get('entry_spread')),
+             t.get('entry_spread_normalized',t.get('entry_spread')),t.get('current_spread'),
+             t.get('exit_spread_pct'),
+             t.get('position_size'),t.get('qty_a',0),t.get('qty_b',0),
+             t.get('price_a_entry'),t.get('price_b_entry'),
+             t.get('price_a_exit'),t.get('price_b_exit'),
+             t.get('price_a_usd_norm'),t.get('price_b_usd_norm'),
+             t.get('price_a_usd_norm_exit'),t.get('price_b_usd_norm_exit'),
+             t.get('bid_a'),t.get('ask_a'),t.get('bid_b'),t.get('ask_b'),
+             t.get('bid_a_exit'),t.get('ask_a_exit'),t.get('bid_b_exit'),t.get('ask_b_exit'),
+             t.get('spread_bps_a'),t.get('spread_bps_b'),
+             t.get('spread_bps_a_exit'),t.get('spread_bps_b_exit'),
+             t.get('fx_rate'),t.get('fx_rate_exit'),t.get('fx_ts'),
              t.get('fx_cost',0),t.get('slippage_cost_a',0),t.get('slippage_cost_b',0),
+             t.get('slippage_bps_total',0),
              t.get('exchange_fee_a',0),t.get('exchange_fee_b',0),
-             t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0)))
+             t.get('broker_fee_a',0),t.get('broker_fee_b',0),
+             t.get('lending_cost',0),t.get('lending_rate_annual',0),t.get('total_cost_estimated',0),
+             t.get('opened_at'),t.get('closed_at'),
+             t.get('entry_ts',t.get('opened_at')),t.get('exit_ts',t.get('closed_at')),
+             t.get('signal_ts_a'),t.get('signal_ts_b'),t.get('delta_ts_between_legs_ms',0),
+             t.get('price_source_a'),t.get('price_source_b'),
+             t.get('ratio_a',1),t.get('ratio_b',1),
+             t.get('simulation_model_version'),t.get('fee_model_version'),t.get('slippage_model_version'),
+             t.get('pnl',0),t.get('pnl_pct',0),t.get('peak_pnl_pct',0),
+             t.get('status','OPEN'),t.get('close_reason'),t.get('extensions',0),
+             t.get('audit_flag','valid'),_audit_json))
         conn.commit()
     except Exception as e: log.error(f'db_save_arbi_trade: {e}')
     finally:
@@ -7003,16 +7162,26 @@ def auto_trade_crypto():
                 if _dow_c in (1, 6):
                     log.info(f'[CRYPTO-BAD-DAY] {display}: dia {_dow_c} (seg/sab) historicamente fraco — penalty via score, nao bloqueado')
 
-                # [CRYPTO-REGIME-BLOCK 29/abr] Padroes mais destrutivos historicamente:
-                # LONG + TRENDING: n=641, -$44k (oposto de stocks!)
-                # SHORT + RANGING: n=712, -$49k
+                # [CRYPTO-REGIME 05/mai/2026] Hard-block REMOVIDO — alinhamento 24/7.
+                # Historicamente LONG+TRENDING e SHORT+RANGING tinham PnL negativo
+                # (-$44k e -$49k em ~700 trades cada), mas bloquear tudo era a razao
+                # principal de NENHUMA trade abrir em mercado em alta (todos sinais
+                # COMPRA viravam blocked porque BTC ETH BNB subindo = TRENDING).
+                # Agora so loga; o score_engine_v3 e o brain advisor podem aplicar
+                # penalty no score para esses padroes. Se quiser restaurar block
+                # rigido, setar env CRYPTO_REGIME_HARDBLOCK=true.
                 _regime_c = market_regime.get('mode', '')
+                _regime_hardblock = os.environ.get('CRYPTO_REGIME_HARDBLOCK', 'false').lower() == 'true'
                 if direction == 'LONG' and _regime_c == 'TRENDING':
-                    log.info(f'[CRYPTO-REGIME-BLOCK] {display} LONG+TRENDING bloqueado (historico -$44k)')
-                    continue
+                    if _regime_hardblock:
+                        log.info(f'[CRYPTO-REGIME-BLOCK] {display} LONG+TRENDING bloqueado (env hardblock=true)')
+                        continue
+                    log.info(f'[CRYPTO-REGIME-WARN] {display} LONG+TRENDING — historico -$44k mas seguindo (24/7)')
                 if direction == 'SHORT' and _regime_c == 'RANGING':
-                    log.info(f'[CRYPTO-REGIME-BLOCK] {display} SHORT+RANGING bloqueado (historico -$49k)')
-                    continue
+                    if _regime_hardblock:
+                        log.info(f'[CRYPTO-REGIME-BLOCK] {display} SHORT+RANGING bloqueado (env hardblock=true)')
+                        continue
+                    log.info(f'[CRYPTO-REGIME-WARN] {display} SHORT+RANGING — historico -$49k mas seguindo (24/7)')
 
                 score_factor=min(abs(score-50)/50.0,1.0)
 
@@ -8132,6 +8301,30 @@ def arbi_monitor_loop():
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else: reason='TIMEOUT'
                     if reason:
+                        # [AUDIT-RESTORE 04/mai] Snapshot de SAIDA — preco, FX, bid/ask,
+                        # qty e spread_bps no momento exato do close. Sem isso a trade
+                        # eh fechada mas auditoria nao consegue calcular PnL real por perna.
+                        _sd_exit = arbi_spreads.get(trade['pair_id']) or {}
+                        _exit_ts = now.isoformat()
+                        trade['exit_ts'] = _exit_ts
+                        if _sd_exit:
+                            # Preco bruto e USD-normalizado
+                            trade['price_a_exit']           = _sd_exit.get('price_a')
+                            trade['price_b_exit']           = _sd_exit.get('price_b')
+                            trade['price_a_usd_norm_exit']  = _sd_exit.get('price_a_usd')
+                            trade['price_b_usd_norm_exit']  = _sd_exit.get('price_b_usd')
+                            # Cambio no momento da saida
+                            trade['fx_rate_exit']           = _sd_exit.get('fx_rate')
+                            # Bid/Ask por perna no momento da saida (liquidez)
+                            trade['bid_a_exit']             = _sd_exit.get('bid_a')
+                            trade['ask_a_exit']             = _sd_exit.get('ask_a')
+                            trade['bid_b_exit']             = _sd_exit.get('bid_b')
+                            trade['ask_b_exit']             = _sd_exit.get('ask_b')
+                            # Spread bid/ask em bps (proxy de liquidez)
+                            trade['spread_bps_a_exit']      = _sd_exit.get('spread_bps_a')
+                            trade['spread_bps_b_exit']      = _sd_exit.get('spread_bps_b')
+                            # Spread normalizado de saida (proxy do PnL %)
+                            trade['exit_spread_pct']        = _sd_exit.get('spread_pct')
                         # [v10.20] Ledger: RELEASE + PNL_CREDIT arbi (ordem contábil correta)
                         arbi_capital += trade['position_size']
                         # [v11-hook] dual-write arbi close

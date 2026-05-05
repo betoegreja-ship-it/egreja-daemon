@@ -11037,6 +11037,55 @@ def void_trade():
         conn.rollback(); conn.close()
         return jsonify({'error': str(e)}), 500
 
+@app.route('/debug/b3-prices')
+def debug_b3_prices():
+    """[DEBUG 05/mai] Diagnostico de variacoes 0.00% em B3.
+    Mostra em paralelo:
+      1) O que esta em stock_prices (cache em memoria do daemon)
+      2) O que a brapi.dev REST retorna direto agora
+    Para cada uma das B3 da watchlist mais usadas. Nenhuma autenticacao
+    para facilitar o debug ad-hoc. Remover depois.
+    """
+    test_syms = ['PETR4', 'VALE3', 'ITUB4', 'ABEV3', 'WEGE3', 'BBDC4', 'RENT3', 'SUZB3']
+    out = {'now_utc': datetime.utcnow().isoformat(), 'cedro_socket_enabled': bool(_cedro_socket and _cedro_socket.enabled),
+           'brapi_token_set': bool(BRAPI_TOKEN), 'cedro_primary_env': os.environ.get('CEDRO_PRIMARY','false')}
+    # 1) Memory cache
+    out['memory_state'] = {}
+    with state_lock:
+        for s in test_syms:
+            d = stock_prices.get(s) or {}
+            out['memory_state'][s] = {
+                'price': d.get('price'),
+                'prev':  d.get('prev'),
+                'change_pct': d.get('change_pct'),
+                'source': d.get('source'),
+                'updated_at': d.get('updated_at'),
+            }
+    # 2) Live brapi REST
+    out['brapi_live'] = {}
+    if BRAPI_TOKEN:
+        try:
+            r = requests.get(
+                f'https://brapi.dev/api/quote/{",".join(test_syms)}',
+                headers={'Authorization': f'Bearer {BRAPI_TOKEN}'}, timeout=10)
+            if r.status_code == 200:
+                for q in r.json().get('results', []):
+                    sym = q.get('symbol', '').replace('.SA','')
+                    out['brapi_live'][sym] = {
+                        'regularMarketPrice':         q.get('regularMarketPrice'),
+                        'regularMarketPreviousClose': q.get('regularMarketPreviousClose'),
+                        'regularMarketChangePercent': q.get('regularMarketChangePercent'),
+                        'regularMarketTime':          q.get('regularMarketTime'),
+                        'marketState':                q.get('marketState'),
+                    }
+            else:
+                out['brapi_live']['_error'] = f'HTTP {r.status_code}: {r.text[:200]}'
+        except Exception as e:
+            out['brapi_live']['_error'] = f'{type(e).__name__}: {e}'
+    else:
+        out['brapi_live']['_error'] = 'BRAPI_TOKEN nao setado'
+    return jsonify(out)
+
 @app.route('/debug/drawdown')
 @require_auth
 def debug_drawdown():

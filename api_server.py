@@ -8818,41 +8818,51 @@ def start_background_threads():
         'deriv_monitor_loop':     deriv_monitor_loop,        # [v10.35] paper MTM + exits (stop/target/expiry)
     }
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
-    _deriv_loop_args = dict(
-        beat_fn=beat, get_db_fn=get_db, log=log,
-        provider_mgr=globals().get('_deriv_provider_mgr'),
-        services_dict=globals().get('_deriv_services', {}),
-        risk_check_fn=lambda strat, sym, notional: (True, 'OK'),  # paper mode: always approve
-        audit_fn=lambda evt, data: log.debug(f'[DERIV-AUDIT] {evt}: {data}'),
-    )
-    _deriv_loops = {
-        'pcp_scan_loop': pcp_scan_loop,
-        'fst_scan_loop': fst_scan_loop,
-        'roll_arb_scan_loop': roll_arb_scan_loop,
-        'etf_basket_scan_loop': etf_basket_scan_loop,
-        'skew_arb_scan_loop': skew_arb_scan_loop,
-        'interlisted_scan_loop': interlisted_scan_loop,
-        'dividend_arb_scan_loop': dividend_arb_scan_loop,
-        'vol_arb_scan_loop': vol_arb_scan_loop,
-        # [v10.38] New arbitrage strategies
-        'ibov_basis_scan_loop': ibov_basis_scan_loop,
-        'di_calendar_scan_loop': di_calendar_scan_loop,
-        'interlisted_hedged_scan_loop': interlisted_hedged_scan_loop,
-    }
-    for dname, dfn in _deriv_loops.items():
-        if dfn is None:
-            log.warning(f'[v10.25] {dname} not available (stub mode)')
-            continue
-        def _make_deriv_wrapper(fn, name, args):
-            def wrapper():
-                try:
-                    fn(**args)
-                except Exception as e:
-                    log.error(f'[v10.25] {name} crashed: {e}')
-                    import traceback; traceback.print_exc()
-            return wrapper
-        _wrapped = _make_deriv_wrapper(dfn, dname, _deriv_loop_args)
-        defs[dname] = _wrapped
+    # [DISABLE_DERIV 05/mai/2026] Pular as 13 threads de derivatives quando o usuario
+    # nao tem OpLab/Cedro (sem provider real, todas caem em Simulated paper sintetico —
+    # consomem CPU/memoria sem benefcio). Setar env DISABLE_DERIVATIVES=true no Railway
+    # pula completamente. Default false (mantem comportamento anterior).
+    _disable_deriv = os.environ.get('DISABLE_DERIVATIVES', 'false').lower() == 'true'
+    if _disable_deriv:
+        log.info('[v10.25] DISABLE_DERIVATIVES=true — pulando 13 deriv loops (pcp/fst/roll/etc) e deriv_monitor_loop')
+        # Tambem remover deriv_monitor_loop do defs principal (esta em defs ja)
+        defs.pop('deriv_monitor_loop', None)
+    else:
+        _deriv_loop_args = dict(
+            beat_fn=beat, get_db_fn=get_db, log=log,
+            provider_mgr=globals().get('_deriv_provider_mgr'),
+            services_dict=globals().get('_deriv_services', {}),
+            risk_check_fn=lambda strat, sym, notional: (True, 'OK'),  # paper mode: always approve
+            audit_fn=lambda evt, data: log.debug(f'[DERIV-AUDIT] {evt}: {data}'),
+        )
+        _deriv_loops = {
+            'pcp_scan_loop': pcp_scan_loop,
+            'fst_scan_loop': fst_scan_loop,
+            'roll_arb_scan_loop': roll_arb_scan_loop,
+            'etf_basket_scan_loop': etf_basket_scan_loop,
+            'skew_arb_scan_loop': skew_arb_scan_loop,
+            'interlisted_scan_loop': interlisted_scan_loop,
+            'dividend_arb_scan_loop': dividend_arb_scan_loop,
+            'vol_arb_scan_loop': vol_arb_scan_loop,
+            # [v10.38] New arbitrage strategies
+            'ibov_basis_scan_loop': ibov_basis_scan_loop,
+            'di_calendar_scan_loop': di_calendar_scan_loop,
+            'interlisted_hedged_scan_loop': interlisted_hedged_scan_loop,
+        }
+        for dname, dfn in _deriv_loops.items():
+            if dfn is None:
+                log.warning(f'[v10.25] {dname} not available (stub mode)')
+                continue
+            def _make_deriv_wrapper(fn, name, args):
+                def wrapper():
+                    try:
+                        fn(**args)
+                    except Exception as e:
+                        log.error(f'[v10.25] {name} crashed: {e}')
+                        import traceback; traceback.print_exc()
+                return wrapper
+            _wrapped = _make_deriv_wrapper(dfn, dname, _deriv_loop_args)
+            defs[dname] = _wrapped
     now=time.time()
     for name,fn in defs.items():
         thread_fns[name]=fn; thread_restart_count[name]=0

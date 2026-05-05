@@ -655,6 +655,51 @@ V3_EMERGENCY_STOP        = os.environ.get('V3_EMERGENCY_STOP', 'false').lower() 
 MIN_SCORE_AUTO_CRYPTO    = int(os.environ.get('MIN_SCORE_AUTO_CRYPTO', 55))  # [v10.15] crypto threshold 55 (era 48) — reduz over-trading
 DEFAULT_POSITION_SIZE    = float(os.environ.get('DEFAULT_POSITION_SIZE', 100000))
 
+# ── [LATE-ENTRY 05/mai/2026] Filtro contra "chase de momentum" ──────────────
+# Indicadores tradicionais (RSI, EMA, momentum) sao LAGGING — refletem o
+# passado, nao preveem o futuro. Quando o ativo ja subiu muito no dia, o score
+# tende a ficar alto MAS o espaco de subida residual e pequeno (late entry).
+# Esses thresholds bloqueiam/penalizam entradas em movimento ja consumado.
+# Stocks usa change_pct (variacao do dia). Crypto usa change_24h.
+# LONG: bloqueia se subiu demais. SHORT: bloqueia se caiu demais.
+LATE_ENTRY_STOCKS_BLOCK_PCT   = float(os.environ.get('LATE_ENTRY_STOCKS_BLOCK_PCT', 8.0))   # subiu >=8% hoje (LONG) -> block
+LATE_ENTRY_STOCKS_HEAVY_PCT   = float(os.environ.get('LATE_ENTRY_STOCKS_HEAVY_PCT', 5.0))   # subiu >=5% (LONG) -> -10pts
+LATE_ENTRY_STOCKS_LIGHT_PCT   = float(os.environ.get('LATE_ENTRY_STOCKS_LIGHT_PCT', 3.0))   # subiu >=3% (LONG) -> -5pts
+LATE_ENTRY_CRYPTO_BLOCK_PCT   = float(os.environ.get('LATE_ENTRY_CRYPTO_BLOCK_PCT', 12.0))  # 24h >=12% -> block
+LATE_ENTRY_CRYPTO_HEAVY_PCT   = float(os.environ.get('LATE_ENTRY_CRYPTO_HEAVY_PCT', 8.0))   # 24h >=8%  -> -10pts
+LATE_ENTRY_CRYPTO_LIGHT_PCT   = float(os.environ.get('LATE_ENTRY_CRYPTO_LIGHT_PCT', 5.0))   # 24h >=5%  -> -5pts
+
+def _late_entry_adjust(change_pct: float, direction: str, asset: str = 'stocks') -> tuple:
+    """[LATE-ENTRY] Retorna (score_delta, blocked, reason).
+
+    Penaliza/bloqueia LONG quando ativo ja subiu muito hoje (late entry tipico
+    de chase de momentum) e SHORT quando ja caiu muito (catching falling knife).
+
+    score_delta: pontos a SUBTRAIR do score (positivo = penalty)
+    blocked: True se a trade deve ser totalmente vetada
+    reason: string descritiva para logging
+    """
+    block_pct = LATE_ENTRY_CRYPTO_BLOCK_PCT if asset == 'crypto' else LATE_ENTRY_STOCKS_BLOCK_PCT
+    heavy_pct = LATE_ENTRY_CRYPTO_HEAVY_PCT if asset == 'crypto' else LATE_ENTRY_STOCKS_HEAVY_PCT
+    light_pct = LATE_ENTRY_CRYPTO_LIGHT_PCT if asset == 'crypto' else LATE_ENTRY_STOCKS_LIGHT_PCT
+    cp = change_pct or 0
+    if direction == 'LONG':
+        if cp >= block_pct:
+            return 0, True, f'{asset.upper()}_LATE_LONG_BLOCK_change={cp:+.2f}pct'
+        if cp >= heavy_pct:
+            return 10, False, f'{asset.upper()}_LATE_LONG_HEAVY_change={cp:+.2f}pct'
+        if cp >= light_pct:
+            return 5, False, f'{asset.upper()}_LATE_LONG_LIGHT_change={cp:+.2f}pct'
+    elif direction == 'SHORT':
+        if cp <= -block_pct:
+            return 0, True, f'{asset.upper()}_LATE_SHORT_BLOCK_change={cp:+.2f}pct'
+        if cp <= -heavy_pct:
+            return 10, False, f'{asset.upper()}_LATE_SHORT_HEAVY_change={cp:+.2f}pct'
+        if cp <= -light_pct:
+            return 5, False, f'{asset.upper()}_LATE_SHORT_LIGHT_change={cp:+.2f}pct'
+    return 0, False, ''
+# ─────────────────────────────────────────────────────────────────────────────
+
 # [v10.47] Position sizing escalado por score (dinheiro parado é prejuízo)
 # Quanto maior confiança do score v3, maior o capital alocado
 # Baseline 1.0x para score neutro, máximo 2.0x em score 85+
@@ -6563,6 +6608,26 @@ def stock_execution_worker():
                 except Exception as _e:
                     log.warning(f"V3_STOCK_FAIL {sym}: {_e} — símbolo pulado")
                     continue
+
+                # [LATE-ENTRY 05/mai/2026] Penalizar/bloquear entradas em movimento ja consumado.
+                # Indicadores tradicionais (RSI, EMA, momentum) sao LAGGING — quando o ativo
+                # ja subiu muito hoje, o score tende a alto MAS espaco residual e pequeno.
+                # Resultado: trade entra na alta, ativo corrige, PnL fica negativo.
+                # Esse filtro adiciona penalty progressivo + block em casos extremos.
+                _le_change_pct = float(pd_data.get('change_pct', 0) or 0)
+                _le_direction  = 'LONG' if score > 50 else ('SHORT' if score < 50 else 'NEUTRAL')
+                _le_delta, _le_blocked, _le_reason = _late_entry_adjust(_le_change_pct, _le_direction, 'stocks')
+                if _le_blocked:
+                    log.info(f'[LATE-ENTRY-BLOCK] {sym} score={score} dir={_le_direction} change={_le_change_pct:+.2f}% — {_le_reason}')
+                    continue
+                if _le_delta > 0:
+                    _score_pre_le = score
+                    if _le_direction == 'LONG':
+                        score = max(0, score - _le_delta)   # LONG penalizado: derruba score
+                    elif _le_direction == 'SHORT':
+                        score = min(100, score + _le_delta) # SHORT penalizado: empurra score pra cima (sai da zona)
+                    log.info(f'[LATE-ENTRY-PENALTY] {sym} dir={_le_direction} change={_le_change_pct:+.2f}% score {_score_pre_le}->{score} ({_le_reason})')
+
                 signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')  # [v10.24-FIX] was MIN_SCORE_AUTO_CRYPTO
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),
@@ -7137,6 +7202,23 @@ def auto_trade_crypto():
                 if _dir_blocked_c:
                     log.info(f'[CRYPTO-DIR-BLOCK] {display}: {_dir_reason_c}')
                     continue
+                # [LATE-ENTRY 05/mai/2026] Penalizar/bloquear entradas em movimento ja consumado.
+                # Indicadores tradicionais sao LAGGING; quando crypto ja subiu/caiu muito em
+                # 24h, o score tende alto MAS espaco residual e pequeno. Late entry tipico de
+                # chase de momentum. Threshold default 12% (block) / 8% (heavy) / 5% (light).
+                # change_24h ja eh a variacao 24h da Binance — bate exatamente com o conceito.
+                _le_delta_c, _le_blocked_c, _le_reason_c = _late_entry_adjust(change_24h, direction, 'crypto')
+                if _le_blocked_c:
+                    log.info(f'[LATE-ENTRY-BLOCK] {display} score={score} dir={direction} change_24h={change_24h:+.2f}% — {_le_reason_c}')
+                    continue
+                if _le_delta_c > 0:
+                    _score_pre_le_c = score
+                    if direction == 'LONG':
+                        score = max(0, score - _le_delta_c)
+                    elif direction == 'SHORT':
+                        score = min(100, score + _le_delta_c)
+                    log.info(f'[LATE-ENTRY-PENALTY] {display} dir={direction} change_24h={change_24h:+.2f}% score {_score_pre_le_c}->{score} ({_le_reason_c})')
+
                 # [v10.24.2-FIX] _crypto_composite_score() já inverte o score para SHORT
                 # (linha 4650: composite = 100 - composite). Portanto score ALTO = sinal
                 # forte para AMBAS as direções. Threshold único: score >= MIN_SCORE_AUTO_CRYPTO.

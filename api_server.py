@@ -6594,6 +6594,18 @@ def stock_execution_worker():
                 insight   = generate_insight(sig_enriched, features, feat_hash, conf)
                 risk_mult = get_risk_multiplier(conf)
 
+                # [FIX 04/mai] _confirmed_sig_id e _cache_reason MOVIDOS PARA CIMA do dead-zone block.
+                # Bug original: dead-zone (linhas abaixo) chamava _cache_reason() ANTES da sua
+                # definicao no codigo. Como `def _cache_reason` torna o nome local na funcao,
+                # qualquer uso anterior gera UnboundLocalError, derrubando a iteracao inteira do
+                # stock_execution_worker e impedindo TODAS as trades de stocks no ciclo.
+                # Mantendo a semantica original de [v10.6.3-Fix1].
+                _confirmed_sig_id = _sig_pre_id
+
+                def _cache_reason(reason: str):
+                    with learning_lock:
+                        processed_signal_ids[ms_key] = {'sig_id': _confirmed_sig_id, 'reason': reason}
+
                 # [v10.9-DeadZone] Bloquear faixa de confiança com performance historicamente negativa
                 # Dados mostram: 55-64 = 38-44% WR e -$53K em perdas. Faixa 40-54 e 65+ OK.
                 # [v10.14-FIX] Dead zone NÃO se aplica a SHORTs puros — foi calibrada só com LONGs
@@ -6612,15 +6624,11 @@ def stock_execution_worker():
 
 
                 # Filtros de execução — gravar signal_event + shadow antes de qualquer continue/break
-                # [v10.6.3-Fix1] _confirmed_sig_id: começa com _sig_pre_id e é atualizado para o ID
+                # [v10.6.3-Fix1] _confirmed_sig_id começa com _sig_pre_id e é atualizado para o ID
                 # real que o banco confirma via ON DUPLICATE KEY em record_signal_event().
                 # Sem isso, o cache pode guardar o ID tentado em vez do ID persistido, causando
                 # shadow_decisions ligados ao ID errado — simétrico ao fix de crypto em v10.6.2.
-                _confirmed_sig_id = _sig_pre_id
-
-                def _cache_reason(reason: str):
-                    with learning_lock:
-                        processed_signal_ids[ms_key] = {'sig_id': _confirmed_sig_id, 'reason': reason}
+                # (definicoes movidas para cima — v.acima)
 
                 if not mkt_open:
                     _confirmed_sig_id = record_signal_event(sig_enriched, features, feat_hash, conf, insight,
@@ -6978,24 +6986,22 @@ def auto_trade_crypto():
                     log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
                     continue
 
-                # [CRYPTO-BAD-HOURS-BLOCK 29/abr/2026] Filtro de horarios catastroficos.
-                # Backtested em 3003 trades crypto:
-                #   13-22 UTC (10-19 BRT): n=988, acumulado -$108k em horario comercial
-                #   Janelas DOURADAS: 5-7 UTC (2-4 BRT) WR 58-67%, +$40k acumulado
-                # Crypto opera 24h mas SO ganha em horario asiatico.
+                # [CRYPTO-24/7 04/mai/2026] Hard-blocks REMOVIDOS — alinhamento com decisao do
+                # commit 84de0f0 ("DECISAO DO USUARIO: operar 24/7 mantido. Forca maxima em horas
+                # boas, penalty em horas ruins"). O score_engine_v2 ja aplica:
+                #   GOLDEN_HOURS_CRYPTO_UTC -> +8 (bonus)
+                #   BAD_HOURS_CRYPTO_UTC    -> -8 (-3 se LONG com uptrend confirmado)
+                # Os blocks duros que existiam aqui (BAD-HOURS 13-22 UTC e DAY-BLOCK seg/sab)
+                # impediam QUALQUER trade nessas janelas — contraditorio com a operacao 24/7
+                # documentada. Removidos para que o motor decida via score, nao via continue.
+                # Mantemos apenas o log informativo para visibilidade.
                 from datetime import datetime as _dt_crypto
                 _h_utc_c = _dt_crypto.utcnow().hour
+                _dow_c   = _dt_crypto.utcnow().isoweekday()  # 1=seg ... 7=dom
                 if 13 <= _h_utc_c <= 22:
-                    log.info(f'[CRYPTO-BAD-HOURS-BLOCK] {display}: UTC {_h_utc_c}h dentro de janela ruim 13-22h ({(_h_utc_c-3)%24}h BRT) — bloqueado')
-                    continue
-
-                # [CRYPTO-DAY-BLOCK 29/abr] Segunda+sabado piores dias (DAYOFWEEK MySQL: 1=dom,2=seg,7=sab)
-                # Segunda LONG: -$38.7k. Sabado: -$22k.
-                _dow_c = _dt_crypto.utcnow().isoweekday()  # 1=seg ... 7=dom
-                # Bloquear segunda (1) e sabado (6)
+                    log.info(f'[CRYPTO-BAD-HOURS] {display}: UTC {_h_utc_c}h em janela ruim — penalty via score, nao bloqueado')
                 if _dow_c in (1, 6):
-                    log.info(f'[CRYPTO-DAY-BLOCK] {display}: dia da semana {_dow_c} (seg/sab) - historicamente catastrofico')
-                    continue
+                    log.info(f'[CRYPTO-BAD-DAY] {display}: dia {_dow_c} (seg/sab) historicamente fraco — penalty via score, nao bloqueado')
 
                 # [CRYPTO-REGIME-BLOCK 29/abr] Padroes mais destrutivos historicamente:
                 # LONG + TRENDING: n=641, -$44k (oposto de stocks!)

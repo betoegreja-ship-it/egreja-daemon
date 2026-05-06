@@ -10386,19 +10386,19 @@ def debug_reload_stocks_closed():
 
 @app.route('/debug/recalc-arbi-fx', methods=['POST'])
 def debug_recalc_arbi_fx():
-    """[DEBUG 06/mai] Recalcula PnL de trades arbi closed usando FX historico
-    real do Yahoo Finance (intraday 1h/1d) em vez do FX armazenado (que era ECB
-    diario do frankfurter). Auditoria mostrou +0.65% diff medio = ~\$64k de
-    subestimacao em 32 trades B3-NYSE.
+    """[DEBUG 06/mai V2] Recalcula PnL de TODAS arbi closed (incl. trades antigas
+    sem fx_rate_exit). Para trades sem fx armazenado, infere fx real via Yahoo
+    histor1co. Para trades com fx armazenado, recalcula vs Yahoo real.
 
-    Para cada trade closed com fx_rate + fx_rate_exit:
-      1. Identifica par FX (USDBRL para B3-NYSE, etc)
-      2. Pega Yahoo candle proximo de opened_at e closed_at
-      3. Recalcula price_a_usd_norm = price_a / fx_real
-      4. Recalcula spread_entry e spread_exit com FX correto
-      5. Recalcula pnl_pct e pnl absolute
-      6. Atualiza trade no DB + grava versao original em audit_json
-      7. Adiciona MANUAL_ADJUSTMENT no capital_ledger pelo delta
+    Algoritmo:
+      1. Lista todas trades arbi closed (fx armazenado ou nao)
+      2. Para cada, identifica par FX (USDBRL, GBPUSD, etc)
+      3. Pega Yahoo candles intraday (60d em 1h, mais antigas em 1d)
+      4. Encontra fx_real_entry e fx_real_exit por timestamp
+      5. Compara com fx armazenado (se houver) e calcula delta
+      6. Atualiza pnl, pnl_pct, fx_rate, fx_rate_exit + os 4 fx_*_entry/exit
+      7. Preserva valores originais em audit_json
+      8. MANUAL_ADJUSTMENT no capital_ledger
     """
     if not (datetime.utcnow().year == 2026 and datetime.utcnow().month == 5):
         return jsonify({'error': 'expirado'}), 403
@@ -10460,10 +10460,10 @@ def debug_recalc_arbi_fx():
                               opened_at, closed_at, audit_json
                        FROM arbi_trades
                        WHERE status='CLOSED'
-                         AND fx_rate IS NOT NULL AND fx_rate_exit IS NOT NULL
                          AND opened_at IS NOT NULL AND closed_at IS NOT NULL
+                         AND COALESCE(close_reason,'') NOT LIKE '%VOID%'
                        ORDER BY closed_at DESC
-                       LIMIT 500""")
+                       LIMIT 1000""")
         rows = cur.fetchall()
         cur.close()
         log.warning(f'[RECALC-ARBI-FX] processando {len(rows)} trades')
@@ -10489,23 +10489,39 @@ def debug_recalc_arbi_fx():
                 if not fx_real_e or not fx_real_x:
                     results['skipped'].append({'id': t['id'], 'reason': 'fx_at none'})
                     continue
-                fx_sys_e = float(t['fx_rate']); fx_sys_x = float(t['fx_rate_exit'])
+                # [V2 06/mai] Trades sem fx_rate armazenado: usa fx Yahoo direto, sem recalc PnL
+                # (não temos baseline para diff). Trades com fx_rate armazenado: recalcula delta.
                 pos = float(t.get('position_size') or 0)
-                # Estimativa simples: delta_fx_error_diff × position_size = impacto
-                # diff = (sys - real) / real * 100
-                # Sistema super-estima se sys > real
-                err_e = (fx_sys_e - fx_real_e) / fx_real_e
-                err_x = (fx_sys_x - fx_real_x) / fx_real_x
-                delta_pnl = -pos * (err_x - err_e)  # impacto estimado (negativo se sistema super)
                 pnl_orig = float(t.get('pnl') or 0)
-                pnl_new = round(pnl_orig + delta_pnl, 2)
                 pnl_pct_orig = float(t.get('pnl_pct') or 0)
-                pnl_pct_new = round(pnl_pct_orig + (-(err_x - err_e) * 100), 4)
+                fx_sys_e_raw = t.get('fx_rate')
+                fx_sys_x_raw = t.get('fx_rate_exit')
+                if fx_sys_e_raw and fx_sys_x_raw:
+                    fx_sys_e = float(fx_sys_e_raw); fx_sys_x = float(fx_sys_x_raw)
+                    err_e = (fx_sys_e - fx_real_e) / fx_real_e
+                    err_x = (fx_sys_x - fx_real_x) / fx_real_x
+                    delta_pnl = -pos * (err_x - err_e)
+                    pnl_new = round(pnl_orig + delta_pnl, 2)
+                    pnl_pct_new = round(pnl_pct_orig + (-(err_x - err_e) * 100), 4)
+                    _had_baseline = True
+                else:
+                    # Sem fx armazenado — só preenche com Yahoo real, não muda PnL
+                    fx_sys_e = None; fx_sys_x = None
+                    delta_pnl = 0.0
+                    pnl_new = pnl_orig
+                    pnl_pct_new = pnl_pct_orig
+                    _had_baseline = False
                 # Atualizar trade + capital_ledger
                 c2 = conn.cursor()
                 c2.execute("""UPDATE arbi_trades SET pnl=%s, pnl_pct=%s,
-                              fx_rate=%s, fx_rate_exit=%s WHERE id=%s""",
-                           (pnl_new, pnl_pct_new, round(fx_real_e, 4), round(fx_real_x, 4), t['id']))
+                              fx_rate=%s, fx_rate_exit=%s,
+                              fx_a_entry=%s, fx_b_entry=%s,
+                              fx_a_exit=%s, fx_b_exit=%s
+                              WHERE id=%s""",
+                           (pnl_new, pnl_pct_new, round(fx_real_e, 4), round(fx_real_x, 4),
+                            round(fx_real_e, 4), round(fx_real_e, 4),
+                            round(fx_real_x, 4), round(fx_real_x, 4),
+                            t['id']))
                 # Audit json: preservar valores originais
                 _orig_audit = {}
                 try:
@@ -10517,6 +10533,8 @@ def debug_recalc_arbi_fx():
                     'fx_sys_entry_orig': fx_sys_e, 'fx_sys_exit_orig': fx_sys_x,
                     'fx_real_entry': round(fx_real_e, 4), 'fx_real_exit': round(fx_real_x, 4),
                     'pnl_delta': round(delta_pnl, 2),
+                    'had_baseline_fx': _had_baseline,
+                    'note': 'recalc_full_v2: pre-audit-trail trades preenchidas com Yahoo real (sem mudar PnL)' if not _had_baseline else 'recalc com baseline fx armazenado',
                 }
                 c2.execute("""UPDATE arbi_trades SET audit_json=%s WHERE id=%s""",
                            (json.dumps(_orig_audit, default=str)[:65000], t['id']))

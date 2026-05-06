@@ -5432,48 +5432,67 @@ def _fetch_brapi_batch(tickers: list) -> dict:
 
     headers = {'Authorization': f'Bearer {BRAPI_TOKEN}'}
 
-    # ── Warm: batch snapshot, sem histórico ─────────────────────────────────
+    # ── Warm: batch snapshot com candles 1m (real-time fix 06/mai) ──────────
+    # [REAL-TIME-FIX 06/mai/2026] Brapi tem bug onde regularMarketPrice fica
+    # com close de ontem, mas o array historicalDataPrice (com interval=1m)
+    # tem candles real-time atualizados. Solucao: pedir range=1d&interval=1m
+    # e usar o LAST CANDLE como preco atual em vez de regularMarketPrice.
+    # Custo: response um pouco maior (~688 candles vs 1) mas mesma req count.
     for i in range(0, len(warm), 20):
         chunk = warm[i:i+20]
         t0 = time.time()
         try:
             r = requests.get(
                 f'https://brapi.dev/api/quote/{",".join(chunk)}',
-                headers=headers, timeout=8)
+                params={'range': '1d', 'interval': '1m'},
+                headers=headers, timeout=12)
             lat = (time.time() - t0) * 1000
             if r.status_code != 200: continue
             for q in r.json().get('results', []):
                 sym   = q.get('symbol', '').replace('.SA', '')
-                price = float(q.get('regularMarketPrice') or 0)
+                # [REAL-TIME-FIX] Pegar last candle do historicalDataPrice
+                _hist_intraday = q.get('historicalDataPrice', []) or []
+                _last_candle_price = None
+                _last_candle_ts = None
+                if _hist_intraday:
+                    _last = _hist_intraday[-1]
+                    _last_candle_price = _last.get('close')
+                    _last_candle_ts = _last.get('date')
+                # Fallback: regularMarketPrice se historicalDataPrice vazio
+                _rm_price = float(q.get('regularMarketPrice') or 0)
+                price = float(_last_candle_price) if _last_candle_price else _rm_price
                 prev  = float(q.get('regularMarketPreviousClose') or 0)
                 if price <= 0: continue
-                # [STALE-DETECT 06/mai/2026] Brapi as vezes serve dados de fechamento
-                # do dia anterior em vez do live (provedor com cache stale, plano que
-                # caiu, etc). Caso confirmado: 6/mai 11:25 BRT, brapi retornava
-                # regularMarketTime=2026-05-05T21:30:30Z (ontem 18:30 BRT) para todas
-                # as B3, mesmo com pregao aberto. Resultado: trades B3 com current=entry,
-                # P&L sempre 0%. Detectar e descartar para cair no proximo provider.
-                _market_time_str = q.get('regularMarketTime') or ''
-                if _market_time_str:
+                # [STALE-DETECT v2 06/mai] Verificar age do LAST CANDLE (mais confiavel)
+                if _last_candle_ts:
                     try:
-                        _mt = datetime.fromisoformat(_market_time_str.replace('Z', '+00:00'))
-                        # Comparar em UTC ignorando tz (datetime.utcnow() retorna naive)
-                        _mt_naive = _mt.replace(tzinfo=None) if _mt.tzinfo else _mt
-                        _age_hours = (datetime.utcnow() - _mt_naive).total_seconds() / 3600
-                        if _age_hours > 4:
-                            log.warning(f'[BRAPI-STALE] {sym}: regularMarketTime {_market_time_str} '
-                                        f'eh {_age_hours:.1f}h velho — descartando, proximo provider')
+                        _age_min = (time.time() - float(_last_candle_ts)) / 60
+                        if _age_min > 30 and is_b3_open():
+                            log.warning(f'[BRAPI-STALE] {sym}: last candle eh {_age_min:.1f}min velho '
+                                        f'— descartando, fallback Cedro')
                             continue
-                    except Exception as _ee:
-                        log.debug(f'[BRAPI-STALE-CHECK] {sym} parse erro: {_ee}')
-                # [FIX 05/mai] brapi as vezes retorna regularMarketPreviousClose IGUAL ao
-                # regularMarketPrice (snapshot intraday em vez do fechamento real de ontem),
-                # fazendo (price/prev - 1) ficar em 0% mesmo com mercado se mexendo.
-                # Solucao: priorizar regularMarketChangePercent que a propria brapi calcula
-                # corretamente (compara contra close real do pregao anterior).
-                _brapi_change = q.get('regularMarketChangePercent')
-                _change_pct = (round(float(_brapi_change), 2) if _brapi_change is not None
-                               else (round((price / prev - 1) * 100, 2) if prev > 0 else 0))
+                    except Exception: pass
+                else:
+                    # Sem candles intraday: cair pra check antigo de regularMarketTime
+                    _market_time_str = q.get('regularMarketTime') or ''
+                    if _market_time_str:
+                        try:
+                            _mt = datetime.fromisoformat(_market_time_str.replace('Z', '+00:00'))
+                            _mt_naive = _mt.replace(tzinfo=None) if _mt.tzinfo else _mt
+                            _age_hours = (datetime.utcnow() - _mt_naive).total_seconds() / 3600
+                            if _age_hours > 4:
+                                log.warning(f'[BRAPI-STALE] {sym}: sem candles + regularMarketTime '
+                                            f'eh {_age_hours:.1f}h velho — descartando')
+                                continue
+                        except Exception: pass
+                # [REAL-TIME-FIX 06/mai] Calcular change_pct com price REAL (last candle)
+                # contra prev (regularMarketPreviousClose, que e o close de ontem).
+                # Se price for last candle = real-time, change_pct fica correto sozinho.
+                if prev > 0 and price > 0:
+                    _change_pct = round((price / prev - 1) * 100, 2)
+                else:
+                    _brapi_change = q.get('regularMarketChangePercent')
+                    _change_pct = round(float(_brapi_change), 2) if _brapi_change is not None else 0
                 cached = _get_cached_candles(f'brapi:{sym}')
                 if cached:
                     entry = dict(cached)
@@ -5481,8 +5500,8 @@ def _fetch_brapi_batch(tickers: list) -> dict:
                     entry['prev']       = prev
                     entry['change_pct'] = _change_pct
                     entry['updated_at'] = datetime.utcnow().isoformat()
-                    entry['source']     = 'brapi-batch-snapshot'
-                    entry['regularMarketTime'] = _market_time_str
+                    entry['source']     = 'brapi-batch-snapshot+1m-candle'
+                    entry['last_candle_ts'] = _last_candle_ts
                     results[sym] = entry
                     record_data_quality(sym, 'brapi', lat, True)
         except Exception as e:

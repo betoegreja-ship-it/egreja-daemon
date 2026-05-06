@@ -10337,9 +10337,9 @@ def debug_batch_void_stale_feed():
         """)
         suspect_stale_entry = cur.fetchall()
 
-        # 1c) [AGGRESSIVE 06/mai/2026] Brapi stale o dia inteiro. Em paper trading,
-        # nao faz sentido manter QUALQUER trade B3 fechada hoje com perda — sao
-        # todas suspeitas de contaminacao por feed corrompido. Voida tudo.
+        # 1c) [TOTAL 06/mai/2026] Feed brapi corrompido o dia inteiro afetou TODAS
+        # as B3 (wins E losses, nao so perdas). Voidar tudo eh imparcial — manter
+        # so wins seria cherry-picking. Em paper trading, integridade > saldo.
         cur.execute("""
             SELECT id, symbol, entry_price, exit_price, current_price, pnl, close_reason,
                    opened_at, closed_at, status, asset_type, market, position_value, direction
@@ -10347,7 +10347,6 @@ def debug_batch_void_stale_feed():
             WHERE asset_type='stock' AND market='B3'
               AND DATE(closed_at)='2026-05-06'
               AND status='CLOSED'
-              AND pnl < 0
               AND COALESCE(close_reason,'') NOT LIKE '%VOID%'
         """)
         suspect_all_b3_losses = cur.fetchall()

@@ -288,19 +288,33 @@ def _fetch_cedro_stock(display: str) -> tuple:
     if not q or not q.get('price'):
         return None, lat
     price = float(q.get('price') or 0)
-    prev = float(q.get('prev_close') or 0) or price
+    # [FIX 06/mai/2026] prev_close vindo do socket Cedro eh confiavel (close real de ontem),
+    # ao contrario de variation_pct que e atualizacao incremental (chega 0 na abertura e
+    # nunca mais e reenviado). SEMPRE calcular change_pct = (price/prev - 1)*100 quando
+    # temos ambos validos. Cair pro variation_pct so se prev_close indisponivel.
+    _prev_raw = float(q.get('prev_close') or 0)
+    _vpct_socket = q.get('variation_pct')
+    if _prev_raw > 0:
+        prev = _prev_raw
+        change_pct_calc = round((price/prev - 1) * 100, 2)
+    elif _vpct_socket is not None:
+        prev = price  # placeholder
+        change_pct_calc = round(float(_vpct_socket), 2)
+    else:
+        prev = price
+        change_pct_calc = 0
     # Start from last BRAPI candle cache if exists (for EMAs/RSI/ATR)
     cached = _get_cached_candles(f'brapi:{display}') if '_get_cached_candles' in globals() else None
     if cached:
         entry = dict(cached)
         entry['price'] = price
         entry['prev'] = prev
-        entry['change_pct'] = q.get('variation_pct') if q.get('variation_pct') is not None else (round((price/prev-1)*100, 2) if prev > 0 else 0)
+        entry['change_pct'] = change_pct_calc
         entry['source'] = 'cedro-socket+brapi-candles'
     else:
         entry = {
             'price': price, 'prev': prev,
-            'change_pct': q.get('variation_pct') if q.get('variation_pct') is not None else (round((price/prev-1)*100, 2) if prev > 0 else 0),
+            'change_pct': change_pct_calc,
             'ema9': price, 'ema21': price, 'ema50': price,
             'rsi': 50.0, 'atr_pct': 0.0, 'volume_ratio': 0.0,
             'ema9_real': False, 'ema21_real': False, 'ema50_real': False, 'rsi_real': False,
@@ -5433,12 +5447,30 @@ def _fetch_brapi_batch(tickers: list) -> dict:
                 price = float(q.get('regularMarketPrice') or 0)
                 prev  = float(q.get('regularMarketPreviousClose') or 0)
                 if price <= 0: continue
+                # [STALE-DETECT 06/mai/2026] Brapi as vezes serve dados de fechamento
+                # do dia anterior em vez do live (provedor com cache stale, plano que
+                # caiu, etc). Caso confirmado: 6/mai 11:25 BRT, brapi retornava
+                # regularMarketTime=2026-05-05T21:30:30Z (ontem 18:30 BRT) para todas
+                # as B3, mesmo com pregao aberto. Resultado: trades B3 com current=entry,
+                # P&L sempre 0%. Detectar e descartar para cair no proximo provider.
+                _market_time_str = q.get('regularMarketTime') or ''
+                if _market_time_str:
+                    try:
+                        _mt = datetime.fromisoformat(_market_time_str.replace('Z', '+00:00'))
+                        # Comparar em UTC ignorando tz (datetime.utcnow() retorna naive)
+                        _mt_naive = _mt.replace(tzinfo=None) if _mt.tzinfo else _mt
+                        _age_hours = (datetime.utcnow() - _mt_naive).total_seconds() / 3600
+                        if _age_hours > 4:
+                            log.warning(f'[BRAPI-STALE] {sym}: regularMarketTime {_market_time_str} '
+                                        f'eh {_age_hours:.1f}h velho — descartando, proximo provider')
+                            continue
+                    except Exception as _ee:
+                        log.debug(f'[BRAPI-STALE-CHECK] {sym} parse erro: {_ee}')
                 # [FIX 05/mai] brapi as vezes retorna regularMarketPreviousClose IGUAL ao
                 # regularMarketPrice (snapshot intraday em vez do fechamento real de ontem),
                 # fazendo (price/prev - 1) ficar em 0% mesmo com mercado se mexendo.
                 # Solucao: priorizar regularMarketChangePercent que a propria brapi calcula
                 # corretamente (compara contra close real do pregao anterior).
-                # Caso confirmado em 5/mai: ABEV3 prev=16.55 price=16.56 mas change real=14.68%.
                 _brapi_change = q.get('regularMarketChangePercent')
                 _change_pct = (round(float(_brapi_change), 2) if _brapi_change is not None
                                else (round((price / prev - 1) * 100, 2) if prev > 0 else 0))
@@ -5450,6 +5482,7 @@ def _fetch_brapi_batch(tickers: list) -> dict:
                     entry['change_pct'] = _change_pct
                     entry['updated_at'] = datetime.utcnow().isoformat()
                     entry['source']     = 'brapi-batch-snapshot'
+                    entry['regularMarketTime'] = _market_time_str
                     results[sym] = entry
                     record_data_quality(sym, 'brapi', lat, True)
         except Exception as e:
@@ -5686,9 +5719,29 @@ def fetch_stock_prices():
     B3_WATCHLIST_PREGAO_IV = 60        # [v10.6-P1-3] 60s entre updates da watchlist durante pregão
 
     if BRAPI_TOKEN:
+        # [FALLBACK 06/mai/2026] Quando brapi retorna stale (>4h) ela descarta o simbolo
+        # do batch_result. Para esses, tentar Cedro Socket como fallback (real-time).
+        # Sem isso, posicoes ficam com preco congelado e P&L=0 indefinidamente.
+        def _fallback_to_cedro_for_missing(requested: list, got: dict) -> dict:
+            missing = [s for s in requested if s not in got]
+            if not missing:
+                return got
+            if not (_cedro_socket and _cedro_socket.enabled):
+                return got
+            log.info(f'[BRAPI-FALLBACK] {len(missing)} simbolos stale/missing -> Cedro: {missing[:5]}...')
+            for s in missing:
+                try:
+                    cedro_data, lat = _fetch_cedro_stock(s)
+                    if cedro_data and cedro_data.get('price', 0) > 0:
+                        got[s] = cedro_data
+                except Exception as _e:
+                    log.debug(f'[BRAPI-FALLBACK] {s}: cedro fail {_e}')
+            return got
+
         # Posições abertas B3: todo loop durante pregão
         if b3_open_positions and b3_open:
             batch_result = _fetch_brapi_batch(b3_open_positions)
+            batch_result = _fallback_to_cedro_for_missing(b3_open_positions, batch_result)
             with state_lock:
                 for sym, data in batch_result.items():
                     stock_prices[sym] = data
@@ -5703,6 +5756,7 @@ def fetch_stock_prices():
 
             if should_update_watchlist:
                 batch_result = _fetch_brapi_batch(b3_watchlist)
+                batch_result = _fallback_to_cedro_for_missing(b3_watchlist, batch_result)
                 with state_lock:
                     for sym, data in batch_result.items():
                         stock_prices[sym] = data

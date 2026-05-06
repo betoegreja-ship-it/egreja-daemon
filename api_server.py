@@ -10235,7 +10235,7 @@ def debug_batch_void_stale_feed():
     results = {'closed_voided': [], 'open_force_closed': [], 'errors': []}
     try:
         cur = conn.cursor(dictionary=True)
-        # 1) Trades B3 fechadas hoje com entry==exit (suspeita stale)
+        # 1a) Trades B3 fechadas hoje com entry==exit (suspeita stale tipo 1)
         cur.execute("""
             SELECT id, symbol, entry_price, exit_price, current_price, pnl, close_reason,
                    opened_at, closed_at, status, asset_type, market, position_value
@@ -10247,6 +10247,29 @@ def debug_batch_void_stale_feed():
               AND COALESCE(close_reason,'') NOT LIKE '%VOID%'
         """)
         suspect_closed = cur.fetchall()
+
+        # 1b) [STALE-ENTRY 06/mai] Trades B3 que abriram com preco stale e fecharam
+        # com perda quando feed corrigiu. Padrao: B3 LONG, EARLY_STOP, duracao <2h,
+        # |entry-exit|/entry > 1.5%, fechadas hoje. Contaminadas pelo feed brapi
+        # de ontem (regularMarketTime stale).
+        cur.execute("""
+            SELECT id, symbol, entry_price, exit_price, current_price, pnl, close_reason,
+                   opened_at, closed_at, status, asset_type, market, position_value, direction
+            FROM trades
+            WHERE asset_type='stock' AND market='B3'
+              AND DATE(closed_at)='2026-05-06'
+              AND status='CLOSED'
+              AND direction='LONG'
+              AND close_reason='EARLY_STOP'
+              AND TIMESTAMPDIFF(MINUTE, opened_at, closed_at) < 120
+              AND entry_price > 0
+              AND ABS(entry_price - COALESCE(exit_price, current_price, 0)) / entry_price > 0.015
+              AND COALESCE(close_reason,'') NOT LIKE '%VOID%'
+              AND pnl < 0
+        """)
+        suspect_stale_entry = cur.fetchall()
+        suspect_closed = list(suspect_closed) + list(suspect_stale_entry)
+        log.warning(f'[BATCH-VOID-STALE] Suspeitas: {len(suspect_closed)} closed (incl {len(suspect_stale_entry)} stale-entry)')
         # 2) Trades B3 abertas hoje com current==entry (preso em stale)
         cur.execute("""
             SELECT id, symbol, entry_price, current_price, pnl, opened_at, status,

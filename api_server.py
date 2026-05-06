@@ -10319,9 +10319,7 @@ def debug_batch_void_stale_feed():
         suspect_closed = cur.fetchall()
 
         # 1b) [STALE-ENTRY 06/mai] Trades B3 que abriram com preco stale e fecharam
-        # com perda quando feed corrigiu. Padrao: B3 LONG, EARLY_STOP, duracao <2h,
-        # |entry-exit|/entry > 1.5%, fechadas hoje. Contaminadas pelo feed brapi
-        # de ontem (regularMarketTime stale).
+        # com perda quando feed corrigiu.
         cur.execute("""
             SELECT id, symbol, entry_price, exit_price, current_price, pnl, close_reason,
                    opened_at, closed_at, status, asset_type, market, position_value, direction
@@ -10338,8 +10336,33 @@ def debug_batch_void_stale_feed():
               AND pnl < 0
         """)
         suspect_stale_entry = cur.fetchall()
-        suspect_closed = list(suspect_closed) + list(suspect_stale_entry)
-        log.warning(f'[BATCH-VOID-STALE] Suspeitas: {len(suspect_closed)} closed (incl {len(suspect_stale_entry)} stale-entry)')
+
+        # 1c) [AGGRESSIVE 06/mai/2026] Brapi stale o dia inteiro. Em paper trading,
+        # nao faz sentido manter QUALQUER trade B3 fechada hoje com perda — sao
+        # todas suspeitas de contaminacao por feed corrompido. Voida tudo.
+        cur.execute("""
+            SELECT id, symbol, entry_price, exit_price, current_price, pnl, close_reason,
+                   opened_at, closed_at, status, asset_type, market, position_value, direction
+            FROM trades
+            WHERE asset_type='stock' AND market='B3'
+              AND DATE(closed_at)='2026-05-06'
+              AND status='CLOSED'
+              AND pnl < 0
+              AND COALESCE(close_reason,'') NOT LIKE '%VOID%'
+        """)
+        suspect_all_b3_losses = cur.fetchall()
+
+        # Merge dedupe by id
+        seen_ids = set()
+        merged = []
+        for r in list(suspect_closed) + list(suspect_stale_entry) + list(suspect_all_b3_losses):
+            rid = r.get('id')
+            if rid and rid not in seen_ids:
+                seen_ids.add(rid)
+                merged.append(r)
+        suspect_closed = merged
+        log.warning(f'[BATCH-VOID-STALE] Total unico: {len(suspect_closed)} '
+                    f'(equity-eq {len(suspect_stale_entry)}, all-B3-losses {len(suspect_all_b3_losses)})')
         # 2) Trades B3 abertas hoje com current==entry (preso em stale)
         cur.execute("""
             SELECT id, symbol, entry_price, current_price, pnl, opened_at, status,

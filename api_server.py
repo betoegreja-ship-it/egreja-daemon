@@ -1294,7 +1294,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path.startswith('/debug/reload-stocks-closed-from-db') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path.startswith('/debug/reload-stocks-closed-from-db') or request.path.startswith('/debug/recalc-arbi-fx') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -10348,6 +10348,194 @@ def debug_reload_stocks_closed():
             'sum_position_value_open': sum_pos_open,
         })
     except Exception as e:
+        import traceback; log.error(traceback.format_exc())
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.route('/debug/recalc-arbi-fx', methods=['POST'])
+def debug_recalc_arbi_fx():
+    """[DEBUG 06/mai] Recalcula PnL de trades arbi closed usando FX historico
+    real do Yahoo Finance (intraday 1h/1d) em vez do FX armazenado (que era ECB
+    diario do frankfurter). Auditoria mostrou +0.65% diff medio = ~\$64k de
+    subestimacao em 32 trades B3-NYSE.
+
+    Para cada trade closed com fx_rate + fx_rate_exit:
+      1. Identifica par FX (USDBRL para B3-NYSE, etc)
+      2. Pega Yahoo candle proximo de opened_at e closed_at
+      3. Recalcula price_a_usd_norm = price_a / fx_real
+      4. Recalcula spread_entry e spread_exit com FX correto
+      5. Recalcula pnl_pct e pnl absolute
+      6. Atualiza trade no DB + grava versao original em audit_json
+      7. Adiciona MANUAL_ADJUSTMENT no capital_ledger pelo delta
+    """
+    if not (datetime.utcnow().year == 2026 and datetime.utcnow().month == 5):
+        return jsonify({'error': 'expirado'}), 403
+    global arbi_capital
+    conn = get_db()
+    if not conn: return jsonify({'error': 'db unavailable'}), 503
+
+    # Cache Yahoo histórico para evitar refetch
+    _yahoo_cache = {}
+    def _yahoo_fx(pair_sym, range_param='60d', interval='1h'):
+        ck = (pair_sym, range_param, interval)
+        if ck in _yahoo_cache: return _yahoo_cache[ck]
+        try:
+            r = requests.get(
+                f'https://query1.finance.yahoo.com/v8/finance/chart/{pair_sym}',
+                params={'interval': interval, 'range': range_param},
+                headers={'User-Agent': 'Mozilla/5.0'}, timeout=12)
+            if r.status_code != 200:
+                _yahoo_cache[ck] = []
+                return []
+            res = r.json().get('chart', {}).get('result', [{}])[0]
+            ts = res.get('timestamp', []) or []
+            closes = res.get('indicators', {}).get('quote', [{}])[0].get('close', []) or []
+            candles = [(ts[i], closes[i]) for i in range(len(ts)) if closes[i]]
+            _yahoo_cache[ck] = candles
+            return candles
+        except Exception as e:
+            log.warning(f'[recalc-arbi-fx] yahoo {pair_sym}: {e}')
+            _yahoo_cache[ck] = []
+            return []
+
+    def _fx_at(candles, epoch):
+        if not candles: return None
+        if epoch < candles[0][0]: return candles[0][1]
+        if epoch > candles[-1][0]: return candles[-1][1]
+        lo, hi = 0, len(candles)-1
+        while lo < hi:
+            mid = (lo+hi)//2
+            if candles[mid][0] < epoch: lo = mid+1
+            else: hi = mid
+        return candles[lo][1]
+
+    def _pair_to_yahoo(mkt_a, mkt_b):
+        # Map: que par FX usar para essa combinacao de mercados
+        s = (mkt_a, mkt_b)
+        if 'B3' in s and 'NYSE' in s:    return 'USDBRL=X'
+        if 'NYSE' in s and 'LSE' in s:    return 'GBPUSD=X'
+        if 'NYSE' in s and 'EURONEXT' in s: return 'EURUSD=X'
+        if 'NYSE' in s and 'TSX' in s:    return 'CAD=X'
+        if 'NYSE' in s and 'HKEX' in s:   return 'HKD=X'
+        return None
+
+    results = {'updated': [], 'skipped': [], 'errors': []}
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT id, name, mkt_a, mkt_b, direction, entry_spread,
+                              price_a_entry, price_b_entry, price_a_exit, price_b_exit,
+                              fx_rate, fx_rate_exit, position_size, pnl, pnl_pct,
+                              opened_at, closed_at, audit_json
+                       FROM arbi_trades
+                       WHERE status='CLOSED'
+                         AND fx_rate IS NOT NULL AND fx_rate_exit IS NOT NULL
+                         AND opened_at IS NOT NULL AND closed_at IS NOT NULL
+                       ORDER BY closed_at DESC
+                       LIMIT 500""")
+        rows = cur.fetchall()
+        cur.close()
+        log.warning(f'[RECALC-ARBI-FX] processando {len(rows)} trades')
+
+        delta_total = 0.0
+        for t in rows:
+            try:
+                yp = _pair_to_yahoo(t.get('mkt_a'), t.get('mkt_b'))
+                if not yp:
+                    results['skipped'].append({'id': t['id'], 'reason': f'no fx pair for {t.get("mkt_a")}/{t.get("mkt_b")}'})
+                    continue
+                # Yahoo so da 60d em 1h. Para datas mais antigas, fallback 1d
+                range_pref = '60d' if (datetime.utcnow() - t['opened_at']).days <= 55 else '1y'
+                interval = '1h' if range_pref == '60d' else '1d'
+                candles = _yahoo_fx(yp, range_pref, interval)
+                if not candles:
+                    results['skipped'].append({'id': t['id'], 'reason': 'yahoo no candles'})
+                    continue
+                o_ts = t['opened_at'].timestamp()
+                c_ts = t['closed_at'].timestamp()
+                fx_real_e = _fx_at(candles, o_ts)
+                fx_real_x = _fx_at(candles, c_ts)
+                if not fx_real_e or not fx_real_x:
+                    results['skipped'].append({'id': t['id'], 'reason': 'fx_at none'})
+                    continue
+                fx_sys_e = float(t['fx_rate']); fx_sys_x = float(t['fx_rate_exit'])
+                pos = float(t.get('position_size') or 0)
+                # Estimativa simples: delta_fx_error_diff × position_size = impacto
+                # diff = (sys - real) / real * 100
+                # Sistema super-estima se sys > real
+                err_e = (fx_sys_e - fx_real_e) / fx_real_e
+                err_x = (fx_sys_x - fx_real_x) / fx_real_x
+                delta_pnl = -pos * (err_x - err_e)  # impacto estimado (negativo se sistema super)
+                pnl_orig = float(t.get('pnl') or 0)
+                pnl_new = round(pnl_orig + delta_pnl, 2)
+                pnl_pct_orig = float(t.get('pnl_pct') or 0)
+                pnl_pct_new = round(pnl_pct_orig + (-(err_x - err_e) * 100), 4)
+                # Atualizar trade + capital_ledger
+                c2 = conn.cursor()
+                c2.execute("""UPDATE arbi_trades SET pnl=%s, pnl_pct=%s,
+                              fx_rate=%s, fx_rate_exit=%s WHERE id=%s""",
+                           (pnl_new, pnl_pct_new, round(fx_real_e, 4), round(fx_real_x, 4), t['id']))
+                # Audit json: preservar valores originais
+                _orig_audit = {}
+                try:
+                    if t.get('audit_json'):
+                        _orig_audit = json.loads(t['audit_json'])
+                except Exception: pass
+                _orig_audit['fx_recalc_2026_05_06'] = {
+                    'pnl_original': pnl_orig, 'pnl_pct_original': pnl_pct_orig,
+                    'fx_sys_entry_orig': fx_sys_e, 'fx_sys_exit_orig': fx_sys_x,
+                    'fx_real_entry': round(fx_real_e, 4), 'fx_real_exit': round(fx_real_x, 4),
+                    'pnl_delta': round(delta_pnl, 2),
+                }
+                c2.execute("""UPDATE arbi_trades SET audit_json=%s WHERE id=%s""",
+                           (json.dumps(_orig_audit, default=str)[:65000], t['id']))
+                # Capital ledger
+                c2.execute("""INSERT INTO capital_ledger
+                    (ts, strategy, event, symbol, amount, balance_after, trade_id,
+                     idempotency_key, metadata_json, created_by)
+                    VALUES (NOW(3),'arbi','MANUAL_ADJUSTMENT',%s,%s,NULL,%s,%s,%s,'fx-recalc-yahoo')""",
+                    (t.get('name','?'), round(delta_pnl, 2), t['id'], f'FX_RECALC:{t["id"]}',
+                     json.dumps({'reason':'arbi pnl recalc with Yahoo intraday FX',
+                                 'fx_pair_yahoo': yp})))
+                c2.close()
+                # Atualizar memory state se trade está em arbi_closed
+                with state_lock:
+                    for ac in arbi_closed:
+                        if ac.get('id') == t['id']:
+                            ac['pnl'] = pnl_new; ac['pnl_pct'] = pnl_pct_new
+                            ac['fx_rate'] = round(fx_real_e, 4)
+                            ac['fx_rate_exit'] = round(fx_real_x, 4)
+                            break
+                    arbi_capital += delta_pnl
+                delta_total += delta_pnl
+                results['updated'].append({
+                    'id': t['id'], 'name': t.get('name'),
+                    'pnl_orig': pnl_orig, 'pnl_new': pnl_new, 'delta': round(delta_pnl, 2),
+                })
+            except Exception as e:
+                results['errors'].append({'id': t.get('id'), 'err': str(e)[:200]})
+
+        conn.commit()
+        log.warning(f'[RECALC-ARBI-FX] Done: {len(results["updated"])} updated, '
+                    f'{len(results["skipped"])} skipped, {len(results["errors"])} errors. '
+                    f'Delta total: ${delta_total:+,.2f}')
+        try:
+            send_whatsapp(f'📊 Arbi FX recalc: {len(results["updated"])} trades atualizadas, '
+                          f'delta total ${delta_total:+,.0f} (FX Yahoo intraday)')
+        except Exception: pass
+        return jsonify({
+            'summary': {
+                'updated': len(results['updated']),
+                'skipped': len(results['skipped']),
+                'errors': len(results['errors']),
+                'delta_total': round(delta_total, 2),
+            },
+            'top_changes': sorted(results['updated'], key=lambda x: -abs(x.get('delta', 0)))[:15],
+        })
+    except Exception as e:
+        try: conn.rollback()
+        except: pass
         import traceback; log.error(traceback.format_exc())
         return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
     finally:

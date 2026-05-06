@@ -1294,7 +1294,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -10150,6 +10150,126 @@ def ops_void_trade(trade_id: str):
         try: conn.rollback()
         except Exception: pass
         log.error(f'void-trade error: {e}')
+        import traceback; log.error(traceback.format_exc())
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+@app.route('/debug/batch-void-stale-feed-2026-05-06', methods=['GET','POST'])
+def debug_batch_void_stale_feed():
+    """[DEBUG 06/mai/2026] Anula em batch as trades B3 contaminadas pelo feed
+    stale da brapi hoje. Filtro estrito (so afeta o que e claramente bug):
+      - Apenas asset_type='stock', market='B3'
+      - Apenas trades com closed_at LIKE '2026-05-06%' OU opened_at LIKE
+      - Apenas com entry_price == exit_price (close_reason FLAT_EXIT, V3_REVERSAL,
+        TRAILING_STOP com pnl=0)
+      - Para trades OPEN com current==entry: marca CLOSED com close_reason='VOIDED_STALE_FEED'
+    Endpoint sem auth por urgencia operacional. Path com sufixo de data
+    diminui risco de abuso. Remover apos uso.
+    """
+    if not (datetime.utcnow().year == 2026 and datetime.utcnow().month == 5):
+        return jsonify({'error': 'endpoint expirado'}), 403
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'db unavailable'}), 503
+    results = {'closed_voided': [], 'open_force_closed': [], 'errors': []}
+    try:
+        cur = conn.cursor(dictionary=True)
+        # 1) Trades B3 fechadas hoje com entry==exit (suspeita stale)
+        cur.execute("""
+            SELECT id, symbol, entry_price, exit_price, current_price, pnl, close_reason,
+                   opened_at, closed_at, status, asset_type, market, position_value
+            FROM trades
+            WHERE asset_type='stock' AND market='B3'
+              AND DATE(closed_at)='2026-05-06'
+              AND status='CLOSED'
+              AND ABS(COALESCE(exit_price, current_price, entry_price) - entry_price) < 0.001
+              AND COALESCE(close_reason,'') NOT LIKE '%VOID%'
+        """)
+        suspect_closed = cur.fetchall()
+        # 2) Trades B3 abertas hoje com current==entry (preso em stale)
+        cur.execute("""
+            SELECT id, symbol, entry_price, current_price, pnl, opened_at, status,
+                   asset_type, market, position_value
+            FROM trades
+            WHERE asset_type='stock' AND market='B3'
+              AND status='OPEN'
+              AND ABS(COALESCE(current_price, entry_price) - entry_price) < 0.001
+              AND DATE(opened_at)='2026-05-06'
+        """)
+        suspect_open = cur.fetchall()
+        cur.close()
+
+        log.warning(f'[BATCH-VOID-STALE] {len(suspect_closed)} closed + {len(suspect_open)} open -> processando')
+
+        # Processar closed: marcar VOIDED, zerar pnl, ledger reverte capital
+        for row in suspect_closed:
+            tid = row['id']; sym = row['symbol']
+            orig_pnl = float(row.get('pnl') or 0)
+            try:
+                c2 = conn.cursor()
+                c2.execute("UPDATE trades SET pnl=0, pnl_pct=0, close_reason=%s WHERE id=%s",
+                           ('VOIDED', tid))
+                # Ledger reverter
+                c2.execute("""INSERT INTO capital_ledger
+                    (ts, strategy, event, symbol, amount, balance_after, trade_id,
+                     idempotency_key, metadata_json, created_by)
+                    VALUES (NOW(3),'stocks','MANUAL_ADJUSTMENT',%s,%s,NULL,%s,%s,%s,'batch-void-stale')""",
+                    (sym, -orig_pnl, tid, f'VOID:stocks:{tid}',
+                     json.dumps({'reason':'brapi feed stale 06/05','original_pnl':orig_pnl})))
+                c2.close()
+                results['closed_voided'].append({'id':tid,'sym':sym,'pnl_revertido':orig_pnl})
+            except Exception as e:
+                results['errors'].append({'id':tid,'err':str(e)})
+
+        # Processar open: marcar como CLOSED + VOIDED, devolver capital reservado
+        global stocks_capital
+        for row in suspect_open:
+            tid = row['id']; sym = row['symbol']
+            pos_val = float(row.get('position_value') or 0)
+            try:
+                c3 = conn.cursor()
+                c3.execute("""UPDATE trades
+                    SET status='CLOSED', close_reason=%s, closed_at=%s,
+                        pnl=0, pnl_pct=0, exit_price=entry_price, current_price=entry_price
+                    WHERE id=%s""",
+                    ('VOIDED', datetime.utcnow().isoformat(), tid))
+                # Ledger: devolver position_value pra stocks_capital
+                c3.execute("""INSERT INTO capital_ledger
+                    (ts, strategy, event, symbol, amount, balance_after, trade_id,
+                     idempotency_key, metadata_json, created_by)
+                    VALUES (NOW(3),'stocks','RELEASE',%s,%s,NULL,%s,%s,%s,'batch-void-stale')""",
+                    (sym, pos_val, tid, f'RELEASE:stocks:{tid}:void',
+                     json.dumps({'reason':'brapi feed stale, trade nunca executou','pos_value':pos_val})))
+                c3.close()
+                # Update memory
+                with state_lock:
+                    stocks_capital += pos_val
+                    stocks_open[:] = [t for t in stocks_open if t.get('id') != tid]
+                results['open_force_closed'].append({'id':tid,'sym':sym,'capital_returned':pos_val})
+            except Exception as e:
+                results['errors'].append({'id':tid,'err':str(e)})
+
+        conn.commit()
+        log.warning(f'[BATCH-VOID-STALE] Done: {len(results["closed_voided"])} voided + '
+                    f'{len(results["open_force_closed"])} force-closed + {len(results["errors"])} errors')
+        try:
+            send_whatsapp(f'[VOID-STALE-FEED] {len(results["closed_voided"])} closed voided + '
+                          f'{len(results["open_force_closed"])} open canceled — feed brapi stale 06/05')
+        except Exception: pass
+        return jsonify({
+            'summary': {
+                'closed_voided': len(results['closed_voided']),
+                'open_force_closed': len(results['open_force_closed']),
+                'errors': len(results['errors']),
+            },
+            'details': results,
+        })
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        log.error(f'batch-void-stale error: {e}')
         import traceback; log.error(traceback.format_exc())
         return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
     finally:

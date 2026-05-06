@@ -1280,7 +1280,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -11059,7 +11059,8 @@ def debug_b3_prices():
     Para cada uma das B3 da watchlist mais usadas. Nenhuma autenticacao
     para facilitar o debug ad-hoc. Remover depois.
     """
-    test_syms = ['PETR4', 'VALE3', 'ITUB4', 'ABEV3', 'WEGE3', 'BBDC4', 'RENT3', 'SUZB3']
+    test_syms = ['PETR4', 'VALE3', 'ITUB4', 'ABEV3', 'WEGE3', 'BBDC4', 'RENT3', 'SUZB3',
+                 'GGBR4', 'GOAU4', 'USIM5', 'ENEV3', 'NEOE3', 'ODPV3', 'VBBR3', 'UGPA3', 'HYPE3', 'NATU3']
     out = {'now_utc': datetime.utcnow().isoformat(), 'cedro_socket_enabled': bool(_cedro_socket and _cedro_socket.enabled),
            'brapi_token_set': bool(BRAPI_TOKEN), 'cedro_primary_env': os.environ.get('CEDRO_PRIMARY','false')}
     # 1) Memory cache
@@ -11097,6 +11098,47 @@ def debug_b3_prices():
             out['brapi_live']['_error'] = f'{type(e).__name__}: {e}'
     else:
         out['brapi_live']['_error'] = 'BRAPI_TOKEN nao setado'
+    return jsonify(out)
+
+@app.route('/debug/b3-trades-pricing')
+def debug_b3_trades_pricing():
+    """[DEBUG 06/mai] Diagnostica P&L zerado em B3.
+    Para cada trade B3 OPEN, mostra:
+      - trade.symbol, entry_price, current_price (do dict da trade)
+      - stock_prices[symbol].price (preco em memoria)
+      - delta entre eles
+      - se a key existe ou nao no stock_prices
+    """
+    out = {'now_utc': datetime.utcnow().isoformat(), 'rows': []}
+    with state_lock:
+        sp_keys = list(stock_prices.keys())
+        for t in stocks_open:
+            sym = t.get('symbol', '?')
+            pd = stock_prices.get(sym)
+            mkt = t.get('market', '?')
+            if mkt != 'B3' and t.get('asset_type') != 'stock':
+                continue
+            row = {
+                'symbol': sym,
+                'market': mkt,
+                'trade_entry':   t.get('entry_price'),
+                'trade_current': t.get('current_price'),
+                'trade_pnl':     t.get('pnl'),
+                'trade_pnl_pct': t.get('pnl_pct'),
+                'sp_exists':     pd is not None,
+                'sp_price':      pd.get('price') if pd else None,
+                'sp_change_pct': pd.get('change_pct') if pd else None,
+                'sp_updated_at': pd.get('updated_at') if pd else None,
+                'sp_source':     pd.get('source') if pd else None,
+            }
+            if pd:
+                try:
+                    row['expected_pnl_pct'] = round((float(pd['price']) / float(t.get('entry_price', 0)) - 1) * 100, 4) if t.get('entry_price', 0) > 0 else None
+                except Exception:
+                    row['expected_pnl_pct'] = 'err'
+            out['rows'].append(row)
+        out['stock_prices_keys_count'] = len(sp_keys)
+        out['stock_prices_b3_keys_sample'] = [k for k in sp_keys if not k.isupper() or len(k) < 5][:20]
     return jsonify(out)
 
 @app.route('/debug/drawdown')

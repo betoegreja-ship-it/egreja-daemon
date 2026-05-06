@@ -6139,46 +6139,70 @@ def is_momentum_positive(trade):
 # FX RATES
 # ═══════════════════════════════════════════════════════════════
 def fetch_fx_rates():
-    """[v10.4] frankfurter.app primário (ECB data, free, sem key, sem limite) → Yahoo fallback.
-    frankfurter.app é mantido pelo Frankfurter open-source project, dados do Banco Central Europeu.
-    USDBRL, GBPUSD, HKDUSD. Atualizado a cada ciclo do arbi_scan_loop (~6min).
+    """[FIX 06/mai/2026] Yahoo Finance intraday PRIMARY (real-time tick) → frankfurter.app
+    fallback (ECB diario). Era o oposto antes — frankfurter primary forcava ECB diario,
+    causando defasagem em arbi B3-NYSE. Auditoria mostrou +0.65% diff medio em FX entry
+    e $64k subestimacao de PnL acumulado.
+
+    Para arbi institucional precisa de FX intraday. Yahoo da candles 1m do USDBRL=X,
+    EURUSD=X, GBPUSD=X etc. Real-time, free, sem key.
     """
+    pairs = {'USDBRL': 'USDBRL=X', 'GBPUSD': 'GBPUSD=X', 'HKDUSD': 'HKD=X',
+             'CADUSD': 'CAD=X', 'EURUSD': 'EURUSD=X'}
+    yahoo_ok = 0
+    for key, sym in pairs.items():
+        try:
+            # Pegar last candle 1m (real-time intraday)
+            r = requests.get(
+                f'https://query1.finance.yahoo.com/v8/finance/chart/{sym}',
+                params={'interval': '1m', 'range': '1d'},
+                headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+            if r.status_code == 200:
+                _res = r.json().get('chart', {}).get('result', [{}])[0]
+                _meta = _res.get('meta', {})
+                _closes = _res.get('indicators', {}).get('quote', [{}])[0].get('close', []) or []
+                _closes_clean = [c for c in _closes if c]
+                # Priorizar last candle 1m, depois meta regularMarketPrice
+                _price = _closes_clean[-1] if _closes_clean else _meta.get('regularMarketPrice', 0)
+                # Yahoo retorna BRL=X como 1 USD = X BRL (ex: 4.92), exatamente como queremos USDBRL
+                # Mesma logica para outros pares: GBPUSD=X já vem na direção certa
+                # MAS HKD=X e CAD=X retornam USD->moeda; precisamos inverter para moeda->USD
+                if _price and _price > 0:
+                    if key == 'HKDUSD':
+                        # HKD=X = USD/HKD (ex: 7.83); HKDUSD nominal = 1 HKD em USD (ex: 0.128)
+                        # Mas no codigo arbi (calc_spread): pa = pa_raw/rate, ou seja rate = USD/HKD
+                        # Manter formato original: HKDUSD = USD/HKD (mesmo do frankfurter HKD)
+                        fx_rates[key] = round(_price, 4)
+                    elif key == 'CADUSD':
+                        # CAD=X = USD/CAD (ex: 1.36); CADUSD nominal = 1 CAD em USD = 1/USD/CAD = 0.735
+                        # No frankfurter o codigo faz: 1.0 / rates['CAD'] = inverte. Manter inversao
+                        fx_rates[key] = round(1.0 / _price, 4)
+                    else:
+                        # USDBRL, GBPUSD, EURUSD: ja vem direto na direcao certa
+                        fx_rates[key] = round(_price, 4)
+                    yahoo_ok += 1
+        except Exception as _ye:
+            log.debug(f'[FX-YAHOO] {key}: {_ye}')
+    if yahoo_ok >= 1:
+        log.info(f'FX (Yahoo intraday 1m): {fx_rates}')
+        return
+    # Fallback: frankfurter ECB diario
     try:
-        # frankfurter.app: base USD, retorna quantas unidades de cada moeda = 1 USD
         r = requests.get(
             'https://api.frankfurter.app/latest',
-            params={'from': 'USD', 'to': 'BRL,GBP,HKD,CAD,EUR'}, timeout=8)  # [v10.9] +CAD,EUR
+            params={'from': 'USD', 'to': 'BRL,GBP,HKD,CAD,EUR'}, timeout=8)
         if r.status_code == 200:
             rates = r.json().get('rates', {})
-            if rates.get('BRL', 0) > 0:
-                fx_rates['USDBRL'] = round(rates['BRL'], 4)
-            if rates.get('GBP', 0) > 0:
-                # frankfurter retorna USD→GBP (ex: 0.79); queremos GBPUSD (ex: 1.27)
-                fx_rates['GBPUSD'] = round(1.0 / rates['GBP'], 4)
-            if rates.get('HKD', 0) > 0:
-                fx_rates['HKDUSD'] = round(rates['HKD'], 4)
-            if rates.get('CAD', 0) > 0:
-                # USD→CAD (ex: 1.36); queremos CADUSD = 1 CAD em USD (ex: 0.735)
-                fx_rates['CADUSD'] = round(1.0 / rates['CAD'], 4)
-            if rates.get('EUR', 0) > 0:
-                # USD→EUR (ex: 0.92); queremos EURUSD = 1 EUR em USD (ex: 1.085)
-                fx_rates['EURUSD'] = round(1.0 / rates['EUR'], 4)
-            log.info(f'FX (frankfurter.app/ECB): {fx_rates}')
+            if rates.get('BRL', 0) > 0: fx_rates['USDBRL'] = round(rates['BRL'], 4)
+            if rates.get('GBP', 0) > 0: fx_rates['GBPUSD'] = round(1.0 / rates['GBP'], 4)
+            if rates.get('HKD', 0) > 0: fx_rates['HKDUSD'] = round(rates['HKD'], 4)
+            if rates.get('CAD', 0) > 0: fx_rates['CADUSD'] = round(1.0 / rates['CAD'], 4)
+            if rates.get('EUR', 0) > 0: fx_rates['EURUSD'] = round(1.0 / rates['EUR'], 4)
+            log.info(f'FX (frankfurter ECB fallback): {fx_rates}')
             return
     except Exception as e:
         log.warning(f'frankfurter.app: {e}')
-    # Yahoo fallback
-    pairs = {'USDBRL': 'BRL=X', 'GBPUSD': 'GBPUSD=X', 'HKDUSD': 'HKD=X', 'CADUSD': 'CAD=X', 'EURUSD': 'EURUSD=X'}  # [v10.9-arbi]
-    for key, sym in pairs.items():
-        try:
-            r = requests.get(
-                f'https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d',
-                headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
-            if r.status_code == 200:
-                price = r.json()['chart']['result'][0]['meta'].get('regularMarketPrice', 0)
-                if price > 0: fx_rates[key] = price
-        except: pass
-    log.info(f'FX (Yahoo fallback): {fx_rates}')
+    log.warning(f'FX update FAILED — usando ultimo cached: {fx_rates}')
 
 # ═══════════════════════════════════════════════════════════════
 # MONITOR TRADES
@@ -8524,9 +8548,19 @@ def arbi_scan_loop():
 
 def arbi_monitor_loop():
     global arbi_capital
+    _fx_refresh_counter = 0
     while True:
         beat('arbi_monitor_loop')
         time.sleep(60)
+        # [FIX 06/mai/2026] Refrescar FX a cada 2 ciclos (~2min) pra capturar
+        # fx_rate_exit fresh. Antes monitor usava FX cacheado de ate 5min atras
+        # (somente arbi_scan_loop chamava fetch_fx_rates). Critico para arbi
+        # B3-NYSE onde 0.5% de FX = $1k+ de PnL erro por trade.
+        _fx_refresh_counter += 1
+        if _fx_refresh_counter >= 2:
+            _fx_refresh_counter = 0
+            try: fetch_fx_rates()
+            except Exception as _fx_e: log.debug(f'[arbi_monitor] FX refresh: {_fx_e}')
         try:
             closed_trades=[]
             with state_lock:

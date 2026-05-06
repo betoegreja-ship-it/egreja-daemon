@@ -4599,6 +4599,17 @@ def init_all_tables():
             "ALTER TABLE arbi_trades ADD COLUMN spread_bps_b_exit DECIMAL(8,2) NULL",
             "ALTER TABLE arbi_trades ADD COLUMN fx_rate_exit DECIMAL(10,4) NULL",
             "ALTER TABLE arbi_trades ADD COLUMN exit_spread_pct DECIMAL(10,4) NULL",
+            # [FX-POR-PERNA 06/mai/2026] Captura FX no momento exato de cada perna
+            # Para paper trading (execucao simultanea), fx_a == fx_b. Para real money
+            # com latencia entre pernas, esses 4 campos capturam o FX exato da fill.
+            "ALTER TABLE arbi_trades ADD COLUMN fx_a_entry DECIMAL(10,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_b_entry DECIMAL(10,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_a_exit DECIMAL(10,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_b_exit DECIMAL(10,4) NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_a_entry_ts DATETIME NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_b_entry_ts DATETIME NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_a_exit_ts DATETIME NULL",
+            "ALTER TABLE arbi_trades ADD COLUMN fx_b_exit_ts DATETIME NULL",
             # Catch-all JSON para garantir que NADA seja perdido em auditoria futura
             "ALTER TABLE arbi_trades ADD COLUMN audit_json TEXT NULL",
         ]:
@@ -5123,6 +5134,8 @@ def _db_save_arbi_trade(trade):
             bid_a,ask_a,bid_b,ask_b,bid_a_exit,ask_a_exit,bid_b_exit,ask_b_exit,
             spread_bps_a,spread_bps_b,spread_bps_a_exit,spread_bps_b_exit,
             fx_rate,fx_rate_exit,fx_ts,
+            fx_a_entry,fx_b_entry,fx_a_exit,fx_b_exit,
+            fx_a_entry_ts,fx_b_entry_ts,fx_a_exit_ts,fx_b_exit_ts,
             fx_cost,slippage_cost_a,slippage_cost_b,slippage_bps_total,
             exchange_fee_a,exchange_fee_b,broker_fee_a,broker_fee_b,
             lending_cost,lending_rate_annual,total_cost_estimated,
@@ -5140,6 +5153,7 @@ def _db_save_arbi_trade(trade):
             %s,%s,%s,%s,%s,%s,%s,%s,
             %s,%s,%s,%s,
             %s,%s,%s,
+            %s,%s,%s,%s,%s,%s,%s,%s,
             %s,%s,%s,%s,
             %s,%s,%s,%s,
             %s,%s,%s,
@@ -5182,6 +5196,8 @@ def _db_save_arbi_trade(trade):
              t.get('spread_bps_a'),t.get('spread_bps_b'),
              t.get('spread_bps_a_exit'),t.get('spread_bps_b_exit'),
              t.get('fx_rate'),t.get('fx_rate_exit'),t.get('fx_ts'),
+             t.get('fx_a_entry'),t.get('fx_b_entry'),t.get('fx_a_exit'),t.get('fx_b_exit'),
+             t.get('fx_a_entry_ts'),t.get('fx_b_entry_ts'),t.get('fx_a_exit_ts'),t.get('fx_b_exit_ts'),
              t.get('fx_cost',0),t.get('slippage_cost_a',0),t.get('slippage_cost_b',0),
              t.get('slippage_bps_total',0),
              t.get('exchange_fee_a',0),t.get('exchange_fee_b',0),
@@ -8499,6 +8515,13 @@ def arbi_scan_loop():
                             'position_size':round(pos,2),
                             'pnl':0,'pnl_pct':0,'peak_pnl_pct':0,
                             'fx_rate':spread['fx_rate'],'fx_ts':spread.get('fx_ts',_entry_ts),
+                            # [FX-POR-PERNA 06/mai/2026] Captura FX por perna no momento
+                            # da execucao de cada ordem. Para paper (delta=0), fx_a==fx_b==fx_rate.
+                            # Para real money com latencia, capturado no fill exato de cada perna.
+                            'fx_a_entry':spread['fx_rate'],
+                            'fx_b_entry':spread['fx_rate'],
+                            'fx_a_entry_ts':spread.get('signal_ts_a',_entry_ts),
+                            'fx_b_entry_ts':spread.get('signal_ts_b',_entry_ts),
                             # Timestamps Sprint 1
                             'entry_ts':_entry_ts,
                             'signal_ts_a':spread.get('signal_ts_a',_entry_ts),
@@ -8610,6 +8633,13 @@ def arbi_monitor_loop():
                             trade['price_b_usd_norm_exit']  = _sd_exit.get('price_b_usd')
                             # Cambio no momento da saida
                             trade['fx_rate_exit']           = _sd_exit.get('fx_rate')
+                            # [FX-POR-PERNA 06/mai/2026] FX capturado no fill exato de cada perna.
+                            # Paper: fx_a_exit == fx_b_exit == fx_rate_exit (execucao simultanea).
+                            # Real money: capturar no momento real de cada fill.
+                            trade['fx_a_exit']              = _sd_exit.get('fx_rate')
+                            trade['fx_b_exit']              = _sd_exit.get('fx_rate')
+                            trade['fx_a_exit_ts']           = _exit_ts
+                            trade['fx_b_exit_ts']           = _exit_ts
                             # Bid/Ask por perna no momento da saida (liquidez)
                             trade['bid_a_exit']             = _sd_exit.get('bid_a')
                             trade['ask_a_exit']             = _sd_exit.get('ask_a')

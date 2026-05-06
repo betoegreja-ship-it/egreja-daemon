@@ -5718,7 +5718,24 @@ def fetch_stock_prices():
     B3_OFF_HOURS_INTERVAL  = 30 * 60   # 30 min fora do pregão
     B3_WATCHLIST_PREGAO_IV = 60        # [v10.6-P1-3] 60s entre updates da watchlist durante pregão
 
-    if BRAPI_TOKEN:
+    # [B3-FORCE-CEDRO 06/mai/2026] Quando env B3_FORCE_CEDRO=true, pula brapi
+    # totalmente e usa Cedro como UNICA fonte de B3. Util enquanto brapi.dev
+    # esta bugada (servindo close de ontem como real-time, gerando flips de
+    # preco e EARLY_STOPs falsos).
+    _b3_force_cedro = os.environ.get('B3_FORCE_CEDRO', 'false').lower() == 'true'
+    if _b3_force_cedro and _cedro_socket and _cedro_socket.enabled:
+        log.info('[B3-FORCE-CEDRO] Pulando brapi para B3, usando Cedro Socket apenas')
+        all_b3 = list(set(b3_open_positions + b3_watchlist))
+        for s in all_b3:
+            try:
+                cd, lat = _fetch_cedro_stock(s)
+                if cd and cd.get('price', 0) > 0:
+                    with state_lock:
+                        stock_prices[s] = cd
+            except Exception as e:
+                log.debug(f'[B3-FORCE-CEDRO] {s}: {e}')
+
+    if BRAPI_TOKEN and not _b3_force_cedro:
         # [FALLBACK 06/mai/2026] Quando brapi retorna stale (>4h) ela descarta o simbolo
         # do batch_result. Para esses, tentar Cedro Socket como fallback (real-time).
         # Sem isso, posicoes ficam com preco congelado e P&L=0 indefinidamente.

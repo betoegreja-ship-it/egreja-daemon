@@ -1294,7 +1294,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path.startswith('/debug/reload-stocks-closed-from-db') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -10215,6 +10215,62 @@ def ops_void_trade(trade_id: str):
         try: conn.close()
         except Exception: pass
 
+@app.route('/debug/reload-stocks-closed-from-db', methods=['POST'])
+def debug_reload_stocks_closed():
+    """[DEBUG 06/mai] Forca reload da lista in-memory stocks_closed do banco.
+    Necessario apos batch-void que atualiza DB mas nao memoria. Tambem
+    re-sincroniza stocks_capital com saldo real do banco (somando todos
+    os pnl + position_values devolvidos)."""
+    if not (datetime.utcnow().year == 2026 and datetime.utcnow().month == 5):
+        return jsonify({'error': 'expirado'}), 403
+    conn = get_db()
+    if not conn: return jsonify({'error': 'db unavailable'}), 503
+    global stocks_closed, stocks_capital
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT id, symbol, market, asset_type, direction,
+                              entry_price, exit_price, current_price,
+                              quantity, position_value, pnl, pnl_pct,
+                              opened_at, closed_at, close_reason, status, score
+                       FROM trades
+                       WHERE asset_type='stock' AND status='CLOSED'
+                       ORDER BY closed_at DESC LIMIT 5000""")
+        rows = cur.fetchall()
+        new_list = []
+        for r in rows:
+            t = dict(r)
+            for k in ('opened_at','closed_at'):
+                v = t.get(k)
+                if v and not isinstance(v, str): t[k] = v.isoformat()
+            for k in ('entry_price','exit_price','current_price','position_value','pnl','pnl_pct'):
+                v = t.get(k)
+                if v is not None: t[k] = float(v)
+            new_list.append(t)
+        cur.close()
+        # Pegar stocks_capital recalculado
+        cur2 = conn.cursor()
+        cur2.execute("""SELECT COALESCE(SUM(amount),0) FROM capital_ledger WHERE strategy='stocks'""")
+        ledger_sum = float(cur2.fetchone()[0] or 0)
+        cur2.close()
+        with state_lock:
+            stocks_closed[:] = new_list
+            old_cap = stocks_capital
+            stocks_capital = INITIAL_CAPITAL_STOCKS + ledger_sum
+        log.warning(f'[DEBUG-RELOAD] stocks_closed: {len(new_list)} | '
+                    f'stocks_capital: {old_cap:.2f} -> {stocks_capital:.2f} (ledger sum={ledger_sum:.2f})')
+        return jsonify({
+            'stocks_closed_loaded': len(new_list),
+            'stocks_capital_old': old_cap,
+            'stocks_capital_new': stocks_capital,
+            'ledger_sum': ledger_sum,
+        })
+    except Exception as e:
+        import traceback; log.error(traceback.format_exc())
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+    finally:
+        try: conn.close()
+        except: pass
+
 @app.route('/debug/batch-void-stale-feed-2026-05-06', methods=['GET','POST'])
 def debug_batch_void_stale_feed():
     """[DEBUG 06/mai/2026] Anula em batch as trades B3 contaminadas pelo feed
@@ -10227,6 +10283,7 @@ def debug_batch_void_stale_feed():
     Endpoint sem auth por urgencia operacional. Path com sufixo de data
     diminui risco de abuso. Remover apos uso.
     """
+    global stocks_capital
     if not (datetime.utcnow().year == 2026 and datetime.utcnow().month == 5):
         return jsonify({'error': 'endpoint expirado'}), 403
     conn = get_db()
@@ -10301,12 +10358,24 @@ def debug_batch_void_stale_feed():
                     (sym, -orig_pnl, tid, f'VOID:stocks:{tid}',
                      json.dumps({'reason':'brapi feed stale 06/05','original_pnl':orig_pnl})))
                 c2.close()
+                # [FIX 06/mai] tambem atualizar lista in-memory stocks_closed
+                # (o /trades endpoint serve dessa lista, nao do DB direto)
+                with state_lock:
+                    for tc in stocks_closed:
+                        if tc.get('id') == tid:
+                            tc['pnl'] = 0
+                            tc['pnl_pct'] = 0
+                            tc['close_reason'] = 'VOIDED'
+                            tc['voided_at'] = datetime.utcnow().isoformat()
+                            tc['original_pnl'] = orig_pnl
+                            break
+                    # Atualizar capital legacy (reverter o impacto que estava no saldo)
+                    stocks_capital += (-orig_pnl)
                 results['closed_voided'].append({'id':tid,'sym':sym,'pnl_revertido':orig_pnl})
             except Exception as e:
                 results['errors'].append({'id':tid,'err':str(e)})
 
         # Processar open: marcar como CLOSED + VOIDED, devolver capital reservado
-        global stocks_capital
         for row in suspect_open:
             tid = row['id']; sym = row['symbol']
             pos_val = float(row.get('position_value') or 0)

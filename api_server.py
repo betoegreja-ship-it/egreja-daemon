@@ -10218,16 +10218,21 @@ def ops_void_trade(trade_id: str):
 @app.route('/debug/reload-stocks-closed-from-db', methods=['POST'])
 def debug_reload_stocks_closed():
     """[DEBUG 06/mai] Forca reload da lista in-memory stocks_closed do banco.
-    Necessario apos batch-void que atualiza DB mas nao memoria. Tambem
-    re-sincroniza stocks_capital com saldo real do banco (somando todos
-    os pnl + position_values devolvidos)."""
+    [FIX 06/mai/2026] Calculo correto de stocks_capital:
+      stocks_capital = INITIAL_CAPITAL_STOCKS
+                     + sum(pnl de stocks CLOSED)
+                     - sum(position_value de stocks OPEN)
+    Versao anterior somava TODO o capital_ledger (RESERVE+RELEASE+PNL+MANUAL),
+    o que dava centenas de milhoes — pq RESERVE/RELEASE de trades historicas
+    nao se cancelam em SUM(amount). Bug corrigido."""
+    global stocks_closed, stocks_capital
     if not (datetime.utcnow().year == 2026 and datetime.utcnow().month == 5):
         return jsonify({'error': 'expirado'}), 403
     conn = get_db()
     if not conn: return jsonify({'error': 'db unavailable'}), 503
-    global stocks_closed, stocks_capital
     try:
         cur = conn.cursor(dictionary=True)
+        # Carregar stocks closed
         cur.execute("""SELECT id, symbol, market, asset_type, direction,
                               entry_price, exit_price, current_price,
                               quantity, position_value, pnl, pnl_pct,
@@ -10237,6 +10242,7 @@ def debug_reload_stocks_closed():
                        ORDER BY closed_at DESC LIMIT 5000""")
         rows = cur.fetchall()
         new_list = []
+        sum_pnl_closed = 0.0
         for r in rows:
             t = dict(r)
             for k in ('opened_at','closed_at'):
@@ -10246,23 +10252,30 @@ def debug_reload_stocks_closed():
                 v = t.get(k)
                 if v is not None: t[k] = float(v)
             new_list.append(t)
+            sum_pnl_closed += t.get('pnl') or 0
         cur.close()
-        # Pegar stocks_capital recalculado
+        # Sum position_value das open (capital reservado)
         cur2 = conn.cursor()
-        cur2.execute("""SELECT COALESCE(SUM(amount),0) FROM capital_ledger WHERE strategy='stocks'""")
-        ledger_sum = float(cur2.fetchone()[0] or 0)
+        cur2.execute("""SELECT COALESCE(SUM(position_value),0) FROM trades
+                        WHERE asset_type='stock' AND status='OPEN'""")
+        sum_pos_open = float(cur2.fetchone()[0] or 0)
         cur2.close()
+        # Calcular capital correto
+        new_capital = INITIAL_CAPITAL_STOCKS + sum_pnl_closed - sum_pos_open
         with state_lock:
             stocks_closed[:] = new_list
             old_cap = stocks_capital
-            stocks_capital = INITIAL_CAPITAL_STOCKS + ledger_sum
+            stocks_capital = new_capital
         log.warning(f'[DEBUG-RELOAD] stocks_closed: {len(new_list)} | '
-                    f'stocks_capital: {old_cap:.2f} -> {stocks_capital:.2f} (ledger sum={ledger_sum:.2f})')
+                    f'stocks_capital: {old_cap:.2f} -> {new_capital:.2f} | '
+                    f'INITIAL={INITIAL_CAPITAL_STOCKS} pnl_closed={sum_pnl_closed:.2f} pos_open={sum_pos_open:.2f}')
         return jsonify({
             'stocks_closed_loaded': len(new_list),
             'stocks_capital_old': old_cap,
-            'stocks_capital_new': stocks_capital,
-            'ledger_sum': ledger_sum,
+            'stocks_capital_new': new_capital,
+            'INITIAL_CAPITAL_STOCKS': INITIAL_CAPITAL_STOCKS,
+            'sum_pnl_closed': sum_pnl_closed,
+            'sum_position_value_open': sum_pos_open,
         })
     except Exception as e:
         import traceback; log.error(traceback.format_exc())

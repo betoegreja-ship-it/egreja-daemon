@@ -1294,7 +1294,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path.startswith('/debug/reload-stocks-closed-from-db') or request.path.startswith('/debug/recalc-arbi-fx') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path.startswith('/debug/reload-stocks-closed-from-db') or request.path.startswith('/debug/recalc-arbi-fx') or request.path.startswith('/debug/reload-arbi-from-db') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -10384,6 +10384,56 @@ def debug_reload_stocks_closed():
         try: conn.close()
         except: pass
 
+@app.route('/debug/reload-arbi-from-db', methods=['POST'])
+def debug_reload_arbi():
+    """[DEBUG 06/mai] Forca reload da lista arbi_closed do banco. Inclui os
+    4 campos fx_a_entry, fx_b_entry, fx_a_exit, fx_b_exit recentemente adicionados.
+    Necessario apos batch recalc-arbi-fx pra que /arbitrage/trades reflita os
+    valores atualizados (que estao no banco mas nao na memoria)."""
+    if not (datetime.utcnow().year == 2026 and datetime.utcnow().month == 5):
+        return jsonify({'error': 'expirado'}), 403
+    global arbi_closed
+    conn = get_db()
+    if not conn: return jsonify({'error': 'db unavailable'}), 503
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT * FROM arbi_trades
+                       WHERE status='CLOSED'
+                       ORDER BY closed_at DESC LIMIT 5000""")
+        rows = cur.fetchall()
+        new_list = []
+        for r in rows:
+            t = dict(r)
+            for k in ('opened_at','closed_at','entry_ts','exit_ts','signal_ts_a','signal_ts_b',
+                      'fx_a_entry_ts','fx_b_entry_ts','fx_a_exit_ts','fx_b_exit_ts','fx_ts'):
+                v = t.get(k)
+                if v and not isinstance(v, str): t[k] = v.isoformat()
+            for k in ('entry_price','exit_price','current_price','position_size','pnl','pnl_pct',
+                      'fx_rate','fx_rate_exit','fx_a_entry','fx_b_entry','fx_a_exit','fx_b_exit',
+                      'price_a_entry','price_b_entry','price_a_exit','price_b_exit'):
+                v = t.get(k)
+                if v is not None:
+                    try: t[k] = float(v)
+                    except: pass
+            new_list.append(t)
+        cur.close()
+        with state_lock:
+            old_n = len(arbi_closed)
+            arbi_closed[:] = new_list
+        log.warning(f'[DEBUG-RELOAD-ARBI] arbi_closed: {old_n} -> {len(new_list)}')
+        return jsonify({
+            'arbi_closed_loaded': len(new_list),
+            'old_count': old_n,
+            'with_fx_per_leg': sum(1 for t in new_list if t.get('fx_a_entry')),
+            'with_fx_baseline': sum(1 for t in new_list if t.get('fx_rate') and t.get('fx_rate_exit')),
+        })
+    except Exception as e:
+        import traceback; log.error(traceback.format_exc())
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+    finally:
+        try: conn.close()
+        except: pass
+
 @app.route('/debug/recalc-arbi-fx', methods=['POST'])
 def debug_recalc_arbi_fx():
     """[DEBUG 06/mai V2] Recalcula PnL de TODAS arbi closed (incl. trades antigas
@@ -10554,6 +10604,10 @@ def debug_recalc_arbi_fx():
                             ac['pnl'] = pnl_new; ac['pnl_pct'] = pnl_pct_new
                             ac['fx_rate'] = round(fx_real_e, 4)
                             ac['fx_rate_exit'] = round(fx_real_x, 4)
+                            ac['fx_a_entry'] = round(fx_real_e, 4)
+                            ac['fx_b_entry'] = round(fx_real_e, 4)
+                            ac['fx_a_exit'] = round(fx_real_x, 4)
+                            ac['fx_b_exit'] = round(fx_real_x, 4)
                             break
                     arbi_capital += delta_pnl
                 delta_total += delta_pnl

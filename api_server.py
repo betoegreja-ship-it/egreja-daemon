@@ -6536,9 +6536,68 @@ def stock_execution_worker():
                 sp_snap = dict(stock_prices)
             now_iso = datetime.utcnow().isoformat()
             rows = []
+            # [HARD-GATE 06/mai/2026] Bloquear entrada se feed estiver stale.
+            # B3: rejeita se updated_at > 10min OU regularMarketTime nao for de hoje
+            # NYSE: rejeita se updated_at > 10min (Polygon e mais confiavel)
+            # Sem essa gate, sistema abre trade com preco de ontem -> P&L corrompido,
+            # exit fica preso, FLAT_EXIT forca fechamento sem operacao real.
+            FEED_MAX_AGE_MIN = float(os.environ.get('FEED_MAX_AGE_MIN', 10))
+            FEED_CIRCUIT_PCT = float(os.environ.get('FEED_CIRCUIT_PCT', 50))  # %
+            now_dt = datetime.utcnow()
+            today_str = now_dt.strftime('%Y-%m-%d')
+            # [CIRCUIT-BREAKER 06/mai/2026] Se >50% dos B3 monitorados estao stale,
+            # pausar globalmente entradas B3 (não só por sÍmbolo). Evita que single
+            # outage de provider resulte em entradas parciais ruins.
+            _b3_total = 0; _b3_stale = 0
+            for _s, _pd in sp_snap.items():
+                if not _pd or not re.match(r'^[A-Z]{4}[0-9]+$', _s): continue
+                _b3_total += 1
+                _u = _pd.get('updated_at') or ''
+                _mt = _pd.get('regularMarketTime') or ''
+                _stale = False
+                if _u:
+                    try:
+                        _u_dt = datetime.fromisoformat(_u.replace('Z',''))
+                        if (now_dt - _u_dt).total_seconds()/60 > FEED_MAX_AGE_MIN: _stale = True
+                    except: pass
+                if not _stale and _mt and _mt[:10] != today_str and is_b3_open(): _stale = True
+                if _stale: _b3_stale += 1
+            _b3_stale_pct = (_b3_stale / _b3_total * 100) if _b3_total else 0
+            _b3_circuit_open = _b3_stale_pct >= FEED_CIRCUIT_PCT and _b3_total >= 5
+            if _b3_circuit_open:
+                log.error(f'[B3-CIRCUIT-BREAKER] {_b3_stale}/{_b3_total} ({_b3_stale_pct:.0f}%) '
+                          f'stale >= threshold {FEED_CIRCUIT_PCT}% — TODAS entradas B3 bloqueadas')
+                # alerta 1x por hora pra nao spammar
+                _last_circuit_alert = getattr(stock_execution_worker, '_last_circuit_alert_ts', 0)
+                if time.time() - _last_circuit_alert > 3600:
+                    try:
+                        send_whatsapp(f'🚨 B3 CIRCUIT BREAKER: {_b3_stale_pct:.0f}% feed stale '
+                                      f'({_b3_stale}/{_b3_total}). Entradas B3 pausadas. Verificar brapi/Cedro.')
+                    except: pass
+                    stock_execution_worker._last_circuit_alert_ts = time.time()
             for sym, pd_data in sp_snap.items():
                 if not pd_data or pd_data.get('price', 0) <= 0: continue
                 mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
+                # ── CIRCUIT-BREAKER B3: pausa global se feed degradado ──────────
+                if mkt_type == 'B3' and _b3_circuit_open:
+                    continue
+                # ── HARD-GATE: idade do dado ────────────────────────────────────
+                _upd_at = pd_data.get('updated_at') or ''
+                if _upd_at:
+                    try:
+                        _upd_dt = datetime.fromisoformat(_upd_at.replace('Z',''))
+                        _age_min = (now_dt - _upd_dt).total_seconds() / 60
+                        if _age_min > FEED_MAX_AGE_MIN:
+                            log.warning(f'[STALE-FEED-BLOCK] {sym}: updated_at {_upd_at} eh {_age_min:.1f}min velho — sem trade')
+                            continue
+                    except Exception: pass
+                # ── HARD-GATE: regularMarketTime do brapi (B3 only) ─────────────
+                if mkt_type == 'B3':
+                    _mkt_time = pd_data.get('regularMarketTime') or ''
+                    if _mkt_time and _mkt_time[:10] != today_str and is_b3_open():
+                        log.warning(f'[STALE-FEED-BLOCK] {sym} B3: regularMarketTime {_mkt_time[:10]} '
+                                    f'!= hoje {today_str} (B3 aberta) — sem trade')
+                        continue
                 rsi  = pd_data.get('rsi', 50) or 50
                 ema9 = pd_data.get('ema9', 0)  or 0
                 ema21= pd_data.get('ema21',0)  or 0

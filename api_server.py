@@ -10471,7 +10471,39 @@ def debug_crypto_filter_trace():
                     out['symbols'].append(row); continue
             except Exception as e:
                 row['dir_err'] = str(e)
-            row['blocked_at'] = 'PASSOU_TODOS_FILTROS_PRE_SCORE'
+            # Score real do market_signals (ultimo cache do signals)
+            try:
+                with state_lock:
+                    sig = market_signals.get(sym) or {}
+                row['score'] = sig.get('score')
+                row['signal'] = sig.get('signal')
+                if sig.get('score') is not None:
+                    if sig.get('score') < MIN_SCORE_AUTO_CRYPTO:
+                        row['blocked_at'] = f'SCORE_BELOW_THRESHOLD ({sig.get("score")} < {MIN_SCORE_AUTO_CRYPTO})'
+                        out['symbols'].append(row); continue
+            except Exception as e:
+                row['score_err'] = str(e)
+            # Conviction filter
+            try:
+                # Conviction nao tem helper acessivel aqui; vou simular: usa learning_confidence
+                # se _conv_min existe (CRYPTO_MIN_CONVICTION), checar
+                row['conviction_threshold'] = CRYPTO_MIN_CONVICTION
+            except: pass
+            # Symbol cooldown
+            try:
+                _last = symbol_cooldown.get(display, 0)
+                _cd_age = time.time() - _last
+                row['cooldown_age_s'] = round(_cd_age, 1)
+                if _cd_age < SYMBOL_COOLDOWN_SEC:
+                    row['blocked_at'] = f'COOLDOWN ({_cd_age:.0f}s < {SYMBOL_COOLDOWN_SEC}s)'
+                    out['symbols'].append(row); continue
+            except Exception as e:
+                row['cd_err'] = str(e)
+            # Capital free check
+            if crypto_capital <= 0:
+                row['blocked_at'] = f'NO_CAPITAL_CRYPTO (crypto_capital={crypto_capital})'
+                out['symbols'].append(row); continue
+            row['blocked_at'] = 'PASSOU_TODOS_FILTROS — DEVERIA ABRIR'
             out['symbols'].append(row)
     except Exception as e:
         import traceback; out['error'] = traceback.format_exc()

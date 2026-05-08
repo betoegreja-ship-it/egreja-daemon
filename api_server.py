@@ -1294,7 +1294,7 @@ def auth_check():
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path.startswith('/debug/reload-stocks-closed-from-db') or request.path.startswith('/debug/recalc-arbi-fx') or request.path.startswith('/debug/reload-arbi-from-db') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
+    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path.startswith('/debug/reload-stocks-closed-from-db') or request.path.startswith('/debug/recalc-arbi-fx') or request.path.startswith('/debug/reload-arbi-from-db') or request.path.startswith('/debug/crypto-filter-trace') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
@@ -6629,14 +6629,20 @@ def stock_execution_worker():
                 if not _pd or not re.match(r'^[A-Z]{4}[0-9]+$', _s): continue
                 _b3_total += 1
                 _u = _pd.get('updated_at') or ''
-                _mt = _pd.get('regularMarketTime') or ''
+                _last_ts = _pd.get('last_candle_ts')
                 _stale = False
+                # Idade do updated_at (feed framework)
                 if _u:
                     try:
                         _u_dt = datetime.fromisoformat(_u.replace('Z',''))
                         if (now_dt - _u_dt).total_seconds()/60 > FEED_MAX_AGE_MIN: _stale = True
                     except: pass
-                if not _stale and _mt and _mt[:10] != today_str and is_b3_open(): _stale = True
+                # [FIX 08/mai] usar last_candle_ts (real-time) ao inves de regularMarketTime
+                # (que continua bugado top-level na brapi)
+                if not _stale and _last_ts and is_b3_open():
+                    try:
+                        if (time.time() - float(_last_ts)) / 60 > 30: _stale = True
+                    except: pass
                 if _stale: _b3_stale += 1
             _b3_stale_pct = (_b3_stale / _b3_total * 100) if _b3_total else 0
             _b3_circuit_open = _b3_stale_pct >= FEED_CIRCUIT_PCT and _b3_total >= 5
@@ -6667,13 +6673,21 @@ def stock_execution_worker():
                             log.warning(f'[STALE-FEED-BLOCK] {sym}: updated_at {_upd_at} eh {_age_min:.1f}min velho — sem trade')
                             continue
                     except Exception: pass
-                # ── HARD-GATE: regularMarketTime do brapi (B3 only) ─────────────
+                # ── HARD-GATE: validar com last_candle_ts (B3) ──────────────────
+                # [FIX 08/mai/2026] regularMarketTime da brapi continua bugado
+                # (campo top-level retorna data de fechamento de ontem). Mas o
+                # last_candle_ts (timestamp do candle 1m real-time) reflete a
+                # realidade. Usar ele em vez de regularMarketTime.
                 if mkt_type == 'B3':
-                    _mkt_time = pd_data.get('regularMarketTime') or ''
-                    if _mkt_time and _mkt_time[:10] != today_str and is_b3_open():
-                        log.warning(f'[STALE-FEED-BLOCK] {sym} B3: regularMarketTime {_mkt_time[:10]} '
-                                    f'!= hoje {today_str} (B3 aberta) — sem trade')
-                        continue
+                    _last_ts = pd_data.get('last_candle_ts')
+                    if _last_ts and is_b3_open():
+                        try:
+                            _candle_age_min = (time.time() - float(_last_ts)) / 60
+                            if _candle_age_min > 30:
+                                log.warning(f'[STALE-CANDLE-BLOCK] {sym} B3: last_candle eh '
+                                            f'{_candle_age_min:.1f}min velho — sem trade')
+                                continue
+                        except Exception: pass
                 rsi  = pd_data.get('rsi', 50) or 50
                 ema9 = pd_data.get('ema9', 0)  or 0
                 ema21= pd_data.get('ema21',0)  or 0
@@ -10383,6 +10397,85 @@ def debug_reload_stocks_closed():
     finally:
         try: conn.close()
         except: pass
+
+@app.route('/debug/crypto-filter-trace', methods=['GET'])
+def debug_crypto_filter_trace():
+    """[DEBUG 08/mai] Roda os mesmos filtros de auto_trade_crypto e retorna
+    em JSON onde cada simbolo seria bloqueado/aceito. Sem usar o trade real.
+    Util pra entender porque sistema nao abre nenhuma trade crypto."""
+    if not (datetime.utcnow().year == 2026 and datetime.utcnow().month == 5):
+        return jsonify({'error': 'expirado'}), 403
+    out = {'now': datetime.utcnow().isoformat(), 'symbols': []}
+    try:
+        with state_lock:
+            sp = dict(crypto_prices)
+            mom = dict(crypto_momentum)
+            tickers = dict(crypto_tickers)
+        out['MIN_SCORE_AUTO_CRYPTO'] = MIN_SCORE_AUTO_CRYPTO
+        out['MAX_POSITIONS_CRYPTO'] = MAX_POSITIONS_CRYPTO
+        out['HARD_BLACKLIST'] = list(HARD_BLACKLIST_CRYPTO)
+        out['LATE_ENTRY_BLOCK'] = LATE_ENTRY_CRYPTO_BLOCK_PCT
+        out['LATE_ENTRY_HEAVY'] = LATE_ENTRY_CRYPTO_HEAVY_PCT
+        out['crypto_open_count'] = len(crypto_open)
+        out['crypto_capital'] = round(crypto_capital, 2)
+        out['regime'] = market_regime.get('mode')
+        for sym in CRYPTO_SYMBOLS:
+            display = sym.replace('USDT','')
+            price = sp.get(sym, 0)
+            change_24h = mom.get(sym, 0)
+            row = {'sym': display, 'price': price, 'change_24h': round(change_24h, 2)}
+            if price <= 0:
+                row['blocked_at'] = 'price<=0'
+                out['symbols'].append(row); continue
+            if abs(change_24h) < 0.3:
+                row['blocked_at'] = f'change_24h={change_24h:.2f} < 0.3 (mercado lateral)'
+                out['symbols'].append(row); continue
+            if display in HARD_BLACKLIST_CRYPTO:
+                row['blocked_at'] = 'HARD_BLACKLIST'
+                out['symbols'].append(row); continue
+            direction = 'LONG' if change_24h > 0 else 'SHORT'
+            row['direction'] = direction
+            # Late-entry check
+            try:
+                _le_delta, _le_blocked, _le_reason = _late_entry_adjust(change_24h, direction, 'crypto')
+                row['late_entry_check'] = {'delta': _le_delta, 'blocked': _le_blocked, 'reason': _le_reason}
+                if _le_blocked:
+                    row['blocked_at'] = f'LATE_ENTRY_BLOCK ({_le_reason})'
+                    out['symbols'].append(row); continue
+            except Exception as e:
+                row['late_entry_err'] = str(e)
+            # DD check
+            try:
+                _dd_blocked, _dd_reason = check_strategy_daily_dd('crypto')
+                row['dd_check'] = {'blocked': _dd_blocked, 'reason': _dd_reason}
+                if _dd_blocked:
+                    row['blocked_at'] = f'DAILY_DD_BLOCK ({_dd_reason})'
+                    out['symbols'].append(row); continue
+            except Exception as e:
+                row['dd_err'] = str(e)
+            # Symbol blacklist
+            try:
+                _bl_blocked, _bl_reason = is_symbol_blacklisted(display)
+                row['blacklist_check'] = {'blocked': _bl_blocked, 'reason': _bl_reason}
+                if _bl_blocked:
+                    row['blocked_at'] = f'AUTO_BLACKLIST ({_bl_reason})'
+                    out['symbols'].append(row); continue
+            except Exception as e:
+                row['blacklist_err'] = str(e)
+            # Directional
+            try:
+                _dir_blocked, _dir_reason, _ = check_directional_exposure(direction, 'crypto')
+                row['dir_check'] = {'blocked': _dir_blocked, 'reason': _dir_reason}
+                if _dir_blocked:
+                    row['blocked_at'] = f'DIR_BLOCK ({_dir_reason})'
+                    out['symbols'].append(row); continue
+            except Exception as e:
+                row['dir_err'] = str(e)
+            row['blocked_at'] = 'PASSOU_TODOS_FILTROS_PRE_SCORE'
+            out['symbols'].append(row)
+    except Exception as e:
+        import traceback; out['error'] = traceback.format_exc()
+    return jsonify(out)
 
 @app.route('/debug/reload-arbi-from-db', methods=['POST'])
 def debug_reload_arbi():

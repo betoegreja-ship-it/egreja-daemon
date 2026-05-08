@@ -10471,18 +10471,35 @@ def debug_crypto_filter_trace():
                     out['symbols'].append(row); continue
             except Exception as e:
                 row['dir_err'] = str(e)
-            # Score real do market_signals (ultimo cache do signals)
+            # Score real — calcula INLINE igual ao auto_trade_crypto
             try:
-                with state_lock:
-                    sig = market_signals.get(sym) or {}
-                row['score'] = sig.get('score')
-                row['signal'] = sig.get('signal')
-                if sig.get('score') is not None:
-                    if sig.get('score') < MIN_SCORE_AUTO_CRYPTO:
-                        row['blocked_at'] = f'SCORE_BELOW_THRESHOLD ({sig.get("score")} < {MIN_SCORE_AUTO_CRYPTO})'
-                        out['symbols'].append(row); continue
+                kline_cache_key = f'klines:{sym}'
+                klines_data = _get_cached_candles(kline_cache_key, ttl_min=5) or {}
+                if not klines_data:
+                    klines_data = _fetch_binance_klines(sym, 100)
+                closes_k = klines_data.get('closes', [])
+                highs_k  = klines_data.get('highs', [])
+                lows_k   = klines_data.get('lows', [])
+                vols_k   = klines_data.get('volumes', [])
+                if len(closes_k) < 30:
+                    row['blocked_at'] = f'V3_CRYPTO_SKIP closes={len(closes_k)}<30'
+                    out['symbols'].append(row); continue
+                from modules.score_engine_v2 import compute_score_v3 as _csv3c
+                _rc = _csv3c(closes_k, highs_k, lows_k, vols_k,
+                             factor_stats_cache=factor_stats_cache,
+                             pattern_stats_cache=pattern_stats_cache,
+                             asset_type='crypto')
+                _score = _rc.get('score')
+                row['score_v3'] = _score
+                row['regime_v2'] = _rc.get('regime')
+                row['signal_v2'] = _rc.get('signal')
+                if _score is None or _score < MIN_SCORE_AUTO_CRYPTO:
+                    row['blocked_at'] = f'SCORE_V3_BELOW ({_score} < {MIN_SCORE_AUTO_CRYPTO})'
+                    out['symbols'].append(row); continue
             except Exception as e:
                 row['score_err'] = str(e)
+                row['blocked_at'] = f'SCORE_ERR ({type(e).__name__})'
+                out['symbols'].append(row); continue
             # Conviction filter
             try:
                 # Conviction nao tem helper acessivel aqui; vou simular: usa learning_confidence

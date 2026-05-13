@@ -11407,6 +11407,10 @@ def signals():
                 sig['ema9']=cached.get('ema9',sig.get('ema9',0)); sig['ema21']=cached.get('ema21',sig.get('ema21',0))
                 sig['ema50']=cached.get('ema50',sig.get('ema50',0))
                 sig['ema50_real']=cached.get('ema50_real',False); sig['rsi_real']=cached.get('rsi_real',False)
+                # [DIAG 2026-05-13] Expor freshness/source para diagnostico HARD-GATE
+                sig['_updated_at']=cached.get('updated_at','')
+                sig['_last_candle_ts']=cached.get('last_candle_ts')
+                sig['_source']=cached.get('source','?')
 
         # [v10.9] Gerar stock_signals diretamente do stock_prices em memória
         # (como crypto faz com crypto_prices) — independente do market_signals no banco.
@@ -11467,6 +11471,10 @@ def signals():
                 'created_at': now_iso,
                 'trade_open': sym in open_stock_syms,
                 'market_open': mkt_open,
+                # [DIAG 2026-05-13] Expor freshness/source para diagnostico HARD-GATE
+                '_updated_at': pd.get('updated_at', ''),
+                '_last_candle_ts': pd.get('last_candle_ts'),
+                '_source': pd.get('source', '?'),
             })
         rows = rows + stock_signals_from_mem
         crypto_signals=[]

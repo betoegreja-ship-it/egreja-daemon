@@ -6827,7 +6827,9 @@ def stock_execution_worker():
                     _l = pd_data.get('lows_series', [])
                     _v = pd_data.get('volumes_series', [])
                     if len(_c) < 30 or len(_h) != len(_c) or len(_l) != len(_c):
-                        log.debug(f"V3_STOCK_SKIP {sym}: séries insuficientes (closes={len(_c)})")
+                        # [DIAG 2026-05-25] mudou de debug -> warning: bug suspeito de bloquear
+                        # silenciosamente B3 quando warm-cache nao tem closes_series.
+                        log.warning(f"V3_STOCK_SKIP {sym}: series insuficientes (closes={len(_c)} highs={len(_h)} lows={len(_l)} src={pd_data.get('source','?')})")
                         continue
                     _r = _csv3(_c, _h, _l, _v,
                                factor_stats_cache=factor_stats_cache,

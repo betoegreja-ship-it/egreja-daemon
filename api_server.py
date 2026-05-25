@@ -5683,21 +5683,48 @@ def _fetch_single_stock(sym: str) -> tuple:
         price  = float(meta.get('regularMarketPrice') or 0)
         prev   = float(meta.get('chartPreviousClose') or 0)
         if price <= 0: return None, lat
-        closes = [c for c in data.get('indicators', {}).get('quote', [{}])[0].get('close', []) if c]
+        # [FIX 2026-05-25] Yahoo path nao populava highs_series/lows_series/volumes_series.
+        # Resultado: V3_STOCK_SKIP silencioso (log.debug invisivel) bloqueando 100% das
+        # entradas para qualquer ticker que caisse no Yahoo (especialmente ADRs/NYSE
+        # quando Polygon falha). Mesmo bug pattern documentado em v10.48-HOTFIX para brapi-cold.
+        _q = data.get('indicators', {}).get('quote', [{}])[0]
+        _raw_c = _q.get('close', [])
+        _raw_h = _q.get('high', [])
+        _raw_l = _q.get('low', [])
+        _raw_v = _q.get('volume', [])
+        # Filtrar barras com fechamento valido E alinhar por indice (preserva relacao 1:1
+        # entre arrays close/high/low/volume para o calculo de ATR e Ichimoku no V3).
+        closes, highs, lows, volumes = [], [], [], []
+        for i, c in enumerate(_raw_c):
+            if c is None: continue
+            h = _raw_h[i] if i < len(_raw_h) else None
+            l = _raw_l[i] if i < len(_raw_l) else None
+            v = _raw_v[i] if i < len(_raw_v) else None
+            if h is None or l is None: continue  # barra inutil para ATR
+            closes.append(float(c))
+            highs.append(float(h))
+            lows.append(float(l))
+            volumes.append(float(v) if v is not None else 0.0)
         n = len(closes)
         ema9  = _ema(closes, 9)  if n >= 9  else price
         ema21 = _ema(closes, 21) if n >= 21 else price
         ema50 = _ema(closes, 50) if n >= 50 else price
         rsi   = _rsi(closes)     if n >= 15 else 50.0
-        atr   = _calc_atr(closes, [], [], 14)
+        atr   = _calc_atr(closes, highs, lows, 14) if n >= 15 else 0.0
         atr_pct = round((atr / price) * 100, 3) if price > 0 and atr > 0 else 0.0
+        vol_today = volumes[-1] if volumes else 0
+        avg_vol20 = sum(volumes[-20:]) / len(volumes[-20:]) if len(volumes) >= 20 else 0
+        vol_ratio = round(vol_today / avg_vol20, 3) if avg_vol20 > 0 else 0.0
         result = {
             'price': price, 'prev': prev,
             'change_pct': round((price / prev - 1) * 100, 2) if prev > 0 else 0,
             'ema9': round(ema9, 4), 'ema21': round(ema21, 4), 'ema50': round(ema50, 4),
-            'rsi': round(rsi, 1), 'atr_pct': atr_pct, 'volume_ratio': 0.0,
+            'rsi': round(rsi, 1), 'atr_pct': atr_pct, 'volume_ratio': vol_ratio,
             'ema9_real': n >= 9, 'ema21_real': n >= 21, 'ema50_real': n >= 50, 'rsi_real': n >= 15,
             'candles_available': n, 'market': 'B3' if sym.endswith('.SA') else 'NYSE',
+            # [FIX 2026-05-25] expor series para compute_score_v3 (mesma fix que brapi-cold)
+            'closes_series': closes, 'highs_series': highs,
+            'lows_series': lows, 'volumes_series': volumes,
             'source': 'Yahoo', 'updated_at': datetime.utcnow().isoformat()
         }
         record_data_quality(display, 'Yahoo-3mo', lat, True)

@@ -6639,6 +6639,13 @@ def stock_execution_worker():
                 sp_snap = dict(stock_prices)
             now_iso = datetime.utcnow().isoformat()
             rows = []
+            # [DIAG 2026-05-27] log inicio de cycle e contadores de gates
+            _diag_counts = {'total': 0, 'price0': 0, 'circuit': 0,
+                            'stale_feed': 0, 'stale_candle': 0,
+                            'pattern_weak': 0, 'temporal': 0, 'composite': 0,
+                            'v3_skip': 0, 'v3_fail': 0, 'late_block': 0,
+                            'manter': 0, 'reached_rows': 0}
+            log.info(f'[STOCK-LOOP-START] symbols={len(sp_snap)} b3_open={is_b3_open()} nyse_open={is_nyse_open()}')
             # [HARD-GATE 06/mai/2026] Bloquear entrada se feed estiver stale.
             # B3: rejeita se updated_at > 10min OU regularMarketTime nao for de hoje
             # NYSE: rejeita se updated_at > 10min (Polygon e mais confiavel)
@@ -6685,10 +6692,14 @@ def stock_execution_worker():
                     except: pass
                     stock_execution_worker._last_circuit_alert_ts = time.time()
             for sym, pd_data in sp_snap.items():
-                if not pd_data or pd_data.get('price', 0) <= 0: continue
+                _diag_counts['total'] += 1
+                if not pd_data or pd_data.get('price', 0) <= 0:
+                    _diag_counts['price0'] += 1
+                    continue
                 mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
                 # ── CIRCUIT-BREAKER B3: pausa global se feed degradado ──────────
                 if mkt_type == 'B3' and _b3_circuit_open:
+                    _diag_counts['circuit'] += 1
                     continue
                 # ── HARD-GATE: idade do dado ────────────────────────────────────
                 _upd_at = pd_data.get('updated_at') or ''
@@ -6794,6 +6805,7 @@ def stock_execution_worker():
                 _is_weak_long  = (_pre_dir == 'LONG'  and score < MIN_SCORE_AUTO + 5)
                 _is_weak_short = (_pre_dir == 'SHORT' and score > (100 - MIN_SCORE_AUTO - 5))
                 if _pattern_blocked and (_is_weak_long or _is_weak_short):
+                    _diag_counts['pattern_weak'] += 1
                     continue  # bloquear sinal fraco de padrão ruim
                 # [v10.13] Ajuste temporal para stocks
                 _now_s = datetime.utcnow()
@@ -6804,7 +6816,7 @@ def stock_execution_worker():
                 # SHORTs têm comportamento diferente em janelas ruins para LONGs
                 _pre_temporal_dir = 'SHORT' if score <= 50 else 'LONG'
                 if _st_blocked and _pre_temporal_dir == 'LONG':
-                    log.debug(f"STOCK_TEMPORAL_BLOCK: {sym} — {_st_reason}")
+                    log.warning(f"STOCK_TEMPORAL_BLOCK: {sym} — {_st_reason}")
                     continue
                 elif _st_blocked and _pre_temporal_dir == 'SHORT':
                     _st_adj = -5  # penaliza leve mas não bloqueia SHORT
@@ -6837,7 +6849,7 @@ def stock_execution_worker():
                 except Exception as _ge:
                     _disc_adj, _disc_blocked, _disc_key = 0, False, ''
                 if _disc_blocked:
-                    log.debug(f"COMPOSITE_BLOCK stock {sym}: {_disc_key}")
+                    log.warning(f"COMPOSITE_BLOCK stock {sym}: {_disc_key}")
                     continue
                 if _disc_adj != 0:
                     score = max(0, min(100, score + _disc_adj))
@@ -6891,6 +6903,9 @@ def stock_execution_worker():
                     log.info(f'[LATE-ENTRY-PENALTY] {sym} dir={_le_direction} change={_le_change_pct:+.2f}% score {_score_pre_le}->{score} ({_le_reason})')
 
                 signal_val = 'COMPRA' if score >= MIN_SCORE_AUTO else ('VENDA' if score <= (100-MIN_SCORE_AUTO) else 'MANTER')  # [v10.24-FIX] was MIN_SCORE_AUTO_CRYPTO
+                if signal_val == 'MANTER':
+                    _diag_counts['manter'] += 1
+                _diag_counts['reached_rows'] += 1
                 rows.append({
                     'symbol': sym, 'price': pd_data.get('price', 0),
                     'score': score, 'signal': signal_val,
@@ -6955,7 +6970,7 @@ def stock_execution_worker():
                         _p_now  = pd_data.get('price', 0)
                         _p_5ago = _hist[-5] if len(_hist) >= 5 else _hist[0]
                         if _p_5ago > 0 and (_p_now - _p_5ago) / _p_5ago * 100 < -5.0:
-                            log.debug(f'TREND_FILTER: {sym} LONG bloqueado — queda {(_p_now-_p_5ago)/_p_5ago*100:.1f}% em 5 períodos')
+                            log.warning(f'TREND_FILTER: {sym} LONG bloqueado — queda {(_p_now-_p_5ago)/_p_5ago*100:.1f}% em 5 periodos')
                             continue
 
                 # ── Deduplicação + política de re-avaliação ─────────────────────────────────
@@ -7117,6 +7132,7 @@ def stock_execution_worker():
                 # (definicoes movidas para cima — v.acima)
 
                 if not mkt_open:
+                    log.warning(f'[MARKET-CLOSED-BLOCK] {sym} {mkt} — market_open_for retornou False')
                     _confirmed_sig_id = record_signal_event(sig_enriched, features, feat_hash, conf, insight,
                                         source_type='stock_signal_db',
                                         existing_signal_id=_sig_pre_id,
@@ -7331,6 +7347,11 @@ def stock_execution_worker():
                 if score>=ALERT_MIN_SCORE: alert_signal(dict(sig))
                 _last_trade_opened['stocks'] = time.time()  # [v10.16] inactivity tracking
                 log.info(f'STK {sym} {direction} qty={qty} score={score}')
+            # [DIAG 2026-05-27] sumario do ciclo para diagnostico de zero-trade
+            log.info(f'[STOCK-LOOP-END] rows={len(rows)} '
+                     f'price0={_diag_counts["price0"]} circuit={_diag_counts["circuit"]} '
+                     f'pattern_weak={_diag_counts["pattern_weak"]} '
+                     f'manter={_diag_counts["manter"]} reached_rows={_diag_counts["reached_rows"]}')
         except Exception as e:
             import traceback as _tb
             log.error(f'stock_execution_worker: {e}\n{_tb.format_exc()[:800]}')

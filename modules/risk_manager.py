@@ -271,8 +271,15 @@ class InstitutionalRiskManager:
         with self._lock:
             self.daily_pnl_by_strategy.clear()
             self.global_daily_pnl = 0.0
+            # [FIX 2026-05-29] asset_losses tambem eh contador diario.
+            # Sem clear, valores acumulavam desde o ultimo restart e
+            # eventualmente disparavam max_loss_per_asset ($50k) como
+            # falso positivo (e.g. CSNA3-SID com $54k cumulativo mesmo
+            # apos fechar +$12k no dia).
+            self.asset_losses.clear()
             self.daily_reset_date = datetime.now().date()
-            logger.info(f"Daily counters reset on {self.daily_reset_date}")
+            logger.info(f"Daily counters reset on {self.daily_reset_date} "
+                        f"(daily_pnl, daily_by_strategy, asset_losses all cleared)")
     
     def reset_weekly(self) -> None:
         """Reset weekly P&L counters."""

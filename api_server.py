@@ -11857,9 +11857,30 @@ def reset_kill_switch():
         for k in keys_to_del:
             del processed_signal_ids[k]
             cleared += 1
-    audit('KILL_SWITCH_RESET',{'by':'manual_api','cache_cleared':cleared})
+    # [FIX 2026-05-29] Zerar tambem risk_manager.asset_losses e ext_kill_switch.
+    # Sem isso, o asset_losses acumulado desde o startup do processo dispara
+    # is_breached() no proximo ciclo e o kill switch reativa em minutos.
+    # Caso real: CSNA3-SID com $54k cumulativo (mesmo ganhando +$12k hoje)
+    # reativava o global kill switch a cada poucos minutos.
+    asset_losses_before = {}
+    try:
+        asset_losses_before = dict(risk_manager.asset_losses)
+        risk_manager.asset_losses.clear()
+        log.info(f'[KS] risk_manager.asset_losses cleared ({len(asset_losses_before)} symbols)')
+    except Exception as _e:
+        log.warning(f'[KS] failed to clear risk_manager.asset_losses: {_e}')
+    # Tambem desativar o ext_kill_switch que dispara o "Global kill switch active" msg
+    try:
+        ext_kill_switch.deactivate('global', 'manual_reset_api', get_db)
+        log.info('[KS] ext_kill_switch.global deactivated')
+    except Exception as _e:
+        log.warning(f'[KS] failed to deactivate ext_kill_switch.global: {_e}')
+    audit('KILL_SWITCH_RESET',{'by':'manual_api','cache_cleared':cleared,
+                                'asset_losses_cleared':list(asset_losses_before.keys())})
     log.info(f'[KS] Kill switch reset — {cleared} sinais liberados do cache')
-    return jsonify({'ok':True,'kill_switch':False,'signals_released':cleared})
+    return jsonify({'ok':True,'kill_switch':False,'signals_released':cleared,
+                    'asset_losses_cleared':list(asset_losses_before.keys()),
+                    'asset_losses_total': sum(asset_losses_before.values())})
 
 @app.route('/trades/correct', methods=['POST'])
 @require_auth

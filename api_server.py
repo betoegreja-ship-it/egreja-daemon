@@ -5247,9 +5247,9 @@ def _db_save_cooldown(symbol, ts):
 STOCK_SYMBOLS_B3 = [
     # ── Blue chips originais ──────────────────────────────
     'PETR4.SA','VALE3.SA','ITUB4.SA','BBDC4.SA','ABEV3.SA','WEGE3.SA',
-    'RENT3.SA','LREN3.SA','SUZB3.SA','GGBR4.SA','EMBR3.SA','CSNA3.SA',
+    'RENT3.SA','LREN3.SA','SUZB3.SA','EMBR3.SA','CSNA3.SA',  # [v10.50] GGBR4 removido (toxic: WR 21%, -$6.5k)
     'CMIG4.SA','CPLE6.SA','BBAS3.SA','VIVT3.SA','SBSP3.SA','CSAN3.SA',
-    'GOAU4.SA','USIM5.SA','BPAC11.SA','RADL3.SA','PRIO3.SA',
+    'USIM5.SA','BPAC11.SA','RADL3.SA','PRIO3.SA',  # [v10.50] GOAU4 removido (toxic: WR 23%, -$5.1k)
     'BRFS3.SA','MRFG3.SA','JBSS3.SA','EGIE3.SA','CMIN3.SA','AESB3.SA',
     # ── Expansão v10.14 — watchlist + curadoria ──────────
     'BBDC3.SA','BBSE3.SA',             # Bradesco ON + BB Seguridade
@@ -5259,7 +5259,7 @@ STOCK_SYMBOLS_B3 = [
     'VBBR3.SA','UGPA3.SA',             # Vibra + Ultrapar (combustíveis)
     'KLBN11.SA',                        # Klabin (papel/celulose)
     'TOTS3.SA','MGLU3.SA','CASH3.SA',  # tech/varejo BR
-    'HAPV3.SA','RDOR3.SA','HYPE3.SA',  # saúde
+    'HAPV3.SA','RDOR3.SA',  # saúde [v10.50] HYPE3 removido (toxic: WR 0%, -$5.9k)
     'COGN3.SA','YDUQ3.SA',             # educação (alta volatilidade)
     'NTCO3.SA',                         # Natura/Grupo Boticário
     'AZUL4.SA',                         # Azul Airlines

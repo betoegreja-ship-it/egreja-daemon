@@ -12793,6 +12793,79 @@ def learning_insights():
         'timestamp':             datetime.utcnow().isoformat(),
     })
 
+
+@app.route('/learning/pending_proposals')
+@require_auth
+def learning_pending_proposals():
+    """[L-7] Lista propostas de mudança de política geradas pelo cérebro do sistema
+    que ainda não foram aprovadas/rolled_out/rejected.
+
+    O sistema gera propostas via modules/adaptive_learning/orchestrator.py mas elas
+    permanecem em status='proposed' até serem revisadas por um humano. Este endpoint
+    facilita a revisão periódica.
+
+    Query params:
+        status: filtrar por status específico (default: proposed)
+                valores válidos: proposed, approved, rolled_out, rejected, rolled_back
+        limit:  máximo de registros (default 50, max 200)
+    """
+    from flask import request as _req
+    status = (_req.args.get('status') or 'proposed').lower().strip()
+    valid_status = {'proposed', 'approved', 'rolled_out', 'rejected', 'rolled_back'}
+    if status not in valid_status:
+        return jsonify({'error': f'invalid status, use one of: {sorted(valid_status)}'}), 400
+    try:
+        limit = min(max(int(_req.args.get('limit', 50)), 1), 200)
+    except (TypeError, ValueError):
+        limit = 50
+
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'DB unavailable'}), 503
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""SELECT id, run_id, proposal_type, target_scope,
+                                 current_value, proposed_value, rationale,
+                                 risk_level, confidence_score, status,
+                                 approved_by, approval_note,
+                                 created_at, approved_at, rolled_out_at, rolled_back_at,
+                                 TIMESTAMPDIFF(DAY, created_at, NOW()) AS days_since_created
+                          FROM learning_policy_proposals
+                          WHERE status=%s
+                          ORDER BY confidence_score DESC, created_at ASC
+                          LIMIT %s""", (status, limit))
+        rows = cursor.fetchall() or []
+        # Convert datetime to ISO strings
+        for r in rows:
+            for k, v in list(r.items()):
+                if isinstance(v, datetime):
+                    r[k] = v.isoformat()
+
+        # Aggregate counts by status (overview)
+        cursor.execute("""SELECT status, COUNT(*) AS n
+                          FROM learning_policy_proposals GROUP BY status""")
+        counts = {r['status']: int(r['n']) for r in cursor.fetchall()}
+        cursor.close(); conn.close()
+
+        return jsonify({
+            'status_filter': status,
+            'limit': limit,
+            'count': len(rows),
+            'counts_by_status': counts,
+            'proposals': rows,
+            'note': ('Propostas em status="proposed" foram geradas automaticamente pelo '
+                     'sistema mas exigem aprovação humana antes do rollout. Aplicação '
+                     'efetiva é manual via Railway env var. Ver '
+                     'modules/adaptive_learning/policy_registry.py para detalhes do ciclo.'),
+            'timestamp': datetime.utcnow().isoformat(),
+        })
+    except Exception as e:
+        try: conn.close()
+        except Exception: pass
+        log.warning(f'[L-7] pending_proposals erro: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/signals/enriched')
 @require_auth
 def signals_enriched():

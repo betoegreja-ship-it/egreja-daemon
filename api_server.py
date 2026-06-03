@@ -3274,18 +3274,45 @@ def get_regime_multiplier() -> tuple:
     TRENDING: size maior (1.2x), SL mais largo (1.3x) — momentum
     HIGH_VOL: size menor (0.6x), SL mais largo (1.5x) — proteção
     NORMAL:   1.0x, 1.0x
+
+    [VOLATILITY-CLUSTERING 03/jun/2026] Padrao confirmado conf 89%: alta volatilidade
+    em 1 modulo precede aumento em outros 1-3 dias depois. Implementacao:
+    se kill_switch ATIVADO em qualquer book nas ultimas 4h, reduz size todos books 0.5x.
     """
     mode = market_regime.get('mode', 'UNKNOWN')
     vol = market_regime.get('volatility', 'NORMAL')
     if mode == 'HIGH_VOL':
-        return 0.6, 1.5, f'regime={mode} vol={vol}'
+        size_mult, sl_mult, reason = 0.6, 1.5, f'regime={mode} vol={vol}'
     elif mode == 'TRENDING':
         if vol == 'HIGH':
-            return 1.0, 1.3, f'regime={mode} vol={vol}'
-        return 1.2, 1.3, f'regime={mode} vol={vol}'
+            size_mult, sl_mult, reason = 1.0, 1.3, f'regime={mode} vol={vol}'
+        else:
+            size_mult, sl_mult, reason = 1.2, 1.3, f'regime={mode} vol={vol}'
     elif mode == 'RANGING':
-        return 0.8, 0.85, f'regime={mode} vol={vol}'
-    return 1.0, 1.0, f'regime={mode} vol={vol}'
+        size_mult, sl_mult, reason = 0.8, 0.85, f'regime={mode} vol={vol}'
+    else:
+        size_mult, sl_mult, reason = 1.0, 1.0, f'regime={mode} vol={vol}'
+
+    # [VOLATILITY-CLUSTERING] cross-book stress reducer
+    try:
+        _cluster_enabled = os.environ.get('VOLATILITY_CLUSTERING_ENABLED', 'true').lower() == 'true'
+        if _cluster_enabled:
+            import time as _t_cl
+            _now_c = _t_cl.time()
+            _stress_4h = False
+            # Verificar se kill_switch ou DD-block disparou em qualquer book nas ultimas 4h
+            _last_ks = getattr(get_regime_multiplier, '_last_kill_switch_ts', 0)
+            _last_dd = max(
+                getattr(get_regime_multiplier, '_last_dd_stocks_ts', 0),
+                getattr(get_regime_multiplier, '_last_dd_crypto_ts', 0),
+                getattr(get_regime_multiplier, '_last_dd_arbi_ts', 0)
+            )
+            if (_now_c - max(_last_ks, _last_dd)) < 14400:  # 4h em segundos
+                size_mult *= 0.5
+                reason = f'{reason} +CROSS-BOOK-STRESS(0.5x)'
+    except Exception:
+        pass
+    return size_mult, sl_mult, reason
 
 
 # ── [v10.17] Dynamic timeout per symbol ───────────────────────────────────
@@ -6952,6 +6979,15 @@ def stock_execution_worker():
                 #  10:30-11:00 BRT (UTC 13:30-14): n=202, WR 42.4%, avg -$155, total -$31k
                 #  14:00-15:00 BRT (UTC 17): n=211, WR 39.1%, avg -$86, total -$18k
                 # Filtro reduz n=2533 (-1015 trades) e ganha +$33k vs baseline.
+                # [HIGH-VOL-BLOCK 03/jun/2026] Bloqueia entries STOCKS quando regime=HIGH_VOL.
+                # Analise empirica: factor_stats regime=HIGH_VOL tem edge -0.157 (n=121, WR 43%).
+                # Trades em HIGH_VOL perdem -0.288% medio em NYSE, -0.125% em B3.
+                # Override via env: HIGH_VOL_HARDBLOCK_STOCKS=true (default ativo).
+                _hv_block_stk = os.environ.get('HIGH_VOL_HARDBLOCK_STOCKS', 'true').lower() == 'true'
+                if _hv_block_stk and market_regime.get('mode') == 'HIGH_VOL':
+                    log.warning(f'[HIGH-VOL-BLOCK] {sym} stock bloqueado: regime HIGH_VOL (historico edge -0.157, WR 43%)')
+                    continue
+
                 if is_long and mkt_type == 'B3':
                     # [FIX 30/abr] datetime ja importado no topo do modulo, NAO re-importar local
                     import datetime as _dt_bh
@@ -7598,6 +7634,15 @@ def auto_trade_crypto():
                     if _h_utc_c in _hbhrs_set:
                         log.warning(f'[CRYPTO-BAD-HOURS-HARDBLOCK] {display} bloqueado: UTC {_h_utc_c}h em hardblock (historico catastrofico)')
                         continue
+
+                # [HIGH-VOL-BLOCK 03/jun/2026] Bloqueia entries CRYPTO quando regime=HIGH_VOL.
+                # Atual: get_regime_multiplier reduz size 0.6x mas nao bloqueia. Dados mostram
+                # que penalty soft nao e suficiente: HIGH_VOL em crypto perde estruturalmente.
+                # Override via env: HIGH_VOL_HARDBLOCK_CRYPTO=true (default ativo).
+                _hv_block_c = os.environ.get('HIGH_VOL_HARDBLOCK_CRYPTO', 'true').lower() == 'true'
+                if _hv_block_c and market_regime.get('mode') == 'HIGH_VOL':
+                    log.warning(f'[HIGH-VOL-BLOCK] {display} crypto bloqueado: regime HIGH_VOL')
+                    continue
 
                 # [CRYPTO-REGIME 05/mai/2026] Hard-block REMOVIDO — alinhamento 24/7.
                 # Historicamente LONG+TRENDING e SHORT+RANGING tinham PnL negativo

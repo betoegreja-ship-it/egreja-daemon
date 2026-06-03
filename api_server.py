@@ -7114,6 +7114,28 @@ def stock_execution_worker():
                 insight   = generate_insight(sig_enriched, features, feat_hash, conf)
                 risk_mult = get_risk_multiplier(conf)
 
+                # [KRYPTONITA-BLOCK 03/jun/2026] Bloquear entries em padrões com WR<=5% e n>=30.
+                # Analise empirica em pattern_stats: 10+ hashes acumulam 17k+ trades históricos
+                # com WR 0-3%, alguns ainda ATIVOS hoje (last_seen recente). Sistema continua
+                # entrando porque V3 score combina dezenas de features e nenhum bucket
+                # individual aciona threshold de bloqueio. Este gate trabalha no NÍVEL do
+                # feature_hash composto. Tolerante a erros: se cache não popular, segue.
+                _kryp_skip_stock = False
+                try:
+                    _kryp_ps = pattern_stats_cache.get(feat_hash) if isinstance(pattern_stats_cache, dict) else None
+                    if _kryp_ps:
+                        _kryp_n = int(_kryp_ps.get('total_samples') or 0)
+                        _kryp_w = int(_kryp_ps.get('wins') or 0)
+                        if _kryp_n >= 30 and _kryp_w / max(_kryp_n, 1) <= 0.05:
+                            log.warning(f'[KRYPTONITA-BLOCK] {sym} stock bloqueado: feature_hash={feat_hash[:18]} n={_kryp_n} WR={_kryp_w/max(_kryp_n,1)*100:.0f}% (limite 5%)')
+                            _kryp_skip_stock = True
+                except Exception as _kerr:
+                    log.debug(f'[KRYPTONITA-CHECK] {sym} skip: {_kerr}')
+                if _kryp_skip_stock:
+                    with learning_lock:
+                        processed_signal_ids[ms_key] = {'sig_id': _sig_pre_id, 'reason': 'kryptonita_pattern'}
+                    continue
+
                 # [FIX 04/mai] _confirmed_sig_id e _cache_reason MOVIDOS PARA CIMA do dead-zone block.
                 # Bug original: dead-zone (linhas abaixo) chamava _cache_reason() ANTES da sua
                 # definicao no codigo. Como `def _cache_reason` torna o nome local na funcao,
@@ -7546,6 +7568,37 @@ def auto_trade_crypto():
                 if _dow_c in (1, 6):
                     log.info(f'[CRYPTO-BAD-DAY] {display}: dia {_dow_c} (seg/sab) historicamente fraco — penalty via score, nao bloqueado')
 
+                # [CRYPTO-HARD-BLACKLIST 03/jun/2026] Bloqueia simbolos com perda estrutural
+                # pós-recalibração V3 (29/abr/2026+). Análise empírica:
+                #   LINK: 152 trades, WR 50.7%, PnL -US$8.062
+                #   APT:  191 trades, WR 54.5%, PnL -US$8.033
+                #   AVAX: 160 trades, WR 54.4%, PnL -US$7.569
+                #   DOGE: 110 trades, WR 48.2%, PnL -US$6.988
+                #   ARB:  155 trades, WR 55.5%, PnL -US$6.583
+                # Soma: -US$37k em 768 trades — perda estrutural por payoff assimétrico.
+                # Override via env: CRYPTO_HARD_BLACKLIST=LINK,APT,AVAX,DOGE,ARB (default ativo).
+                _cry_blacklist = os.environ.get('CRYPTO_HARD_BLACKLIST', 'LINK,APT,AVAX,DOGE,ARB').upper().split(',')
+                _cry_blacklist = [s.strip() for s in _cry_blacklist if s.strip()]
+                _sym_clean = display.replace('USDT','').replace('USD','').strip().upper()
+                if _sym_clean in _cry_blacklist:
+                    log.warning(f'[CRYPTO-HARD-BLACKLIST] {display} bloqueado: sym {_sym_clean} em blacklist (perda estrutural pós-29/abr)')
+                    continue
+
+                # [CRYPTO-BAD-HOURS-HARDBLOCK 03/jun/2026] Re-ativa bloqueio duro nas 2 horas
+                # MAIS catastróficas pós-recalibração: UTC 13 (avg -$163/trade) e UTC 22 (avg -$143).
+                # A decisão de 24/7 (commit 84de0f0) substituiu hardblock por penalty soft (-8 score),
+                # mas dados empíricos mostram que 113 trades passaram em UTC 13 com avg -$163.
+                # Override via env: CRYPTO_HARDBLOCK_BAD_HOURS_UTC=13,22 (default ativo nas 2 piores).
+                _hbhrs_str = os.environ.get('CRYPTO_HARDBLOCK_BAD_HOURS_UTC', '13,22').strip()
+                if _hbhrs_str:
+                    try:
+                        _hbhrs_set = {int(h) for h in _hbhrs_str.split(',') if h.strip().isdigit()}
+                    except Exception:
+                        _hbhrs_set = set()
+                    if _h_utc_c in _hbhrs_set:
+                        log.warning(f'[CRYPTO-BAD-HOURS-HARDBLOCK] {display} bloqueado: UTC {_h_utc_c}h em hardblock (historico catastrofico)')
+                        continue
+
                 # [CRYPTO-REGIME 05/mai/2026] Hard-block REMOVIDO — alinhamento 24/7.
                 # Historicamente LONG+TRENDING e SHORT+RANGING tinham PnL negativo
                 # (-$44k e -$49k em ~700 trades cada), mas bloquear tudo era a razao
@@ -7603,6 +7656,23 @@ def auto_trade_crypto():
                 conf_c      = calc_learning_confidence(sig_enriched_c, features_c, feat_hash_c)
                 insight_c   = generate_insight(sig_enriched_c, features_c, feat_hash_c, conf_c)
                 risk_mult_c = get_risk_multiplier(conf_c)
+
+                # [KRYPTONITA-BLOCK 03/jun/2026] Bloquear crypto em padrões com WR<=5% e n>=30
+                _kryp_skip_c = False
+                try:
+                    _kryp_ps_c = pattern_stats_cache.get(feat_hash_c) if isinstance(pattern_stats_cache, dict) else None
+                    if _kryp_ps_c:
+                        _kryp_n_c = int(_kryp_ps_c.get('total_samples') or 0)
+                        _kryp_w_c = int(_kryp_ps_c.get('wins') or 0)
+                        if _kryp_n_c >= 30 and _kryp_w_c / max(_kryp_n_c, 1) <= 0.05:
+                            log.warning(f'[KRYPTONITA-BLOCK] {display} crypto bloqueado: feature_hash={feat_hash_c[:18]} n={_kryp_n_c} WR={_kryp_w_c/max(_kryp_n_c,1)*100:.0f}%')
+                            _kryp_skip_c = True
+                except Exception as _kerr_c:
+                    log.debug(f'[KRYPTONITA-CHECK] {display} skip: {_kerr_c}')
+                if _kryp_skip_c:
+                    with learning_lock:
+                        processed_signal_ids[ms_key_c] = {'sig_id': _sig_pre_id_c, 'reason': 'kryptonita_pattern'}
+                    continue
 
                 # [v10.18] Conviction filter — confiança mínima + movimento mínimo
                 _conv_ok, _conv_reason = check_crypto_conviction(conf_c, change_24h, display)

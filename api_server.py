@@ -6962,6 +6962,25 @@ def stock_execution_worker():
                         log.info(f'[BAD-HOURS-BLOCK] {sym} LONG B3 bloqueado: UTC {_h_utc:02d}:{_m_utc:02d} (BRT {(_h_utc-3)%24:02d}:{_m_utc:02d}) historicamente catastrofico')
                         continue
 
+                # [B3-TOXIC-FEATURES 02/jun/2026] Gates B3 baseados em analise empirica
+                # de 2214 trades B3 CLOSED com features. Os 2 buckets mais destrutivos sao:
+                #   - ema_alignment = BEARISH_STACK: n=146, WR 28.8%, avg -0.426%, total -$68k
+                #   - atr_bucket    = EXTREME      : n=120, WR 30.8%, avg -0.531%, total -$68k
+                # Bloquear LONG B3 nessas condicoes.
+                if is_long and mkt_type == 'B3':
+                    _ema9  = sig.get('ema9', 0) or 0
+                    _ema21 = sig.get('ema21', 0) or 0
+                    _ema50 = sig.get('ema50', 0) or 0
+                    _atr_pct = sig.get('atr_pct', 0) or 0
+                    # BEARISH_STACK = ema9 < ema21 < ema50
+                    if _ema9 > 0 and _ema21 > 0 and _ema50 > 0 and _ema9 < _ema21 < _ema50:
+                        log.warning(f'[B3-TOXIC-FEATURES] {sym} LONG B3 bloqueado: EMA_BEARISH_STACK (ema9={_ema9:.2f} < ema21={_ema21:.2f} < ema50={_ema50:.2f}). Historico: avg -0.426%, WR 29%')
+                        continue
+                    # ATR EXTREME: atr_pct >= 3.0 (calibrado empiricamente)
+                    if _atr_pct >= 3.0:
+                        log.warning(f'[B3-TOXIC-FEATURES] {sym} LONG B3 bloqueado: ATR_EXTREME ({_atr_pct:.2f}%). Historico: avg -0.531%, WR 31%')
+                        continue
+
                 # [v10.9-TrendFilter] Bloquear LONGs em ações com queda >5% nos últimos 5 preços
                 # Previne loops como RAIZ4 — ação em tendência de queda não deve receber COMPRA
                 if is_long:

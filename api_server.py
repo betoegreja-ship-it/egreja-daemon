@@ -5151,6 +5151,49 @@ def _db_save_arbi_trade(trade):
             _audit_json = json.dumps(_audit_payload, default=str, ensure_ascii=False)[:65000]
         except Exception:
             _audit_json = None
+
+        # [ARBI-AUDIT-FIX 03/jun/2026] Calcular campos derivados ANTES do INSERT.
+        # Auditoria identificou 11 colunas nao populadas. Este bloco computa:
+        #  - fees_total agregado (soma dos componentes)
+        #  - realized_pnl_post_fees (pnl - fees_total)
+        #  - delta_ts_between_legs_ms (diferenca entre signal_ts_a e signal_ts_b)
+        # E gera fallbacks para campos _entry quando dict so tem versao sem sufixo.
+        try:
+            _fees_total = (float(t.get('exchange_fee_a') or 0) + float(t.get('exchange_fee_b') or 0)
+                          + float(t.get('broker_fee_a') or 0)   + float(t.get('broker_fee_b') or 0)
+                          + float(t.get('slippage_cost_a') or 0)+ float(t.get('slippage_cost_b') or 0)
+                          + float(t.get('fx_cost') or 0)        + float(t.get('lending_cost') or 0))
+        except Exception:
+            _fees_total = 0
+        try:
+            _realized_pnl_net = float(t.get('pnl') or 0) - _fees_total
+        except Exception:
+            _realized_pnl_net = None
+        # Delta entre as duas pernas (em ms)
+        _delta_ms = t.get('delta_ts_between_legs_ms')
+        if not _delta_ms:
+            try:
+                _sa = t.get('signal_ts_a'); _sb = t.get('signal_ts_b')
+                if _sa and _sb:
+                    from datetime import datetime as _dt_d
+                    if isinstance(_sa, str): _sa = _dt_d.fromisoformat(_sa.replace('Z','+00:00'))
+                    if isinstance(_sb, str): _sb = _dt_d.fromisoformat(_sb.replace('Z','+00:00'))
+                    _delta_ms = abs((_sa - _sb).total_seconds() * 1000)
+                else:
+                    _delta_ms = 0
+            except Exception:
+                _delta_ms = 0
+        # Fallbacks _entry: quando o dict so tem versao sem sufixo
+        _bid_a_entry = t.get('bid_a_entry') if t.get('bid_a_entry') is not None else t.get('bid_a')
+        _ask_a_entry = t.get('ask_a_entry') if t.get('ask_a_entry') is not None else t.get('ask_a')
+        _bid_b_entry = t.get('bid_b_entry') if t.get('bid_b_entry') is not None else t.get('bid_b')
+        _ask_b_entry = t.get('ask_b_entry') if t.get('ask_b_entry') is not None else t.get('ask_b')
+        _spread_bps_a_entry = t.get('spread_bps_a_entry') if t.get('spread_bps_a_entry') is not None else t.get('spread_bps_a')
+        _spread_bps_b_entry = t.get('spread_bps_b_entry') if t.get('spread_bps_b_entry') is not None else t.get('spread_bps_b')
+        _price_a_usd_norm_entry = t.get('price_a_usd_norm_entry') if t.get('price_a_usd_norm_entry') is not None else t.get('price_a_usd_norm')
+        _price_b_usd_norm_entry = t.get('price_b_usd_norm_entry') if t.get('price_b_usd_norm_entry') is not None else t.get('price_b_usd_norm')
+        _fx_rate_entry_value = t.get('fx_rate_entry') if t.get('fx_rate_entry') is not None else (t.get('fx_a_entry') or t.get('fx_rate'))
+
         cursor.execute("""INSERT INTO arbi_trades (
             id,pair_id,name,leg_a,leg_b,mkt_a,mkt_b,
             direction,buy_leg,buy_mkt,short_leg,short_mkt,
@@ -5169,7 +5212,11 @@ def _db_save_arbi_trade(trade):
             opened_at,closed_at,entry_ts,exit_ts,signal_ts_a,signal_ts_b,delta_ts_between_legs_ms,
             price_source_a,price_source_b,ratio_a,ratio_b,
             simulation_model_version,fee_model_version,slippage_model_version,
-            pnl,pnl_pct,peak_pnl_pct,status,close_reason,extensions,audit_flag,audit_json)
+            pnl,pnl_pct,peak_pnl_pct,status,close_reason,extensions,audit_flag,audit_json,
+            bid_a_entry,ask_a_entry,bid_b_entry,ask_b_entry,
+            spread_bps_a_entry,spread_bps_b_entry,
+            price_a_usd_norm_entry,price_b_usd_norm_entry,
+            fx_rate_entry,fees_total,realized_pnl_post_fees)
             VALUES (
             %s,%s,%s,%s,%s,%s,%s,
             %s,%s,%s,%s,%s,
@@ -5187,7 +5234,11 @@ def _db_save_arbi_trade(trade):
             %s,%s,%s,%s,%s,%s,%s,
             %s,%s,%s,%s,
             %s,%s,%s,
-            %s,%s,%s,%s,%s,%s,%s,%s)
+            %s,%s,%s,%s,%s,%s,%s,%s,
+            %s,%s,%s,%s,
+            %s,%s,
+            %s,%s,
+            %s,%s,%s)
             ON DUPLICATE KEY UPDATE
               current_spread=VALUES(current_spread),
               exit_spread_pct=COALESCE(VALUES(exit_spread_pct),exit_spread_pct),
@@ -5206,6 +5257,8 @@ def _db_save_arbi_trade(trade):
               spread_bps_a_exit=COALESCE(VALUES(spread_bps_a_exit),spread_bps_a_exit),
               spread_bps_b_exit=COALESCE(VALUES(spread_bps_b_exit),spread_bps_b_exit),
               fx_rate_exit=COALESCE(VALUES(fx_rate_exit),fx_rate_exit),
+              fees_total=COALESCE(VALUES(fees_total),fees_total),
+              realized_pnl_post_fees=COALESCE(VALUES(realized_pnl_post_fees),realized_pnl_post_fees),
               audit_flag=VALUES(audit_flag),audit_json=VALUES(audit_json)""",
             (t.get('id'),t.get('pair_id'),t.get('name'),t.get('leg_a'),t.get('leg_b'),
              t.get('mkt_a'),t.get('mkt_b'),
@@ -5238,7 +5291,11 @@ def _db_save_arbi_trade(trade):
              t.get('simulation_model_version'),t.get('fee_model_version'),t.get('slippage_model_version'),
              t.get('pnl',0),t.get('pnl_pct',0),t.get('peak_pnl_pct',0),
              t.get('status','OPEN'),t.get('close_reason'),t.get('extensions',0),
-             t.get('audit_flag','valid'),_audit_json))
+             t.get('audit_flag','valid'),_audit_json,
+             _bid_a_entry, _ask_a_entry, _bid_b_entry, _ask_b_entry,
+             _spread_bps_a_entry, _spread_bps_b_entry,
+             _price_a_usd_norm_entry, _price_b_usd_norm_entry,
+             _fx_rate_entry_value, _fees_total, _realized_pnl_net))
         conn.commit()
     except Exception as e: log.error(f'db_save_arbi_trade: {e}')
     finally:

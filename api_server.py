@@ -4149,7 +4149,11 @@ def update_composite_pattern(features: dict, pnl: float, pnl_pct: float):
                 else: s['score_adj'] = -15
             # Marcar como confiável ou a bloquear
             s['reliable'] = (n >= 20 and wr >= 0.70 and s['ewma_hit_rate'] >= 0.65)
-            s['blocked']  = (n >= 20 and wr < 0.38 and s['ewma_hit_rate'] < 0.45)
+            # [FIX 05/jun/2026] Block dimension-aware: combos 2D sao grosseiros e podem
+            # cobrir um book inteiro (ex. market_type=CRYPTO|rsi_bucket=NEUTRAL degenera p/
+            # toda crypto). Exigir amostra muito maior (n>=60) p/ 2D; 3D (especifico) mantem 20.
+            _block_min_n = 20 if len(dims) >= 3 else 60
+            s['blocked']  = (n >= _block_min_n and wr < 0.38 and s['ewma_hit_rate'] < 0.45)
             s['last_seen'] = now_iso
             s['updated'] = now_iso
             _composite_patterns[key] = s
@@ -10662,8 +10666,10 @@ def debug_crypto_filter_trace():
     """[DEBUG 08/mai] Roda os mesmos filtros de auto_trade_crypto e retorna
     em JSON onde cada simbolo seria bloqueado/aceito. Sem usar o trade real.
     Util pra entender porque sistema nao abre nenhuma trade crypto."""
-    if not (datetime.utcnow().year == 2026 and datetime.utcnow().month == 5):
-        return jsonify({'error': 'expirado'}), 403
+    # [FIX 05/jun/2026] Trava de expiracao (month==5) removida — endpoint diagnostico
+    # permanente, protegido por auth /debug/*. NOTA: este trace foi escrito em 08/mai e
+    # NAO reflete os gates de 03/jun (composite CBLOCK, KRYPTONITA, CRYPTO-HARD-BLACKLIST,
+    # BAD-HOURS-HARDBLOCK, HIGH-VOL). Use os logs (V3_CRYPTO / CRYPTO-*) p/ diagnostico completo.
     out = {'now': datetime.utcnow().isoformat(), 'symbols': []}
     try:
         with state_lock:

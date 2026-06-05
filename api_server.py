@@ -4178,11 +4178,25 @@ def get_composite_score_adj(features: dict) -> tuple:
             s = _composite_patterns.get(key)
             if not s or s['total_samples'] < 10: continue
 
-            # Bloquear se este padrão é consistentemente ruim
+            # Bloquear se este padrão é consistentemente ruim.
+            # [FIX 05/jun/2026] Hard-block SO para padroes 3D (especificos o suficiente).
+            # Combos 2D sao grosseiros: ex. (market_type, rsi_bucket) degenera para o BOOK
+            # inteiro de crypto (rsi sempre NEUTRAL nesse path) e um unico dia ruim (n=20, WR 30%)
+            # matava 100% das entradas de crypto. Para 2D, converte o block em PENALTY soft
+            # (aplica score_adj) -- alinhado a decisao 24/7 "penalty em horas ruins, nao block".
             if s['blocked']:
-                blocked = True
-                best_key = key
-                break
+                if len(dims) >= 3:
+                    blocked = True
+                    best_key = key
+                    break
+                # 2D blocked -> penalty soft (nao derruba o book inteiro)
+                weight = min(s['total_samples'] / 50.0, 1.0)
+                adj_total += s['score_adj'] * weight
+                count += 1
+                if s['total_samples'] > best_n:
+                    best_n = s['total_samples']
+                    best_key = key
+                continue
 
             # Peso pelo número de amostras (mais amostras = mais confiável)
             weight = min(s['total_samples'] / 50.0, 1.0)

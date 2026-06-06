@@ -1634,14 +1634,14 @@ def alert_signal(signal):
     send_whatsapp(f"Egreja AI | {key} ({signal.get('market_type','')}) Score:{signal.get('score',0)}/100 {signal.get('signal','')} ${signal.get('price',0):,.2f}")
 
 # ═══ Egreja Brain v2 — ponte opcional (shadow, isolada, fail-safe) ═══════════
-# Gated por env BRAIN_URL. Se a variável não existir, é no-op TOTAL: o daemon
+# Gated por env BRAIN_V2_URL (separada do BRAIN_URL existente). Se a variável não existir, é no-op TOTAL: o daemon
 # não muda em nada. Envio assíncrono (fire-and-forget) — latência ZERO no loop
 # de trading e nenhuma exceção propagada.
 import os as _os_bv2, json as _json_bv2, threading as _th_bv2
 import urllib.request as _urlreq_bv2
 
 def _brain_v2_post_async(path, payload):
-    base = _os_bv2.environ.get('BRAIN_URL')
+    base = _os_bv2.environ.get('BRAIN_V2_URL')
     if not base:
         return
     def _send():

@@ -10682,6 +10682,9 @@ def debug_crypto_filter_trace():
         out['regime'] = market_regime.get('mode')
         out['MIN_SCORE_AUTO_CRYPTO'] = MIN_SCORE_AUTO_CRYPTO
         out['MAX_POSITIONS_CRYPTO'] = MAX_POSITIONS_CRYPTO
+        out['crypto_prices_count'] = len(sp)
+        out['crypto_momentum_count'] = len(mom)
+        out['crypto_tickers_count'] = len(tickers)
         out['crypto_open_count'] = len(crypto_open)
         out['crypto_capital'] = round(crypto_capital, 2)
         # env gates 03/jun
@@ -10728,32 +10731,41 @@ def debug_crypto_filter_trace():
                 out['symbols'].append(row); continue
             direction = 'LONG' if change_24h > 0 else 'SHORT'
             row['direction'] = direction
-            # 3) klines do cache do loop (NAO re-busca; reporta honesto se ausente)
+            # 3) score: espelha os 3 casos do loop — V3 (ticker_data + klines>=30),
+            #    klines-ausente (loop busca inline), ou FALLBACK (sem ticker_data).
+            row['has_ticker'] = bool(ticker_data)
             kline_cache_key = f'klines:{sym}'
             klines_data = _get_cached_candles(kline_cache_key, ttl_min=15) or {}
-            row['klines_source'] = 'loop_cache' if klines_data else 'none'
             closes_k = klines_data.get('closes', [])
             highs_k  = klines_data.get('highs', [])
             lows_k   = klines_data.get('lows', [])
             vols_k   = klines_data.get('volumes', [])
-            if len(closes_k) < 30:
-                row['blocked_at'] = f'NO_KLINES_CACHED (closes={len(closes_k)}<30; loop ainda nao cacheou)'
+            atr_pct_c = 0.0
+            if ticker_data and len(closes_k) >= 30:
+                row['score_source'] = 'v3'
+                try:
+                    _rc = _csv3c(closes_k, highs_k, lows_k, vols_k,
+                                 factor_stats_cache=factor_stats_cache,
+                                 pattern_stats_cache=pattern_stats_cache, asset_type='crypto')
+                    score = _rc.get('score'); regime_v2_c = _rc.get('regime'); signal_v2_c = _rc.get('signal')
+                except Exception as e:
+                    row['blocked_at'] = f'V3_FAIL ({type(e).__name__}: {e})'
+                    out['symbols'].append(row); continue
+                row['score_v3_raw'] = score; row['regime_v2'] = regime_v2_c; row['signal_v2'] = signal_v2_c
+                if score is None:
+                    row['blocked_at'] = 'V3_SCORE_NONE'
+                    out['symbols'].append(row); continue
+                atr_c = _calc_atr(closes_k, highs_k, lows_k, 14) if len(closes_k) >= 15 else 0.0
+                atr_pct_c = round((atr_c / price) * 100, 3) if price > 0 and atr_c > 0 else 0.0
+            elif ticker_data and len(closes_k) < 30:
+                row['blocked_at'] = f'NO_KLINES_CACHED (closes={len(closes_k)}<30; loop busca inline no ciclo)'
                 out['symbols'].append(row); continue
-            # 4) score V3 bruto
-            try:
-                _rc = _csv3c(closes_k, highs_k, lows_k, vols_k,
-                             factor_stats_cache=factor_stats_cache,
-                             pattern_stats_cache=pattern_stats_cache, asset_type='crypto')
-                score = _rc.get('score'); regime_v2_c = _rc.get('regime'); signal_v2_c = _rc.get('signal')
-            except Exception as e:
-                row['blocked_at'] = f'V3_FAIL ({type(e).__name__}: {e})'
-                out['symbols'].append(row); continue
-            row['score_v3_raw'] = score; row['regime_v2'] = regime_v2_c; row['signal_v2'] = signal_v2_c
-            if score is None:
-                row['blocked_at'] = 'V3_SCORE_NONE'
-                out['symbols'].append(row); continue
-            atr_c = _calc_atr(closes_k, highs_k, lows_k, 14) if len(closes_k) >= 15 else 0.0
-            atr_pct_c = round((atr_c / price) * 100, 3) if price > 0 and atr_c > 0 else 0.0
+            else:
+                # else-branch do loop: sem ticker_data -> score fallback (sem klines)
+                row['score_source'] = 'fallback'
+                score = min(50 + int(abs(change_24h) * 5), 95)
+                if direction == 'SHORT': score = 100 - score
+                row['score_v3_raw'] = score
             row['atr_pct'] = atr_pct_c
             # 5) temporal block
             if _t_blocked0:

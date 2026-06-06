@@ -1633,12 +1633,40 @@ def alert_signal(signal):
     alerted_signals[key]=now
     send_whatsapp(f"Egreja AI | {key} ({signal.get('market_type','')}) Score:{signal.get('score',0)}/100 {signal.get('signal','')} ${signal.get('price',0):,.2f}")
 
+# ═══ Egreja Brain v2 — ponte opcional (shadow, isolada, fail-safe) ═══════════
+# Gated por env BRAIN_URL. Se a variável não existir, é no-op TOTAL: o daemon
+# não muda em nada. Envio assíncrono (fire-and-forget) — latência ZERO no loop
+# de trading e nenhuma exceção propagada.
+import os as _os_bv2, json as _json_bv2, threading as _th_bv2
+import urllib.request as _urlreq_bv2
+
+def _brain_v2_post_async(path, payload):
+    base = _os_bv2.environ.get('BRAIN_URL')
+    if not base:
+        return
+    def _send():
+        try:
+            data = _json_bv2.dumps(payload, default=str).encode('utf-8')
+            req = _urlreq_bv2.Request(base.rstrip('/') + path, data=data,
+                                      headers={'Content-Type': 'application/json'}, method='POST')
+            _urlreq_bv2.urlopen(req, timeout=4)
+        except Exception:
+            pass  # nunca afeta o daemon
+    try:
+        _th_bv2.Thread(target=_send, daemon=True).start()
+    except Exception:
+        pass
+
+
 def alert_trade_closed(trade):
     key=trade.get('id','')
     if key in alerted_trades: return
     alerted_trades[key]=True
     pnl=trade.get('pnl',0); result='OK' if pnl>=0 else 'LOSS'
     send_whatsapp(f"Trade {result} | {trade.get('symbol','')} | {trade.get('close_reason','')} | {'+'if pnl>=0 else ''}{pnl:,.2f} ({trade.get('pnl_pct',0):+.2f}%)")
+
+    # [Egreja Brain v2] aprende com o trade fechado (shadow, não-bloqueante)
+    _brain_v2_post_async('/brain/ingest/trade-closed', dict(trade))
 
     # [v3.0] Brain learns from every closed trade
     try:
@@ -7228,6 +7256,10 @@ def stock_execution_worker():
                 conf      = calc_learning_confidence(sig_enriched, features, feat_hash)
                 insight   = generate_insight(sig_enriched, features, feat_hash, conf)
                 risk_mult = get_risk_multiplier(conf)
+
+                # [Egreja Brain v2] espelha o sinal p/ o cérebro (shadow, não-bloqueante)
+                _brain_v2_post_async('/brain/ingest/signal', {
+                    'sig': sig_enriched, 'regime': dict(market_regime), 'dq_score': dq_score})
 
                 # [KRYPTONITA-BLOCK 03/jun/2026] Bloquear entries em padrões com WR<=5% e n>=30.
                 # Analise empirica em pattern_stats: 10+ hashes acumulam 17k+ trades históricos

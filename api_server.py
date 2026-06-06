@@ -10663,133 +10663,206 @@ def debug_reload_stocks_closed():
 
 @app.route('/debug/crypto-filter-trace', methods=['GET'])
 def debug_crypto_filter_trace():
-    """[DEBUG 08/mai] Roda os mesmos filtros de auto_trade_crypto e retorna
-    em JSON onde cada simbolo seria bloqueado/aceito. Sem usar o trade real.
-    Util pra entender porque sistema nao abre nenhuma trade crypto."""
-    # [FIX 05/jun/2026] Trava de expiracao (month==5) removida — endpoint diagnostico
-    # permanente, protegido por auth /debug/*. NOTA: este trace foi escrito em 08/mai e
-    # NAO reflete os gates de 03/jun (composite CBLOCK, KRYPTONITA, CRYPTO-HARD-BLACKLIST,
-    # BAD-HOURS-HARDBLOCK, HIGH-VOL). Use os logs (V3_CRYPTO / CRYPTO-*) p/ diagnostico completo.
+    """[DEBUG 08/mai - reescrito 05/jun/2026] Espelha FIELMENTE a sequencia de gates de
+    auto_trade_crypto (incl. gates de 03/jun) e retorna em JSON onde cada simbolo seria
+    bloqueado/aceito — sem abrir trade real. Le klines do MESMO cache in-process do loop
+    (_candles_cache, chave klines:{sym}); nao re-busca a Binance no request (evita o
+    'closes=0' enganoso). Gates profundos (KRYPTONITA/conviction/ML/dead-zone) sao
+    best-effort com try/except — nunca derrubam o endpoint.
+    FONTE DA VERDADE = auto_trade_crypto. Manter em sincronia se a ordem dos gates mudar."""
     out = {'now': datetime.utcnow().isoformat(), 'symbols': []}
     try:
         with state_lock:
             sp = dict(crypto_prices)
             mom = dict(crypto_momentum)
             tickers = dict(crypto_tickers)
+        _now_c = datetime.utcnow()
+        out['utc_hour'] = _now_c.hour
+        out['weekday'] = _now_c.weekday()
+        out['regime'] = market_regime.get('mode')
         out['MIN_SCORE_AUTO_CRYPTO'] = MIN_SCORE_AUTO_CRYPTO
         out['MAX_POSITIONS_CRYPTO'] = MAX_POSITIONS_CRYPTO
-        out['HARD_BLACKLIST'] = list(HARD_BLACKLIST_CRYPTO)
-        out['LATE_ENTRY_BLOCK'] = LATE_ENTRY_CRYPTO_BLOCK_PCT
-        out['LATE_ENTRY_HEAVY'] = LATE_ENTRY_CRYPTO_HEAVY_PCT
         out['crypto_open_count'] = len(crypto_open)
         out['crypto_capital'] = round(crypto_capital, 2)
-        out['regime'] = market_regime.get('mode')
+        # env gates 03/jun
+        _env_blacklist = [s.strip() for s in os.environ.get('CRYPTO_HARD_BLACKLIST', 'LINK,APT,AVAX,DOGE,ARB').upper().split(',') if s.strip()]
+        _hbhrs = {int(h) for h in os.environ.get('CRYPTO_HARDBLOCK_BAD_HOURS_UTC', '13,22').split(',') if h.strip().isdigit()}
+        _hv_block = os.environ.get('HIGH_VOL_HARDBLOCK_CRYPTO', 'true').lower() == 'true'
+        out['env_gates'] = {'CRYPTO_HARD_BLACKLIST': _env_blacklist,
+                            'CRYPTO_HARDBLOCK_BAD_HOURS_UTC': sorted(_hbhrs),
+                            'HIGH_VOL_HARDBLOCK_CRYPTO': _hv_block,
+                            'this_hour_is_hardblock': _now_c.hour in _hbhrs}
+        # DD e cross-market: calculados uma vez (globais)
+        try:
+            _dd_blocked, _dd_reason = check_strategy_daily_dd('crypto')
+        except Exception as e:
+            _dd_blocked, _dd_reason = False, f'dd_err:{e}'
+        out['daily_dd'] = {'blocked': _dd_blocked, 'reason': _dd_reason}
+        try:
+            _cm_adj = get_cross_market_crypto_adj()
+        except Exception:
+            _cm_adj = 0
+        try:
+            _t_adj0, _t_blocked0, _t_reason0 = get_temporal_crypto_score(_now_c.hour, _now_c.weekday())
+        except Exception as e:
+            _t_adj0, _t_blocked0, _t_reason0 = 0, False, f'temporal_err:{e}'
+        out['temporal'] = {'t_adj': _t_adj0, 'blocked': _t_blocked0, 'reason': _t_reason0, 'cm_adj': _cm_adj}
+
+        from modules.score_engine_v2 import compute_score_v3 as _csv3c
         for sym in CRYPTO_SYMBOLS:
             display = sym.replace('USDT','')
             price = sp.get(sym, 0)
             change_24h = mom.get(sym, 0)
+            ticker_data = tickers.get(sym, {})
             row = {'sym': display, 'price': price, 'change_24h': round(change_24h, 2)}
+            # 1) legacy hard blacklist (mesma ordem do loop)
+            if display in HARD_BLACKLIST_CRYPTO:
+                row['blocked_at'] = 'HARD_BLACKLIST (legacy)'
+                out['symbols'].append(row); continue
+            # 2) preco / mercado lateral
             if price <= 0:
                 row['blocked_at'] = 'price<=0'
                 out['symbols'].append(row); continue
             if abs(change_24h) < 0.3:
-                row['blocked_at'] = f'change_24h={change_24h:.2f} < 0.3 (mercado lateral)'
-                out['symbols'].append(row); continue
-            if display in HARD_BLACKLIST_CRYPTO:
-                row['blocked_at'] = 'HARD_BLACKLIST'
+                row['blocked_at'] = f'change_24h={change_24h:.2f} < 0.3 (lateral)'
                 out['symbols'].append(row); continue
             direction = 'LONG' if change_24h > 0 else 'SHORT'
             row['direction'] = direction
-            # Late-entry check
+            # 3) klines do cache do loop (NAO re-busca; reporta honesto se ausente)
+            kline_cache_key = f'klines:{sym}'
+            klines_data = _get_cached_candles(kline_cache_key, ttl_min=15) or {}
+            row['klines_source'] = 'loop_cache' if klines_data else 'none'
+            closes_k = klines_data.get('closes', [])
+            highs_k  = klines_data.get('highs', [])
+            lows_k   = klines_data.get('lows', [])
+            vols_k   = klines_data.get('volumes', [])
+            if len(closes_k) < 30:
+                row['blocked_at'] = f'NO_KLINES_CACHED (closes={len(closes_k)}<30; loop ainda nao cacheou)'
+                out['symbols'].append(row); continue
+            # 4) score V3 bruto
+            try:
+                _rc = _csv3c(closes_k, highs_k, lows_k, vols_k,
+                             factor_stats_cache=factor_stats_cache,
+                             pattern_stats_cache=pattern_stats_cache, asset_type='crypto')
+                score = _rc.get('score'); regime_v2_c = _rc.get('regime'); signal_v2_c = _rc.get('signal')
+            except Exception as e:
+                row['blocked_at'] = f'V3_FAIL ({type(e).__name__}: {e})'
+                out['symbols'].append(row); continue
+            row['score_v3_raw'] = score; row['regime_v2'] = regime_v2_c; row['signal_v2'] = signal_v2_c
+            if score is None:
+                row['blocked_at'] = 'V3_SCORE_NONE'
+                out['symbols'].append(row); continue
+            atr_c = _calc_atr(closes_k, highs_k, lows_k, 14) if len(closes_k) >= 15 else 0.0
+            atr_pct_c = round((atr_c / price) * 100, 3) if price > 0 and atr_c > 0 else 0.0
+            row['atr_pct'] = atr_pct_c
+            # 5) temporal block
+            if _t_blocked0:
+                row['blocked_at'] = f'CRYPTO-TBLOCK ({_t_reason0})'
+                out['symbols'].append(row); continue
+            # 6) ajuste temporal+cross-market (cap igual ao loop)
+            _raw_change = float(ticker_data.get('change_pct', 0) or change_24h)
+            _strong = abs(_raw_change) > 3.0
+            if _strong and (_t_adj0 + _cm_adj) < 0:
+                _capped = max(_t_adj0 + _cm_adj, -12)
+            else:
+                _tot = _t_adj0 + _cm_adj
+                _capped = max(_tot, -20) if _tot < 0 else _tot
+            score = max(0, min(100, score + _capped))
+            row['score_after_temporal'] = score
+            # 7) composite (CBLOCK / disc adj) — espelha get_composite_score_adj
+            _rsi_c = float(ticker_data.get('rsi', 50) or 50)
+            _feats = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bucket(_rsi_c),
+                      'weekday': str(_now_c.weekday()), 'hour_utc': str(_now_c.hour),
+                      'time_bucket': _time_bucket(_now_c), 'asset_type': 'crypto',
+                      'market_type': 'CRYPTO', 'direction': direction,
+                      'volatility_bucket': 'LOW' if atr_pct_c < 1 else ('HIGH' if atr_pct_c > 3 else 'NORMAL'),
+                      'btc_trend': (_cross_market_state.get('btc_change_24h', 0) > 2 and 'UP') or (_cross_market_state.get('btc_change_24h', 0) < -2 and 'DOWN' or 'FLAT'),
+                      'stocks_regime': 'BAD' if _cross_market_state.get('stocks_wr_today', 50) < 45 else ('GOOD' if _cross_market_state.get('stocks_wr_today', 50) >= 58 else 'NEUTRAL')}
+            try:
+                _disc_adj, _disc_blocked, _disc_key = get_composite_score_adj(_feats)
+            except Exception:
+                _disc_adj, _disc_blocked, _disc_key = 0, False, ''
+            row['composite'] = {'adj': _disc_adj, 'blocked': _disc_blocked, 'key': _disc_key}
+            if _disc_blocked:
+                row['blocked_at'] = f'CRYPTO-CBLOCK ({_disc_key})'
+                out['symbols'].append(row); continue
+            if _disc_adj != 0:
+                score = max(0, min(100, score + _disc_adj))
+            # 8) DD (global)
+            if _dd_blocked:
+                row['blocked_at'] = f'CRYPTO-DD-BLOCK ({_dd_reason})'
+                out['symbols'].append(row); continue
+            # 9) late-entry penalty (score adj)
             try:
                 _le_delta, _le_blocked, _le_reason = _late_entry_adjust(change_24h, direction, 'crypto')
-                row['late_entry_check'] = {'delta': _le_delta, 'blocked': _le_blocked, 'reason': _le_reason}
                 if _le_blocked:
                     row['blocked_at'] = f'LATE_ENTRY_BLOCK ({_le_reason})'
                     out['symbols'].append(row); continue
+                if _le_delta:
+                    score = max(0, min(100, score + _le_delta))
             except Exception as e:
                 row['late_entry_err'] = str(e)
-            # DD check
-            try:
-                _dd_blocked, _dd_reason = check_strategy_daily_dd('crypto')
-                row['dd_check'] = {'blocked': _dd_blocked, 'reason': _dd_reason}
-                if _dd_blocked:
-                    row['blocked_at'] = f'DAILY_DD_BLOCK ({_dd_reason})'
-                    out['symbols'].append(row); continue
-            except Exception as e:
-                row['dd_err'] = str(e)
-            # Symbol blacklist
-            try:
-                _bl_blocked, _bl_reason = is_symbol_blacklisted(display)
-                row['blacklist_check'] = {'blocked': _bl_blocked, 'reason': _bl_reason}
-                if _bl_blocked:
-                    row['blocked_at'] = f'AUTO_BLACKLIST ({_bl_reason})'
-                    out['symbols'].append(row); continue
-            except Exception as e:
-                row['blacklist_err'] = str(e)
-            # Directional
-            try:
-                _dir_blocked, _dir_reason, _ = check_directional_exposure(direction, 'crypto')
-                row['dir_check'] = {'blocked': _dir_blocked, 'reason': _dir_reason}
-                if _dir_blocked:
-                    row['blocked_at'] = f'DIR_BLOCK ({_dir_reason})'
-                    out['symbols'].append(row); continue
-            except Exception as e:
-                row['dir_err'] = str(e)
-            # Score real — calcula INLINE igual ao auto_trade_crypto
-            try:
-                kline_cache_key = f'klines:{sym}'
-                klines_data = _get_cached_candles(kline_cache_key, ttl_min=5) or {}
-                if not klines_data:
-                    klines_data = _fetch_binance_klines(sym, 100)
-                closes_k = klines_data.get('closes', [])
-                highs_k  = klines_data.get('highs', [])
-                lows_k   = klines_data.get('lows', [])
-                vols_k   = klines_data.get('volumes', [])
-                if len(closes_k) < 30:
-                    row['blocked_at'] = f'V3_CRYPTO_SKIP closes={len(closes_k)}<30'
-                    out['symbols'].append(row); continue
-                from modules.score_engine_v2 import compute_score_v3 as _csv3c
-                _rc = _csv3c(closes_k, highs_k, lows_k, vols_k,
-                             factor_stats_cache=factor_stats_cache,
-                             pattern_stats_cache=pattern_stats_cache,
-                             asset_type='crypto')
-                _score = _rc.get('score')
-                row['score_v3'] = _score
-                row['regime_v2'] = _rc.get('regime')
-                row['signal_v2'] = _rc.get('signal')
-                if _score is None or _score < MIN_SCORE_AUTO_CRYPTO:
-                    row['blocked_at'] = f'SCORE_V3_BELOW ({_score} < {MIN_SCORE_AUTO_CRYPTO})'
-                    out['symbols'].append(row); continue
-            except Exception as e:
-                row['score_err'] = str(e)
-                row['blocked_at'] = f'SCORE_ERR ({type(e).__name__})'
+            row['score_final'] = score
+            # 10) threshold
+            if score < MIN_SCORE_AUTO_CRYPTO:
+                row['blocked_at'] = f'CRYPTO-THRESHOLD ({score} < {MIN_SCORE_AUTO_CRYPTO})'
                 out['symbols'].append(row); continue
-            # Conviction filter
-            try:
-                # Conviction nao tem helper acessivel aqui; vou simular: usa learning_confidence
-                # se _conv_min existe (CRYPTO_MIN_CONVICTION), checar
-                row['conviction_threshold'] = CRYPTO_MIN_CONVICTION
-            except: pass
-            # Symbol cooldown
-            try:
-                _last = symbol_cooldown.get(display, 0)
-                _cd_age = time.time() - _last
-                row['cooldown_age_s'] = round(_cd_age, 1)
-                if _cd_age < SYMBOL_COOLDOWN_SEC:
-                    row['blocked_at'] = f'COOLDOWN ({_cd_age:.0f}s < {SYMBOL_COOLDOWN_SEC}s)'
-                    out['symbols'].append(row); continue
-            except Exception as e:
-                row['cd_err'] = str(e)
-            # Capital free check
-            if crypto_capital <= 0:
-                row['blocked_at'] = f'NO_CAPITAL_CRYPTO (crypto_capital={crypto_capital})'
+            # 11) CRYPTO-HARD-BLACKLIST (env 03/jun)
+            _sym_clean = display.replace('USDT', '').replace('USD', '').strip().upper()
+            if _sym_clean in _env_blacklist:
+                row['blocked_at'] = f'CRYPTO-HARD-BLACKLIST ({_sym_clean})'
                 out['symbols'].append(row); continue
+            # 12) CRYPTO-BAD-HOURS-HARDBLOCK (env 03/jun)
+            if _now_c.hour in _hbhrs:
+                row['blocked_at'] = f'CRYPTO-BAD-HOURS-HARDBLOCK (UTC {_now_c.hour}h)'
+                out['symbols'].append(row); continue
+            # 13) HIGH-VOL-BLOCK (03/jun)
+            if _hv_block and market_regime.get('mode') == 'HIGH_VOL':
+                row['blocked_at'] = 'HIGH-VOL-BLOCK (regime HIGH_VOL)'
+                out['symbols'].append(row); continue
+            # 14) KRYPTONITA + conviction + ML + dead-zone (best-effort)
+            try:
+                _sig = {'symbol': display, 'asset_type': 'crypto', 'market_type': 'CRYPTO',
+                        'signal': 'COMPRA' if direction == 'LONG' else 'VENDA',
+                        'score': score, 'price': price, 'rsi': 50,
+                        'atr_pct': atr_pct_c, 'volume_ratio': 0.0}
+                _dq = get_dq_score(display)
+                _feats_c = extract_features(_sig, dict(market_regime), _dq, _now_c)
+                _fh = make_feature_hash(_feats_c)
+                row['feature_hash'] = _fh[:18]
+                _ps = pattern_stats_cache.get(_fh) if isinstance(pattern_stats_cache, dict) else None
+                if _ps:
+                    _n = int(_ps.get('total_samples') or 0); _w = int(_ps.get('wins') or 0)
+                    if _n >= 30 and _w / max(_n, 1) <= 0.05:
+                        row['blocked_at'] = f'KRYPTONITA (n={_n} WR={_w/max(_n,1)*100:.0f}%)'
+                        out['symbols'].append(row); continue
+                _conf = calc_learning_confidence(_sig, _feats_c, _fh)
+                try:
+                    _cv_ok, _cv_reason = check_crypto_conviction(_conf, change_24h, display)
+                    if not _cv_ok:
+                        row['blocked_at'] = f'CRYPTO-CONV-BLOCK ({_cv_reason})'
+                        out['symbols'].append(row); continue
+                except Exception as e:
+                    row['conv_err'] = str(e)
+                try:
+                    _ml_ok, _ml_reason, _ml_s = should_trade_ml(_feats_c, _conf, asset_type='crypto')
+                    if not _ml_ok:
+                        row['blocked_at'] = f'CRYPTO-ML-BLOCK ({_ml_reason})'
+                        out['symbols'].append(row); continue
+                except Exception as e:
+                    row['ml_err'] = str(e)
+            except Exception as e:
+                row['deep_gate_err'] = str(e)
             row['blocked_at'] = 'PASSOU_TODOS_FILTROS — DEVERIA ABRIR'
             out['symbols'].append(row)
+        # resumo agregado
+        from collections import Counter as _Counter
+        _c = _Counter((r.get('blocked_at') or '?').split('(')[0].strip() for r in out['symbols'])
+        out['summary'] = dict(_c.most_common())
     except Exception as e:
         import traceback; out['error'] = traceback.format_exc()
     return jsonify(out)
+
 
 @app.route('/debug/reload-arbi-from-db', methods=['POST'])
 def debug_reload_arbi():

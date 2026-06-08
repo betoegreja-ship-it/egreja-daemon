@@ -60,7 +60,7 @@ import re        # [adaptive-v1] pattern matching B3 ticker classification
 import os, sys, time, queue, json, uuid, threading, itertools, requests, logging, hashlib, math
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, session, redirect, make_response
 from flask_cors import CORS
 import mysql.connector
 
@@ -261,6 +261,45 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger('egreja')
 
 app = Flask(__name__)
+
+# ═══════════════════════════════════════════════════════════════
+# [v10.52] WEB LOGIN — single-user authentication for dashboard
+# ═══════════════════════════════════════════════════════════════
+# Configuração via env vars (Railway):
+#   WEB_USERNAME       - usuario do login (default: 'admin')
+#   WEB_PASSWORD_HASH  - SHA-256 hex da senha + WEB_PASSWORD_SALT
+#   WEB_PASSWORD_SALT  - salt opcional (default: 'egreja-2026')
+#   FLASK_SECRET_KEY   - cookie de sessao assinado (gerar com secrets.token_hex(32))
+#   WEB_SESSION_DAYS   - duracao da sessao em dias (default: 7)
+#
+# Se WEB_PASSWORD_HASH NAO estiver setado, o login fica DESLIGADO (modo legado).
+import hashlib as _hashlib
+import secrets as _secrets
+
+WEB_USERNAME       = os.environ.get('WEB_USERNAME', 'admin')
+WEB_PASSWORD_HASH  = os.environ.get('WEB_PASSWORD_HASH', '').strip().lower()
+WEB_PASSWORD_SALT  = os.environ.get('WEB_PASSWORD_SALT', 'egreja-2026')
+WEB_SESSION_DAYS   = int(os.environ.get('WEB_SESSION_DAYS', 7))
+_FLASK_SECRET      = os.environ.get('FLASK_SECRET_KEY', '').strip()
+if not _FLASK_SECRET:
+    # Sem segredo persistente, gera um efêmero — usuários serão deslogados a cada deploy.
+    _FLASK_SECRET = _secrets.token_hex(32)
+app.secret_key = _FLASK_SECRET
+app.permanent_session_lifetime = timedelta(days=WEB_SESSION_DAYS) if False else None  # set below
+from datetime import timedelta as _td
+app.permanent_session_lifetime = _td(days=WEB_SESSION_DAYS)
+
+def _web_pwd_hash(password: str) -> str:
+    """SHA-256(salt + password) em lowercase hex."""
+    return _hashlib.sha256((WEB_PASSWORD_SALT + password).encode('utf-8')).hexdigest()
+
+def _is_web_login_enabled() -> bool:
+    return bool(WEB_PASSWORD_HASH)
+
+def _is_session_authed() -> bool:
+    if not _is_web_login_enabled():
+        return True  # se login não configurado, libera (modo legado)
+    return bool(session.get('web_user'))
 
 # ═══ [v10.31] CEDRO SOCKET PROVIDER — real-time streaming quotes ═══
 # Primary source for B3 quotes (stocks + indices + futures). BRAPI/OpLab used as fallback.
@@ -638,7 +677,8 @@ B3_ADR_SYMBOLS = set(B3_TO_ADR.values())
 if not FMP_API_KEY and not POLYGON_API_KEY:
     log.warning('Nenhuma API key configurada — usando Yahoo Finance (não recomendado em produção)')
 
-PUBLIC_ROUTES = {'/', '/health', '/degraded', '/sync/export', '/sync/import'}
+PUBLIC_ROUTES = {'/', '/health', '/degraded', '/sync/export', '/sync/import',
+                 '/login', '/logout', '/auth/status'}  # [v10.52] login endpoints
 
 TWILIO_SID     = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_TOKEN   = os.environ.get('TWILIO_AUTH_TOKEN', '')
@@ -11634,8 +11674,81 @@ def broker_execution_profile_v1023():
 # ═══ [v10.26] WEB DASHBOARD (standalone HTML) ═══
 @app.route('/')
 def index():
-    """Serve main web dashboard. API info moved to /api/info."""
-    return send_from_directory('static', 'index.html')
+    """Serve main web dashboard. Redireciona para /login se sessao nao autenticada."""
+    if not _is_session_authed():
+        return redirect('/login', code=302)
+    resp = make_response(send_from_directory('static', 'index.html'))
+    # [v10.52] Headers de seguranca anti-scraping e anti-indexacao
+    resp.headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive'
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, private'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    resp.headers['X-Frame-Options'] = 'DENY'
+    return resp
+
+# ═══ [v10.52] LOGIN / LOGOUT ROUTES ═══
+@app.route('/login', methods=['GET'])
+def login_page():
+    """Serve a pagina de login. Se ja autenticado, redireciona para /."""
+    if _is_session_authed():
+        return redirect('/', code=302)
+    resp = make_response(send_from_directory('static', 'login.html'))
+    resp.headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive'
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, private'
+    return resp
+
+@app.route('/login', methods=['POST'])
+def login_submit():
+    """Valida credenciais e cria sessao."""
+    if not _is_web_login_enabled():
+        return jsonify({'ok': False, 'error': 'Login desabilitado pelo servidor.'}), 503
+    try:
+        data = request.get_json(silent=True) or {}
+        u = (data.get('username') or '').strip()
+        p = data.get('password') or ''
+        if not u or not p:
+            return jsonify({'ok': False, 'error': 'Usuario e senha sao obrigatorios.'}), 400
+        # Verificacao constante-time
+        u_ok = _secrets.compare_digest(u, WEB_USERNAME)
+        p_hash = _web_pwd_hash(p)
+        p_ok = _secrets.compare_digest(p_hash, WEB_PASSWORD_HASH)
+        if not (u_ok and p_ok):
+            log.warning(f'[WEB-LOGIN] FAIL user={u!r} ip={request.remote_addr} ua={request.headers.get("User-Agent","")[:80]}')
+            try: audit('WEB_LOGIN_FAIL', {'user': u, 'ip': request.remote_addr})
+            except Exception: pass
+            return jsonify({'ok': False, 'error': 'Credenciais invalidas.'}), 401
+        # Sucesso
+        session.permanent = True
+        session['web_user'] = u
+        session['login_ts'] = datetime.utcnow().isoformat()
+        log.info(f'[WEB-LOGIN] OK user={u} ip={request.remote_addr}')
+        try: audit('WEB_LOGIN_OK', {'user': u, 'ip': request.remote_addr})
+        except Exception: pass
+        return jsonify({'ok': True, 'next': '/'}), 200
+    except Exception as e:
+        log.error(f'login_submit: {e}')
+        return jsonify({'ok': False, 'error': 'Erro interno.'}), 500
+
+@app.route('/logout', methods=['GET','POST'])
+def logout():
+    """Limpa a sessao e redireciona para /login."""
+    try:
+        user = session.get('web_user','-')
+        session.clear()
+        log.info(f'[WEB-LOGOUT] user={user} ip={request.remote_addr}')
+    except Exception: pass
+    if request.method == 'POST':
+        return jsonify({'ok': True}), 200
+    return redirect('/login', code=302)
+
+@app.route('/auth/status')
+def auth_status():
+    """Lightweight check para o frontend saber se ainda esta logado."""
+    return jsonify({
+        'enabled': _is_web_login_enabled(),
+        'authed': _is_session_authed(),
+        'user': session.get('web_user') if _is_session_authed() else None,
+    }), 200
 
 @app.route('/ticker-tape.js')
 def ticker_tape_js():

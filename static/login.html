@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>Egreja Investment AI — Acesso</title>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=DM+Mono:wght@300;400;500&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --navy:   #0a1628;
+  --navy2:  #0e1e36;
+  --navy3:  #132540;
+  --gold:   #b8973a;
+  --gold2:  #d4ae57;
+  --gold3:  #f0cc7a;
+  --green:  #22a06b;
+  --red:    #e74c3c;
+  --text:   #e8edf4;
+  --text2:  #8fa3be;
+  --text3:  #4a637f;
+  --white:  #f5f8fc;
+  --line:   rgba(255,255,255,0.07);
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+body{
+  background: radial-gradient(ellipse at top, #112440 0%, var(--navy) 60%);
+  color:var(--text);
+  font-family:'Instrument Sans',sans-serif;
+  font-size:13px;
+  line-height:1.5;
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  -webkit-font-smoothing:antialiased;
+  padding:20px;
+}
+.login-shell{
+  width:100%;
+  max-width:420px;
+  background:linear-gradient(180deg, rgba(14,30,54,0.95) 0%, rgba(10,22,40,0.95) 100%);
+  border:1px solid rgba(184,151,58,0.30);
+  box-shadow: 0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(184,151,58,0.08) inset;
+  padding:48px 44px 40px;
+  position:relative;
+}
+.login-shell::before{
+  content:'';
+  position:absolute;
+  top:0; left:0; right:0;
+  height:3px;
+  background: linear-gradient(90deg, transparent 0%, var(--gold2) 50%, transparent 100%);
+}
+.brand{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  margin-bottom:32px;
+  padding-bottom:24px;
+  border-bottom:1px solid rgba(184,151,58,0.18);
+}
+.emblem{
+  width:46px;
+  height:46px;
+  background:linear-gradient(135deg,#b8973a,#8a6f2a);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-shrink:0;
+  font-family:'EB Garamond', serif;
+  font-size:22px;
+  color:var(--white);
+  font-weight:600;
+}
+.brand-text .name{
+  font-family:'EB Garamond',serif;
+  font-size:19px;
+  font-weight:500;
+  color:var(--white);
+  letter-spacing:0.03em;
+  line-height:1.2;
+}
+.brand-text .sub{
+  font-family:monospace;
+  font-size:8.5px;
+  color:var(--gold2);
+  letter-spacing:0.22em;
+  text-transform:uppercase;
+  margin-top:4px;
+}
+.title{
+  font-family:'EB Garamond', serif;
+  font-size:24px;
+  font-weight:500;
+  color:var(--white);
+  margin-bottom:6px;
+  letter-spacing:0.02em;
+}
+.subtitle{
+  font-size:12px;
+  color:var(--text2);
+  margin-bottom:30px;
+  line-height:1.6;
+}
+form{display:flex;flex-direction:column;gap:18px}
+.field{display:flex;flex-direction:column;gap:7px}
+.label{
+  font-family:monospace;
+  font-size:9.5px;
+  color:var(--gold);
+  letter-spacing:0.22em;
+  text-transform:uppercase;
+}
+.input{
+  height:44px;
+  padding:0 16px;
+  background:rgba(255,255,255,0.04);
+  border:1px solid rgba(255,255,255,0.10);
+  color:var(--text);
+  font-family:'Instrument Sans',sans-serif;
+  font-size:14px;
+  letter-spacing:0.02em;
+  transition:all .2s;
+}
+.input:focus{
+  outline:none;
+  border-color:var(--gold2);
+  background:rgba(255,255,255,0.06);
+  box-shadow: 0 0 0 3px rgba(184,151,58,0.10);
+}
+.input::placeholder{color:var(--text3)}
+.btn{
+  height:46px;
+  background:linear-gradient(180deg, var(--gold2) 0%, var(--gold) 100%);
+  border:1px solid var(--gold);
+  color:var(--navy);
+  font-family:'Instrument Sans',sans-serif;
+  font-size:12px;
+  font-weight:600;
+  letter-spacing:0.16em;
+  text-transform:uppercase;
+  cursor:pointer;
+  transition:all .2s;
+  margin-top:8px;
+}
+.btn:hover{background:linear-gradient(180deg, var(--gold3) 0%, var(--gold2) 100%)}
+.btn:disabled{opacity:.6;cursor:not-allowed}
+.error{
+  background:rgba(231,76,60,0.10);
+  border:1px solid rgba(231,76,60,0.35);
+  color:#ff8a7a;
+  padding:11px 14px;
+  font-size:12px;
+  letter-spacing:0.02em;
+  display:none;
+}
+.error.show{display:block}
+.footer{
+  margin-top:30px;
+  padding-top:22px;
+  border-top:1px solid rgba(255,255,255,0.05);
+  text-align:center;
+  font-family:monospace;
+  font-size:9.5px;
+  color:var(--text3);
+  letter-spacing:0.14em;
+  text-transform:uppercase;
+}
+.footer .lock{color:var(--gold);margin-right:6px}
+</style>
+</head>
+<body>
+  <div class="login-shell">
+    <div class="brand">
+      <div class="emblem">E</div>
+      <div class="brand-text">
+        <div class="name">Egreja Investment AI</div>
+        <div class="sub">Private Wealth Management</div>
+      </div>
+    </div>
+
+    <div class="title">Acesso Restrito</div>
+    <div class="subtitle">Esta plataforma é de uso exclusivo. Identifique-se para continuar.</div>
+
+    <div id="error" class="error"></div>
+
+    <form id="loginForm" method="post" action="/login">
+      <div class="field">
+        <label class="label" for="username">Usuário</label>
+        <input class="input" id="username" name="username" type="text" autocomplete="username" required autofocus>
+      </div>
+      <div class="field">
+        <label class="label" for="password">Senha</label>
+        <input class="input" id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button id="btnSubmit" class="btn" type="submit">Entrar</button>
+    </form>
+
+    <div class="footer">
+      <span class="lock">●</span>Sessão protegida · audit log ativo
+    </div>
+  </div>
+
+<script>
+const form = document.getElementById('loginForm');
+const errBox = document.getElementById('error');
+const btn = document.getElementById('btnSubmit');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  errBox.classList.remove('show'); errBox.textContent = '';
+  btn.disabled = true; btn.textContent = 'Validando...';
+  try {
+    const res = await fetch('/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: form.username.value.trim(),
+        password: form.password.value,
+      }),
+      credentials: 'same-origin',
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      window.location.href = data.next || '/';
+    } else {
+      errBox.textContent = data.error || 'Credenciais inválidas.';
+      errBox.classList.add('show');
+      btn.disabled = false; btn.textContent = 'Entrar';
+    }
+  } catch (err) {
+    errBox.textContent = 'Erro de conexão. Tente novamente.';
+    errBox.classList.add('show');
+    btn.disabled = false; btn.textContent = 'Entrar';
+  }
+});
+</script>
+</body>
+</html>

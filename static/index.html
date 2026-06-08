@@ -466,8 +466,34 @@ tbody td:last-child{padding-right:28px;text-align:right}
     <div id="fx-rates" class="fx-group"></div>
     <div id="topbar-clock">--:--:--</div>
     <button class="btn-refresh" onclick="loadAll()">↺ Refresh</button>
+    <button class="btn-refresh btn-logout" onclick="doLogout()" title="Sair" style="padding:0 12px">↪ Sair</button>
   </div>
 </div>
+
+<script>
+// [v10.52] Logout helper
+async function doLogout() {
+  try { await fetch('/logout', { method: 'POST', credentials: 'same-origin' }); } catch(e) {}
+  window.location.href = '/login';
+}
+// Auto-redirect if session expired during use (401 from API → back to login)
+(function(){
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = async function(input, init) {
+    const res = await _origFetch(input, init);
+    if (res && res.status === 401) {
+      try {
+        const url = (typeof input === 'string') ? input : (input && input.url) || '';
+        if (!url.startsWith('/login')) {
+          // sessao expirou — volta para login
+          window.location.href = '/login';
+        }
+      } catch(_){}
+    }
+    return res;
+  };
+})();
+</script>
 
 <div class="subbar">
   <div class="market-pill"><div class="mpill-dot" style="background:#2ecc71;box-shadow:0 0 5px #2ecc71"></div><span class="mpill-label">Crypto</span><span class="mpill-status">24/7</span></div>

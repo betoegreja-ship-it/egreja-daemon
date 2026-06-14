@@ -9364,6 +9364,35 @@ def deriv_monitor_loop():
         import traceback; traceback.print_exc()
 
 
+def brain_evolution_loop():
+    """[v3.1 14-jun-2026] Descongela brain_evolution: roda update_evolution() periodicamente.
+    Antes: update_evolution() era chamado APENAS no init (1x por startup) — por isso a tabela
+    brain_evolution ficou congelada desde abril (acc=55% fixo, decisoes 0/0).
+    Agora: roda a cada BRAIN_EVOLUTION_INTERVAL_SEC (default 3600s = 1h) para refletir
+    crescimento de licoes, padroes ativos e decisoes resolvidas em quase tempo real.
+    """
+    loop_name = 'brain_evolution_loop'
+    interval = int(os.environ.get('BRAIN_EVOLUTION_INTERVAL_SEC', 3600))
+    while True:
+        beat(loop_name)
+        time.sleep(interval)
+        beat(loop_name)
+        try:
+            engine = _get_brain_engine()
+            if engine is None:
+                continue
+            engine.update_evolution()
+            try:
+                _l = len(getattr(engine, '_lessons', []) or [])
+                _p = len([p for p in (getattr(engine, '_patterns', []) or []) if p.get('active')])
+                _d = len(getattr(engine, '_decisions', []) or [])
+                log.info(f'[BRAIN-EVO] update_evolution OK: lessons={_l:,} active_patterns={_p} decisions={_d:,}')
+            except Exception:
+                log.info('[BRAIN-EVO] update_evolution OK')
+        except Exception as _e:
+            log.warning(f'[BRAIN-EVO] update_evolution failed: {_e}')
+
+
 def start_background_threads():
     # [v10.35] Rehydrate paper trades from DB BEFORE threads start so monitor sees them
     try:
@@ -9389,6 +9418,7 @@ def start_background_threads():
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
         'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
+        'brain_evolution_loop':   brain_evolution_loop,    # [v3.1] descongela brain_evolution (era 1x/startup)
         'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
         'deriv_monitor_loop':     deriv_monitor_loop,        # [v10.35] paper MTM + exits (stop/target/expiry)
     }

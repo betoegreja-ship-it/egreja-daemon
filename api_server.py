@@ -905,6 +905,27 @@ TRAILING_PEAK_STOCKS      = float(os.environ.get('TRAILING_PEAK_STOCKS', 1.0))  
 TRAILING_DROP_STOCKS      = float(os.environ.get('TRAILING_DROP_STOCKS', 0.4))     # era 0.5% — retração menor
 TRAILING_PEAK_CRYPTO      = float(os.environ.get('TRAILING_PEAK_CRYPTO', 1.5))     # era 2.0% — ativa trailing mais cedo
 TRAILING_DROP_CRYPTO      = float(os.environ.get('TRAILING_DROP_CRYPTO', 0.7))     # era 1.0% — retração menor
+# ── [v3.2 14-jun-2026] Trailing por mercado (B3 vs NYSE) ─────────────────
+# Permite calibrar separadamente cada mercado. Default = TRAILING_PEAK_STOCKS / TRAILING_DROP_STOCKS atuais
+# para garantir compatibilidade. Ajustar via env vars quando padroes de cada bolsa divergirem.
+TRAILING_PEAK_B3          = float(os.environ.get('TRAILING_PEAK_B3',   TRAILING_PEAK_STOCKS))
+TRAILING_DROP_B3          = float(os.environ.get('TRAILING_DROP_B3',   TRAILING_DROP_STOCKS))
+TRAILING_PEAK_NYSE        = float(os.environ.get('TRAILING_PEAK_NYSE', TRAILING_PEAK_STOCKS))
+TRAILING_DROP_NYSE        = float(os.environ.get('TRAILING_DROP_NYSE', TRAILING_DROP_STOCKS))
+EARLY_STOP_B3_PCT         = float(os.environ.get('EARLY_STOP_B3_PCT',   float(os.environ.get('EARLY_STOP_STOCK_PCT', -0.6))))
+EARLY_STOP_NYSE_PCT       = float(os.environ.get('EARLY_STOP_NYSE_PCT', float(os.environ.get('EARLY_STOP_STOCK_PCT', -0.6))))
+
+def _trailing_peak_for(market):
+    """[v3.2] Retorna peak trigger baseado no mercado (B3/NYSE)."""
+    return TRAILING_PEAK_B3 if market == 'B3' else TRAILING_PEAK_NYSE
+
+def _trailing_drop_for(market):
+    """[v3.2] Retorna drop trigger baseado no mercado (B3/NYSE)."""
+    return TRAILING_DROP_B3 if market == 'B3' else TRAILING_DROP_NYSE
+
+def _early_stop_pct_for(market):
+    """[v3.2] Retorna early stop pct baseado no mercado (B3/NYSE)."""
+    return EARLY_STOP_B3_PCT if market == 'B3' else EARLY_STOP_NYSE_PCT
 # ── [v10.17] Directional exposure limit ───────────────────────────────────
 MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))       # max 70% das posições na mesma direção (stocks)
 MAX_DIRECTIONAL_PCT_CRYPTO = float(os.environ.get('MAX_DIRECTIONAL_PCT_CRYPTO', 100))  # [v10.24.4] crypto: 100% — mercado correlacionado, diversificação é entre moedas
@@ -6502,15 +6523,18 @@ def monitor_trades():
                         log.debug(f'[EXIT-ADV] stock {sym}: {_ea_e_s}')
                     # ═══ FIM EXIT ADVISOR ════════════════════════════════
 
-                    if reason is None and peak>=TRAILING_PEAK_STOCKS and trade['pnl_pct']<=peak-TRAILING_DROP_STOCKS:
-                        reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.0%, drop≥0.4% (era 1.5/0.5)
+                    # [v3.2] Trailing por mercado (B3 vs NYSE separados)
+                    _t_peak_s = _trailing_peak_for(mkt)
+                    _t_drop_s = _trailing_drop_for(mkt)
+                    if reason is None and peak>=_t_peak_s and trade['pnl_pct']<=peak-_t_drop_s:
+                        reason='TRAILING_STOP'  # [v3.2] triggers por mercado B3/NYSE (default = STOCKS global)
 
                     # ═══ [adaptive-v1] EARLY STOP STOCK ═══════════════════
                     # Corta trades stock afundando ANTES de virar STOP_LOSS catastrao.
                     # So ativa se peak < 0.4 (trade nunca foi lucrativa — trailing cuida do resto).
-                    # Env vars: EARLY_STOP_STOCK_ENABLED/PCT, EARLY_ALERT_STOCK_PCT
+                    # [v3.2] EARLY_STOP por mercado (B3 vs NYSE)
                     if reason is None and os.environ.get('EARLY_STOP_STOCK_ENABLED','true').lower()!='false':
-                        _early_stop_pct_s = float(os.environ.get('EARLY_STOP_STOCK_PCT', -0.6))
+                        _early_stop_pct_s = _early_stop_pct_for(mkt)  # [v3.2] B3/NYSE separado
                         _early_alert_pct_s = float(os.environ.get('EARLY_ALERT_STOCK_PCT', -0.4))
                         _peak_pos_s = float(trade.get('peak_pnl_pct', 0) or 0)
                         _min_pnl_s = trade.setdefault('min_pnl_pct', trade['pnl_pct'])

@@ -9394,13 +9394,20 @@ def brain_evolution_loop():
     brain_evolution ficou congelada desde abril (acc=55% fixo, decisoes 0/0).
     Agora: roda a cada BRAIN_EVOLUTION_INTERVAL_SEC (default 3600s = 1h) para refletir
     crescimento de licoes, padroes ativos e decisoes resolvidas em quase tempo real.
+
+    [v3.1-fix] Beat a cada 60s para nao travar watchdog (timeout=120s),
+    mas update_evolution roda so a cada interval segundos.
     """
     loop_name = 'brain_evolution_loop'
     interval = int(os.environ.get('BRAIN_EVOLUTION_INTERVAL_SEC', 3600))
+    _last_update = 0
     while True:
         beat(loop_name)
-        time.sleep(interval)
-        beat(loop_name)
+        time.sleep(60)  # heartbeat a cada 60s — watchdog timeout eh 120s
+        now_ts = time.time()
+        if now_ts - _last_update < interval:
+            continue
+        _last_update = now_ts
         try:
             engine = _get_brain_engine()
             if engine is None:

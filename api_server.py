@@ -14330,6 +14330,7 @@ def admin_db_cleanup():
 if __name__ == '__main__':
     port=int(os.environ.get('PORT',3001))
     log.info(f'━━━ Egreja Investment AI v10.22.0 | {ENV.upper()} | port {port} | single-process ━━━')
+    log.info('[BOOT-MARKER-21JUN-2226] commit e11eb5c+ deploy ativo — investigando crypto travado desde 19-jun')
     log.info(f'FMP: {"SET" if FMP_API_KEY else "NOT SET"} | Auth: {"ENABLED" if API_SECRET_KEY else "DISABLED (dev)"} | Alerts: {"ON" if ALERTS_ENABLED else "OFF"}')
     validate_settings_on_boot()  # [v10.16]
     load_calibration()  # [v10.18] restaurar calibração persistida

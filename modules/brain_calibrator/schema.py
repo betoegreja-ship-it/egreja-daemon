@@ -13,6 +13,9 @@ SCHEMA_SQL = [
       n_samples INT NOT NULL DEFAULT 0,
       win_rate DECIMAL(6,3),
       avg_pnl_pct DECIMAL(8,4),
+      avg_win_pct DECIMAL(8,4),
+      avg_loss_pct DECIMAL(8,4),
+      expected_value DECIMAL(8,4),
       adj_pts DECIMAL(6,2),
       version INT DEFAULT 1,
       last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -98,8 +101,19 @@ SCHEMA_SQL = [
 ]
 
 
+# Migrations idempotentes pra adicionar colunas novas
+MIGRATIONS = [
+    # v2 (24-jun-2026): Expected Value tracking — sugestao do especialista
+    "ALTER TABLE brain_feature_weights ADD COLUMN IF NOT EXISTS avg_win_pct DECIMAL(8,4)",
+    "ALTER TABLE brain_feature_weights ADD COLUMN IF NOT EXISTS avg_loss_pct DECIMAL(8,4)",
+    "ALTER TABLE brain_feature_weights ADD COLUMN IF NOT EXISTS expected_value DECIMAL(8,4)",
+    "ALTER TABLE brain_combo_weights ADD COLUMN IF NOT EXISTS expected_value DECIMAL(8,4)",
+    "ALTER TABLE brain_symbol_stats ADD COLUMN IF NOT EXISTS expected_value DECIMAL(8,4)",
+]
+
+
 def create_calibrator_tables(conn):
-    """Cria tabelas. Idempotente."""
+    """Cria tabelas + migrations. Idempotente."""
     created = []
     try:
         cur = conn.cursor()
@@ -107,9 +121,15 @@ def create_calibrator_tables(conn):
             tname = sql.split('CREATE TABLE IF NOT EXISTS')[1].split('(')[0].strip()
             cur.execute(sql)
             created.append(tname)
+        # Aplica migrations (idempotente via IF NOT EXISTS)
+        for sql in MIGRATIONS:
+            try: cur.execute(sql)
+            except Exception as me:
+                # MySQL antigo nao tem IF NOT EXISTS em ADD COLUMN — ignore Duplicate column
+                if '1060' not in str(me): log.debug(f'migration: {me}')
         conn.commit()
         cur.close()
-        log.info(f'[calibrator.schema] tabelas garantidas: {created}')
+        log.info(f'[calibrator.schema] tabelas garantidas: {created} + {len(MIGRATIONS)} migrations')
         return created
     except Exception as e:
         log.error(f'[calibrator.schema] erro: {e}')

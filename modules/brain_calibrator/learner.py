@@ -115,13 +115,20 @@ def recalibrate_brain(lookback_days=None) -> dict:
     try:
         cur = conn.cursor(dictionary=True)
 
-        # 1. Pega trades
+        # 1. Pega trades — SANITIZADOS (especialista 2026-06-24):
+        #    - EXCLUI close_reason VOIDED (120 trades de lixo)
+        #    - EXCLUI peak_pnl_pct > 10 (outliers — 7 trades; um chegou a 2.391.656%)
+        #    - EXCLUI peak_pnl_pct < -10 (mesmo motivo, sanity)
+        #    - EXCLUI close_reason de bugs (price_zero_bug_fix, price_correction_bug_v108)
         cur.execute("""SELECT id, symbol, market, asset_type, direction,
                               pnl_pct, score, features_json,
                               HOUR(opened_at) AS hr, DAYOFWEEK(opened_at) AS dow
                        FROM trades
                        WHERE status='CLOSED' AND features_json IS NOT NULL
                          AND features_json != '' AND pnl_pct IS NOT NULL
+                         AND COALESCE(close_reason,'') NOT IN
+                             ('VOIDED','price_zero_bug_fix','price_correction_bug_v108','MANUAL_CLOSE')
+                         AND COALESCE(peak_pnl_pct, 0) BETWEEN -10 AND 10
                          AND closed_at >= NOW() - INTERVAL %s DAY""", (lookback_days,))
         rows = cur.fetchall()
         n_trades = len(rows)
@@ -174,18 +181,39 @@ def recalibrate_brain(lookback_days=None) -> dict:
                     wins = sum(r['_win'] for r in rs)
                     wr = 100 * wins / n
                     avg = sum(r['_pnl'] for r in rs) / n
-                    adj_raw = (wr - base) * SCALE_FACTOR
+                    # Expected Value (sugestao do especialista 24-jun-2026):
+                    # EV = p_win * avg_win + p_loss * avg_loss
+                    # avg_win e avg_loss sao em %; EV vira % esperado por trade
+                    win_pnls = [r['_pnl'] for r in rs if r['_pnl'] > 0]
+                    loss_pnls = [r['_pnl'] for r in rs if r['_pnl'] <= 0]
+                    avg_win_pct = sum(win_pnls)/len(win_pnls) if win_pnls else 0.0
+                    avg_loss_pct = sum(loss_pnls)/len(loss_pnls) if loss_pnls else 0.0
+                    p_win = wr/100
+                    p_loss = 1 - p_win
+                    ev = p_win * avg_win_pct + p_loss * avg_loss_pct
+                    # Adj = blend de win-rate edge + EV
+                    # adj_wr captura probabilidade, adj_ev captura magnitude
+                    adj_wr = (wr - base) * SCALE_FACTOR
+                    adj_ev = ev * 8.0  # EV em % -> pts (escala empirica)
+                    adj_raw = 0.6 * adj_wr + 0.4 * adj_ev
                     adj = _clip(_shrinkage(adj_raw, n))
                     if abs(adj) < 0.3: continue
                     try:
                         cur.execute("""INSERT INTO brain_feature_weights
-                            (feature_name, feature_value, asset_scope, n_samples, win_rate, avg_pnl_pct, adj_pts)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s)
+                            (feature_name, feature_value, asset_scope, n_samples,
+                             win_rate, avg_pnl_pct, avg_win_pct, avg_loss_pct,
+                             expected_value, adj_pts)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                             ON DUPLICATE KEY UPDATE
                               n_samples=VALUES(n_samples), win_rate=VALUES(win_rate),
-                              avg_pnl_pct=VALUES(avg_pnl_pct), adj_pts=VALUES(adj_pts),
-                              version=version+1""",
-                            (fname, v[:64], scope, n, round(wr,2), round(avg,4), round(adj,2)))
+                              avg_pnl_pct=VALUES(avg_pnl_pct),
+                              avg_win_pct=VALUES(avg_win_pct),
+                              avg_loss_pct=VALUES(avg_loss_pct),
+                              expected_value=VALUES(expected_value),
+                              adj_pts=VALUES(adj_pts), version=version+1""",
+                            (fname, v[:64], scope, n, round(wr,2), round(avg,4),
+                             round(avg_win_pct,4), round(avg_loss_pct,4),
+                             round(ev,4), round(adj,2)))
                         features_updated += 1
                     except Exception as e:
                         log.debug(f'feat insert {fname}/{v}/{scope}: {e}')
@@ -206,18 +234,33 @@ def recalibrate_brain(lookback_days=None) -> dict:
                 wins = sum(r['_win'] for r in rs)
                 wr = 100 * wins / n
                 avg = sum(r['_pnl'] for r in rs) / n
-                adj_raw = (wr - baseline) * SCALE_FACTOR * 0.7  # combos pesam menos
+                # Expected Value tambem em combos (especialista identificou combos
+                # perdedores com win-rate normal mas EV muito negativo):
+                # crypto LONG OVERNIGHT SURGE: 962 trades, 49.7% win, -R$ 51.747
+                win_pnls = [r['_pnl'] for r in rs if r['_pnl'] > 0]
+                loss_pnls = [r['_pnl'] for r in rs if r['_pnl'] <= 0]
+                avg_win = sum(win_pnls)/len(win_pnls) if win_pnls else 0.0
+                avg_loss = sum(loss_pnls)/len(loss_pnls) if loss_pnls else 0.0
+                p_w = wr/100; p_l = 1-p_w
+                ev = p_w * avg_win + p_l * avg_loss
+                adj_wr = (wr - baseline) * SCALE_FACTOR * 0.7
+                adj_ev = ev * 7.0  # combos: peso EV um pouco menor
+                adj_raw = 0.6 * adj_wr + 0.4 * adj_ev
                 adj = _clip(_shrinkage(adj_raw, n))
                 if abs(adj) < 0.5: continue
                 combo_key = f'{f1}×{f2}'
                 try:
                     cur.execute("""INSERT INTO brain_combo_weights
-                        (combo_key, combo_value, asset_scope, n_samples, win_rate, avg_pnl_pct, adj_pts)
-                        VALUES (%s,%s,'ALL',%s,%s,%s,%s)
+                        (combo_key, combo_value, asset_scope, n_samples,
+                         win_rate, avg_pnl_pct, expected_value, adj_pts)
+                        VALUES (%s,%s,'ALL',%s,%s,%s,%s,%s)
                         ON DUPLICATE KEY UPDATE
                           n_samples=VALUES(n_samples), win_rate=VALUES(win_rate),
-                          avg_pnl_pct=VALUES(avg_pnl_pct), adj_pts=VALUES(adj_pts)""",
-                        (combo_key[:128], combo_val[:128], n, round(wr,2), round(avg,4), round(adj,2)))
+                          avg_pnl_pct=VALUES(avg_pnl_pct),
+                          expected_value=VALUES(expected_value),
+                          adj_pts=VALUES(adj_pts)""",
+                        (combo_key[:128], combo_val[:128], n, round(wr,2),
+                         round(avg,4), round(ev,4), round(adj,2)))
                     combos_updated += 1
                 except Exception as e:
                     log.debug(f'combo insert {combo_key}/{combo_val}: {e}')
@@ -232,22 +275,33 @@ def recalibrate_brain(lookback_days=None) -> dict:
             wr = 100 * wins / n
             avg = sum(r['_pnl'] for r in rs) / n
             total = sum(r['_pnl'] for r in rs)
+            # EV por simbolo — especialista identificou AZEV4 com 0% win
+            # mas tambem simbolos com win-rate alto e EV ruim (avg_loss >> avg_win)
+            win_pnls = [r['_pnl'] for r in rs if r['_pnl'] > 0]
+            loss_pnls = [r['_pnl'] for r in rs if r['_pnl'] <= 0]
+            avg_win = sum(win_pnls)/len(win_pnls) if win_pnls else 0.0
+            avg_loss = sum(loss_pnls)/len(loss_pnls) if loss_pnls else 0.0
+            p_w = wr/100; p_l = 1-p_w
+            sym_ev = p_w * avg_win + p_l * avg_loss
             base = baseline_stock if atype in ('stock','stocks') else baseline_crypto
-            adj_raw = (wr - base) * 0.8
+            adj_wr = (wr - base) * 0.8
+            adj_ev = sym_ev * 6.0
+            adj_raw = 0.5 * adj_wr + 0.5 * adj_ev  # symbol: peso 50/50
             adj = _clip(_shrinkage(adj_raw, n, n_min=10), -10, 10)
             try:
                 cur.execute("""INSERT INTO brain_symbol_stats
                     (symbol, asset_type, n_samples, win_rate, avg_pnl_pct, ewma_pnl_pct,
-                     total_pnl_pct, symbol_skill_pts)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                     total_pnl_pct, symbol_skill_pts, expected_value)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON DUPLICATE KEY UPDATE
                       n_samples=VALUES(n_samples), win_rate=VALUES(win_rate),
                       avg_pnl_pct=VALUES(avg_pnl_pct),
                       ewma_pnl_pct = (1 - %s) * COALESCE(ewma_pnl_pct, 0) + %s * VALUES(avg_pnl_pct),
                       total_pnl_pct=VALUES(total_pnl_pct),
-                      symbol_skill_pts=VALUES(symbol_skill_pts)""",
+                      symbol_skill_pts=VALUES(symbol_skill_pts),
+                      expected_value=VALUES(expected_value)""",
                     (sym[:16], atype[:16], n, round(wr,2), round(avg,4), round(avg,4),
-                     round(total,3), round(adj,2),
+                     round(total,3), round(adj,2), round(sym_ev,4),
                      EWMA_ALPHA, EWMA_ALPHA))
                 symbols_updated += 1
             except Exception as e:

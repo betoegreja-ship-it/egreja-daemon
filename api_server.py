@@ -7168,7 +7168,11 @@ def stock_execution_worker():
                                'asset_type': 'stock', 'direction': 'LONG' if score>50 else 'SHORT',
                                'volatility_bucket': 'LOW' if atr_pct<1 else ('HIGH' if atr_pct>3 else 'NORMAL'),
                                'atr_bucket': 'EXTREME' if atr_pct>4 else ('HIGH' if atr_pct>2.5 else 'NORMAL'),
-                               'volume_bucket': 'HIGH' if vol_ratio>1.5 else ('LOW' if vol_ratio<0.5 else 'NORMAL')}
+                               'volume_bucket': 'HIGH' if vol_ratio>1.5 else ('LOW' if vol_ratio<0.5 else 'NORMAL'),
+                               # [FIX especialista 24-jun-2026] adicionar features que vinham vazias:
+                               # signal_v2 e regime serao preenchidos abaixo apos v3 rodar
+                               'signal_v2': 'PENDING',
+                               'regime': 'PENDING'}
                 try:
                     _disc_adj, _disc_blocked, _disc_key = get_composite_score_adj(_feats_disc)
                 except Exception as _ge:
@@ -7233,6 +7237,11 @@ def stock_execution_worker():
                     score = _r['score']
                     regime_v2_val = _r['regime']
                     signal_v2_val = _r['signal']
+                    # [FIX especialista 24-jun-2026] Atualizar _feats_disc com signal_v2 e regime
+                    # antes do features_json ser persistido. Sem isso, esses 2 campos vinham
+                    # vazios em 100% dos trades exportados.
+                    _feats_disc['signal_v2'] = signal_v2_val or 'MANTER'
+                    _feats_disc['regime'] = regime_v2_val or 'UNKNOWN'
                     log.info(f"V3_STOCK {sym}: score={score} regime={regime_v2_val} signal={signal_v2_val}")
                 except Exception as _e:
                     log.warning(f"V3_STOCK_FAIL {sym}: {_e} — símbolo pulado")
@@ -9933,6 +9942,61 @@ def brain_calibration_history():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/brain/calibration/ev')
+def brain_calibration_ev():
+    """Top combos/features por Expected Value — sugestao especialista 24-jun-2026."""
+    if not _calibrator_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.brain_calibrator.learner import _get_conn
+        conn = _get_conn()
+        if not conn: return jsonify({'error': 'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT feature_name, feature_value, asset_scope, n_samples,
+                              win_rate, avg_win_pct, avg_loss_pct, expected_value, adj_pts
+                       FROM brain_feature_weights
+                       WHERE expected_value IS NOT NULL
+                       ORDER BY expected_value DESC LIMIT 30""")
+        top_ev = cur.fetchall()
+        cur.execute("""SELECT feature_name, feature_value, asset_scope, n_samples,
+                              win_rate, avg_win_pct, avg_loss_pct, expected_value, adj_pts
+                       FROM brain_feature_weights
+                       WHERE expected_value IS NOT NULL
+                       ORDER BY expected_value ASC LIMIT 30""")
+        bot_ev = cur.fetchall()
+        cur.execute("""SELECT combo_key, combo_value, n_samples, win_rate,
+                              expected_value, adj_pts FROM brain_combo_weights
+                       WHERE expected_value IS NOT NULL
+                       ORDER BY expected_value ASC LIMIT 20""")
+        worst_combos = cur.fetchall()
+        cur.execute("""SELECT symbol, asset_type, n_samples, win_rate,
+                              expected_value, symbol_skill_pts FROM brain_symbol_stats
+                       WHERE expected_value IS NOT NULL
+                       ORDER BY expected_value ASC LIMIT 20""")
+        worst_syms = cur.fetchall()
+        cur.close()
+        try: conn.close()
+        except: pass
+        def n(rs):
+            o = []
+            for r in rs:
+                d = {}
+                for k,v in r.items():
+                    if hasattr(v,'isoformat'): d[k]=v.isoformat()
+                    elif hasattr(v,'__float__'): d[k]=float(v)
+                    else: d[k]=v
+                o.append(d)
+            return o
+        return jsonify({
+            'top_ev_features': n(top_ev),
+            'bottom_ev_features': n(bot_ev),
+            'worst_ev_combos': n(worst_combos),
+            'worst_ev_symbols': n(worst_syms),
+            'timestamp': datetime.utcnow().isoformat(),
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/brain/calibration/test')
 def brain_calibration_test():
     """Testa apply_calibration com query params. Para debug.
@@ -11385,7 +11449,12 @@ def debug_crypto_filter_trace():
                       'market_type': 'CRYPTO', 'direction': direction,
                       'volatility_bucket': 'LOW' if atr_pct_c < 1 else ('HIGH' if atr_pct_c > 3 else 'NORMAL'),
                       'btc_trend': (_cross_market_state.get('btc_change_24h', 0) > 2 and 'UP') or (_cross_market_state.get('btc_change_24h', 0) < -2 and 'DOWN' or 'FLAT'),
-                      'stocks_regime': 'BAD' if _cross_market_state.get('stocks_wr_today', 50) < 45 else ('GOOD' if _cross_market_state.get('stocks_wr_today', 50) >= 58 else 'NEUTRAL')}
+                      'stocks_regime': 'BAD' if _cross_market_state.get('stocks_wr_today', 50) < 45 else ('GOOD' if _cross_market_state.get('stocks_wr_today', 50) >= 58 else 'NEUTRAL'),
+                      # [FIX especialista 24-jun-2026] features que vinham vazias
+                      'signal_v2': row.get('signal_v2') or row.get('signal') or 'MANTER',
+                      'regime': row.get('regime_v2') or row.get('regime') or 'UNKNOWN',
+                      'ema_alignment': row.get('ema_alignment') or 'MIXED',
+                      'atr_bucket': row.get('atr_bucket') or ('EXTREME' if atr_pct_c>4 else ('HIGH' if atr_pct_c>2.5 else 'NORMAL'))}
             try:
                 _disc_adj, _disc_blocked, _disc_key = get_composite_score_adj(_feats)
             except Exception:

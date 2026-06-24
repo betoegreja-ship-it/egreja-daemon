@@ -9481,6 +9481,14 @@ def start_background_threads():
         'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
         'deriv_monitor_loop':     deriv_monitor_loop,        # [v10.35] paper MTM + exits (stop/target/expiry)
     }
+    # [LIMPEZA 24-jun-2026] DISABLE_LONG_HORIZON tira monthly_picks_worker (depende de
+    # long_horizon que tem candidate_expansion.py com syntax error desde abril e nunca rodou).
+    # Setar env var DISABLE_LONG_HORIZON=true no Railway para limpar threads mortas.
+    # Modulo sera substituido pelo pairs_engine (stat arbi B3) — Fase 2 da limpeza/reorg.
+    _disable_lh = os.environ.get('DISABLE_LONG_HORIZON', 'false').lower() == 'true'
+    if _disable_lh:
+        log.info('[LIMPEZA] DISABLE_LONG_HORIZON=true — pulando monthly_picks_worker (long_horizon morto)')
+        defs.pop('monthly_picks_worker', None)
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
     # [DISABLE_DERIV 05/mai/2026] Pular as 13 threads de derivatives quando o usuario
     # nao tem OpLab/Cedro (sem provider real, todas caem em Simulated paper sintetico —

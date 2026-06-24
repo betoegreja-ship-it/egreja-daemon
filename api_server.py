@@ -6596,6 +6596,23 @@ def monitor_trades():
                     if reason is None and peak>=_t_peak_s and trade['pnl_pct']<=peak-_t_drop_s:
                         reason='TRAILING_STOP'  # [v3.2] triggers por mercado B3/NYSE (default = STOCKS global)
 
+                    # ═══ [v11-BEPROTECT 24-jun-2026] BREAKEVEN PROTECT ═══════
+                    # Cobre o "limbo" entre peak 0.4-1.0% (abaixo do TRAILING_PEAK_STOCKS=1.0)
+                    # onde trades ganhando 0.4-1.0% viravam negativas sem nenhuma protecao
+                    # ate o TIMEOUT (avg pnl TIMEOUT = -0.17% com 50% win-rate).
+                    # Regra: se peak chegou a +BE_TRIGGER_PCT (default 0.4%) E pnl atual
+                    # caiu para BE_FLOOR_PCT ou pior (default -0.10%), fecha protecao.
+                    # 17 trades nos ultimos 14 dias teriam sido cortadas mais cedo:
+                    #   BAC peak +0.67% -> -1.18%, SPOT peak +0.69% -> -0.96%, etc.
+                    if reason is None and os.environ.get('BREAKEVEN_PROTECT_ENABLED','true').lower()!='false':
+                        _be_trigger = float(os.environ.get('BE_PROTECT_TRIGGER_PCT', 0.4))
+                        _be_floor   = float(os.environ.get('BE_PROTECT_FLOOR_PCT', -0.10))
+                        if peak >= _be_trigger and trade['pnl_pct'] <= _be_floor:
+                            reason = 'BREAKEVEN_PROTECT'
+                            log.info(f"[BE-PROTECT] {trade['symbol']}(stock): peak={peak:+.2f}% "
+                                     f"pnl={trade['pnl_pct']:+.2f}% — protegendo (devolveu {peak - trade['pnl_pct']:.2f}pp)")
+                    # ═══ FIM BREAKEVEN PROTECT ═══════════════════════════════
+
                     # ═══ [adaptive-v1] EARLY STOP STOCK ═══════════════════
                     # Corta trades stock afundando ANTES de virar STOP_LOSS catastrao.
                     # So ativa se peak < 0.4 (trade nunca foi lucrativa — trailing cuida do resto).
@@ -6764,6 +6781,18 @@ def monitor_trades():
 
                     if reason is None and peak>=TRAILING_PEAK_CRYPTO and trade['pnl_pct']<=peak-TRAILING_DROP_CRYPTO:
                         reason='TRAILING_STOP'  # [v10.17] triggers: peak≥1.5%, drop≥0.7% (era 2.0/1.0)
+
+                    # ═══ [v11-BEPROTECT 24-jun-2026] BREAKEVEN PROTECT CRYPTO ═
+                    # Mesma logica do stocks: cobre o limbo peak 0.5-1.5% em crypto.
+                    # Trigger e floor sao DIFERENTES (crypto eh mais volatil — limiares maiores).
+                    if reason is None and os.environ.get('BREAKEVEN_PROTECT_CRYPTO_ENABLED','true').lower()!='false':
+                        _be_trigger_c = float(os.environ.get('BE_PROTECT_CRYPTO_TRIGGER_PCT', 0.6))
+                        _be_floor_c   = float(os.environ.get('BE_PROTECT_CRYPTO_FLOOR_PCT', -0.15))
+                        if peak >= _be_trigger_c and trade['pnl_pct'] <= _be_floor_c:
+                            reason = 'BREAKEVEN_PROTECT'
+                            log.info(f"[BE-PROTECT] {trade['symbol']}(crypto): peak={peak:+.2f}% "
+                                     f"pnl={trade['pnl_pct']:+.2f}% — protegendo (devolveu {peak - trade['pnl_pct']:.2f}pp)")
+                    # ═══ FIM BREAKEVEN PROTECT CRYPTO ════════════════════════
 
                     # ═══ [adaptive-v1] EARLY STOP CRYPTO ═══════════════════
                     # Corta trades que estão afundando ANTES de virar STOP_LOSS catastrão.

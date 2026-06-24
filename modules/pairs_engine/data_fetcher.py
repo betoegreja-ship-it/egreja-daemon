@@ -103,34 +103,38 @@ def fetch_pair_quote(symbol: str) -> Optional[Dict]:
         return None
 
 
+_BRAPI_BULK_CHUNK = 20   # limite plano free BRAPI
+
 def fetch_pair_quotes_bulk(symbols: List[str]) -> Dict[str, Dict]:
-    """Pega quotes de varios simbolos numa unica chamada BRAPI."""
+    """Pega quotes de varios simbolos via BRAPI em chunks de 20 (limite free plan)."""
     if not symbols:
         return {}
     out = {}
-    try:
-        params = {}
-        if BRAPI_TOKEN:
-            params['token'] = BRAPI_TOKEN
-        # BRAPI aceita lista CSV
-        syms_csv = ','.join(symbols)
-        r = requests.get(f'{BRAPI_BASE}/quote/{syms_csv}', params=params, timeout=10)
-        if r.status_code != 200:
-            log.warning(f'[BRAPI] bulk quote HTTP {r.status_code}')
-            return {}
-        for d in r.json().get('results', []) or []:
-            sym = d.get('symbol')
-            price = float(d.get('regularMarketPrice') or 0)
-            if not sym or price <= 0:
+    # Quebrar em chunks de 20 (limite BRAPI free)
+    chunks = [symbols[i:i + _BRAPI_BULK_CHUNK] for i in range(0, len(symbols), _BRAPI_BULK_CHUNK)]
+    for chunk in chunks:
+        try:
+            params = {}
+            if BRAPI_TOKEN:
+                params['token'] = BRAPI_TOKEN
+            syms_csv = ','.join(chunk)
+            r = requests.get(f'{BRAPI_BASE}/quote/{syms_csv}', params=params, timeout=10)
+            if r.status_code != 200:
+                log.warning(f'[BRAPI] bulk chunk ({len(chunk)} syms) HTTP {r.status_code}')
                 continue
-            out[sym] = {
-                'symbol': sym, 'price': price,
-                'bid': float(d.get('bid') or price),
-                'ask': float(d.get('ask') or price),
-                'volume': int(d.get('regularMarketVolume') or 0),
-                'change_pct': float(d.get('regularMarketChangePercent') or 0),
-            }
-        return out
-    except Exception as e:
-        log.warning(f'[BRAPI] bulk quote: {e}')
-        return {}
+            for d in r.json().get('results', []) or []:
+                sym = d.get('symbol')
+                price = float(d.get('regularMarketPrice') or 0)
+                if not sym or price <= 0:
+                    continue
+                out[sym] = {
+                    'symbol': sym, 'price': price,
+                    'bid': float(d.get('bid') or price),
+                    'ask': float(d.get('ask') or price),
+                    'volume': int(d.get('regularMarketVolume') or 0),
+                    'change_pct': float(d.get('regularMarketChangePercent') or 0),
+                }
+        except Exception as e:
+            log.warning(f'[BRAPI] bulk chunk: {e}')
+            continue
+    return out

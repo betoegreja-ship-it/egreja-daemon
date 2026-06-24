@@ -7181,6 +7181,36 @@ def stock_execution_worker():
                     log.debug(f"COMPOSITE_ADJ stock {sym}: {_disc_adj:+d} via {_disc_key}")
                 if abs(_st_adj) >= 5:
                     log.debug(f"STOCK_SCORE_ADJ: {sym} {_score_before_t}→{score} ({_st_reason})")
+
+                # ═══ [v12-CALIBRATOR] Brain auto-learning adjustment ═══
+                # Aplica pesos data-driven dos 12k+ trades historicos.
+                # Roda em SHADOW por padrao (apenas loga) durante 1 semana antes de ir live.
+                # Para ativar live: set CALIBRATOR_LIVE_STOCK=true
+                if _calibrator_loaded:
+                    try:
+                        _calib_feats_stk = {
+                            'time_bucket':   _feats_disc.get('time_bucket'),
+                            'ema_alignment': _feats_disc.get('ema_alignment'),
+                            'volume_bucket': _feats_disc.get('volume_bucket'),
+                            'atr_bucket':    _feats_disc.get('atr_bucket'),
+                            'rsi_bucket':    _feats_disc.get('rsi_bucket'),
+                            'market_type':   _feats_disc.get('market_type'),
+                            'market':        _mkt_type,
+                        }
+                        _score_pre_calib = score
+                        _calib_dir = 'LONG' if score > 50 else 'SHORT'
+                        _adj_score, _adj_total, _adj_bd = _apply_calibration(
+                            int(score), _calib_feats_stk, sym, 'stock',
+                            _calib_dir, _now_s.hour)
+                        if abs(_adj_total) >= 1:
+                            log.debug(f"CALIB stock {sym}: {_score_pre_calib}→{_adj_score:.1f} "
+                                      f"(adj={_adj_total:+.1f})")
+                        if os.environ.get('CALIBRATOR_LIVE_STOCK','false').lower() == 'true':
+                            # LIVE: substitui o score
+                            score = int(round(_adj_score))
+                    except Exception as _ce:
+                        log.debug(f'[CALIB] stock {sym}: {_ce}')
+                # ═══ FIM CALIBRATOR ════════════════════════════════════
                 # [v10.47] SISTEMA APENAS V3 — score v1 acima é ignorado, só v3 decide
                 # Se v3 falhar para este símbolo, skip (não abrir trade)
                 regime_v2_val = None; signal_v2_val = None
@@ -11366,6 +11396,29 @@ def debug_crypto_filter_trace():
                 out['symbols'].append(row); continue
             if _disc_adj != 0:
                 score = max(0, min(100, score + _disc_adj))
+
+            # ═══ [v12-CALIBRATOR] Brain auto-learning crypto ═══
+            if _calibrator_loaded:
+                try:
+                    _calib_feats_cry = {
+                        'time_bucket':   _feats.get('time_bucket'),
+                        'rsi_bucket':    _feats.get('rsi_bucket'),
+                        'market_type':   'CRYPTO',
+                    }
+                    _score_pre_calib_c = score
+                    _adj_score_c, _adj_total_c, _adj_bd_c = _apply_calibration(
+                        int(score), _calib_feats_cry, ticker_data.get('symbol', ''),
+                        'crypto', direction, _now_c.hour)
+                    row['calibrator'] = {'adj': _adj_total_c, 'score_calib': _adj_score_c}
+                    if abs(_adj_total_c) >= 1:
+                        log.debug(f"CALIB crypto {ticker_data.get('symbol','?')}: "
+                                  f"{_score_pre_calib_c}→{_adj_score_c:.1f} (adj={_adj_total_c:+.1f})")
+                    if os.environ.get('CALIBRATOR_LIVE_CRYPTO','false').lower() == 'true':
+                        score = int(round(_adj_score_c))
+                except Exception as _ce:
+                    log.debug(f'[CALIB] crypto: {_ce}')
+            # ═══ FIM CALIBRATOR ════════════════════════════════════
+
             # 8) DD (global)
             if _dd_blocked:
                 row['blocked_at'] = f'CRYPTO-DD-BLOCK ({_dd_reason})'

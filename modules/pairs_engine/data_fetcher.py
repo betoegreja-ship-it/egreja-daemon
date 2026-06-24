@@ -21,48 +21,109 @@ _quote_cache: Dict[str, tuple] = {}
 _QUOTE_TTL_S = 5
 
 
-def fetch_pair_history(symbol: str, days: int = 60) -> List[Dict]:
-    """Pega historico diario de fechamento via BRAPI.
-
-    Args:
-        symbol: ticker B3 (ex: 'ITUB4')
-        days: numero de dias (60 default)
-
-    Returns:
-        Lista de dicts [{'date': '2026-06-24', 'close': 40.49}, ...]
-        Lista vazia em caso de erro.
-    """
+def fetch_pair_history_brapi(symbol: str, days: int = 60) -> List[Dict]:
+    """Historico diario via BRAPI (range max 1y free, 5y/10y/max planos pagos)."""
     try:
-        range_ = '3mo' if days <= 90 else '6mo' if days <= 180 else '1y'
+        if days <= 30: range_ = '1mo'
+        elif days <= 90: range_ = '3mo'
+        elif days <= 180: range_ = '6mo'
+        elif days <= 365: range_ = '1y'
+        elif days <= 730: range_ = '2y'
+        elif days <= 1825: range_ = '5y'
+        else: range_ = 'max'
         params = {'range': range_, 'interval': '1d'}
         if BRAPI_TOKEN:
             params['token'] = BRAPI_TOKEN
-        r = requests.get(f'{BRAPI_BASE}/quote/{symbol}', params=params, timeout=10)
+        r = requests.get(f'{BRAPI_BASE}/quote/{symbol}', params=params, timeout=25)
         if r.status_code != 200:
-            log.warning(f'[BRAPI] {symbol}: HTTP {r.status_code}')
+            log.warning(f'[BRAPI] {symbol}: HTTP {r.status_code} range={range_}')
             return []
         data = r.json().get('results', [{}])[0]
         hist = data.get('historicalDataPrice', []) or []
-        # Filtrar so close > 0 e ultimos `days` dias
-        from datetime import datetime
+        from datetime import datetime as _dt
         out = []
         for h in hist[-days:]:
-            ts = h.get('date')
-            close = h.get('close')
+            ts = h.get('date'); close = h.get('close')
             if not ts or not close or close <= 0:
                 continue
             try:
-                dt = datetime.utcfromtimestamp(int(ts)).strftime('%Y-%m-%d')
+                dt = _dt.utcfromtimestamp(int(ts)).strftime('%Y-%m-%d')
                 out.append({'date': dt, 'close': float(close),
+                           'open': float(h.get('open', close) or close),
                            'high': float(h.get('high', close) or close),
                            'low': float(h.get('low', close) or close),
-                           'volume': int(h.get('volume', 0) or 0)})
-            except Exception:
-                continue
+                           'volume': int(h.get('volume', 0) or 0),
+                           'source': 'brapi'})
+            except Exception: continue
         return out
     except Exception as e:
         log.warning(f'[BRAPI] fetch_pair_history {symbol}: {e}')
         return []
+
+
+def fetch_pair_history_cedro(symbol: str, days: int = 60) -> List[Dict]:
+    """Historico diario via Cedro Socket (datafeed pago, max ~10y)."""
+    try:
+        from modules.cedro_socket_provider import get_cedro
+        cedro = get_cedro()
+        if not cedro:
+            return []
+        # Cedro retorna lista cronologica (antigo -> recente)
+        candles = cedro.get_candles_history(symbol, period='D', n_candles=days, wait_ms=8000)
+        if not candles:
+            return []
+        out = []
+        for c in candles:
+            dt_str = c.get('datetime') or c.get('date')
+            if not dt_str: continue
+            # datetime do Cedro: 'YYYYMMDDHHMM' -> 'YYYY-MM-DD'
+            try:
+                if len(str(dt_str)) >= 8:
+                    s = str(dt_str)
+                    date_iso = f'{s[0:4]}-{s[4:6]}-{s[6:8]}'
+                else:
+                    date_iso = str(dt_str)
+            except Exception: continue
+            close = c.get('close') or c.get('c')
+            if not close or float(close) <= 0:
+                continue
+            out.append({
+                'date': date_iso,
+                'open': float(c.get('open', close) or close),
+                'high': float(c.get('high', close) or close),
+                'low': float(c.get('low', close) or close),
+                'close': float(close),
+                'volume': int(c.get('volume', 0) or 0),
+                'source': 'cedro',
+            })
+        return out
+    except Exception as e:
+        log.debug(f'[CEDRO] fetch_pair_history {symbol}: {e}')
+        return []
+
+
+def fetch_pair_history(symbol: str, days: int = 60, prefer_cedro: bool = False) -> List[Dict]:
+    """Historico fusion BRAPI + Cedro. Cedro tem mais densidade quando disponivel.
+
+    Strategy:
+    - Default: BRAPI primary (mais estavel), Cedro fallback se BRAPI < 80% target
+    - prefer_cedro=True: Cedro primary (usado em backfill onde queremos densidade)
+    """
+    if prefer_cedro:
+        out = fetch_pair_history_cedro(symbol, days=days)
+        if len(out) >= days * 0.5:
+            return out
+        # fallback BRAPI
+        return fetch_pair_history_brapi(symbol, days=days)
+    # default: BRAPI primary
+    out = fetch_pair_history_brapi(symbol, days=days)
+    if len(out) >= days * 0.5:
+        return out
+    log.info(f'[FUSION] {symbol}: BRAPI returned {len(out)}/{days}, tentando Cedro...')
+    cedro_out = fetch_pair_history_cedro(symbol, days=days)
+    if len(cedro_out) > len(out):
+        return cedro_out
+    return out
 
 
 def fetch_pair_quote(symbol: str) -> Optional[Dict]:

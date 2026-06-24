@@ -16,6 +16,7 @@ from typing import Dict, Optional, List
 from .config import PAIRS_CONFIG, get_pair, all_symbols
 from .data_fetcher import fetch_pair_history, fetch_pair_quotes_bulk
 from .zscore import calc_spread_series, calc_zscore_stats, calc_hedge_ratio, calc_correlation
+from . import persistence as _persist
 
 log = logging.getLogger('egreja.pairs')
 
@@ -39,15 +40,40 @@ def _gen_trade_id():
     return f"PAIR-{uuid.uuid4().hex[:12]}"
 
 
+PAIRS_HISTORY_DAYS = int(os.environ.get('PAIRS_HISTORY_DAYS', 250))  # ~1y de pregoes
+PAIRS_HISTORY_TTL_S = int(os.environ.get('PAIRS_HISTORY_TTL_S', 14400))  # 4h cache
+
 def _refresh_history(symbol: str, force: bool = False) -> List[Dict]:
-    """Cache de historico (24h TTL)."""
+    """Cache de historico (4h TTL). Source-of-truth: pairs_history_daily MySQL.
+
+    Fluxo:
+    1. Memoria (TTL 4h) — mais rapido
+    2. MySQL pairs_history_daily — fonte persistente
+    3. BRAPI+Cedro fusion — apenas se DB tem pouca data
+    """
     now = time.time()
     cached = pairs_history_cache.get(symbol)
-    if cached and not force and (now - cached.get('ts', 0)) < 86400:
+    if cached and not force and (now - cached.get('ts', 0)) < PAIRS_HISTORY_TTL_S:
         return cached.get('data', [])
-    data = fetch_pair_history(symbol, days=70)  # 70 pra dar margem ao window 60
-    pairs_history_cache[symbol] = {'ts': now, 'data': data}
-    return data
+
+    # Tentar DB primeiro (mais denso, ja consolidado)
+    db_data = _persist.load_history_from_db(symbol, days=PAIRS_HISTORY_DAYS)
+    if len(db_data) >= 80:  # janela 60 + margem
+        pairs_history_cache[symbol] = {'ts': now, 'data': db_data}
+        return db_data
+
+    # Sem DB suficiente — fetch fresh + persiste
+    log.info(f'[PAIRS] {symbol}: DB tem {len(db_data)} bars, fetch fresh...')
+    data = fetch_pair_history(symbol, days=PAIRS_HISTORY_DAYS)
+    if data:
+        n = _persist.bulk_upsert_daily_bars(symbol, data, source=data[0].get('source', 'brapi'))
+        log.info(f'[PAIRS] {symbol}: persisted {n} bars no MySQL')
+    # Merge: DB + fresh, dedupe por date
+    merged = {b['date']: b for b in db_data}
+    for b in data: merged[b['date']] = b
+    final = sorted(merged.values(), key=lambda x: x['date'])
+    pairs_history_cache[symbol] = {'ts': now, 'data': final}
+    return final
 
 
 def calc_pair_signal(pair_config: Dict, quotes: Dict[str, Dict]) -> Optional[Dict]:
@@ -208,6 +234,9 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
     log.info(f'[PAIRS] OPEN {trade_id} {signal["pair_id"]} dir={signal["direction"]} '
              f'z={signal["z_score"]:+.2f} corr={signal["correlation_60d"]:.2f} '
              f'qty_a={qty_a} qty_b={qty_b}')
+    # PERSIST: nunca perder esta trade
+    try: _persist.persist_trade_open(trade)
+    except Exception as e: log.warning(f'[PAIRS] persist OPEN failed: {e}')
     if audit_fn:
         try: audit_fn('PAIRS_OPENED', {'id': trade_id, 'pair_id': signal['pair_id'],
                                         'z': signal['z_score'], 'direction': signal['direction']})
@@ -282,6 +311,11 @@ def close_pair_trade(trade: Dict, signal: Dict, reason: str, audit_fn=None):
 
     log.info(f'[PAIRS] CLOSE {trade["id"]} {trade["pair_id"]} reason={reason} '
              f'pnl=${pnl:+,.2f} ({pnl_pct:+.3f}%) entry_z={trade["entry_z"]:+.2f} exit_z={signal["z_score"]:+.2f}')
+    # PERSIST close + pattern stats — historia desta trade preservada pra sempre
+    try: _persist.persist_trade_close(trade)
+    except Exception as e: log.warning(f'[PAIRS] persist CLOSE failed: {e}')
+    try: _persist.update_pattern_stats(trade)
+    except Exception as e: log.debug(f'[PAIRS] update pattern_stats: {e}')
     if audit_fn:
         try: audit_fn('PAIRS_CLOSED', {'id': trade['id'], 'pair_id': trade['pair_id'],
                                         'reason': reason, 'pnl': pnl, 'pnl_pct': pnl_pct})
@@ -289,18 +323,42 @@ def close_pair_trade(trade: Dict, signal: Dict, reason: str, audit_fn=None):
 
 
 def pairs_scan_loop(beat_fn=None, audit_fn=None, enqueue_fn=None):
-    """Loop principal — scan a cada PAIRS_SCAN_INTERVAL_S segundos."""
+    """Loop principal — scan a cada PAIRS_SCAN_INTERVAL_S segundos.
+
+    Persiste TODO signal (mesmo HOLD) em pairs_signals. Toda trade open/close
+    em pairs_trades. Cada hora roda aggregate_hourly_stats.
+    """
     log.info(f'[PAIRS] scanner iniciando | capital_paper=R${PAIRS_CAPITAL:,.0f} '
              f'max_positions={PAIRS_MAX_POSITIONS} interval={PAIRS_SCAN_INTERVAL_S}s')
+    # Garante schema MySQL (idempotente)
+    try:
+        from . import schema as _schema
+        from .persistence import _get_conn
+        c = _get_conn()
+        if c:
+            _schema.create_pairs_tables(c)
+            try: c.close()
+            except: pass
+    except Exception as e:
+        log.warning(f'[PAIRS] schema init falhou: {e}')
+
+    # Signal persist sample rate (1 = todos, 2 = a cada 2 scans, etc)
+    # Default 4 = ~uma persist por minuto por par (scan 30s × 4 = 2min)
+    signal_persist_every = int(os.environ.get('PAIRS_SIGNAL_PERSIST_EVERY', 4))
+    scan_count = 0
+    last_hourly_agg = 0.0
+
     while True:
         if beat_fn: beat_fn('pairs_scan_loop')
         try:
-            # Coletar todos os simbolos necessarios
             syms = list(all_symbols())
             quotes = fetch_pair_quotes_bulk(syms)
             if not quotes:
                 time.sleep(PAIRS_SCAN_INTERVAL_S)
                 continue
+
+            scan_count += 1
+            persist_signals_this_scan = (scan_count % signal_persist_every == 0)
 
             for pcfg in PAIRS_CONFIG:
                 if not pcfg.get('enabled', True):
@@ -309,9 +367,14 @@ def pairs_scan_loop(beat_fn=None, audit_fn=None, enqueue_fn=None):
                 signal = calc_pair_signal(pcfg, quotes)
                 if not signal:
                     continue
-                pairs_spreads[pcfg['id']] = signal  # cache
+                pairs_spreads[pcfg['id']] = signal
 
-                # Existe trade aberta neste par?
+                # PERSIST signal periodicamente (todo signal vai pro DB pra learning)
+                # Sempre persiste se for ENTRY/CONVERGED/AVOID (eventos importantes)
+                if persist_signals_this_scan or signal.get('action') in ('ENTRY','CONVERGED','AVOID'):
+                    try: _persist.persist_signal(signal)
+                    except Exception as e: log.debug(f'[PAIRS] persist_signal: {e}')
+
                 open_trade = None
                 with pairs_state_lock:
                     for t in pairs_open:
@@ -326,6 +389,15 @@ def pairs_scan_loop(beat_fn=None, audit_fn=None, enqueue_fn=None):
                 else:
                     if signal['action'] == 'ENTRY':
                         open_pair_trade(signal, audit_fn=audit_fn, enqueue_fn=enqueue_fn)
+
+            # Hourly aggregate (1x por hora)
+            now_ts = time.time()
+            if now_ts - last_hourly_agg > 3600:
+                try:
+                    _persist.aggregate_hourly_stats()
+                    last_hourly_agg = now_ts
+                except Exception as e:
+                    log.debug(f'[PAIRS] hourly aggregate: {e}')
 
         except Exception as e:
             log.error(f'[PAIRS] scan loop erro: {e}')

@@ -316,9 +316,20 @@ try:
         pairs_spreads as _pairs_spreads, pairs_state_lock as _pairs_lock,
         PAIRS_CAPITAL as _PAIRS_CAPITAL, PAIRS_MAX_POSITIONS as _PAIRS_MAX_POSITIONS,
     )
+    from modules.pairs_engine.schema import create_pairs_tables as _create_pairs_tables
     _pairs_engine_loaded = True
     log.info(f'[v11-PAIRS] Pairs engine loaded: {len(_PAIRS_LIST)} pares ativos, '
              f'capital paper R${_PAIRS_CAPITAL:,.0f}, max_pos={_PAIRS_MAX_POSITIONS}')
+    # Criar tabelas MySQL idempotente — NUNCA DROP (historico = ativo da empresa)
+    try:
+        from modules.pairs_engine.persistence import _get_conn as _pairs_conn
+        _c = _pairs_conn()
+        if _c:
+            _create_pairs_tables(_c)
+            try: _c.close()
+            except: pass
+    except Exception as _se:
+        log.warning(f'[v11-PAIRS] schema bootstrap: {_se}')
 except Exception as _pe:
     log.warning(f'[v11-PAIRS] pairs_engine module not loaded: {_pe}')
     _pairs_engine_loaded = False
@@ -9836,6 +9847,99 @@ def pairs_trades():
         'capital_paper': _PAIRS_CAPITAL,
         'timestamp': datetime.utcnow().isoformat(),
     }), 200
+
+@app.route('/pairs/history/<symbol>')
+def pair_history(symbol):
+    """Retorna ate N bars OHLC do simbolo, lidos do MySQL pairs_history_daily."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.pairs_engine import persistence as _pp
+        days = min(int(request.args.get('days', 250)), 2000)
+        bars = _pp.load_history_from_db(symbol.upper(), days=days)
+        return jsonify({'symbol': symbol.upper(), 'n_bars': len(bars), 'bars': bars}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/pairs/backfill', methods=['POST'])
+def pair_backfill():
+    """Roda backfill manual de historico Cedro+BRAPI. Protegido (POST auth)."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.pairs_engine.backfill import run_backfill
+        body = request.get_json(silent=True) or {}
+        days = int(body.get('days', 730))
+        use_cedro = bool(body.get('use_cedro', True))
+        use_brapi = bool(body.get('use_brapi', True))
+        # Roda em thread separada (pode demorar muito)
+        import threading
+        result_holder = {}
+        def _worker():
+            try:
+                result_holder['result'] = run_backfill(days=days, use_cedro=use_cedro, use_brapi=use_brapi)
+            except Exception as e:
+                result_holder['error'] = str(e)
+        t = threading.Thread(target=_worker, daemon=True, name='pairs_backfill')
+        t.start()
+        return jsonify({
+            'status': 'started',
+            'thread': t.name,
+            'message': f'Backfill rodando em background. Cheque /pairs/history/<sym> em alguns minutos.',
+            'days': days, 'cedro': use_cedro, 'brapi': use_brapi,
+        }), 202
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/pairs/stats/learning')
+def pair_stats_learning():
+    """Stats agregadas de learning: pattern_stats por par + hourly aggregates."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.pairs_engine.persistence import _get_conn
+        conn = _get_conn()
+        if not conn:
+            return jsonify({'error': 'no db'}), 500
+        cur = conn.cursor(dictionary=True)
+        # Pattern stats
+        cur.execute("""SELECT pair_id, pattern_key, n_trades, n_wins, total_pnl, avg_pnl_pct
+                       FROM pairs_pattern_stats ORDER BY n_trades DESC LIMIT 100""")
+        patterns = cur.fetchall()
+        # Hourly aggregates (ultimas 24h)
+        cur.execute("""SELECT hour_bucket, pair_id, n_signals, n_entries,
+                              avg_z, max_abs_z, avg_correlation
+                       FROM pairs_hourly_stats
+                       WHERE hour_bucket >= NOW() - INTERVAL 24 HOUR
+                       ORDER BY hour_bucket DESC LIMIT 200""")
+        hourly = cur.fetchall()
+        # Signals last hour count
+        cur.execute("""SELECT pair_id, COUNT(*) AS n, AVG(z_score) AS avg_z
+                       FROM pairs_signals WHERE ts >= NOW() - INTERVAL 1 HOUR
+                       GROUP BY pair_id""")
+        last_hour = cur.fetchall()
+        cur.close()
+        try: conn.close()
+        except: pass
+        # Convert Decimals/datetimes para JSON-friendly
+        def _norm(rs):
+            out = []
+            for r in rs:
+                d = {}
+                for k, v in r.items():
+                    if hasattr(v, 'isoformat'): d[k] = v.isoformat()
+                    elif hasattr(v, '__float__'): d[k] = float(v)
+                    else: d[k] = v
+                out.append(d)
+            return out
+        return jsonify({
+            'patterns': _norm(patterns),
+            'hourly_24h': _norm(hourly),
+            'last_hour': _norm(last_hour),
+            'timestamp': datetime.utcnow().isoformat(),
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/pairs/<pair_id>')
 def pair_detail(pair_id):

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pairs Trade B3 — Egreja Investment AI</title>
+<link rel="icon" type="image/png" href="/logo.png">
+<style>
+:root{
+  --bg:#0a0e14; --card:#0f1419; --line:#1f2937;
+  --gold:#f5b800; --gold2:#d4a017;
+  --cyan:#06b6d4; --green:#10b981; --red:#ef4444; --orange:#f97316;
+  --mute:#64748b; --text:#e5e7eb;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;min-height:100vh}
+.topbar{background:var(--card);border-bottom:1px solid var(--line);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;color:var(--gold)}
+.brand img{height:24px;width:auto}
+.nav-mini{display:flex;gap:14px;font-size:12px}
+.nav-mini a{color:var(--mute);text-decoration:none}
+.nav-mini a:hover{color:var(--gold)}
+.nav-mini a.active{color:var(--cyan);font-weight:600}
+
+.header{padding:24px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--card) 0%,var(--bg) 100%)}
+.header h1{font-size:22px;font-weight:700;color:var(--cyan);margin-bottom:4px}
+.header .sub{font-size:13px;color:var(--mute)}
+.badge{display:inline-block;background:var(--cyan);color:#000;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;margin-left:8px;vertical-align:middle}
+
+.container{padding:20px;max-width:1400px;margin:0 auto}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:24px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+.stat .label{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.stat .value{font-size:22px;font-weight:700;color:var(--text)}
+.stat .value.cyan{color:var(--cyan)}
+.stat .value.green{color:var(--green)}
+.stat .value.red{color:var(--red)}
+.stat .value.gold{color:var(--gold)}
+
+.section{margin-bottom:28px}
+.section h2{font-size:14px;color:var(--gold);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;font-weight:700}
+
+table{width:100%;background:var(--card);border:1px solid var(--line);border-radius:10px;border-collapse:collapse;overflow:hidden;font-size:13px}
+th{background:#0a1018;color:var(--mute);text-align:left;padding:10px 12px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover{background:#0a1018}
+.mono{font-family:'JetBrains Mono','SF Mono',Monaco,Consolas,monospace;font-size:12px}
+.z-pos{color:var(--red);font-weight:600}
+.z-neg{color:var(--green);font-weight:600}
+.z-zero{color:var(--mute);font-weight:600}
+
+.action-HOLD{background:#1f2937;color:var(--mute);padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.action-ENTRY{background:var(--cyan);color:#000;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700}
+.action-CONVERGED{background:#0d2b3a;color:var(--cyan);padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.action-AVOID{background:#3a1d1d;color:var(--red);padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.action-PENDING_DATA{background:#1e2433;color:var(--mute);padding:3px 8px;border-radius:4px;font-size:10px;font-style:italic}
+
+.corr-strong{color:var(--green);font-weight:600}
+.corr-medium{color:var(--gold)}
+.corr-weak{color:var(--red)}
+
+.type-HOLDING{color:#f5b800;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.type-CLASSES{color:#06b6d4;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.type-SECTORIAL{color:#a78bfa;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.type-HOLDING_PARENT{color:#10b981;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+
+.empty{text-align:center;padding:30px;color:var(--mute);font-size:13px}
+.loading{text-align:center;padding:30px;color:var(--cyan)}
+
+.refresh-info{font-size:11px;color:var(--mute);text-align:right;margin-top:8px}
+
+@media(max-width:768px){
+  .topbar{padding:10px 14px}
+  .header{padding:16px}
+  .header h1{font-size:18px}
+  .container{padding:14px}
+  table{font-size:12px}
+  th,td{padding:8px 6px}
+  .nav-mini{font-size:11px;gap:10px}
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <img src="/logo.png" alt="logo" onerror="this.style.display='none'">
+    EGREJA INVESTMENT AI
+  </div>
+  <div class="nav-mini">
+    <a href="/">Dashboard</a>
+    <a href="/inteligencia.html">Inteligência</a>
+    <a href="/pairs.html" class="active">Pairs B3</a>
+  </div>
+</div>
+
+<div class="header">
+  <h1>🔗 Pairs Trade B3 <span class="badge">PAPER R$1MM</span></h1>
+  <div class="sub">Statistical Arbitrage entre pares correlacionados B3 — mean reversion via z-score rolling 60d. 14 pares ativos. Histórico denso (2y) com aprendizado hora a hora.</div>
+</div>
+
+<div class="container">
+
+  <div class="stats-row" id="stats-row">
+    <div class="stat"><div class="label">Carregando...</div><div class="value">—</div></div>
+  </div>
+
+  <div class="section">
+    <h2>Pares ativos (z-score em tempo real)</h2>
+    <table id="pairs-table">
+      <thead>
+        <tr>
+          <th>Par</th>
+          <th>Tipo</th>
+          <th>Preço A</th>
+          <th>Preço B</th>
+          <th>z-score</th>
+          <th>Ação</th>
+          <th>Correl.</th>
+          <th>Spread</th>
+          <th>Hedge</th>
+        </tr>
+      </thead>
+      <tbody id="pairs-tbody">
+        <tr><td colspan="9" class="loading">Carregando pares…</td></tr>
+      </tbody>
+    </table>
+    <div class="refresh-info" id="refresh-info">—</div>
+  </div>
+
+  <div class="section">
+    <h2>Trades abertas</h2>
+    <table id="open-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Par</th>
+          <th>Direção</th>
+          <th>Entry z</th>
+          <th>Now z</th>
+          <th>Tempo</th>
+          <th>PnL (paper)</th>
+        </tr>
+      </thead>
+      <tbody id="open-tbody">
+        <tr><td colspan="7" class="empty">Nenhuma trade aberta agora</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>Trades fechadas (histórico permanente)</h2>
+    <table id="closed-table">
+      <thead>
+        <tr>
+          <th>Quando</th>
+          <th>Par</th>
+          <th>Direção</th>
+          <th>Entry z</th>
+          <th>Exit z</th>
+          <th>Razão</th>
+          <th>Duração</th>
+          <th>PnL</th>
+        </tr>
+      </thead>
+      <tbody id="closed-tbody">
+        <tr><td colspan="8" class="empty">Nenhuma trade fechada ainda. Sistema rodando em paper.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>Como funciona</h2>
+    <div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;font-size:13px;line-height:1.7;color:#cbd5e1">
+      <strong style="color:var(--cyan)">Estratégia:</strong> Comprar o ativo barato + vender o ativo caro dentro de um par correlacionado quando o spread está estatisticamente esticado (z > 2 desvios), apostando que a relação histórica retornará à média.<br><br>
+      <strong style="color:var(--cyan)">Entrada:</strong> |z| ≥ 2.0 (entre 2.0 e 2.5 nos pares mais estáveis, 2.5 nos voláteis tipo aéreas)<br>
+      <strong style="color:var(--cyan)">Saída por convergência:</strong> |z| ≤ 0.4 (ou cruzou zero)<br>
+      <strong style="color:var(--cyan)">Stop:</strong> |z| ≥ 3.5 (regime shift possível)<br>
+      <strong style="color:var(--cyan)">Filtro de segurança:</strong> correlação ≥ 0.5 nos últimos 60 dias<br><br>
+      <strong style="color:var(--gold)">Capital:</strong> R$ 1.000.000 paper, max 5 posições simultâneas (R$ 200k por trade dividido entre as duas pernas).<br>
+      <strong style="color:var(--gold)">Aprendizado:</strong> toda decisão (entry, hold, converged, avoid) é persistida em MySQL. <strong>Nenhuma trade jamais é deletada</strong> — o histórico é o maior ativo do sistema.
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API_BASE = '';  // mesmo dominio (proxy via vercel.json)
+
+function fmt_z(z){
+  if (z === null || z === undefined) return '<span class="z-zero">—</span>';
+  const cls = z > 0.1 ? 'z-pos' : (z < -0.1 ? 'z-neg' : 'z-zero');
+  return `<span class="${cls} mono">${z >= 0 ? '+' : ''}${z.toFixed(2)}</span>`;
+}
+function fmt_corr(c){
+  if (c === null || c === undefined) return '<span class="z-zero">—</span>';
+  let cls = 'corr-weak';
+  if (Math.abs(c) >= 0.9) cls = 'corr-strong';
+  else if (Math.abs(c) >= 0.5) cls = 'corr-medium';
+  return `<span class="${cls} mono">${c.toFixed(2)}</span>`;
+}
+function fmt_money(v){
+  if (v === null || v === undefined) return '—';
+  return 'R$ ' + Math.abs(v).toLocaleString('pt-BR', {minimumFractionDigits:0, maximumFractionDigits:0});
+}
+function fmt_pnl(v){
+  if (v === null || v === undefined) return '—';
+  const cls = v > 0 ? 'z-neg' : (v < 0 ? 'z-pos' : 'z-zero');
+  return `<span class="${cls} mono">${v >= 0 ? '+' : ''}R$ ${v.toLocaleString('pt-BR', {minimumFractionDigits:0, maximumFractionDigits:0})}</span>`;
+}
+function fmt_duration_s(s){
+  if (!s) return '—';
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s/60) + 'min';
+  if (s < 86400) return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'min';
+  return Math.floor(s/86400) + 'd ' + Math.floor((s%86400)/3600) + 'h';
+}
+function fmt_time_ago(iso){
+  if (!iso) return '—';
+  try {
+    const dt = new Date(iso);
+    const s = Math.floor((Date.now() - dt.getTime())/1000);
+    return fmt_duration_s(s);
+  } catch(e) { return '—'; }
+}
+function fmt_datetime(iso){
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString('pt-BR', {dateStyle:'short', timeStyle:'short'});
+  } catch(e) { return iso; }
+}
+
+async function loadPairs(){
+  try {
+    const r = await fetch(API_BASE + '/pairs', {cache:'no-cache'});
+    const d = await r.json();
+    renderStats(d);
+    renderPairs(d.pairs || []);
+    document.getElementById('refresh-info').textContent = 'Atualizado: ' + new Date().toLocaleTimeString('pt-BR');
+  } catch(e) {
+    document.getElementById('pairs-tbody').innerHTML = `<tr><td colspan="9" class="empty">Erro ao carregar pares: ${e.message}</td></tr>`;
+  }
+}
+
+async function loadTrades(){
+  try {
+    const r = await fetch(API_BASE + '/pairs/trades', {cache:'no-cache'});
+    const d = await r.json();
+    renderOpenTrades(d.open_trades || []);
+    renderClosedTrades(d.closed_trades || []);
+  } catch(e) {
+    document.getElementById('closed-tbody').innerHTML = `<tr><td colspan="8" class="empty">Erro: ${e.message}</td></tr>`;
+  }
+}
+
+function renderStats(d){
+  const totalPairs = (d.pairs || []).length;
+  const active = (d.pairs || []).filter(p => p.z_score !== null).length;
+  const html = `
+    <div class="stat"><div class="label">Capital paper</div><div class="value gold">${fmt_money(d.capital_paper)}</div></div>
+    <div class="stat"><div class="label">Pares monitorados</div><div class="value cyan">${active}/${totalPairs}</div></div>
+    <div class="stat"><div class="label">Trades abertas</div><div class="value">${d.open_count}/${d.max_positions}</div></div>
+    <div class="stat"><div class="label">Trades fechadas</div><div class="value">${d.closed_count}</div></div>
+  `;
+  document.getElementById('stats-row').innerHTML = html;
+}
+
+function renderPairs(pairs){
+  if (!pairs.length) {
+    document.getElementById('pairs-tbody').innerHTML = `<tr><td colspan="9" class="empty">Nenhum par carregado</td></tr>`;
+    return;
+  }
+  const rows = pairs.map(p => `
+    <tr>
+      <td><strong>${p.pair_id}</strong><br><span class="${'type-'+(p.pair_type||'')}">${p.pair_type || ''}</span></td>
+      <td>${p.name || ''}</td>
+      <td class="mono">${p.price_a ? p.price_a.toFixed(2) : '—'}</td>
+      <td class="mono">${p.price_b ? p.price_b.toFixed(2) : '—'}</td>
+      <td>${fmt_z(p.z_score)}</td>
+      <td><span class="action-${p.action || 'PENDING_DATA'}">${p.action || 'PENDING'}</span></td>
+      <td>${fmt_corr(p.correlation)}</td>
+      <td class="mono">${p.spread_current !== null && p.spread_current !== undefined ? p.spread_current.toFixed(4) : '—'}</td>
+      <td class="mono">${p.direction || '—'}</td>
+    </tr>
+  `).join('');
+  document.getElementById('pairs-tbody').innerHTML = rows;
+}
+
+function renderOpenTrades(trades){
+  if (!trades.length){
+    document.getElementById('open-tbody').innerHTML = `<tr><td colspan="7" class="empty">Nenhuma trade aberta agora — sistema aguardando sinal com |z| ≥ 2</td></tr>`;
+    return;
+  }
+  const rows = trades.map(t => `
+    <tr>
+      <td class="mono" style="font-size:10px">${t.id || ''}</td>
+      <td><strong>${t.pair_id}</strong></td>
+      <td>${t.direction || '—'}</td>
+      <td>${fmt_z(t.entry_z)}</td>
+      <td>${fmt_z(t.current_z)}</td>
+      <td>${fmt_time_ago(t.opened_at)}</td>
+      <td>${fmt_pnl(t.pnl)}</td>
+    </tr>
+  `).join('');
+  document.getElementById('open-tbody').innerHTML = rows;
+}
+
+function renderClosedTrades(trades){
+  if (!trades.length){
+    document.getElementById('closed-tbody').innerHTML = `<tr><td colspan="8" class="empty">Nenhuma trade fechada ainda. Sistema rodando em paper.</td></tr>`;
+    return;
+  }
+  const sorted = [...trades].reverse().slice(0, 50);
+  const rows = sorted.map(t => `
+    <tr>
+      <td class="mono" style="font-size:11px">${fmt_datetime(t.closed_at)}</td>
+      <td><strong>${t.pair_id}</strong></td>
+      <td>${t.direction || '—'}</td>
+      <td>${fmt_z(t.entry_z)}</td>
+      <td>${fmt_z(t.exit_z)}</td>
+      <td><span style="font-size:10px;color:var(--mute)">${t.close_reason || '—'}</span></td>
+      <td>${fmt_duration_s(t.duration_seconds)}</td>
+      <td>${fmt_pnl(t.pnl)}</td>
+    </tr>
+  `).join('');
+  document.getElementById('closed-tbody').innerHTML = rows;
+}
+
+// Boot
+loadPairs();
+loadTrades();
+setInterval(loadPairs, 15000);   // refresh /pairs a cada 15s
+setInterval(loadTrades, 30000);  // refresh /pairs/trades a cada 30s
+</script>
+
+</body>
+</html>

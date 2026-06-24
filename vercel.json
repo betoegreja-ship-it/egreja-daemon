@@ -43,6 +43,14 @@
     {
       "source": "/cedro/:path*",
       "destination": "https://diligent-spirit-production.up.railway.app/cedro/:path*"
+    },
+    {
+      "source": "/pairs",
+      "destination": "https://diligent-spirit-production.up.railway.app/pairs"
+    },
+    {
+      "source": "/pairs/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/pairs/:path*"
     }
   ],
   "headers": [

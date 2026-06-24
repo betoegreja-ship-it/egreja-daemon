@@ -301,6 +301,25 @@ def _is_session_authed() -> bool:
         return True  # se login não configurado, libera (modo legado)
     return bool(session.get('web_user'))
 
+# ═══ [v12-CALIBRATOR 24-jun-2026] Brain Calibrator — auto-learning hora-a-hora ═══
+# Aprende dos 12k+ trades historicos e ajusta o score do brain antes da decisao.
+# Roda em loop a cada 1h. Sem comando manual.
+_calibrator_loaded = False
+try:
+    from modules.brain_calibrator import (
+        create_calibrator_tables as _create_calib_tables,
+        recalibrate_brain as _recalibrate_brain,
+        apply_calibration as _apply_calibration,
+        get_active_weights as _get_calib_weights,
+        score_breakdown as _calib_breakdown,
+        calibrator_loop as _calibrator_loop,
+    )
+    _calibrator_loaded = True
+    log.info('[v12-CALIBRATOR] Brain Calibrator module loaded')
+except Exception as _ce:
+    log.warning(f'[v12-CALIBRATOR] module not loaded: {_ce}')
+    _calibrator_loaded = False
+
 # ═══ [v11-PAIRS 24-jun-2026] Pairs Engine — stat arbi B3 ═══
 # Implementa 15 pares de pairs trading (ITUB/ITSA, PETR4/PETR3, etc).
 # Roda paper inicial — capital R$ 1MM separado do arbi cross-listed.
@@ -330,6 +349,18 @@ try:
             except: pass
     except Exception as _se:
         log.warning(f'[v11-PAIRS] schema bootstrap: {_se}')
+
+    # [v12-CALIBRATOR] Schema bootstrap das tabelas de auto-learning
+    if _calibrator_loaded:
+        try:
+            from modules.brain_calibrator.learner import _get_conn as _calib_conn
+            _cc = _calib_conn()
+            if _cc:
+                _create_calib_tables(_cc)
+                try: _cc.close()
+                except: pass
+        except Exception as _se:
+            log.warning(f'[v12-CALIBRATOR] schema bootstrap: {_se}')
 except Exception as _pe:
     log.warning(f'[v11-PAIRS] pairs_engine module not loaded: {_pe}')
     _pairs_engine_loaded = False
@@ -9572,6 +9603,22 @@ def start_background_threads():
         log.info(f'[v11-PAIRS] pairs_scan_loop adicionado ({len(_PAIRS_LIST)} pares)')
     elif _disable_pairs:
         log.info('[v11-PAIRS] DISABLE_PAIRS=true — pairs_engine desligado por env var')
+
+    # [v12-CALIBRATOR 24-jun-2026] Worker que recalibra brain a cada hora
+    # Lê os 12k+ trades historicos, calcula pesos data-driven, atualiza MySQL.
+    # Default ENABLED. Desliga via DISABLE_BRAIN_CALIBRATOR=true
+    _disable_calib = os.environ.get('DISABLE_BRAIN_CALIBRATOR', 'false').lower() == 'true'
+    if _calibrator_loaded and not _disable_calib:
+        def _calib_loop_wrapper():
+            try:
+                _calibrator_loop(beat_fn=beat, audit_fn=audit)
+            except Exception as _ce:
+                log.error(f'[v12-CALIBRATOR] crash: {_ce}')
+                import traceback; traceback.print_exc()
+        defs['brain_calibrator_loop'] = _calib_loop_wrapper
+        log.info('[v12-CALIBRATOR] worker brain_calibrator_loop adicionado (recalibra a cada 1h)')
+    elif _disable_calib:
+        log.info('[v12-CALIBRATOR] DISABLE_BRAIN_CALIBRATOR=true — desligado')
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
     # [DISABLE_DERIV 05/mai/2026] Pular as 13 threads de derivatives quando o usuario
     # nao tem OpLab/Cedro (sem provider real, todas caem em Simulated paper sintetico —
@@ -9812,6 +9859,97 @@ def cedro_quotes():
         'quotes': {k: _cedro_socket.get_analysis(k) for k in batch.keys()},
     })
 
+
+# ═══ [v12-CALIBRATOR 24-jun-2026] Brain Calibrator endpoints ═══
+@app.route('/brain/calibration')
+def brain_calibration_status():
+    """Snapshot dos pesos atuais aprendidos."""
+    if not _calibrator_loaded:
+        return jsonify({'enabled': False, 'reason': 'module not loaded'}), 200
+    try:
+        weights = _get_calib_weights()
+        return jsonify({'enabled': True, **weights, 'timestamp': datetime.utcnow().isoformat()}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/brain/calibration/history')
+def brain_calibration_history():
+    """Historico de execucoes do calibrator (ultimas 100)."""
+    if not _calibrator_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.brain_calibrator.learner import _get_conn
+        conn = _get_conn()
+        if not conn: return jsonify({'error': 'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT run_ts, lookback_days, n_trades_used, baseline_wr,
+                              features_updated, combos_updated, symbols_updated,
+                              calibration_quality, avg_adj_pts, duration_seconds
+                       FROM brain_calibration_history
+                       ORDER BY run_ts DESC LIMIT 100""")
+        rows = cur.fetchall()
+        out = []
+        for r in rows:
+            d = {}
+            for k,v in r.items():
+                if hasattr(v, 'isoformat'): d[k] = v.isoformat()
+                elif hasattr(v, '__float__'): d[k] = float(v)
+                else: d[k] = v
+            out.append(d)
+        cur.close()
+        try: conn.close()
+        except: pass
+        return jsonify({'enabled': True, 'history': out}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/brain/calibration/test')
+def brain_calibration_test():
+    """Testa apply_calibration com query params. Para debug.
+    Ex: /brain/calibration/test?symbol=ITUB4&asset_type=stock&direction=LONG
+        &time_bucket=PRE_MARKET&volume_bucket=SURGE&score=80
+    """
+    if not _calibrator_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        sym = request.args.get('symbol', 'TEST')
+        atype = request.args.get('asset_type', 'stock')
+        dirn = request.args.get('direction', 'LONG')
+        score = int(request.args.get('score', 70))
+        hr = request.args.get('hour')
+        hr = int(hr) if hr else None
+        feats = {k: v for k, v in request.args.items()
+                 if k not in ('symbol','asset_type','direction','score','hour')}
+        adj_score, adj_total, bd = _apply_calibration(score, feats, sym, atype, dirn, hr)
+        return jsonify({
+            'input': {'symbol': sym, 'asset_type': atype, 'direction': dirn,
+                      'score_original': score, 'hour': hr, 'features': feats},
+            'score_adjusted': adj_score,
+            'adj_total': adj_total,
+            'breakdown': bd,
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/brain/calibration/run', methods=['POST'])
+def brain_calibration_run():
+    """Dispara recalibracao manual (POST com X-API-Key)."""
+    if not _calibrator_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        body = request.get_json(silent=True) or {}
+        lookback = int(body.get('lookback_days', 90))
+        import threading
+        result_holder = {}
+        def _worker():
+            try: result_holder['result'] = _recalibrate_brain(lookback_days=lookback)
+            except Exception as e: result_holder['error'] = str(e)
+        t = threading.Thread(target=_worker, daemon=True, name='calib_manual')
+        t.start()
+        return jsonify({'status': 'started', 'lookback_days': lookback,
+                        'message': 'cheque /brain/calibration em alguns segundos'}), 202
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ═══ [v11-PAIRS 24-jun-2026] Pairs Trade endpoints ═══
 @app.route('/pairs')

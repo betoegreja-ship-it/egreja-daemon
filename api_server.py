@@ -301,6 +301,33 @@ def _is_session_authed() -> bool:
         return True  # se login não configurado, libera (modo legado)
     return bool(session.get('web_user'))
 
+# ═══ [v11-PAIRS 24-jun-2026] Pairs Engine — stat arbi B3 ═══
+# Implementa 15 pares de pairs trading (ITUB/ITSA, PETR4/PETR3, etc).
+# Roda paper inicial — capital R$ 1MM separado do arbi cross-listed.
+_pairs_engine_loaded = False
+try:
+    from modules.pairs_engine import (
+        PAIRS_CONFIG as _PAIRS_CFG, PAIRS_LIST as _PAIRS_LIST,
+        pairs_scan_loop as _pairs_scan_loop,
+        calc_pair_signal as _calc_pair_signal,
+    )
+    from modules.pairs_engine.scanner import (
+        pairs_open as _pairs_open, pairs_closed as _pairs_closed,
+        pairs_spreads as _pairs_spreads, pairs_state_lock as _pairs_lock,
+        PAIRS_CAPITAL as _PAIRS_CAPITAL, PAIRS_MAX_POSITIONS as _PAIRS_MAX_POSITIONS,
+    )
+    _pairs_engine_loaded = True
+    log.info(f'[v11-PAIRS] Pairs engine loaded: {len(_PAIRS_LIST)} pares ativos, '
+             f'capital paper R${_PAIRS_CAPITAL:,.0f}, max_pos={_PAIRS_MAX_POSITIONS}')
+except Exception as _pe:
+    log.warning(f'[v11-PAIRS] pairs_engine module not loaded: {_pe}')
+    _pairs_engine_loaded = False
+    _PAIRS_CFG = []
+    _PAIRS_LIST = []
+    _pairs_open = []
+    _pairs_closed = []
+    _pairs_spreads = {}
+
 # ═══ [v10.31] CEDRO SOCKET PROVIDER — real-time streaming quotes ═══
 # Primary source for B3 quotes (stocks + indices + futures). BRAPI/OpLab used as fallback.
 _cedro_socket = None
@@ -1366,6 +1393,7 @@ def auth_check():
     _public_read_prefixes = ('/health', '/strategies', '/brain', '/long-horizon',
                               '/signals', '/stats', '/trades', '/arbitrage',
                               '/prices', '/performance', '/reports', '/static/',
+                              '/pairs',  # [v11-PAIRS] endpoints publicos GET
                               '/debug/b3-prices', '/debug/b3-trades-pricing',
                               '/debug/batch-void-stale-feed-',
                               '/debug/reload-stocks-closed-from-db',
@@ -9484,11 +9512,26 @@ def start_background_threads():
     # [LIMPEZA 24-jun-2026] DISABLE_LONG_HORIZON tira monthly_picks_worker (depende de
     # long_horizon que tem candidate_expansion.py com syntax error desde abril e nunca rodou).
     # Setar env var DISABLE_LONG_HORIZON=true no Railway para limpar threads mortas.
-    # Modulo sera substituido pelo pairs_engine (stat arbi B3) — Fase 2 da limpeza/reorg.
+    # Modulo substituido pelo pairs_engine (stat arbi B3) — Fase 2.
     _disable_lh = os.environ.get('DISABLE_LONG_HORIZON', 'false').lower() == 'true'
     if _disable_lh:
         log.info('[LIMPEZA] DISABLE_LONG_HORIZON=true — pulando monthly_picks_worker (long_horizon morto)')
         defs.pop('monthly_picks_worker', None)
+
+    # [v11-PAIRS 24-jun-2026] Adiciona pairs_scan_loop se pairs_engine carregou.
+    # Default: ENABLED. Para desligar, setar DISABLE_PAIRS=true no Railway.
+    _disable_pairs = os.environ.get('DISABLE_PAIRS', 'false').lower() == 'true'
+    if _pairs_engine_loaded and not _disable_pairs:
+        def _pairs_loop_wrapper():
+            try:
+                _pairs_scan_loop(beat_fn=beat, audit_fn=audit, enqueue_fn=enqueue_persist)
+            except Exception as _pe:
+                log.error(f'[v11-PAIRS] scan loop crashed: {_pe}')
+                import traceback; traceback.print_exc()
+        defs['pairs_scan_loop'] = _pairs_loop_wrapper
+        log.info(f'[v11-PAIRS] pairs_scan_loop adicionado ({len(_PAIRS_LIST)} pares)')
+    elif _disable_pairs:
+        log.info('[v11-PAIRS] DISABLE_PAIRS=true — pairs_engine desligado por env var')
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
     # [DISABLE_DERIV 05/mai/2026] Pular as 13 threads de derivatives quando o usuario
     # nao tem OpLab/Cedro (sem provider real, todas caem em Simulated paper sintetico —
@@ -9729,6 +9772,89 @@ def cedro_quotes():
         'quotes': {k: _cedro_socket.get_analysis(k) for k in batch.keys()},
     })
 
+
+# ═══ [v11-PAIRS 24-jun-2026] Pairs Trade endpoints ═══
+@app.route('/pairs')
+def pairs_status():
+    """Lista atual de pares + z-score atual de cada um."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False, 'reason': 'pairs_engine module not loaded'}), 200
+    spreads_snapshot = []
+    for pcfg in _PAIRS_CFG:
+        if not pcfg.get('enabled', True): continue
+        sig = _pairs_spreads.get(pcfg['id'])
+        if sig:
+            spreads_snapshot.append({
+                'pair_id': pcfg['id'],
+                'name': pcfg['name'],
+                'pair_type': pcfg.get('pair_type'),
+                'z_score': sig.get('z_score'),
+                'action': sig.get('action'),
+                'direction': sig.get('direction'),
+                'price_a': sig.get('price_a'),
+                'price_b': sig.get('price_b'),
+                'correlation': sig.get('correlation_60d'),
+                'spread_current': sig.get('spread_current'),
+                'spread_mean_60d': sig.get('spread_mean_60d'),
+                'timestamp': sig.get('timestamp'),
+            })
+        else:
+            spreads_snapshot.append({
+                'pair_id': pcfg['id'],
+                'name': pcfg['name'],
+                'pair_type': pcfg.get('pair_type'),
+                'z_score': None,
+                'action': 'PENDING_DATA',
+            })
+    return jsonify({
+        'enabled': True,
+        'capital_paper': _PAIRS_CAPITAL,
+        'max_positions': _PAIRS_MAX_POSITIONS,
+        'open_count': len(_pairs_open),
+        'closed_count': len(_pairs_closed),
+        'pairs': spreads_snapshot,
+        'timestamp': datetime.utcnow().isoformat(),
+    }), 200
+
+@app.route('/pairs/trades')
+def pairs_trades():
+    """Lista trades pairs (open + closed)."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    limit = min(int(request.args.get('limit', 50)), 500)
+    include_open = request.args.get('include_open', '1') == '1'
+    closed_total_pnl = sum(t.get('pnl', 0) for t in _pairs_closed)
+    closed_n = len(_pairs_closed)
+    wins = sum(1 for t in _pairs_closed if t.get('pnl', 0) > 0)
+    return jsonify({
+        'open_count': len(_pairs_open),
+        'closed_count': closed_n,
+        'closed_pnl_total': round(closed_total_pnl, 2),
+        'win_rate': round(100 * wins / closed_n, 2) if closed_n else 0,
+        'open_trades': list(_pairs_open) if include_open else [],
+        'closed_trades': list(_pairs_closed[-limit:]),
+        'capital_paper': _PAIRS_CAPITAL,
+        'timestamp': datetime.utcnow().isoformat(),
+    }), 200
+
+@app.route('/pairs/<pair_id>')
+def pair_detail(pair_id):
+    """Detalhe completo de UM par."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    pcfg = next((p for p in _PAIRS_CFG if p['id'] == pair_id), None)
+    if not pcfg:
+        return jsonify({'error': 'pair not found'}), 404
+    sig = _pairs_spreads.get(pair_id)
+    open_trade = next((t for t in _pairs_open if t['pair_id'] == pair_id), None)
+    recent_closed = [t for t in _pairs_closed if t['pair_id'] == pair_id][-10:]
+    return jsonify({
+        'config': pcfg,
+        'current_signal': sig,
+        'open_trade': open_trade,
+        'recent_closed': recent_closed,
+        'timestamp': datetime.utcnow().isoformat(),
+    }), 200
 
 @app.route('/health')
 def health():

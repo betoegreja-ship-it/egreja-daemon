@@ -118,7 +118,7 @@ def fetch_pair_quotes_bulk(symbols: List[str]) -> Dict[str, Dict]:
             if BRAPI_TOKEN:
                 params['token'] = BRAPI_TOKEN
             syms_csv = ','.join(chunk)
-            r = requests.get(f'{BRAPI_BASE}/quote/{syms_csv}', params=params, timeout=10)
+            r = requests.get(f'{BRAPI_BASE}/quote/{syms_csv}', params=params, timeout=25)
             if r.status_code != 200:
                 log.warning(f'[BRAPI] bulk chunk ({len(chunk)} syms) HTTP {r.status_code}')
                 continue

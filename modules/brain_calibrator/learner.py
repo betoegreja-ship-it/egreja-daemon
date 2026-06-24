@@ -146,9 +146,15 @@ def recalibrate_brain(lookback_days=None) -> dict:
         baseline = 100 * sum(r['_win'] for r in rows) / n_trades
         baseline_stock = 100 * sum(r['_win'] for r in rows if r['asset_type'] in ('stock','stocks')) / max(sum(1 for r in rows if r['asset_type'] in ('stock','stocks')), 1)
         baseline_crypto = 100 * sum(r['_win'] for r in rows if r['asset_type'] == 'crypto') / max(sum(1 for r in rows if r['asset_type'] == 'crypto'), 1)
+        # P1-especialista: baseline separado B3 vs NYSE (comportamento bem diferente)
+        rows_b3 = [r for r in rows if r['market'] == 'B3']
+        rows_nyse = [r for r in rows if r['market'] in ('NYSE','NASDAQ')]
+        baseline_b3 = 100 * sum(r['_win'] for r in rows_b3) / max(len(rows_b3), 1)
+        baseline_nyse = 100 * sum(r['_win'] for r in rows_nyse) / max(len(rows_nyse), 1)
 
         log.info(f'[calibrator] iniciando | trades={n_trades} | baseline={baseline:.2f}% '
-                 f'| stock={baseline_stock:.2f}% | crypto={baseline_crypto:.2f}%')
+                 f'| stock={baseline_stock:.2f}% | crypto={baseline_crypto:.2f}% '
+                 f'| B3={baseline_b3:.2f}% | NYSE={baseline_nyse:.2f}%')
 
         features_updated = 0
         combos_updated = 0
@@ -159,6 +165,8 @@ def recalibrate_brain(lookback_days=None) -> dict:
             buckets_all = defaultdict(list)
             buckets_stk = defaultdict(list)
             buckets_cry = defaultdict(list)
+            buckets_b3  = defaultdict(list)
+            buckets_nyse = defaultdict(list)
             for r in rows:
                 if fname == 'hour': v = r['hr']
                 elif fname == 'weekday': v = r['dow']
@@ -171,10 +179,15 @@ def recalibrate_brain(lookback_days=None) -> dict:
                 buckets_all[v].append(r)
                 if r['asset_type'] in ('stock','stocks'): buckets_stk[v].append(r)
                 elif r['asset_type'] == 'crypto': buckets_cry[v].append(r)
+                # P1: B3 e NYSE separados
+                if r['market'] == 'B3': buckets_b3[v].append(r)
+                elif r['market'] in ('NYSE','NASDAQ'): buckets_nyse[v].append(r)
 
             for scope, base, buckets in [('ALL', baseline, buckets_all),
                                           ('stock', baseline_stock, buckets_stk),
-                                          ('crypto', baseline_crypto, buckets_cry)]:
+                                          ('crypto', baseline_crypto, buckets_cry),
+                                          ('B3', baseline_b3, buckets_b3),
+                                          ('NYSE', baseline_nyse, buckets_nyse)]:
                 for v, rs in buckets.items():
                     n = len(rs)
                     if n < MIN_SAMPLES: continue
@@ -268,6 +281,19 @@ def recalibrate_brain(lookback_days=None) -> dict:
         # ═══ 4. SYMBOL STATS ═══
         sym_buckets = defaultdict(list)
         for r in rows: sym_buckets[(r['symbol'], r['asset_type'])].append(r)
+        # P1: meia-vida 30d — trades recentes pesam mais
+        # Para cada trade, calcular weight = 0.5^(days_old / 30)
+        from datetime import datetime as _dt
+        now_utc = _dt.utcnow()
+        def _trade_weight(t):
+            try:
+                ca = t.get('closed_at') or t.get('opened_at')
+                if not ca: return 1.0
+                if isinstance(ca, str): ca = _dt.fromisoformat(ca.replace('Z',''))
+                days_old = (now_utc - ca).total_seconds() / 86400
+                return 0.5 ** (max(0, days_old) / 30.0)
+            except Exception: return 1.0
+
         for (sym, atype), rs in sym_buckets.items():
             n = len(rs)
             if n < 10: continue  # min 10 trades pra ter symbol skill
@@ -275,6 +301,11 @@ def recalibrate_brain(lookback_days=None) -> dict:
             wr = 100 * wins / n
             avg = sum(r['_pnl'] for r in rs) / n
             total = sum(r['_pnl'] for r in rs)
+            # Versao com decay (recente pesa mais)
+            weights = [_trade_weight(r) for r in rs]
+            sum_w = sum(weights) or 1
+            wr_recent = 100 * sum(w * r['_win'] for w, r in zip(weights, rs)) / sum_w
+            avg_recent = sum(w * r['_pnl'] for w, r in zip(weights, rs)) / sum_w
             # EV por simbolo — especialista identificou AZEV4 com 0% win
             # mas tambem simbolos com win-rate alto e EV ruim (avg_loss >> avg_win)
             win_pnls = [r['_pnl'] for r in rs if r['_pnl'] > 0]
@@ -284,7 +315,9 @@ def recalibrate_brain(lookback_days=None) -> dict:
             p_w = wr/100; p_l = 1-p_w
             sym_ev = p_w * avg_win + p_l * avg_loss
             base = baseline_stock if atype in ('stock','stocks') else baseline_crypto
-            adj_wr = (wr - base) * 0.8
+            # P1: usar metricas RECENTES (com decay 30d) pra evitar "Halo Effect" historico
+            # AZEV4 perdeu 100% trades — mas se eram todos antigos e ele virou, o decay reage rapido
+            adj_wr = (wr_recent - base) * 0.8
             adj_ev = sym_ev * 6.0
             adj_raw = 0.5 * adj_wr + 0.5 * adj_ev  # symbol: peso 50/50
             adj = _clip(_shrinkage(adj_raw, n, n_min=10), -10, 10)

@@ -140,11 +140,19 @@ def apply_calibration(score_original: int, features: dict, symbol: str,
         combos_cache = dict(_weights_cache['combos'])
         syms_cache = dict(_weights_cache['symbols'])
 
+    # P1: scope chain agora inclui mercado (B3/NYSE) antes do asset_type
+    # market vem do feature_values['market']
+    market = feature_values.get('market', '')
+    scope_chain = []
+    if market in ('B3', 'NYSE'): scope_chain.append(market)
+    scope_chain.append(asset_norm)
+    scope_chain.append('ALL')
+
     for fname, fval in feature_values.items():
         if fval is None or fval == '': continue
         fval = str(fval)
-        # Prefer asset-specific se existir; fallback ALL
-        for scope in [asset_norm, 'ALL']:
+        # Prefer mercado-specific (B3/NYSE) > asset > ALL
+        for scope in scope_chain:
             adj = feats_cache.get((fname, fval, scope))
             if adj is not None and adj != 0:
                 adj_total += adj

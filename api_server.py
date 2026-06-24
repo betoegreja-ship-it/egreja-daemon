@@ -313,6 +313,11 @@ try:
         get_active_weights as _get_calib_weights,
         score_breakdown as _calib_breakdown,
         calibrator_loop as _calibrator_loop,
+        is_symbol_locked as _is_symbol_locked,
+        cooldown_status as _cooldown_status,
+        refresh_cooldowns as _refresh_cooldowns,
+        get_calib_timeout_h as _calib_timeout_h,
+        boot_health_check as _dq_boot_check,
     )
     _calibrator_loaded = True
     log.info('[v12-CALIBRATOR] Brain Calibrator module loaded')
@@ -361,6 +366,17 @@ try:
                 except: pass
         except Exception as _se:
             log.warning(f'[v12-CALIBRATOR] schema bootstrap: {_se}')
+        # [v12-DQ] Boot health check + cooldown refresh
+        try:
+            _dq = _dq_boot_check()
+            log.info(f'[v12-DQ] boot health: {_dq.get("status")} '
+                     f'{len(_dq.get("warnings", []))} warnings')
+        except Exception as _de:
+            log.warning(f'[v12-DQ] boot check: {_de}')
+        try:
+            _refresh_cooldowns()
+        except Exception as _ce:
+            log.warning(f'[v12-COOLDOWN] refresh: {_ce}')
 except Exception as _pe:
     log.warning(f'[v11-PAIRS] pairs_engine module not loaded: {_pe}')
     _pairs_engine_loaded = False
@@ -669,7 +685,16 @@ except Exception as e:
     _brain_load_error = _tb.format_exc()
     log.warning(f'[v2.2] Unified Brain blueprint registration FAILED:\n{_brain_load_error}')
 
-CORS(app)
+# [SECURITY P0 especialista 24-jun-2026] CORS restrito.
+# Antes: CORS(app) liberava qualquer Origin (lia API key do navegador).
+# Agora: lista whitelist de origens permitidas + supports_credentials=True (cookie).
+# Override via env CORS_ALLOWED_ORIGINS=https://a.com,https://b.com (CSV).
+_default_origins = 'https://www.egreja.net,https://egreja.net,https://egreja.com,https://www.egreja.com,http://localhost:5173,http://localhost:3000'
+_allowed_origins = [o.strip() for o in os.environ.get('CORS_ALLOWED_ORIGINS', _default_origins).split(',') if o.strip()]
+CORS(app, origins=_allowed_origins, supports_credentials=True,
+     allow_headers=['Content-Type', 'X-API-Key', 'Authorization'],
+     expose_headers=['Content-Type'])
+log.info(f'[SECURITY-P0] CORS restrito a: {_allowed_origins}')
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
@@ -1455,6 +1480,10 @@ def auth_check():
                 return None
 
     # 3. Tudo mais (incluindo POST/PUT/DELETE em prefixos acima): exige X-API-Key
+    #    OU session cookie autenticado (P0 especialista 24-jun-2026):
+    #    permite frontend remover API_KEY hardcoded — usa sessao via cookie.
+    if _is_session_authed():
+        return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
         log.warning(f'[SECURITY-P0] Unauthorized: {request.remote_addr} {request.method} {request.path}')
@@ -7186,6 +7215,17 @@ def stock_execution_worker():
                 if abs(_st_adj) >= 5:
                     log.debug(f"STOCK_SCORE_ADJ: {sym} {_score_before_t}→{score} ({_st_reason})")
 
+                # ═══ [v12-COOLDOWN] Symbol cooldown apos sequencia perdas ═══
+                # P2 do especialista: bloqueia simbolo apos N perdas consecutivas
+                if _calibrator_loaded:
+                    try:
+                        _is_locked, _lock_reason = _is_symbol_locked(sym, 'stock')
+                        if _is_locked:
+                            log.info(f'[COOLDOWN] {sym} BLOCKED: {_lock_reason}')
+                            continue
+                    except Exception as _le:
+                        log.debug(f'[COOLDOWN] check {sym}: {_le}')
+
                 # ═══ [v12-CALIBRATOR] Brain auto-learning adjustment ═══
                 # Aplica pesos data-driven dos 12k+ trades historicos.
                 # Roda em SHADOW por padrao (apenas loga) durante 1 semana antes de ir live.
@@ -9942,6 +9982,26 @@ def brain_calibration_history():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/brain/cooldown')
+def brain_cooldown_status():
+    """Status do symbol cooldown — simbolos atualmente bloqueados."""
+    if not _calibrator_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        return jsonify(_cooldown_status()), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/brain/dq')
+def brain_data_quality():
+    """Snapshot da qualidade dos dados — roda checks agora."""
+    if not _calibrator_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        return jsonify(_dq_boot_check()), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/brain/calibration/ev')
 def brain_calibration_ev():
     """Top combos/features por Expected Value — sugestao especialista 24-jun-2026."""
@@ -11465,6 +11525,17 @@ def debug_crypto_filter_trace():
                 out['symbols'].append(row); continue
             if _disc_adj != 0:
                 score = max(0, min(100, score + _disc_adj))
+
+            # ═══ [v12-COOLDOWN] Symbol cooldown crypto ═══
+            if _calibrator_loaded:
+                try:
+                    _sym_c = ticker_data.get('symbol', '')
+                    _lkd, _lkr = _is_symbol_locked(_sym_c, 'crypto')
+                    if _lkd:
+                        row['blocked_at'] = f'COOLDOWN ({_lkr})'
+                        out['symbols'].append(row); continue
+                except Exception as _le:
+                    log.debug(f'[COOLDOWN] crypto: {_le}')
 
             # ═══ [v12-CALIBRATOR] Brain auto-learning crypto ═══
             if _calibrator_loaded:

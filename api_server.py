@@ -1351,16 +1351,44 @@ def alert_worker():
 # ═══════════════════════════════════════════════════════════════
 @app.before_request
 def auth_check():
+    """[SECURITY-P0 24-jun-2026] Auth split por metodo HTTP.
+    Antes: prefixos /trades, /arbitrage, /brain, /strategies eram TOTALMENTE PUBLICOS
+           (nao exigiam nem X-API-Key) — risco P0 expondo /trades/purge, /brain/force-seed etc.
+    Agora: GET nesses prefixos continua publico (dashboards funcionam).
+           POST/PUT/DELETE EXIGE X-API-Key — protege endpoints destrutivos.
+    """
     if request.method == 'OPTIONS':
         return None
     if not API_SECRET_KEY:
         return None
-    if request.path in PUBLIC_ROUTES or request.path.startswith('/health') or request.path.startswith('/strategies') or request.path.startswith('/brain') or request.path.startswith('/long-horizon') or request.path.startswith('/signals') or request.path.startswith('/stats') or request.path.startswith('/trades') or request.path.startswith('/arbitrage') or request.path.startswith('/prices') or request.path.startswith('/performance') or request.path.startswith('/reports') or request.path.startswith('/static/') or request.path.startswith('/debug/b3-prices') or request.path.startswith('/debug/b3-trades-pricing') or request.path.startswith('/debug/batch-void-stale-feed-') or request.path.startswith('/debug/reload-stocks-closed-from-db') or request.path.startswith('/debug/recalc-arbi-fx') or request.path.startswith('/debug/reload-arbi-from-db') or request.path.startswith('/debug/crypto-filter-trace') or request.path in ('/derivatives', '/api/info', '/api/modules-debug', '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js'):
+
+    # Lista de prefixos publicos APENAS PARA LEITURA (GET):
+    _public_read_prefixes = ('/health', '/strategies', '/brain', '/long-horizon',
+                              '/signals', '/stats', '/trades', '/arbitrage',
+                              '/prices', '/performance', '/reports', '/static/',
+                              '/debug/b3-prices', '/debug/b3-trades-pricing',
+                              '/debug/batch-void-stale-feed-',
+                              '/debug/reload-stocks-closed-from-db',
+                              '/debug/recalc-arbi-fx', '/debug/reload-arbi-from-db',
+                              '/debug/crypto-filter-trace')
+    _public_any_method = ('/derivatives', '/api/info', '/api/modules-debug',
+                          '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js')
+
+    # 1. Rotas sempre publicas (info estatica, OPTIONS preflight ja tratado)
+    if request.path in PUBLIC_ROUTES or request.path in _public_any_method:
         return None
+
+    # 2. Prefixos de leitura: APENAS GET/HEAD eh publico
+    if request.method in ('GET', 'HEAD'):
+        for _pfx in _public_read_prefixes:
+            if request.path.startswith(_pfx):
+                return None
+
+    # 3. Tudo mais (incluindo POST/PUT/DELETE em prefixos acima): exige X-API-Key
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
-        log.warning(f'Unauthorized: {request.remote_addr} {request.path}')
-        return jsonify({'error': 'Unauthorized — X-API-Key required'}), 401
+        log.warning(f'[SECURITY-P0] Unauthorized: {request.remote_addr} {request.method} {request.path}')
+        return jsonify({'error': 'Unauthorized — X-API-Key required for mutating requests'}), 401
 
 def require_auth(f):
     """[FIX-1] Decorador de documentação — autenticação real feita pelo before_request.
@@ -14338,29 +14366,21 @@ if __name__ == '__main__':
     log.info(f'Queue thresholds: WARN={URGENT_QUEUE_WARN} / CRIT={URGENT_QUEUE_CRIT}')
 
     log.info('Init...')
-    # [v10.14] Liberar disco ANTES de init_all_tables — DROP TABLE libera espaço imediatamente
-    # (TRUNCATE não libera espaço InnoDB, DROP TABLE sim)
+    # [SECURITY-P0 24-jun-2026] Pre-init cleanup REDUZIDO — preserva audit/learning history.
+    # Antes: DROP TABLE em signal_events/shadow_decisions/learning_audit/audit_events
+    # destruia trilha de auditoria e historico de aprendizado a cada deploy.
+    # Agora: so faz DELETE de orders antigas (>3 dias). Tabelas de audit/learning preservadas.
+    # Para liberar disco fisico do MySQL, usar OPTIMIZE TABLE no /admin/db/optimize endpoint.
     try:
         _sc = get_db()
         if _sc:
             _cur = _sc.cursor()
-            dropped = []
-            # DROP tabelas auxiliares não críticas (serão recriadas por init_all_tables)
-            for _t in ['signal_events','shadow_decisions','learning_audit','audit_events']:
-                try:
-                    _cur.execute(f'DROP TABLE IF EXISTS {_t}'); _sc.commit()
-                    dropped.append(_t)
-                except: pass
-            # orders — limpar antigas (manter tabela)
+            # orders — limpar antigas (manter tabela, > 3 dias)
             try:
                 _cur.execute("DELETE FROM orders WHERE created_at < DATE_SUB(NOW(), INTERVAL 3 DAY)"); _sc.commit()
             except: pass
-            # pattern_stats — limpar entradas fracas
-            try:
-                _cur.execute("DELETE FROM pattern_stats WHERE total_samples < 2"); _sc.commit()
-            except: pass
             _cur.close(); _sc.close()
-            log.info(f'Pre-init disk freed (DROP): {dropped}')
+            log.info('[SECURITY-P0] Pre-init cleanup: orders > 3d purged. Audit/learning history PRESERVED.')
     except Exception as _e:
         log.warning(f'Pre-init cleanup error: {_e}')
     init_all_tables()

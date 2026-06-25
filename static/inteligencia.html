@@ -214,12 +214,14 @@ tr:hover{background:rgba(17,24,32,.5)}
 const RW = 'https://diligent-spirit-production.up.railway.app';
 const BRAIN_API = RW + '/brain';
 
+// [25-jun-2026 fix] Keys agora batem com o que a API retorna em l.module
+// Arbitrage, Crypto, Stocks, Derivatives, Long_Horizon (case-sensitive)
 const MODULES = {
-  ARBI: { label:'Arbitragem', color:'var(--cyan)', icon:'🔄' },
-  CRYPTO: { label:'Crypto', color:'var(--orange)', icon:'₿' },
-  STOCKS: { label:'Stocks', color:'var(--profit)', icon:'📈' },
-  DERIV: { label:'Derivativos', color:'var(--accent)', icon:'📊' },
-  LH: { label:'Long Horizon', color:'var(--gold)', icon:'🚀' },
+  Arbitrage:   { label:'Arbitragem', color:'var(--cyan)', icon:'🔄' },
+  Crypto:      { label:'Crypto', color:'var(--orange)', icon:'₿' },
+  Stocks:      { label:'Stocks', color:'var(--profit)', icon:'📈' },
+  Derivatives: { label:'Derivativos', color:'var(--accent)', icon:'📊' },
+  Long_Horizon:{ label:'Long Horizon', color:'var(--gold)', icon:'🚀' },
 };
 
 const REGIME_COLORS = {
@@ -272,8 +274,14 @@ async function fetchAll() {
       const decBlock = dec.value.decisions;
       state.decisions = Array.isArray(decBlock) ? decBlock : (decBlock?.decisions || []);
     }
-    if(evo.status==='fulfilled' && evo.value) state.evolution = evo.value;
-    if(risk.status==='fulfilled' && risk.value) state.riskRadar = risk.value;
+    // [fix 25-jun] API aninha em evo.value.evolution e risk em risk.value.active_risk_alerts
+    if(evo.status==='fulfilled' && evo.value) {
+      state.evolution = evo.value.evolution || evo.value;
+    }
+    if(risk.status==='fulfilled' && risk.value) {
+      state.riskRadar = risk.value.active_risk_alerts || risk.value;
+      state.riskRadarFull = risk.value;
+    }
     if(hel.status==='fulfilled' && hel.value) state.health = hel.value.modules || {};
 
     document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString('pt-BR');
@@ -814,39 +822,59 @@ function renderScoreV3() {
 function renderRegime() {
   const regime = state.regime || 'DESCONHECIDO';
   const regimeColor = REGIME_COLORS[regime] || 'var(--dim)';
-  const ss = state.systemState || {};
-  const confidence = ss.regime_confidence || 0;
-  const duration = ss.regime_duration || '—';
+  // [25-jun-2026 fix] API retorna regime_data.current.* (não no systemState)
+  const rd = state.regimeData?.current || {};
+  const confidence = rd.confidence || 0;  // já em fração 0-1
+  const duration = rd.duration_days ? `${rd.duration_days} dias` : '—';
+  const indicators = rd.indicators || {};
+  const moduleSignals = rd.module_signals || {};
+  const probabilities = state.regimeData?.probabilities || {};
 
   let html = `<div class="section">
     <div class="regime-card" style="border-color:${regimeColor};background:linear-gradient(135deg,rgba(167,139,250,.05),transparent)">
       <div class="regime-name" style="color:${regimeColor}">${regime}</div>
       <div class="regime-confidence">Confiança: ${fmtNum(confidence*100, 0)}%</div>
-      <div class="regime-duration">Duração: ${duration}</div>
+      <div class="regime-duration">${duration}</div>
     </div>
   </div>`;
 
-  // Regime Timeline (last 6 months as colored blocks)
-  const timeline = ss.regime_timeline || [];
-  if(timeline.length > 0) {
-    html += '<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">Timeline de Regimes (6 Meses)</div><div class="regime-timeline">';
-    for(const block of timeline) {
-      const color = REGIME_COLORS[block.regime] || 'var(--dim)';
-      html += `<div class="regime-block" style="background:${color};opacity:0.7" data-label="${block.regime}"></div>`;
+  // Probabilidades dos regimes
+  if(Object.keys(probabilities).length) {
+    html += '<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">Probabilidades de Regime</div><div class="grid-3">';
+    for(const [reg, prob] of Object.entries(probabilities)) {
+      const color = REGIME_COLORS[reg] || 'var(--dim)';
+      html += `<div class="card" style="padding:10px;border-left:3px solid ${color}">
+        <div style="font-size:11px;color:var(--dim);font-weight:600">${reg}</div>
+        <div style="font-size:18px;font-weight:700;font-family:var(--mono);color:${color}">${fmtNum(prob*100, 1)}%</div>
+      </div>`;
     }
     html += '</div></div>';
   }
 
-  // Module indicators
-  html += '<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">Indicadores por Módulo</div><div class="grid-2">';
-  for(const [key, module] of Object.entries(MODULES)) {
-    const indicator = ss.module_regime_indicators?.[key] || '—';
-    html += `<div style="padding:12px;background:var(--s2);border-radius:6px;border-left:3px solid ${module.color}">
-      <div style="font-size:11px;color:var(--dim);font-weight:600">${module.label}</div>
-      <div style="font-size:13px;font-weight:700;margin-top:4px">${indicator}</div>
-    </div>`;
+  // Indicadores macro atuais
+  if(Object.keys(indicators).length) {
+    html += '<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">Indicadores Atuais</div><div class="grid-3">';
+    for(const [k, v] of Object.entries(indicators)) {
+      html += `<div class="card" style="padding:10px">
+        <div style="font-size:10px;color:var(--dim);text-transform:uppercase">${k.replace(/_/g,' ')}</div>
+        <div style="font-size:16px;font-weight:700;font-family:var(--mono);margin-top:4px">${v}</div>
+      </div>`;
+    }
+    html += '</div></div>';
   }
-  html += '</div></div>';
+
+  // Sinais por módulo
+  if(Object.keys(moduleSignals).length) {
+    html += '<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">Sinais por Módulo</div><div class="grid-2">';
+    for(const [mod, sig] of Object.entries(moduleSignals)) {
+      const m = MODULES[mod] || {label: mod, color: 'var(--purple)'};
+      html += `<div style="padding:12px;background:var(--s2);border-radius:6px;border-left:3px solid ${m.color}">
+        <div style="font-size:11px;color:var(--dim);font-weight:600">${m.label}</div>
+        <div style="font-size:13px;font-weight:700;margin-top:4px">${sig}</div>
+      </div>`;
+    }
+    html += '</div></div>';
+  }
 
   return html;
 }
@@ -857,25 +885,34 @@ function renderDecisions() {
     return '<div class="empty-state">Processando inteligência...</div>';
   }
 
+  // [25-jun-2026 fix] API fields: decision_type, confidence, decided_at,
+  // factors (objeto), asset, status, decision_id
   let html = '<div class="section">';
   for(const dec of state.decisions) {
-    const typeClass = dec.decision_type?.toLowerCase().includes('buy') ? 'buy'
-      : dec.decision_type?.toLowerCase().includes('alert') ? 'alert'
-      : dec.decision_type?.toLowerCase().includes('shift') ? 'shift'
+    const dtype = dec.decision_type || 'NORMAL';
+    const typeClass = dtype.toLowerCase().includes('buy') ? 'buy'
+      : dtype.toLowerCase().includes('alert') ? 'alert'
+      : dtype.toLowerCase().includes('shift') ? 'shift'
       : 'normal';
-    const urgency = dec.urgency || 'NORMAL';
-    const urgencyClass = urgency === 'URGENT' ? 'urgent' : 'normal';
+    const status = dec.status || dec.urgency || 'active';
+    const isUrgent = status === 'urgent' || status === 'URGENT';
+    const urgencyClass = isUrgent ? 'urgent' : 'normal';
     const confidencePct = fmtNum(dec.confidence || 0, 0) + '%';
+    const when = dec.decided_at || dec.timestamp || '—';
+    const factors = dec.factors || {};
+    const recommendation = dec.recommendation || dec.action || dec.recommended_action
+                         || (dec.asset ? `${dtype} em ${dec.asset}` : 'Sem recomendação');
 
     html += `<div class="decision-card">
       <div class="decision-header">
-        <div style="display:flex;gap:6px">
-          <div class="decision-type ${typeClass}">${dec.decision_type || 'NORMAL'}</div>
-          <div class="decision-type ${urgencyClass}" style="font-size:9px">${urgency}</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <div class="decision-type ${typeClass}">${dtype}</div>
+          ${dec.asset ? `<div style="font-family:var(--mono);font-size:11px;color:var(--gold);font-weight:700">${dec.asset}</div>` : ''}
+          <div class="decision-type ${urgencyClass}" style="font-size:9px">${status.toUpperCase()}</div>
         </div>
-        <div style="font-size:10px;color:var(--dim)">${dec.timestamp || '—'}</div>
+        <div style="font-size:10px;color:var(--dim)">${when}</div>
       </div>
-      <div class="decision-text">${dec.recommendation || 'Sem recomendação'}</div>
+      <div class="decision-text">${recommendation}</div>
       <div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-top:8px">
         <span>Confiança:</span>
         <div class="progress-bar" style="flex:1">
@@ -883,14 +920,9 @@ function renderDecisions() {
         </div>
         <span class="text-mono">${confidencePct}</span>
       </div>
-      ${dec.modules && dec.modules.length > 0 ? `<div style="margin-top:8px">${dec.modules.map(m=>getModuleBadge(m)).join('')}</div>` : ''}
-      ${dec.supporting_factors && dec.supporting_factors.length > 0 ? `<div class="decision-factors" style="margin-top:8px">
+      ${Object.keys(factors).length ? `<div class="decision-factors" style="margin-top:8px">
         <div style="font-size:10px;color:var(--dim);font-weight:600;margin-bottom:4px">Fatores:</div>
-        ${dec.supporting_factors.map(f=>`<div class="decision-factor positive">✓ ${f}</div>`).join('')}
-      </div>` : ''}
-      ${dec.risk_assessment ? `<div style="margin-top:8px;padding:8px;background:rgba(239,68,68,.05);border-radius:4px;border-left:2px solid var(--loss);font-size:11px">
-        <div style="color:var(--loss);font-weight:600">Avaliação de Risco:</div>
-        <div style="color:var(--dim);margin-top:2px">${dec.risk_assessment}</div>
+        ${Object.entries(factors).map(([k,v])=>`<div class="decision-factor positive">✓ ${k.replace(/_/g,' ')}: <span class="text-mono">${v}</span></div>`).join('')}
       </div>` : ''}
     </div>`;
   }
@@ -899,63 +931,58 @@ function renderDecisions() {
 }
 
 // ─── Evolution Tab ───────────────────────────────────────────────
+// [25-jun-2026 fix] API: evolution_history (não monthly_scores), accuracy_pct
 function renderEvolution() {
   const evo = state.evolution || {};
-  const months = evo.monthly_scores || [];
+  const history = evo.evolution_history || evo.monthly_scores || [];
 
   let html = '<div class="section">';
 
   // Evolution chart
-  if(months.length > 0) {
-    html += '<div style="font-size:13px;font-weight:700;margin-bottom:16px">Score de Evolução (6 Meses)</div>';
-    for(const m of months.slice(-6)) {
-      const score = m.score || 0;
+  if(history.length > 0) {
+    html += '<div style="font-size:13px;font-weight:700;margin-bottom:16px">Histórico de Score</div>';
+    for(const m of history.slice(-12)) {
+      const score = m.evolution_score || m.score || 0;
+      const date = m.date || m.month || '—';
       const pct = Math.min(100, score);
       html += `<div class="evolution-bar">
-        <div class="evolution-label">${m.month}</div>
+        <div class="evolution-label">${date}</div>
         <div class="evolution-bar-container">
           <div class="evolution-bar-fill" style="width:${pct}%">${fmtNum(score, 1)}</div>
         </div>
       </div>`;
     }
+  } else {
+    html += '<div class="empty-state">Sem histórico de evolução disponível</div>';
   }
 
   html += '</div><div class="section"><div class="grid-3">';
 
-  // Metrics
-  const totalLessons = evo.total_lessons_growth || 0;
-  const accuracyImprovement = evo.accuracy_improvement || 0;
-  const patternsDiscovered = evo.patterns_discovered || 0;
+  const currentScore = evo.current_score || 0;
+  const accuracyPct = evo.accuracy_pct || 0;
+  const decisionAccuracy = evo.decision_accuracy || 0;
 
   html += `
-    ${statCard('Crescimento de Lições', totalLessons + '+', 'Novas experiências', 'var(--gold)')}
-    ${statCard('Melhoria de Acurácia', fmtNum(accuracyImprovement, 1) + '%', 'Decisões mais precisas', 'var(--profit)')}
-    ${statCard('Padrões Descobertos', patternsDiscovered, 'Relações mapeadas', 'var(--accent)')}
+    ${statCard('Score Atual', fmtNum(currentScore, 1) + '/100', 'Capacidade de aprendizado', 'var(--purple)')}
+    ${statCard('Acurácia Geral', fmtNum(accuracyPct, 1) + '%', 'Decisões corretas', 'var(--profit)')}
+    ${statCard('Acurácia Decisões', fmtNum(decisionAccuracy * 100, 1) + '%', 'Taxa de hit das ativas', 'var(--accent)')}
   `;
-
   html += '</div></div>';
-
-  // Milestones
-  const milestones = evo.milestones || [];
-  if(milestones.length > 0) {
-    html += '<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px">Marcos Alcançados</div>';
-    for(const m of milestones) {
-      html += `<div style="padding:12px;background:var(--s2);border-left:3px solid var(--purple);border-radius:4px;margin-bottom:8px">
-        <div style="font-size:12px;font-weight:600">${m.title || 'Marco'}</div>
-        <div style="font-size:11px;color:var(--dim);margin-top:2px">${m.description || '—'}</div>
-      </div>`;
-    }
-    html += '</div>';
-  }
 
   return html;
 }
 
 // ─── Risk Tab ────────────────────────────────────────────────────
+// [25-jun-2026 fix] API: active_risk_alerts.alerts[], aggregate_score
 function renderRisk() {
   const risk = state.riskRadar || {};
-  const overallRisk = risk.overall_risk_score || 0;
-  const moduleRisks = risk.module_risks || {};
+  const full = state.riskRadarFull || {};
+  // Overall risk: tenta varios campos
+  const overallRisk = risk.aggregate_score
+                   || full.aggregate_risk_score
+                   || full.risk_score
+                   || risk.overall_risk_score || 0;
+  const moduleRisks = risk.module_risks || full.module_risks || {};
 
   let html = '<div class="section">';
 
@@ -1005,14 +1032,18 @@ function renderRisk() {
     html += '</div>';
   }
 
-  // Risk alerts
-  const alerts = risk.active_alerts || [];
+  // Risk alerts — API retorna em risk.alerts (do active_risk_alerts.alerts)
+  const alerts = risk.alerts || risk.active_alerts || [];
   if(alerts.length > 0) {
     html += '<div class="section"><div style="font-size:13px;font-weight:700;margin-bottom:12px;color:var(--loss)">Alertas Ativos</div>';
     for(const a of alerts) {
+      const title = a.title || a.decision_type || a.asset || 'Alerta';
+      const msg = a.message || a.recommendation || a.action || '—';
+      const conf = a.confidence ? ` (${a.confidence}% conf)` : '';
       html += `<div style="padding:12px;background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.2);border-radius:6px;margin-bottom:8px">
-        <div style="font-size:12px;font-weight:600;color:var(--loss)">⚠️ ${a.title || 'Alerta'}</div>
-        <div style="font-size:11px;color:var(--text);margin-top:4px">${a.message || '—'}</div>
+        <div style="font-size:12px;font-weight:600;color:var(--loss)">⚠️ ${title}${conf}</div>
+        <div style="font-size:11px;color:var(--text);margin-top:4px">${msg}</div>
+        ${a.factors ? `<div style="font-size:10px;color:var(--dim);margin-top:6px;font-family:var(--mono)">${Object.entries(a.factors).slice(0,4).map(([k,v])=>`${k}=${v}`).join(' · ')}</div>` : ''}
       </div>`;
     }
     html += '</div>';

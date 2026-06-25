@@ -1466,6 +1466,8 @@ def auth_check():
                               '/prices', '/performance', '/reports', '/static/',
                               '/pairs',  # [v11-PAIRS] endpoints publicos GET
                               '/cedro',  # [25-jun-2026] cedro history wrapper
+                              '/api/brain/proposals',  # [25-jun-2026] propostas GET publico
+                              '/api/brain/nightly',    # GET (POST eh autenticado)
                               '/debug/b3-prices', '/debug/b3-trades-pricing',
                               '/debug/batch-void-stale-feed-',
                               '/debug/reload-stocks-closed-from-db',

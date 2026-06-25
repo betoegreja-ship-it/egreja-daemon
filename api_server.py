@@ -10329,6 +10329,60 @@ def pairs_trades():
         'timestamp': datetime.utcnow().isoformat(),
     }), 200
 
+@app.route('/pairs/admin/dedup', methods=['POST'])
+def pairs_admin_dedup():
+    """[25-jun-2026] Limpa trades duplicadas no mesmo pair_id (deploy bug).
+
+    Para cada pair_id com >1 trade OPEN, mantem a MAIS ANTIGA e marca
+    todas as outras como VOIDED (com motivo no notes). Tambem remove
+    da memoria pairs_open.
+
+    Auth: requer X-API-Key OU sessao admin.
+    """
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    # Auth: before_request ja protege POST com X-API-Key ou sessao
+    from modules.pairs_engine.persistence import _get_conn
+    from modules.pairs_engine.scanner import pairs_state_lock
+    from collections import defaultdict
+    conn = _get_conn()
+    if not conn:
+        return jsonify({'error': 'no db conn'}), 500
+    voided = []
+    kept = []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT id, pair_id, opened_at FROM pairs_trades
+                       WHERE status='OPEN' ORDER BY opened_at ASC""")
+        rows = cur.fetchall()
+        by_pair = defaultdict(list)
+        for r in rows:
+            by_pair[r['pair_id']].append(r)
+        for pid, trades in by_pair.items():
+            if len(trades) <= 1:
+                kept.append({'pair_id': pid, 'id': trades[0]['id']})
+                continue
+            kept.append({'pair_id': pid, 'id': trades[0]['id'], 'opened': str(trades[0]['opened_at'])})
+            for dup in trades[1:]:
+                cur.execute("""UPDATE pairs_trades
+                               SET status='VOIDED', closed_at=NOW(),
+                                   close_reason='DEDUP_DUPLICATE_DEPLOY_BUG',
+                                   pnl=0, pnl_pct=0
+                               WHERE id=%s""", (dup['id'],))
+                voided.append({'pair_id': pid, 'id': dup['id'], 'opened': str(dup['opened_at'])})
+        conn.commit()
+        cur.close()
+    finally:
+        try: conn.close()
+        except: pass
+    # Limpa memoria pairs_open: mantem apenas as 'kept'
+    kept_ids = {k['id'] for k in kept}
+    with pairs_state_lock:
+        _pairs_open[:] = [t for t in _pairs_open if t.get('id') in kept_ids]
+    log.info(f'[PAIRS] dedup: kept={len(kept)} voided={len(voided)}')
+    return jsonify({'ok': True, 'kept': kept, 'voided': voided}), 200
+
+
 @app.route('/pairs/history/<symbol>')
 def pair_history(symbol):
     """Retorna ate N bars OHLC do simbolo, lidos do MySQL pairs_history_daily."""

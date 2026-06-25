@@ -134,17 +134,18 @@ tr:hover{background:#0a1018}
     <table id="open-table">
       <thead>
         <tr>
-          <th>ID</th>
           <th>Par</th>
           <th>Direção</th>
-          <th>Entry z</th>
-          <th>Now z</th>
+          <th>Pernas (R$ A / R$ B)</th>
+          <th>Total exposto</th>
+          <th>Entry z → Now z</th>
           <th>Tempo</th>
-          <th>PnL (paper)</th>
+          <th>PnL R$</th>
+          <th>PnL %</th>
         </tr>
       </thead>
       <tbody id="open-tbody">
-        <tr><td colspan="7" class="empty">Nenhuma trade aberta agora</td></tr>
+        <tr><td colspan="8" class="empty">Nenhuma trade aberta agora</td></tr>
       </tbody>
     </table>
   </div>
@@ -173,13 +174,38 @@ tr:hover{background:#0a1018}
   <div class="section">
     <h2>Como funciona</h2>
     <div style="background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;font-size:13px;line-height:1.7;color:#cbd5e1">
-      <strong style="color:var(--cyan)">Estratégia:</strong> Comprar o ativo barato + vender o ativo caro dentro de um par correlacionado quando o spread está estatisticamente esticado (z > 2 desvios), apostando que a relação histórica retornará à média.<br><br>
-      <strong style="color:var(--cyan)">Entrada:</strong> |z| ≥ 2.0 (entre 2.0 e 2.5 nos pares mais estáveis, 2.5 nos voláteis tipo aéreas)<br>
-      <strong style="color:var(--cyan)">Saída por convergência:</strong> |z| ≤ 0.4 (ou cruzou zero)<br>
-      <strong style="color:var(--cyan)">Stop:</strong> |z| ≥ 3.5 (regime shift possível)<br>
-      <strong style="color:var(--cyan)">Filtro de segurança:</strong> correlação ≥ 0.5 nos últimos 60 dias<br><br>
-      <strong style="color:var(--gold)">Capital:</strong> R$ 1.000.000 paper, max 5 posições simultâneas (R$ 200k por trade dividido entre as duas pernas).<br>
-      <strong style="color:var(--gold)">Aprendizado:</strong> toda decisão (entry, hold, converged, avoid) é persistida em MySQL. <strong>Nenhuma trade jamais é deletada</strong> — o histórico é o maior ativo do sistema.
+      <div style="font-size:14px;color:var(--gold);margin-bottom:8px;font-weight:700">O que dispara a abertura de uma trade?</div>
+      <strong style="color:var(--cyan)">O z-score é o GATILHO.</strong> Quando |z| ≥ 2.0 (par sobre/sub-valorizado em 2 desvios padrão da média histórica de 60d), o sistema considera entrar.<br>
+      <strong style="color:var(--cyan)">Correlação é FILTRO.</strong> Se a correlação dos retornos dos últimos 60d cair abaixo de 0.5, o par é considerado "quebrado" e a entrada é bloqueada mesmo com z extremo.<br>
+      <strong style="color:var(--cyan)">Spread é a CAUSA do z.</strong> z = (spread_atual − média_60d) / desvio_60d. O spread é matéria-prima; z é o sinal normalizado.<br><br>
+
+      <div style="font-size:14px;color:var(--gold);margin-bottom:8px;font-weight:700">Hierarquia de decisão (todas precisam ser TRUE)</div>
+      <div style="margin-left:14px;color:#cbd5e1">
+        1. <strong>|z| ≥ z_entry</strong> (2.0 nos Tier A, 2.5 nos Tier B mais voláteis)<br>
+        2. <strong>|z| ≤ z_stop</strong> (3.5 — se já furou, é regime shift, não entra)<br>
+        3. <strong>correlation_60d ≥ 0.5</strong> (par precisa estar "vivo" estatisticamente)<br>
+        4. <strong>Nenhuma trade aberta nesse mesmo par</strong> (evita dobrar exposição)<br>
+        5. <strong>open_count &lt; 5</strong> (limite de posições simultâneas)<br>
+        6. <strong>Tier ≠ WATCH</strong> (pares legacy só observam)
+      </div>
+      <br>
+
+      <div style="font-size:14px;color:var(--gold);margin-bottom:8px;font-weight:700">Direção da trade</div>
+      <strong style="color:var(--cyan)">z &gt; 0:</strong> spread acima da média → ativo A caro → <strong>SHORT_A</strong> (vende A, compra B)<br>
+      <strong style="color:var(--cyan)">z &lt; 0:</strong> spread abaixo da média → ativo A barato → <strong>LONG_A</strong> (compra A, vende B)<br><br>
+
+      <div style="font-size:14px;color:var(--gold);margin-bottom:8px;font-weight:700">Como fecha</div>
+      <strong style="color:var(--green)">CONVERGED:</strong> |z| ≤ 0.4 (spread voltou à média) — toma o lucro<br>
+      <strong style="color:var(--red)">STOP_LOSS:</strong> |z| ≥ 3.5 (spread continuou esticando) — corta perda<br>
+      <strong style="color:var(--cyan)">CROSS_ZERO:</strong> z cruzou zero — também CONVERGED<br><br>
+
+      <div style="font-size:14px;color:var(--gold);margin-bottom:8px;font-weight:700">Capital e sizing</div>
+      <strong>R$ 1.000.000 paper</strong> total, dividido em até <strong>5 posições simultâneas</strong> = R$ 200k por trade.<br>
+      <strong>Tier A (26 pares):</strong> R$ 200k completos por trade.<br>
+      <strong>Tier B (34 pares):</strong> R$ 120k (60% — sizing reduzido até validação).<br>
+      <strong>Hedge ratio dinâmico:</strong> qty da perna B = qty A × beta (regressão OLS 60d). Por isso as pernas raramente têm valor R$ idêntico — depende da volatilidade relativa.<br><br>
+
+      <div style="color:var(--mute);font-size:12px">Aprendizado: toda decisão (entry, hold, converged, avoid) é persistida em MySQL. <strong>Nenhuma trade jamais é deletada</strong> — o histórico é o maior ativo do sistema. A cada 1 hora o sistema recalibra ADF/half-life/beta de cada par e detecta mudanças de regime.</div>
     </div>
   </div>
 
@@ -296,20 +322,28 @@ function renderPairs(pairs){
 
 function renderOpenTrades(trades){
   if (!trades.length){
-    document.getElementById('open-tbody').innerHTML = `<tr><td colspan="7" class="empty">Nenhuma trade aberta agora — sistema aguardando sinal com |z| ≥ 2</td></tr>`;
+    document.getElementById('open-tbody').innerHTML = `<tr><td colspan="8" class="empty">Nenhuma trade aberta agora — sistema aguardando |z| ≥ 2.0 + correlação ≥ 0.5</td></tr>`;
     return;
   }
-  const rows = trades.map(t => `
+  const rows = trades.map(t => {
+    const legA = (t.qty_a || 0) * (t.price_a_entry || 0);
+    const legB = (t.qty_b || 0) * (t.price_b_entry || 0);
+    const total = legA + legB;
+    const pnlPct = t.pnl_pct || 0;
+    const pnlClass = pnlPct > 0 ? 'z-neg' : pnlPct < 0 ? 'z-pos' : 'z-zero';
+    const dirArrow = (t.direction === 'SHORT_A') ? '↓A ↑B' : '↑A ↓B';
+    return `
     <tr>
-      <td class="mono" style="font-size:10px">${t.id || ''}</td>
-      <td><strong>${t.pair_id}</strong></td>
-      <td>${t.direction || '—'}</td>
-      <td>${fmt_z(t.entry_z)}</td>
-      <td>${fmt_z(t.current_z)}</td>
+      <td><strong>${t.pair_id}</strong><br><span style="font-size:10px;color:var(--mute)">${t.name || ''}</span></td>
+      <td>${t.direction || '—'}<br><span style="font-size:10px;color:var(--mute)">${dirArrow}</span></td>
+      <td class="mono" style="font-size:11px">${fmt_money(legA)}<br><span style="color:var(--mute);font-size:10px">${fmt_money(legB)}</span></td>
+      <td class="mono" style="font-weight:600">${fmt_money(total)}</td>
+      <td>${fmt_z(t.entry_z)} → ${fmt_z(t.current_z)}</td>
       <td>${fmt_time_ago(t.opened_at)}</td>
       <td>${fmt_pnl(t.pnl)}</td>
-    </tr>
-  `).join('');
+      <td><span class="${pnlClass} mono" style="font-weight:600">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(3)}%</span></td>
+    </tr>`;
+  }).join('');
   document.getElementById('open-tbody').innerHTML = rows;
 }
 

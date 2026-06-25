@@ -23,10 +23,13 @@ from .config import PAIRS_CONFIG, PAIRS_LIST
 from .data_fetcher import fetch_pair_history, fetch_pair_quote
 from .zscore import calc_zscore, calc_hedge_ratio
 from .scanner import pairs_scan_loop, calc_pair_signal
+from .learning import recalibrate_pair, generate_insights
+from .learning_worker import pairs_learning_loop
 
 __all__ = [
     'PAIRS_CONFIG', 'PAIRS_LIST',
     'fetch_pair_history', 'fetch_pair_quote',
     'calc_zscore', 'calc_hedge_ratio',
     'pairs_scan_loop', 'calc_pair_signal',
+    'recalibrate_pair', 'generate_insights', 'pairs_learning_loop',
 ]

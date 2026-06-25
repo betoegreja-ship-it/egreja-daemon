@@ -9688,6 +9688,24 @@ def start_background_threads():
     elif _disable_pairs:
         log.info('[v11-PAIRS] DISABLE_PAIRS=true — pairs_engine desligado por env var')
 
+    # [v11-PAIRS-LEARNING 25-jun-2026] Worker auto-aprendizado pares
+    # Recalibra ADF/half-life/beta de cada par a cada 1h
+    # Gera insights (best_hour, regime, eventos) a cada 4h
+    if _pairs_engine_loaded and not _disable_pairs:
+        _disable_pair_learning = os.environ.get('DISABLE_PAIRS_LEARNING', 'false').lower() == 'true'
+        if not _disable_pair_learning:
+            try:
+                from modules.pairs_engine.learning_worker import pairs_learning_loop as _pl_loop
+                def _pair_learning_wrapper():
+                    try: _pl_loop(beat_fn=beat, audit_fn=audit)
+                    except Exception as _le:
+                        log.error(f'[pairs.learning] crash: {_le}')
+                        import traceback; traceback.print_exc()
+                defs['pairs_learning_loop'] = _pair_learning_wrapper
+                log.info('[v11-PAIRS-LEARNING] worker adicionado (recal 1h + insights 4h)')
+            except Exception as _le:
+                log.warning(f'[v11-PAIRS-LEARNING] worker setup: {_le}')
+
     # [v12-CALIBRATOR 24-jun-2026] Worker que recalibra brain a cada hora
     # Lê os 12k+ trades historicos, calcula pesos data-driven, atualiza MySQL.
     # Default ENABLED. Desliga via DISABLE_BRAIN_CALIBRATOR=true
@@ -10327,6 +10345,186 @@ def pair_stats_learning():
             'patterns': _norm(patterns),
             'hourly_24h': _norm(hourly),
             'last_hour': _norm(last_hour),
+            'timestamp': datetime.utcnow().isoformat(),
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/pairs/<pair_id>/insights')
+def pair_insights(pair_id):
+    """Insights auto-descobertos pelo learning engine."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.pairs_engine.persistence import _get_conn
+        conn = _get_conn()
+        if not conn: return jsonify({'error':'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT insight_key, insight_value, confidence, n_samples, last_updated
+                       FROM pairs_insights WHERE pair_id=%s ORDER BY last_updated DESC""", (pair_id,))
+        rows = cur.fetchall()
+        cur.close()
+        try: conn.close()
+        except: pass
+        out = {}
+        for r in rows:
+            try:
+                v = r['insight_value']
+                try: v = json.loads(v) if v else None
+                except: pass
+                out[r['insight_key']] = {
+                    'value': v,
+                    'confidence': float(r['confidence']) if r['confidence'] else None,
+                    'updated': r['last_updated'].isoformat() if hasattr(r['last_updated'],'isoformat') else str(r['last_updated']),
+                }
+            except: pass
+        return jsonify({'pair_id': pair_id, 'insights': out}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/pairs/<pair_id>/recalibrations')
+def pair_recalibrations(pair_id):
+    """Historico de recalibracoes — ADF, half-life, beta ao longo do tempo."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.pairs_engine.persistence import _get_conn
+        conn = _get_conn()
+        if not conn: return jsonify({'error':'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        limit = min(int(request.args.get('limit', 100)), 500)
+        cur.execute("""SELECT ts, window_days, adf_tstat, half_life_days, hedge_beta,
+                              return_corr, price_corr, spread_mean, spread_stdev,
+                              regime, tier_recommended
+                       FROM pairs_recalibration_history
+                       WHERE pair_id=%s ORDER BY ts DESC LIMIT %s""", (pair_id, limit))
+        rows = cur.fetchall()
+        cur.close()
+        try: conn.close()
+        except: pass
+        def n(rs):
+            o = []
+            for r in rs:
+                d = {}
+                for k,v in r.items():
+                    if hasattr(v,'isoformat'): d[k]=v.isoformat()
+                    elif hasattr(v,'__float__'): d[k]=float(v)
+                    else: d[k]=v
+                o.append(d)
+            return o
+        return jsonify({'pair_id': pair_id, 'history': n(rows)}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/pairs/<pair_id>/events')
+def pair_events(pair_id):
+    """Eventos detectados (blowups, breakdowns, crossings, entries)."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.pairs_engine.persistence import _get_conn
+        conn = _get_conn()
+        if not conn: return jsonify({'error':'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        limit = min(int(request.args.get('limit', 100)), 500)
+        cur.execute("""SELECT ts, event_type, severity, z_score, details
+                       FROM pairs_events WHERE pair_id=%s
+                       ORDER BY ts DESC LIMIT %s""", (pair_id, limit))
+        rows = cur.fetchall()
+        cur.close()
+        try: conn.close()
+        except: pass
+        out = []
+        for r in rows:
+            out.append({
+                'ts': r['ts'].isoformat() if hasattr(r['ts'],'isoformat') else str(r['ts']),
+                'event_type': r['event_type'],
+                'severity': r['severity'],
+                'z_score': float(r['z_score']) if r['z_score'] else None,
+                'details': r['details'],
+            })
+        return jsonify({'pair_id': pair_id, 'events': out}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/pairs/<pair_id>/snapshots')
+def pair_snapshots(pair_id):
+    """Snapshots de scan (z-score, preco, spread) ao longo do tempo."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.pairs_engine.persistence import _get_conn
+        conn = _get_conn()
+        if not conn: return jsonify({'error':'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        limit = min(int(request.args.get('limit', 200)), 2000)
+        cur.execute("""SELECT ts, price_a, price_b, spread, z_score, correlation_60d,
+                              hedge_ratio, action
+                       FROM pairs_snapshots WHERE pair_id=%s
+                       ORDER BY ts DESC LIMIT %s""", (pair_id, limit))
+        rows = cur.fetchall()
+        cur.close()
+        try: conn.close()
+        except: pass
+        out = []
+        for r in rows:
+            d = {}
+            for k,v in r.items():
+                if hasattr(v,'isoformat'): d[k]=v.isoformat()
+                elif hasattr(v,'__float__'): d[k]=float(v)
+                else: d[k]=v
+            out.append(d)
+        return jsonify({'pair_id': pair_id, 'snapshots': out}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/pairs/learning/dashboard')
+def pairs_learning_dashboard():
+    """Dashboard geral: status de aprendizado todos pares."""
+    if not _pairs_engine_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        from modules.pairs_engine.persistence import _get_conn
+        conn = _get_conn()
+        if not conn: return jsonify({'error':'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        # Snapshots totais
+        cur.execute("SELECT COUNT(*) AS n, COUNT(DISTINCT pair_id) AS pairs FROM pairs_snapshots")
+        snap = cur.fetchone()
+        cur.execute("SELECT COUNT(*) AS n FROM pairs_snapshots WHERE ts >= NOW() - INTERVAL 24 HOUR")
+        snap_24h = cur.fetchone()
+        # Eventos
+        cur.execute("""SELECT event_type, COUNT(*) AS n FROM pairs_events
+                       WHERE ts >= NOW() - INTERVAL 24 HOUR GROUP BY event_type""")
+        events_24h = cur.fetchall()
+        # Recalibrations
+        cur.execute("SELECT COUNT(*) AS n FROM pairs_recalibration_history WHERE ts >= NOW() - INTERVAL 24 HOUR")
+        recal_24h = cur.fetchone()
+        # Tier changes
+        cur.execute("""SELECT pair_id, tier_recommended, regime, adf_tstat, half_life_days, return_corr
+                       FROM pairs_recalibration_history h1
+                       WHERE ts = (SELECT MAX(ts) FROM pairs_recalibration_history h2
+                                   WHERE h2.pair_id = h1.pair_id)
+                       ORDER BY adf_tstat ASC""")
+        current_recommendations = cur.fetchall()
+        cur.close()
+        try: conn.close()
+        except: pass
+        def f(v): return float(v) if v is not None and hasattr(v,'__float__') else None
+        return jsonify({
+            'snapshots_total': int(snap['n']) if snap else 0,
+            'pairs_tracked': int(snap['pairs']) if snap else 0,
+            'snapshots_24h': int(snap_24h['n']) if snap_24h else 0,
+            'recalibrations_24h': int(recal_24h['n']) if recal_24h else 0,
+            'events_24h': {e['event_type']: int(e['n']) for e in events_24h},
+            'current_recommendations': [{
+                'pair_id': r['pair_id'],
+                'tier_recommended': r['tier_recommended'],
+                'regime': r['regime'],
+                'adf_tstat': f(r['adf_tstat']),
+                'half_life_days': f(r['half_life_days']),
+                'return_corr': f(r['return_corr']),
+            } for r in current_recommendations[:30]],
             'timestamp': datetime.utcnow().isoformat(),
         }), 200
     except Exception as e:

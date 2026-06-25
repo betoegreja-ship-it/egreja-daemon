@@ -160,6 +160,94 @@ SCHEMA_SQL = [
       INDEX idx_pair (pair_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
+
+    # ─── 7. Snapshots — TUDO que o scanner observa fica salvo (25-jun-2026) ───
+    """
+    CREATE TABLE IF NOT EXISTS pairs_snapshots (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      ts DATETIME(3) NOT NULL,
+      pair_id VARCHAR(32) NOT NULL,
+      price_a DECIMAL(14,4), price_b DECIMAL(14,4),
+      spread DECIMAL(20,8),
+      z_score DECIMAL(10,4),
+      mean_60d DECIMAL(20,8),
+      stdev_60d DECIMAL(20,8),
+      correlation_60d DECIMAL(8,4),
+      hedge_ratio DECIMAL(10,4),
+      action VARCHAR(16),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_pair_ts (pair_id, ts),
+      INDEX idx_ts (ts)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+
+    # ─── 8. Recalibracao history — ADF/half-life/beta a cada hora ───
+    """
+    CREATE TABLE IF NOT EXISTS pairs_recalibration_history (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      ts DATETIME NOT NULL,
+      pair_id VARCHAR(32) NOT NULL,
+      window_days INT,
+      adf_tstat DECIMAL(8,3),
+      half_life_days DECIMAL(8,2),
+      hedge_beta DECIMAL(10,4),
+      hedge_alpha DECIMAL(14,4),
+      return_corr DECIMAL(6,4),
+      price_corr DECIMAL(6,4),
+      spread_mean DECIMAL(20,8),
+      spread_stdev DECIMAL(20,8),
+      regime VARCHAR(16),
+      tier_recommended VARCHAR(8),
+      INDEX idx_pair_ts (pair_id, ts),
+      INDEX idx_ts (ts)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+
+    # ─── 9. Events — anomalias (blowups, breakdowns, opportunities) ───
+    """
+    CREATE TABLE IF NOT EXISTS pairs_events (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      ts DATETIME(3) NOT NULL,
+      pair_id VARCHAR(32) NOT NULL,
+      event_type VARCHAR(32) NOT NULL,
+      severity VARCHAR(16),
+      z_score DECIMAL(10,4),
+      details TEXT,
+      INDEX idx_pair_ts (pair_id, ts),
+      INDEX idx_type (event_type),
+      INDEX idx_ts (ts)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+
+    # ─── 10. Cross-pair correlation matrix (clusters) ───
+    """
+    CREATE TABLE IF NOT EXISTS pairs_cross_correlation (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      pair_a VARCHAR(32) NOT NULL,
+      pair_b VARCHAR(32) NOT NULL,
+      window_days INT,
+      z_correlation DECIMAL(6,4),
+      n_observations INT,
+      last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_pair_pair (pair_a, pair_b, window_days),
+      INDEX idx_correlation (z_correlation)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+
+    # ─── 11. Insights auto-descobertos por par ───
+    """
+    CREATE TABLE IF NOT EXISTS pairs_insights (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      pair_id VARCHAR(32) NOT NULL,
+      insight_key VARCHAR(64) NOT NULL,
+      insight_value TEXT,
+      confidence DECIMAL(6,4),
+      n_samples INT,
+      last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_pair_insight (pair_id, insight_key),
+      INDEX idx_pair (pair_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
 ]
 
 

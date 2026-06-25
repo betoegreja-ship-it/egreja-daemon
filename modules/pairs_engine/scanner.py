@@ -17,6 +17,7 @@ from .config import PAIRS_CONFIG, get_pair, all_symbols, pairs_by_tier
 from .data_fetcher import fetch_pair_history, fetch_pair_quotes_bulk
 from .zscore import calc_spread_series, calc_zscore_stats, calc_hedge_ratio, calc_correlation
 from . import persistence as _persist
+from . import learning as _learning
 
 log = logging.getLogger('egreja.pairs')
 
@@ -384,6 +385,12 @@ def pairs_scan_loop(beat_fn=None, audit_fn=None, enqueue_fn=None):
                 if persist_signals_this_scan or signal.get('action') in ('ENTRY','CONVERGED','AVOID'):
                     try: _persist.persist_signal(signal)
                     except Exception as e: log.debug(f'[PAIRS] persist_signal: {e}')
+
+                # [25-jun-2026 auto-learning] Snapshot continuo (throttled 2min) + event detection
+                try: _learning.snapshot_persist(signal)
+                except Exception as e: log.debug(f'[learning] snapshot {e}')
+                try: _learning.detect_events(signal)
+                except Exception as e: log.debug(f'[learning] events {e}')
 
                 open_trade = None
                 with pairs_state_lock:

@@ -13167,6 +13167,51 @@ def prices_live():
                 state_lock.release()
     except Exception as e:
         log.debug(f'[prices/live] stock_prices snapshot: {e}')
+    # [25-jun-2026] B3 RT via Cedro Socket — sobrepoe BRAPI quando disponivel
+    # Cedro tick-level (lag <100ms), BRAPI delay 5-15min. Cedro tick nao tem
+    # prev_close pra change_24h, entao PRESERVA o que veio do BRAPI.
+    try:
+        from modules.cedro_socket_provider import get_cedro as _get_cedro
+        cedro = _get_cedro()
+        if cedro and getattr(cedro, 'enabled', False) and getattr(cedro, '_connected', None) and cedro._connected.is_set():
+            # Cache interno do cedro: _cache: dict[symbol, dict[field_idx, value]]
+            cache = getattr(cedro, '_cache', None)
+            if cache:
+                # Cache do Cedro usa nomes (price, bid, ask, etc) — ver SQT_FIELDS
+                cedro_lock = getattr(cedro, '_cache_lock', None)
+                snap = dict(cache) if not cedro_lock else None
+                if snap is None:
+                    with cedro_lock:
+                        snap = dict(cache)
+                for sym, qd in snap.items():
+                    if not isinstance(qd, dict): continue
+                    p = qd.get('price') or qd.get('last_price')
+                    if p is None: continue
+                    try: p_f = float(p)
+                    except (ValueError, TypeError): continue
+                    if p_f <= 0: continue
+                    existing = prices_combined.get(sym, {})
+                    merged = {
+                        'price': p_f,
+                        'source': 'cedro_rt',
+                    }
+                    # Cedro field 21 = 'variation' (variacao do dia) — usa se tiver
+                    if qd.get('variation') is not None:
+                        try: merged['change_24h'] = float(qd['variation'])
+                        except (ValueError, TypeError): pass
+                    elif 'change_24h' in existing:
+                        merged['change_24h'] = existing['change_24h']
+                    # Bid/ask
+                    if qd.get('bid_price') is not None:
+                        try: merged['bid'] = float(qd['bid_price'])
+                        except (ValueError, TypeError): pass
+                    if qd.get('ask_price') is not None:
+                        try: merged['ask'] = float(qd['ask_price'])
+                        except (ValueError, TypeError): pass
+                    prices_combined[sym] = merged
+    except Exception as e:
+        log.debug(f'[prices/live] cedro merge: {e}')
+
     # NYSE/NASDAQ via Polygon WS (tick-level) — sobrepoe price mas PRESERVA
     # change_24h vindo do stock_prices (FMP/Yahoo) — Polygon WS tick nao tem prev_close
     if _polygon_ws_loaded:

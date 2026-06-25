@@ -13087,7 +13087,38 @@ def prices_live():
         finally: state_lock.release()
     else:
         log.warning('[/prices/live] state_lock timeout')
-    return jsonify({'timestamp':datetime.utcnow().isoformat(),'trades':trades,'crypto_prices':crypto_snap})
+
+    # [v13-POLYGON-WS] Acrescenta preços real-time NYSE/NASDAQ do cache WS
+    # JS do dashboard ja le 'prices' dict pra atualizar elementos #price-<sym>
+    prices_combined = {}
+    # Crypto first
+    for sym, v in crypto_snap.items():
+        prices_combined[sym] = v if isinstance(v, dict) else {'price': v}
+    # NYSE/NASDAQ via Polygon WS (tick-level)
+    if _polygon_ws_loaded:
+        try:
+            from modules.polygon_ws import _cache as _pcache, _cache_lock as _pclk
+            with _pclk:
+                snap = dict(_pcache)
+            for sym, c in snap.items():
+                if 'price' in c:
+                    prices_combined[sym] = {
+                        'price': c['price'],
+                        'bid': c.get('bid'),
+                        'ask': c.get('ask'),
+                        'age_s': round(time.time() - c.get('ts', 0), 2),
+                        'source': 'polygon_ws',
+                    }
+        except Exception as e:
+            log.debug(f'[prices/live] polygon_ws: {e}')
+    return jsonify({
+        'timestamp': datetime.utcnow().isoformat(),
+        'trades': trades,
+        'crypto_prices': crypto_snap,
+        'prices': prices_combined,  # dict combinado (crypto + nyse)
+        'polygon_ws_count': sum(1 for v in prices_combined.values()
+                                 if isinstance(v, dict) and v.get('source') == 'polygon_ws'),
+    })
 
 @app.route('/trades/open')
 def trades_open():

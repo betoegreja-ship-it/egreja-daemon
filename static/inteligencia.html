@@ -260,8 +260,18 @@ async function fetchAll() {
     if(ss.status==='fulfilled' && ss.value) state.systemState = ss.value;
     if(les.status==='fulfilled' && les.value) state.lessons = les.value.lessons || [];
     if(pat.status==='fulfilled' && pat.value) state.patterns = pat.value.patterns || [];
-    if(reg.status==='fulfilled' && reg.value) state.regime = reg.value.regime || 'UNKNOWN';
-    if(dec.status==='fulfilled' && dec.value) state.decisions = dec.value.decisions || [];
+    // [fix 25-jun] API retorna regime_data.current.regime_type, não regime direto
+    if(reg.status==='fulfilled' && reg.value) {
+      state.regime = reg.value.regime_data?.current?.regime_type
+                  || reg.value.regime || 'UNKNOWN';
+      state.regimeData = reg.value.regime_data || null;
+    }
+    // [fix 25-jun] API: dec.value.decisions é objeto {by_status, by_type, decisions:[...]}
+    // O array de decisões está em dec.value.decisions.decisions
+    if(dec.status==='fulfilled' && dec.value) {
+      const decBlock = dec.value.decisions;
+      state.decisions = Array.isArray(decBlock) ? decBlock : (decBlock?.decisions || []);
+    }
     if(evo.status==='fulfilled' && evo.value) state.evolution = evo.value;
     if(risk.status==='fulfilled' && risk.value) state.riskRadar = risk.value;
     if(hel.status==='fulfilled' && hel.value) state.health = hel.value.modules || {};
@@ -342,7 +352,9 @@ function renderMarketClock() {
 
 function renderBrainBadge() {
   const el = document.getElementById('brain-badge');
-  const score = state.systemState?.brain_evolution_score || 0;
+  // [fix 25-jun] API retorna brain_state.brain_score
+  const score = state.systemState?.brain_state?.brain_score
+              || state.systemState?.brain_evolution_score || 0;
   const scoreStr = fmtNum(score, 1);
   el.textContent = `🧠 Score: ${scoreStr}`;
 }
@@ -408,8 +420,9 @@ function renderTabContent() {
 function renderOverview() {
   let html = '';
 
-  // Brain Status Banner
-  const score = state.systemState?.brain_evolution_score || 0;
+  // Brain Status Banner — [fix 25-jun] API retorna brain_state.brain_score
+  const score = state.systemState?.brain_state?.brain_score
+              || state.systemState?.brain_evolution_score || 0;
   const regime = state.regime || 'DESCONHECIDO';
   const lessonCount = state.lessons.length;
   html += `<div class="card section" style="background:linear-gradient(135deg,rgba(167,139,250,.1),rgba(96,165,250,.05));border:1px solid rgba(167,139,250,.2)">
@@ -442,8 +455,8 @@ function renderOverview() {
     </div>
   </div>`;
 
-  // KPI Cards
-  const activePatterns = state.patterns.filter(p=>p.is_active).length;
+  // KPI Cards — [fix 25-jun] usa pat.active (API field correto)
+  const activePatterns = state.patterns.filter(p=>(p.active !== undefined ? p.active : p.is_active)).length;
   const correlations = (state.correlations || []).length;
   const avgConfidence = state.decisions.length > 0
     ? (state.decisions.reduce((s,d)=>s+(d.confidence||0),0) / state.decisions.length)
@@ -597,18 +610,21 @@ function renderPatterns() {
 
   let html = '<div class="grid-2 section">';
   for(const pat of state.patterns) {
-    const corrCoeff = pat.correlation_coefficient || 0;
-    const confidencePct = (pat.confidence || 0) * 100;
+    // [25-jun-2026 fix] API usa 'correlation' (não correlation_coefficient),
+    // 'confidence' já em % (0-100, não 0-1), e 'active' (não is_active)
+    const corrCoeff = pat.correlation || pat.correlation_coefficient || 0;
+    const confidencePct = pat.confidence || 0; // já em % (91.0, 84.0, etc)
     const corrColor = corrCoeff > 0.5 ? 'var(--profit)' : corrCoeff > 0 ? 'var(--orange)' : 'var(--loss)';
-    const statusBadge = pat.is_active ? '<span class="badge badge-healthy" style="font-size:9px">Ativo</span>' : '<span class="badge badge-degraded" style="font-size:9px">Inativo</span>';
+    const isActive = pat.active !== undefined ? pat.active : (pat.is_active || false);
+    const statusBadge = isActive ? '<span class="badge badge-healthy" style="font-size:9px">Ativo</span>' : '<span class="badge badge-degraded" style="font-size:9px">Inativo</span>';
 
     html += `<div class="pattern-card">
       <div style="display:flex;align-items:center;justify-content:space-between">
-        <div class="pattern-name">${pat.name || 'Padrão'}</div>
+        <div class="pattern-name">${pat.name || pat.pattern_type || 'Padrão'}</div>
         ${statusBadge}
       </div>
       <div class="pattern-desc">${pat.description || 'Sem descrição'}</div>
-      <div class="pattern-modules">${(pat.modules || []).map(m=>getModuleBadge(m)).join('')}</div>
+      <div class="pattern-modules">${(pat.modules || pat.modules_involved || []).map(m=>getModuleBadge(m)).join('')}</div>
       <div class="pattern-metrics">
         <div class="pattern-metric">
           <div class="pattern-metric-label">Correlação</div>

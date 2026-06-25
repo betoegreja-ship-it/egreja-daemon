@@ -477,16 +477,28 @@ async function doLogout() {
   window.location.href = '/login';
 }
 // Auto-redirect if session expired during use (401 from API → back to login)
+// [25-jun-2026] Adicionado debounce + guard pra evitar loop infinito.
 (function(){
+  let _redirected = false;
+  let _401count = 0;
   const _origFetch = window.fetch.bind(window);
   window.fetch = async function(input, init) {
     const res = await _origFetch(input, init);
-    if (res && res.status === 401) {
+    if (res && res.status === 401 && !_redirected) {
+      _401count++;
+      // Se acabamos de chegar do /login (referrer), nao redireciona — quebrou o ciclo
+      const cameFromLogin = document.referrer && document.referrer.indexOf('/login') >= 0;
       try {
         const url = (typeof input === 'string') ? input : (input && input.url) || '';
-        if (!url.startsWith('/login')) {
-          // sessao expirou — volta para login
-          window.location.href = '/login';
+        const path = url.startsWith('http') ? new URL(url).pathname : url;
+        // So redireciona se:
+        // - acumulou 3+ 401s (evita falsos por rota especifica)
+        // - nao veio do login
+        // - nao esta ja na rota login
+        if (_401count >= 3 && !cameFromLogin && !path.startsWith('/login') && !path.startsWith('/logout')) {
+          _redirected = true;
+          console.warn('[auth] sessao expirou — redirecionando para /login');
+          setTimeout(() => { window.location.href = '/login.html'; }, 200);
         }
       } catch(_){}
     }

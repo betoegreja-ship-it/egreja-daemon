@@ -20,13 +20,15 @@
    ═══════════════════════════════════════════════════════════════════════ */
 
 const API_BASE='https://diligent-spirit-production.up.railway.app';
-// [SECURITY P0 especialista 24-jun-2026] API_KEY removida do source publico.
-// Agora o auth usa cookie de sessao (set via /login). credentials:'include' envia o cookie.
-// Tras logar uma vez no /login, todas as chamadas autenticam pela sessao.
+// Reverido em 25-jun-2026: cookie cross-site nao persistia (Vercel -> Railway).
+// Por enquanto X-API-Key + credentials:include (suporta ambos: sessao e key).
+// Futuro: implementar CSRF token via endpoint /api/csrf-token quando frontend
+// e backend estiverem no mesmo dominio.
+const API_KEY='262b29fb9a2d2b407fc3a2bbe9c48e819cc7a41b34195f9729b9612f6dc01c26';
 function apiFetch(url, opts){
   opts=opts||{};
   opts.credentials='include';
-  opts.headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});
+  opts.headers=Object.assign({'X-API-Key':API_KEY,'Content-Type':'application/json'},opts.headers||{});
   return fetch(url, opts);
 }
 let allSignals=[],statsData={},currentFilter='ALL';

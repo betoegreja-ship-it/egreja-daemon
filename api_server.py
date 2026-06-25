@@ -288,6 +288,10 @@ app.secret_key = _FLASK_SECRET
 app.permanent_session_lifetime = timedelta(days=WEB_SESSION_DAYS) if False else None  # set below
 from datetime import timedelta as _td
 app.permanent_session_lifetime = _td(days=WEB_SESSION_DAYS)
+# [25-jun-2026] Cookie config — permite cookie persistir via Vercel rewrite
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = ENV == 'production'
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # frontend e backend mesma origem via Vercel rewrite
 
 def _web_pwd_hash(password: str) -> str:
     """SHA-256(salt + password) em lowercase hex."""

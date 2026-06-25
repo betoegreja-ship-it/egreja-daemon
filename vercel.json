@@ -51,6 +51,14 @@
     {
       "source": "/pairs/:path*",
       "destination": "https://diligent-spirit-production.up.railway.app/pairs/:path*"
+    },
+    {
+      "source": "/login",
+      "destination": "https://diligent-spirit-production.up.railway.app/login"
+    },
+    {
+      "source": "/logout",
+      "destination": "https://diligent-spirit-production.up.railway.app/logout"
     }
   ],
   "headers": [

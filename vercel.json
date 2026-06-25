@@ -59,6 +59,10 @@
     {
       "source": "/logout",
       "destination": "https://diligent-spirit-production.up.railway.app/logout"
+    },
+    {
+      "source": "/polygon/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/polygon/:path*"
     }
   ],
   "headers": [

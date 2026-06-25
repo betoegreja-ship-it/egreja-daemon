@@ -305,6 +305,22 @@ def _is_session_authed() -> bool:
         return True  # se login não configurado, libera (modo legado)
     return bool(session.get('web_user'))
 
+# ═══ [v13-POLYGON-WS 25-jun-2026] Polygon real-time stocks NYSE/NASDAQ ═══
+# Streaming WebSocket — substitui REST snapshot (30-60s delay) por tick-level.
+# Cache em memoria, auto-reconnect, plug em get_price() automatico.
+_polygon_ws_loaded = False
+try:
+    from modules.polygon_ws import (
+        start_worker as _polygon_ws_start,
+        get_price as _polygon_get_price,
+        get_quote as _polygon_get_quote,
+        status as _polygon_ws_status,
+    )
+    _polygon_ws_loaded = True
+    log.info('[v13-POLYGON-WS] module loaded')
+except Exception as _pwe:
+    log.warning(f'[v13-POLYGON-WS] module not loaded: {_pwe}')
+
 # ═══ [v12-CALIBRATOR 24-jun-2026] Brain Calibrator — auto-learning hora-a-hora ═══
 # Aprende dos 12k+ trades historicos e ajusta o score do brain antes da decisao.
 # Roda em loop a cada 1h. Sem comando manual.
@@ -381,6 +397,13 @@ try:
             _refresh_cooldowns()
         except Exception as _ce:
             log.warning(f'[v12-COOLDOWN] refresh: {_ce}')
+
+    # [v13-POLYGON-WS 25-jun-2026] Start streaming real-time stocks
+    if _polygon_ws_loaded:
+        try:
+            _polygon_ws_start()
+        except Exception as _pwe:
+            log.warning(f'[v13-POLYGON-WS] start_worker: {_pwe}')
 except Exception as _pe:
     log.warning(f'[v11-PAIRS] pairs_engine module not loaded: {_pe}')
     _pairs_engine_loaded = False
@@ -1466,6 +1489,7 @@ def auth_check():
                               '/prices', '/performance', '/reports', '/static/',
                               '/pairs',  # [v11-PAIRS] endpoints publicos GET
                               '/cedro',  # [25-jun-2026] cedro history wrapper
+                              '/polygon',  # [v13-POLYGON-WS] real-time quotes status
                               '/api/brain/proposals',  # [25-jun-2026] propostas GET publico
                               '/api/brain/nightly',    # GET (POST eh autenticado)
                               '/debug/b3-prices', '/debug/b3-trades-pricing',
@@ -5669,19 +5693,43 @@ def _fetch_polygon_stock(ticker: str) -> tuple:
     """[v10.4][v10.5-5] Polygon.io: snapshot de preço sempre fresco.
     Candles históricos (EMA/RSI/ATR/Volume) buscados só se cache > CANDLES_CACHE_MIN min.
     Reduz chamadas de API de ~4/min para ~1/10min por símbolo.
+
+    [v13-POLYGON-WS 25-jun-2026] FAST PATH: se Polygon WebSocket tem preco
+    fresco (<10s) cacheado, USA ele em vez de gastar request REST.
+    Reduz latencia de 400-800ms para ~0ms + economiza API calls.
+    Candles ainda vem do REST (WS so manda trades/quotes, nao OHLC).
     """
     t0 = time.time()
     try:
-        # Snapshot para preço atual — sempre fresco
-        r = requests.get(
-            f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}',
-            params={'apiKey': POLYGON_API_KEY}, timeout=8)
-        lat = (time.time() - t0) * 1000
-        if r.status_code != 200: return None, lat
-        snap = r.json().get('ticker', {})
-        day  = snap.get('day', {}); prev_day = snap.get('prevDay', {})
-        price = float(day.get('c') or snap.get('lastTrade', {}).get('p') or 0)
-        prev  = float(prev_day.get('c') or 0)
+        # [v13] FAST PATH via WebSocket cache
+        ws_price = None
+        if _polygon_ws_loaded:
+            try:
+                ws_price = _polygon_get_price(ticker, max_age_s=10)
+            except Exception: pass
+
+        if ws_price is None:
+            # Snapshot para preço atual — sempre fresco
+            r = requests.get(
+                f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}',
+                params={'apiKey': POLYGON_API_KEY}, timeout=8)
+            lat = (time.time() - t0) * 1000
+            if r.status_code != 200: return None, lat
+            snap = r.json().get('ticker', {})
+            day  = snap.get('day', {}); prev_day = snap.get('prevDay', {})
+            price = float(day.get('c') or snap.get('lastTrade', {}).get('p') or 0)
+            prev  = float(prev_day.get('c') or 0)
+        else:
+            price = ws_price
+            lat = (time.time() - t0) * 1000  # ~0ms
+            # Pega prev_day do REST mais barato — cache 1d
+            r = requests.get(
+                f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}',
+                params={'apiKey': POLYGON_API_KEY}, timeout=8)
+            snap = r.json().get('ticker', {}) if r.status_code == 200 else {}
+            day = snap.get('day', {}); prev_day = snap.get('prevDay', {})
+            prev = float(prev_day.get('c') or 0)
+            log.debug(f'[POLYGON-WS-FAST] {ticker} price={price} via cache (skip REST quote)')
         if price <= 0: return None, lat
 
         market = 'NYSE' if not ticker.endswith('.SA') else 'B3'
@@ -10004,6 +10052,28 @@ def brain_calibration_history():
         try: conn.close()
         except: pass
         return jsonify({'enabled': True, 'history': out}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/polygon/ws/status')
+def polygon_ws_status_endpoint():
+    """[v13-POLYGON-WS] Status do streaming real-time stocks NYSE/NASDAQ."""
+    if not _polygon_ws_loaded:
+        return jsonify({'enabled': False, 'reason': 'module not loaded'}), 200
+    try:
+        return jsonify({'enabled': True, **_polygon_ws_status()}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/polygon/quote/<symbol>')
+def polygon_quote(symbol):
+    """[v13-POLYGON-WS] Quote real-time de um simbolo (do cache WS)."""
+    if not _polygon_ws_loaded:
+        return jsonify({'enabled': False}), 200
+    try:
+        q = _polygon_get_quote(symbol)
+        if not q: return jsonify({'symbol': symbol.upper(), 'cached': False}), 200
+        return jsonify(q), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

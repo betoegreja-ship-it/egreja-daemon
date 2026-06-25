@@ -1209,7 +1209,9 @@ async function updateFxChips(){
 loadAll();
 updateFxChips();                           // [v2] FX inicial
 setInterval(loadAll,10*1000);
-setInterval(loadLivePrices,3000);
+// [25-jun-2026] Reduzido 3s → 1s — Polygon WS fornece tick-level no backend
+// JS faz pull a cada 1s pra mostrar preços US/crypto quase em tempo real
+setInterval(loadLivePrices,1000);
 setInterval(updateFxChips, 30000);         // [v2] FX a cada 30s
 
 

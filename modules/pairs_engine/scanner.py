@@ -353,6 +353,20 @@ def pairs_scan_loop(beat_fn=None, audit_fn=None, enqueue_fn=None):
     except Exception as e:
         log.warning(f'[PAIRS] schema init falhou: {e}')
 
+    # [25-jun-2026 CRITICO] Restaurar trades OPEN do MySQL
+    # Sem isso, cada deploy zerava pairs_open em memoria e o scanner
+    # reabria trades novas no mesmo par, com novo entry_z e novo opened_at
+    # — o usuario via os parametros mudando a cada redeploy.
+    try:
+        restored = _persist.load_open_trades_from_db()
+        if restored:
+            with pairs_state_lock:
+                pairs_open.extend(restored)
+            log.info(f'[PAIRS] RESTAURADAS {len(restored)} trades OPEN do MySQL: '
+                     f'{[t["pair_id"] for t in restored]}')
+    except Exception as e:
+        log.error(f'[PAIRS] falha ao restaurar open trades: {e}')
+
     # Signal persist sample rate (1 = todos, 2 = a cada 2 scans, etc)
     # Default 4 = ~uma persist por minuto por par (scan 30s × 4 = 2min)
     signal_persist_every = int(os.environ.get('PAIRS_SIGNAL_PERSIST_EVERY', 4))

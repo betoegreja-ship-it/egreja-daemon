@@ -257,6 +257,72 @@ def bulk_upsert_daily_bars(symbol: str, bars: List[Dict], source: str = 'brapi')
         except Exception: pass
 
 
+def load_open_trades_from_db() -> List[Dict]:
+    """[25-jun-2026] Restaura pairs_open do MySQL no boot.
+
+    CRITICO: sem isso, cada deploy zera as trades em memoria, e o scanner
+    abre TRADES NOVAS (com novo entry_z, novo opened_at) — o usuario veria
+    a 'mesma' trade com parametros diferentes ao longo do tempo.
+
+    Retorna lista de dicts compatibles com pairs_open.
+    """
+    conn = _get_conn()
+    if not conn: return []
+    out = []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT id, pair_id, pair_name, pair_type, leg_a, leg_b,
+                              direction, mode, status,
+                              opened_at, entry_z, entry_spread, entry_spread_mean,
+                              entry_spread_stdev, hedge_ratio, correlation_60d,
+                              price_a_entry, price_b_entry, qty_a, qty_b,
+                              position_size, pnl, pnl_pct
+                       FROM pairs_trades
+                       WHERE status='OPEN'
+                       ORDER BY opened_at ASC""")
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            try:
+                t = {
+                    'id': r['id'],
+                    'pair_id': r['pair_id'],
+                    'name': r['pair_name'],
+                    'leg_a': r['leg_a'], 'leg_b': r['leg_b'],
+                    'direction': r['direction'],
+                    'pair_type': r['pair_type'],
+                    'mode': r['mode'] or 'paper',
+                    'status': r['status'],
+                    'entry_z': float(r['entry_z']) if r['entry_z'] is not None else None,
+                    'entry_spread': float(r['entry_spread']) if r['entry_spread'] is not None else None,
+                    'entry_spread_mean': float(r['entry_spread_mean']) if r['entry_spread_mean'] is not None else None,
+                    'entry_spread_stdev': float(r['entry_spread_stdev']) if r['entry_spread_stdev'] is not None else None,
+                    'hedge_ratio': float(r['hedge_ratio']) if r['hedge_ratio'] is not None else 1.0,
+                    'correlation_60d': float(r['correlation_60d']) if r['correlation_60d'] is not None else 0,
+                    'price_a_entry': float(r['price_a_entry']) if r['price_a_entry'] is not None else 0,
+                    'price_b_entry': float(r['price_b_entry']) if r['price_b_entry'] is not None else 0,
+                    'qty_a': int(r['qty_a'] or 0),
+                    'qty_b': int(r['qty_b'] or 0),
+                    'position_size': float(r['position_size']) if r['position_size'] is not None else 0,
+                    'opened_at': r['opened_at'].isoformat() if hasattr(r['opened_at'],'isoformat') else str(r['opened_at']),
+                    'asset_type': 'pairs',
+                    'pnl': float(r['pnl'] or 0),
+                    'pnl_pct': float(r['pnl_pct'] or 0),
+                    'current_z': float(r['entry_z']) if r['entry_z'] is not None else None,
+                    'peak_pnl_pct': 0,
+                }
+                out.append(t)
+            except Exception as e:
+                log.warning(f'[pairs.persist] load_open_trades parse: {e}')
+        return out
+    except Exception as e:
+        log.warning(f'[pairs.persist] load_open_trades_from_db: {e}')
+        return []
+    finally:
+        try: conn.close()
+        except: pass
+
+
 def load_history_from_db(symbol: str, days: int = 500) -> List[Dict]:
     """Carrega historico OHLC do MySQL. Source-of-truth depois do backfill."""
     conn = _get_conn()

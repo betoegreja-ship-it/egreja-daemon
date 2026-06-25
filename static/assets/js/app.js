@@ -246,14 +246,28 @@ async function loadLivePrices(){
       if(pnle){pnle.textContent=fmtUSD(t.pnl||0);pnle.style.color=pc(t.pnl||0);}
       if(ppct){var pp=parseFloat(t.pnl_pct||0);ppct.textContent=(pp>=0?'+':'')+pp.toFixed(2)+'%';ppct.style.color=pc(pp);}
     });
-    // Atualiza preços no Signal Monitor e Markets
+    // Atualiza preços no Signal Monitor e Markets (Polygon WS tick-level)
     var prices=d.prices||{};
     Object.keys(prices).forEach(function(sym){
       var pd=prices[sym];
+      if(!pd) return;
+      var price = typeof pd==='object' ? parseFloat(pd.price||0) : parseFloat(pd||0);
       var prEl=document.getElementById('price-'+sym);
+      if(prEl && price>0){
+        // Crypto small price (BTC=high, DOGE=low). US/B3 always 2 decimals.
+        var decimals = price < 1 ? 4 : 2;
+        prEl.textContent='$'+price.toLocaleString('en-US',{minimumFractionDigits:decimals,maximumFractionDigits:decimals});
+        // Pulse efeito visual em update
+        prEl.style.transition='background 0.3s';
+        prEl.style.background='rgba(34,197,94,0.15)';
+        setTimeout(function(){prEl.style.background='transparent';},300);
+      }
       var chEl=document.getElementById('chg-'+sym);
-      if(prEl) prEl.textContent='$'+parseFloat(pd.price||0).toFixed(pd.price>100?2:4);
-      if(chEl){var ch=parseFloat(pd.change_24h||0);chEl.textContent=(ch>0?'+':'')+ch.toFixed(2)+'%';chEl.style.color=ch>0?'#2ecc71':ch<0?'#e74c3c':'#8fa3be';}
+      if(chEl && typeof pd==='object' && pd.change_24h !== undefined){
+        var ch=parseFloat(pd.change_24h||0);
+        chEl.textContent=(ch>0?'+':'')+ch.toFixed(2)+'%';
+        chEl.style.color=ch>0?'#2ecc71':ch<0?'#e74c3c':'#8fa3be';
+      }
     });
   }catch(e){}
 }
@@ -635,10 +649,12 @@ function renderTable(sigs){
     var rsiC=rsiV<30?'#22C55E':rsiV>70?'#EF4444':'#94A3B8';
     var ema=function(v){return cur+parseFloat(v||0).toLocaleString(isB3?'pt-BR':'en-US',{minimumFractionDigits:2,maximumFractionDigits:2});};
     var td='<td style="padding:8px;text-align:right;font-family:monospace;font-size:12px;';
+    // [25-jun-2026] IDs price-<sym> e chg-<sym> pra loadLivePrices (1s) atualizar
+    // O Polygon WS no backend mantem cache real-time, JS pulle a cada 1s
     return '<tr style="border-bottom:1px solid var(--line)">'
       +'<td style="padding:8px 14px;font-weight:600;font-size:13px">'+s.symbol+'<span style="color:var(--text3);font-size:10px;margin-left:5px">'+( isB3?'B3':'US' )+'</span></td>'
-      +td+'color:var(--text1)">'+pr+'</td>'
-      +td+'color:'+chColor+';background:'+chBg+';border-radius:3px;font-weight:600;font-size:11px;padding:6px 8px">'+chStr+'</td>'
+      +td+'color:var(--text1)" id="price-'+s.symbol+'">'+pr+'</td>'
+      +td+'color:'+chColor+';background:'+chBg+';border-radius:3px;font-weight:600;font-size:11px;padding:6px 8px" id="chg-'+s.symbol+'">'+chStr+'</td>'
       +'<td style="padding:8px;text-align:center">'+sp+'</td>'
       +td+'color:'+sc(sc_)+';font-weight:700">'+sc_+'</td>'
       +td+'color:'+rsiC+';font-weight:600">'+rsiV.toFixed(1)+'</td>'

@@ -1465,6 +1465,7 @@ def auth_check():
                               '/signals', '/stats', '/trades', '/arbitrage',
                               '/prices', '/performance', '/reports', '/static/',
                               '/pairs',  # [v11-PAIRS] endpoints publicos GET
+                              '/cedro',  # [25-jun-2026] cedro history wrapper
                               '/debug/b3-prices', '/debug/b3-trades-pricing',
                               '/debug/batch-void-stale-feed-',
                               '/debug/reload-stocks-closed-from-db',
@@ -9983,6 +9984,71 @@ def brain_calibration_history():
         try: conn.close()
         except: pass
         return jsonify({'enabled': True, 'history': out}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/cedro/history', methods=['GET','POST'])
+def cedro_history():
+    """[25-jun-2026 — sugestao especialista] Wrapper para historico Cedro.
+    Permite outros sistemas (scripts de pesquisa) consumir dados Cedro
+    pelo backend sem precisar de credenciais locais.
+
+    GET  /cedro/history?symbol=PETR4&period=D&n=500
+    POST /cedro/history  body: {symbol, period, n_candles, symbols (list opcional)}
+
+    Resposta: {'symbol':'PETR4','period':'D','n_candles':500,'candles':[...]}
+    """
+    try:
+        if request.method == 'POST':
+            body = request.get_json(silent=True) or {}
+            symbol = (body.get('symbol') or '').strip().upper()
+            period = body.get('period', 'D')
+            n = int(body.get('n_candles', 500))
+            wait_ms = int(body.get('wait_ms', 6000))
+            symbols = body.get('symbols')
+            if symbols and isinstance(symbols, list):
+                # Bulk: pega historico de N simbolos
+                from modules.cedro_socket_provider import get_cedro
+                cedro = get_cedro()
+                if not cedro:
+                    return jsonify({'error':'cedro not connected'}), 503
+                out = {}
+                for s in symbols[:50]:
+                    s = s.strip().upper()
+                    try:
+                        bars = cedro.get_candles_history(s, period=period,
+                                                        n_candles=n, wait_ms=wait_ms)
+                        out[s] = bars or []
+                    except Exception as e:
+                        out[s] = {'error': str(e)}
+                return jsonify({'bulk': True, 'period': period, 'n_candles': n,
+                                'symbols': symbols[:50], 'data': out}), 200
+        else:
+            symbol = (request.args.get('symbol') or '').strip().upper()
+            period = request.args.get('period', 'D')
+            n = int(request.args.get('n', 500))
+            wait_ms = int(request.args.get('wait_ms', 6000))
+
+        if not symbol:
+            return jsonify({'error': 'symbol required'}), 400
+
+        from modules.cedro_socket_provider import get_cedro
+        cedro = get_cedro()
+        if not cedro:
+            return jsonify({'error': 'cedro not connected — set CEDRO_USER/CEDRO_PASSWORD'}), 503
+
+        candles = cedro.get_candles_history(symbol, period=period,
+                                            n_candles=n, wait_ms=wait_ms)
+        if not candles:
+            return jsonify({'symbol': symbol, 'period': period, 'n_candles': 0,
+                            'candles': [], 'warning': 'no data — symbol may not exist or Cedro unauthorized'}), 200
+
+        return jsonify({
+            'symbol': symbol,
+            'period': period,
+            'n_candles': len(candles),
+            'candles': candles,
+        }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

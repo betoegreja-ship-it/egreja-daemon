@@ -13,7 +13,7 @@ from datetime import datetime
 from threading import Lock
 from typing import Dict, Optional, List
 
-from .config import PAIRS_CONFIG, get_pair, all_symbols
+from .config import PAIRS_CONFIG, get_pair, all_symbols, pairs_by_tier
 from .data_fetcher import fetch_pair_history, fetch_pair_quotes_bulk
 from .zscore import calc_spread_series, calc_zscore_stats, calc_hedge_ratio, calc_correlation
 from . import persistence as _persist
@@ -194,8 +194,18 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
             log.info(f'[PAIRS] max positions ({PAIRS_MAX_POSITIONS}) reached — skip {signal["pair_id"]}')
             return None
 
+        # [25-jun-2026] WATCH tier: nao opera, so observa
+        cfg = next((p for p in PAIRS_CONFIG if p['id'] == signal['pair_id']), {})
+        tier = cfg.get('tier', 'A')
+        if tier == 'WATCH':
+            log.info(f'[PAIRS] {signal["pair_id"]} tier=WATCH — skip entry (apenas observacao)')
+            return None
+
         # Position size = capital / max_positions
+        # Tier B: sizing reduzido a 60% (validar antes de full)
         pos_size = round(PAIRS_CAPITAL / PAIRS_MAX_POSITIONS, 2)
+        if tier == 'B':
+            pos_size *= 0.6
         hedge_ratio = signal.get('hedge_ratio', 1.0)
         # Qty leg_a = capital_a / price_a
         # Qty leg_b = qty_a * hedge_ratio  (na quantidade que faz a perna B financeiramente equilibrada)

@@ -13195,19 +13195,35 @@ def prices_live():
                         'price': p_f,
                         'source': 'cedro_rt',
                     }
-                    # Cedro field 21 = 'variation' (variacao do dia) — usa se tiver
-                    if qd.get('variation') is not None:
-                        try: merged['change_24h'] = float(qd['variation'])
+                    # change_pct = variacao % do dia (campo certo do Cedro)
+                    if qd.get('change_pct') is not None:
+                        try: merged['change_24h'] = float(qd['change_pct'])
+                        except (ValueError, TypeError): pass
+                    elif qd.get('prev_close') is not None:
+                        # Calcula a partir de prev_close se nao veio direto
+                        try:
+                            pc = float(qd['prev_close'])
+                            if pc > 0:
+                                merged['change_24h'] = round((p_f - pc) / pc * 100, 3)
                         except (ValueError, TypeError): pass
                     elif 'change_24h' in existing:
                         merged['change_24h'] = existing['change_24h']
-                    # Bid/ask
-                    if qd.get('bid_price') is not None:
-                        try: merged['bid'] = float(qd['bid_price'])
+                    # Book topo (Cedro field names: best_bid, best_ask)
+                    if qd.get('best_bid') is not None:
+                        try: merged['bid'] = float(qd['best_bid'])
                         except (ValueError, TypeError): pass
-                    if qd.get('ask_price') is not None:
-                        try: merged['ask'] = float(qd['ask_price'])
+                    if qd.get('best_ask') is not None:
+                        try: merged['ask'] = float(qd['best_ask'])
                         except (ValueError, TypeError): pass
+                    # Day high/low/open/prev_close pra grafico/tooltip
+                    for src_field, dst_field in [
+                        ('day_high', 'high'), ('day_low', 'low'),
+                        ('day_open', 'open'), ('prev_close', 'prev_close'),
+                        ('volume_qty', 'volume'),
+                    ]:
+                        if qd.get(src_field) is not None:
+                            try: merged[dst_field] = float(qd[src_field])
+                            except (ValueError, TypeError): pass
                     prices_combined[sym] = merged
     except Exception as e:
         log.debug(f'[prices/live] cedro merge: {e}')

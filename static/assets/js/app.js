@@ -246,27 +246,58 @@ async function loadLivePrices(){
       if(pnle){pnle.textContent=fmtUSD(t.pnl||0);pnle.style.color=pc(t.pnl||0);}
       if(ppct){var pp=parseFloat(t.pnl_pct||0);ppct.textContent=(pp>=0?'+':'')+pp.toFixed(2)+'%';ppct.style.color=pc(pp);}
     });
-    // Atualiza preços no Signal Monitor e Markets (Polygon WS tick-level)
+    // [25-jun-2026] Atualiza TODAS instancias de price/chg em todas paginas
+    // (Markets, Signals, Opps, OpenTrades, Watchlist). Usa data-sym attr
+    // pra suportar mesmo simbolo em multiplos lugares simultaneamente.
     var prices=d.prices||{};
     Object.keys(prices).forEach(function(sym){
       var pd=prices[sym];
       if(!pd) return;
-      var price = typeof pd==='object' ? parseFloat(pd.price||0) : parseFloat(pd||0);
-      var prEl=document.getElementById('price-'+sym);
-      if(prEl && price>0){
-        // Crypto small price (BTC=high, DOGE=low). US/B3 always 2 decimals.
-        var decimals = price < 1 ? 4 : 2;
-        prEl.textContent='$'+price.toLocaleString('en-US',{minimumFractionDigits:decimals,maximumFractionDigits:decimals});
-        // Pulse efeito visual em update
-        prEl.style.transition='background 0.3s';
-        prEl.style.background='rgba(34,197,94,0.15)';
-        setTimeout(function(){prEl.style.background='transparent';},300);
+      var isObj = typeof pd==='object';
+      var price = isObj ? parseFloat(pd.price||0) : parseFloat(pd||0);
+      var change = isObj ? parseFloat(pd.change_24h||0) : null;
+      // Detecta moeda do simbolo: B3 termina em digito (PETR4, VALE3, ITSA4...)
+      var isB3 = /\d$/.test(sym) && !/^[A-Z]{2,5}USDT?$/i.test(sym);
+      var isCrypto = /^(BTC|ETH|SOL|ADA|DOGE|XRP|MATIC|DOT|AVAX|LINK|UNI|ATOM|LTC|BCH|TRX|BNB|FIL|APT|NEAR|ARB|OP|SUI|TON|INJ|FET|RNDR|TIA)/.test(sym);
+      var cur = isB3?'R$':'$';
+      var locale = isB3?'pt-BR':'en-US';
+      // Decimals: crypto<1 4 casas, demais 2
+      var decimals = (isCrypto && price < 1) ? 4 : 2;
+      var priceStr = cur + price.toLocaleString(locale, {minimumFractionDigits:decimals, maximumFractionDigits:decimals});
+      // Atualiza preco em TODAS instancias
+      if(price>0){
+        var prEls = document.querySelectorAll('.rt-price[data-sym="'+sym+'"]');
+        prEls.forEach(function(prEl){
+          // So pulsa se mudou o texto pra evitar flash continuo
+          if(prEl.textContent !== priceStr){
+            prEl.textContent = priceStr;
+            prEl.style.transition='background 0.4s';
+            prEl.style.background='rgba(34,197,94,0.2)';
+            setTimeout(function(){prEl.style.background='transparent';}, 400);
+          }
+        });
+        // Suporte legado: elementos com id="price-SYMBOL" (caso ainda existam)
+        var legacyPr = document.getElementById('price-'+sym);
+        if(legacyPr && !legacyPr.classList.contains('rt-price')) legacyPr.textContent = priceStr;
       }
-      var chEl=document.getElementById('chg-'+sym);
-      if(chEl && typeof pd==='object' && pd.change_24h !== undefined){
-        var ch=parseFloat(pd.change_24h||0);
-        chEl.textContent=(ch>0?'+':'')+ch.toFixed(2)+'%';
-        chEl.style.color=ch>0?'#2ecc71':ch<0?'#e74c3c':'#8fa3be';
+      // Atualiza % variacao em TODAS instancias
+      if(change !== null && !isNaN(change)){
+        var chStr = (change>=0?'+':'')+change.toFixed(2)+'%';
+        var trend = change>0.5?'▲':change<-0.5?'▼':'▸'; // ▲ ▼ ▸
+        var color = change>0.01?'#22C55E':change<-0.01?'#EF4444':'#8fa3be';
+        var chEls = document.querySelectorAll('.rt-chg[data-sym="'+sym+'"]');
+        chEls.forEach(function(chEl){
+          // Markets usa "▲ +1.23%", Signals usa "▲ +1.23%" tambem
+          // Detectar formato existente pra preservar
+          var hasTrend = /[▲▼▸─▶]/.test(chEl.textContent);
+          chEl.textContent = hasTrend ? (trend+' '+chStr) : chStr;
+          chEl.style.color = color;
+        });
+        var legacyCh = document.getElementById('chg-'+sym);
+        if(legacyCh && !legacyCh.classList.contains('rt-chg')){
+          legacyCh.textContent = (change>=0?'+':'')+change.toFixed(2)+'%';
+          legacyCh.style.color = color;
+        }
       }
     });
   }catch(e){}
@@ -350,8 +381,8 @@ function renderMktTable(tbId, list, mkt){
     var sc_=s.score||0;
     return '<tr style="border-bottom:1px solid var(--line)">'
       +'<td style="padding:8px 14px;font-weight:600">'+s.symbol+'<span style="color:var(--text3);font-size:11px;margin-left:6px">'+( s.name||s.market_type||'' )+'</span></td>'
-      +'<td style="padding:8px 14px;text-align:right;font-family:monospace">'+pr+'</td>'
-      +'<td style="padding:8px 14px;text-align:right;color:'+chColor+';font-family:monospace">'+trend+' '+chStr+'</td>'
+      +'<td class="rt-price" data-sym="'+s.symbol+'" style="padding:8px 14px;text-align:right;font-family:monospace">'+pr+'</td>'
+      +'<td class="rt-chg" data-sym="'+s.symbol+'" style="padding:8px 14px;text-align:right;color:'+chColor+';font-family:monospace">'+trend+' '+chStr+'</td>'
       +'<td style="padding:8px 14px;text-align:right;color:'+(parseFloat(s.rsi||50)<30?'#2ecc71':parseFloat(s.rsi||50)>70?'#e74c3c':'#8fa3be')+';font-family:monospace">'+parseFloat(s.rsi||0).toFixed(1)+'</td>'
       +'<td style="padding:8px 14px;text-align:right;color:'+sc(sc_)+';font-family:monospace;font-weight:600">'+sc_+'</td>'
       +'<td style="padding:8px 14px;text-align:center">'+sig+'</td>'
@@ -649,12 +680,13 @@ function renderTable(sigs){
     var rsiC=rsiV<30?'#22C55E':rsiV>70?'#EF4444':'#94A3B8';
     var ema=function(v){return cur+parseFloat(v||0).toLocaleString(isB3?'pt-BR':'en-US',{minimumFractionDigits:2,maximumFractionDigits:2});};
     var td='<td style="padding:8px;text-align:right;font-family:monospace;font-size:12px;';
-    // [25-jun-2026] IDs price-<sym> e chg-<sym> pra loadLivePrices (1s) atualizar
-    // O Polygon WS no backend mantem cache real-time, JS pulle a cada 1s
+    // [25-jun-2026] classes rt-price/rt-chg + data-sym=X pra loadLivePrices (1s)
+    // atualizar TODAS instancias (Signals + Markets + Opps + OpenTrades).
+    // Polygon WS no backend mantem cache real-time, JS pulle a cada 1s.
     return '<tr style="border-bottom:1px solid var(--line)">'
       +'<td style="padding:8px 14px;font-weight:600;font-size:13px">'+s.symbol+'<span style="color:var(--text3);font-size:10px;margin-left:5px">'+( isB3?'B3':'US' )+'</span></td>'
-      +td+'color:var(--text1)" id="price-'+s.symbol+'">'+pr+'</td>'
-      +td+'color:'+chColor+';background:'+chBg+';border-radius:3px;font-weight:600;font-size:11px;padding:6px 8px" id="chg-'+s.symbol+'">'+chStr+'</td>'
+      +td+'color:var(--text1)" class="rt-price" data-sym="'+s.symbol+'">'+pr+'</td>'
+      +td+'color:'+chColor+';background:'+chBg+';border-radius:3px;font-weight:600;font-size:11px;padding:6px 8px" class="rt-chg" data-sym="'+s.symbol+'">'+chStr+'</td>'
       +'<td style="padding:8px;text-align:center">'+sp+'</td>'
       +td+'color:'+sc(sc_)+';font-weight:700">'+sc_+'</td>'
       +td+'color:'+rsiC+';font-weight:600">'+rsiV.toFixed(1)+'</td>'
@@ -692,7 +724,7 @@ function renderOpps(sigs){
       +'<span style="font-weight:600;font-size:14px">'+s.symbol+'</span>'
       +dir
       +'<span style="color:var(--text2);font-size:11px">'+s.market_type+'</span>'
-      +'<span style="font-family:monospace;font-weight:600">'+pr+'</span>'
+      +'<span class="rt-price" data-sym="'+s.symbol+'" style="font-family:monospace;font-weight:600">'+pr+'</span>'
       +'<span style="color:'+sc(s.score||0)+';font-weight:700;font-family:monospace">'+(s.score||0)+'</span>'
       +'</div>'
       +'<div style="display:flex;gap:12px;font-size:11px;font-family:monospace;flex-wrap:wrap">'
@@ -795,7 +827,7 @@ function _renderOpenTradesTable(trades){ // [ot-sort-applied]
       +'<td style="padding:10px 14px">'+dir+'</td>'
       +'<td style="padding:10px 14px;text-align:right;color:'+scoreColor+';font-family:monospace;font-weight:600">'+scoreStr+'</td>'
       +'<td style="padding:10px 14px;text-align:right;font-family:monospace">'+epStr+'</td>'
-      +'<td style="padding:10px 14px;text-align:right;font-family:monospace" id="lp-'+t.id+'">$'+parseFloat(t.current_price||t.entry_price||0).toFixed(isCrypto&&ep<1?4:2)+'</td>'
+      +'<td class="rt-price" data-sym="'+t.symbol+'" style="padding:10px 14px;text-align:right;font-family:monospace" id="lp-'+t.id+'">$'+parseFloat(t.current_price||t.entry_price||0).toFixed(isCrypto&&ep<1?4:2)+'</td>'
       +'<td style="padding:10px 14px;text-align:right;color:var(--text2);font-family:monospace">'+qtyStr+'</td>'
       +'<td style="padding:10px 14px;text-align:right;font-family:monospace">$'+fmtNum(posVal)+'</td>'
       +'<td style="padding:10px 14px;text-align:right;color:'+pc(pnl)+';font-family:monospace;font-weight:600" id="lpnl-'+t.id+'">'+(pnl>=0?'+':'')+pnl.toFixed(2)+'</td>'

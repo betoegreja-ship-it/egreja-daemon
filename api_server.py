@@ -13148,21 +13148,46 @@ def prices_live():
     # Crypto first
     for sym, v in crypto_snap.items():
         prices_combined[sym] = v if isinstance(v, dict) else {'price': v}
-    # NYSE/NASDAQ via Polygon WS (tick-level)
+    # [25-jun-2026] B3 stocks via BRAPI cache (stock_prices) — atualiza a cada 30-60s
+    # Mesmo nao sendo tick-level, garante que o dashboard mostre o preco mais
+    # recente sem precisar de full reload da pagina (loadAll roda a cada 10s).
+    try:
+        if state_lock.acquire(timeout=1):
+            try:
+                for sym, pd in stock_prices.items():
+                    if not isinstance(pd, dict): continue
+                    price = pd.get('price') or pd.get('last') or pd.get('close')
+                    if not price or price <= 0: continue
+                    prices_combined[sym] = {
+                        'price': float(price),
+                        'change_24h': float(pd.get('change_pct', pd.get('change_24h', 0)) or 0),
+                        'source': 'brapi' if not sym.startswith(('AAPL','MSFT','NVDA','GOOGL','META','TSLA','AMZN')) else 'fmp',
+                    }
+            finally:
+                state_lock.release()
+    except Exception as e:
+        log.debug(f'[prices/live] stock_prices snapshot: {e}')
+    # NYSE/NASDAQ via Polygon WS (tick-level) — sobrepoe price mas PRESERVA
+    # change_24h vindo do stock_prices (FMP/Yahoo) — Polygon WS tick nao tem prev_close
     if _polygon_ws_loaded:
         try:
             from modules.polygon_ws import _cache as _pcache, _cache_lock as _pclk
             with _pclk:
                 snap = dict(_pcache)
             for sym, c in snap.items():
-                if 'price' in c:
-                    prices_combined[sym] = {
-                        'price': c['price'],
-                        'bid': c.get('bid'),
-                        'ask': c.get('ask'),
-                        'age_s': round(time.time() - c.get('ts', 0), 2),
-                        'source': 'polygon_ws',
-                    }
+                if 'price' not in c: continue
+                existing = prices_combined.get(sym, {})
+                # Merge: Polygon dá price+bid+ask tick-level, FMP/Yahoo deu change_24h
+                merged = {
+                    'price': c['price'],
+                    'bid': c.get('bid'),
+                    'ask': c.get('ask'),
+                    'age_s': round(time.time() - c.get('ts', 0), 2),
+                    'source': 'polygon_ws',
+                }
+                if 'change_24h' in existing:
+                    merged['change_24h'] = existing['change_24h']
+                prices_combined[sym] = merged
         except Exception as e:
             log.debug(f'[prices/live] polygon_ws: {e}')
     return jsonify({

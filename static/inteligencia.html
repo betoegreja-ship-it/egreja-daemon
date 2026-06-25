@@ -211,8 +211,11 @@ tr:hover{background:rgba(17,24,32,.5)}
 </div>
 
 <script>
-const RW = 'https://diligent-spirit-production.up.railway.app';
-const BRAIN_API = RW + '/brain';
+// [25-jun-2026 fix CORS] URLs relativas — Vercel rewrites para Railway
+// Antes: cross-origin (egreja.net → railway.app) bloqueado por CORS
+// Agora: mesma origem (egreja.net → /brain/* → rewrite Vercel)
+const RW = '';
+const BRAIN_API = '/brain';
 
 // [25-jun-2026 fix] Keys agora batem com o que a API retorna em l.module
 // Arbitrage, Crypto, Stocks, Derivatives, Long_Horizon (case-sensitive)
@@ -1061,7 +1064,8 @@ function statCard(label, value, sub, color) {
 }
 
 // ─── Proposals Tab (Nightly Analyst) ────────────────────────────
-const _PROP_API = 'https://diligent-spirit-production.up.railway.app';
+// [25-jun-2026 fix CORS] mesma origem via Vercel rewrite
+const _PROP_API = '';
 
 async function renderProposals(container) {
   container.innerHTML = '<div style="padding:40px;text-align:center;color:#8fa3be;font-family:monospace">Carregando propostas do Nightly Analyst…</div>';

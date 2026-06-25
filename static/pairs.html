@@ -219,9 +219,16 @@ function fmt_duration_s(s){
 function fmt_time_ago(iso){
   if (!iso) return '—';
   try {
-    const dt = new Date(iso);
-    const s = Math.floor((Date.now() - dt.getTime())/1000);
-    return fmt_duration_s(s);
+    // [25-jun-2026 fix] Backend grava utcnow().isoformat() sem 'Z'.
+    // Browser interpreta como horario local — diff fica negativa.
+    // Append 'Z' se nao tem timezone.
+    let s = iso;
+    if (typeof s === 'string' && !s.endsWith('Z') && !s.match(/[+-]\d{2}:?\d{2}$/)) {
+      s = s + 'Z';
+    }
+    const dt = new Date(s);
+    const sec = Math.floor((Date.now() - dt.getTime())/1000);
+    return fmt_duration_s(Math.max(0, sec));
   } catch(e) { return '—'; }
 }
 function fmt_datetime(iso){

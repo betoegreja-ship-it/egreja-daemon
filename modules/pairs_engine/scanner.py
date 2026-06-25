@@ -400,6 +400,31 @@ def pairs_scan_loop(beat_fn=None, audit_fn=None, enqueue_fn=None):
                             break
 
                 if open_trade:
+                    # [25-jun-2026] Atualizar PnL e z_score LIVE em trade aberta
+                    # Antes: pnl ficava 0 ate a trade fechar (display mostrava +R$0)
+                    try:
+                        price_a_now = signal['price_a']
+                        price_b_now = signal['price_b']
+                        qty_a = open_trade['qty_a']
+                        qty_b = open_trade['qty_b']
+                        if open_trade['direction'] == 'SHORT_A':
+                            pnl_a = -(price_a_now - open_trade['price_a_entry']) * qty_a
+                            pnl_b =  (price_b_now - open_trade['price_b_entry']) * qty_b
+                        else:  # LONG_A
+                            pnl_a =  (price_a_now - open_trade['price_a_entry']) * qty_a
+                            pnl_b = -(price_b_now - open_trade['price_b_entry']) * qty_b
+                        pnl_now = pnl_a + pnl_b
+                        pnl_pct_now = 100 * pnl_now / max(open_trade['position_size'], 1)
+                        open_trade['pnl'] = round(pnl_now, 2)
+                        open_trade['pnl_pct'] = round(pnl_pct_now, 4)
+                        open_trade['current_z'] = signal['z_score']
+                        open_trade['current_spread'] = signal.get('spread_current')
+                        # Peak tracking
+                        peak = float(open_trade.get('peak_pnl_pct', 0) or 0)
+                        if pnl_pct_now > peak:
+                            open_trade['peak_pnl_pct'] = round(pnl_pct_now, 4)
+                    except Exception as e:
+                        log.debug(f'[PAIRS] live update {open_trade.get("id")}: {e}')
                     exit_reason = evaluate_pair_trade_exit(open_trade, signal, audit_fn=audit_fn)
                     if exit_reason:
                         close_pair_trade(open_trade, signal, exit_reason, audit_fn=audit_fn)

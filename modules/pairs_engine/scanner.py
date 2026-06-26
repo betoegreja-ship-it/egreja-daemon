@@ -255,11 +255,14 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
     return trade
 
 
+PAIRS_MAX_HOLD_DAYS = 15  # [26-jun-2026] protege contra pares que perderam cointegracao
+
+
 def evaluate_pair_trade_exit(trade: Dict, signal: Dict, audit_fn=None) -> Optional[str]:
     """Avalia se trade aberta deve ser fechada.
 
     Returns:
-        'CONVERGED' / 'STOP_LOSS' / None
+        'CONVERGED' / 'STOP_LOSS' / 'TIMEOUT' / None
     """
     z_now = signal.get('z_score')
     if z_now is None:
@@ -267,6 +270,25 @@ def evaluate_pair_trade_exit(trade: Dict, signal: Dict, audit_fn=None) -> Option
     entry_z = trade['entry_z']
     z_exit = signal['z_exit_threshold']
     z_stop = signal['z_stop_threshold']
+
+    # [26-jun-2026] Timeout: fecha apos N dias mesmo sem convergir.
+    # Half-life tipica de pares cointegrados B3 = 5-15d. Se passou disso
+    # sem voltar a media, provavelmente perdeu cointegracao (regime shift
+    # silencioso) — melhor sair com PnL atual do que ficar travado.
+    try:
+        opened_at = trade.get('opened_at')
+        if opened_at:
+            if isinstance(opened_at, str):
+                # ISO format with optional 'Z' or '+00:00'
+                ts = opened_at.replace('Z', '').split('+')[0]
+                opened_dt = datetime.fromisoformat(ts)
+            else:
+                opened_dt = opened_at
+            days_open = (datetime.utcnow() - opened_dt).days
+            if days_open >= PAIRS_MAX_HOLD_DAYS:
+                return 'TIMEOUT'
+    except Exception as e:
+        log.debug(f'[pairs] timeout check failed: {e}')
 
     # Converged: z cruzou pra perto de zero
     if abs(z_now) <= z_exit:

@@ -9771,6 +9771,39 @@ def start_background_threads():
         log.info('[v12-CALIBRATOR] worker brain_calibrator_loop adicionado (recalibra a cada 1h)')
     elif _disable_calib:
         log.info('[v12-CALIBRATOR] DISABLE_BRAIN_CALIBRATOR=true — desligado')
+
+    # [SPECIALIST 27-jun-2026] Worker dos 3 brains specialist (B3/NYSE/CRYPTO)
+    # Roda em paralelo ao brain_calibrator unified (NAO substitui).
+    # Cada market recalibra suas trades isoladas hora-a-hora.
+    # Default ENABLED. Desliga via DISABLE_BRAIN_SPECIALIST=true
+    _disable_specialist = os.environ.get('DISABLE_BRAIN_SPECIALIST', 'false').lower() == 'true'
+    if not _disable_specialist:
+        try:
+            from modules.brain_specialist.worker import specialist_loop as _spec_loop
+            from modules.brain_specialist.schema import create_specialist_tables as _spec_schema
+            from modules.brain_calibrator.learner import _get_conn as _spec_conn_fn
+            # Garante schema (idempotente)
+            try:
+                _sc = _spec_conn_fn()
+                if _sc:
+                    _spec_schema(_sc)
+                    try: _sc.close()
+                    except: pass
+            except Exception as _se:
+                log.warning(f'[SPECIALIST] schema setup: {_se}')
+            def _spec_loop_wrapper():
+                try:
+                    _spec_loop(beat_fn=beat, audit_fn=audit)
+                except Exception as _se:
+                    log.error(f'[SPECIALIST] crash: {_se}')
+                    import traceback; traceback.print_exc()
+            defs['brain_specialist_loop'] = _spec_loop_wrapper
+            log.info('[SPECIALIST] worker adicionado: B3/NYSE/CRYPTO cada 1h (paralelo ao unified)')
+        except Exception as _se:
+            log.warning(f'[SPECIALIST] setup falhou: {_se}')
+    else:
+        log.info('[SPECIALIST] DISABLE_BRAIN_SPECIALIST=true — desligado')
+
     # [v10.25] Derivatives strategy scan loops (paper/shadow mode)
     # [DISABLE_DERIV 05/mai/2026] Pular as 13 threads de derivatives quando o usuario
     # nao tem OpLab/Cedro (sem provider real, todas caem em Simulated paper sintetico —
@@ -10216,6 +10249,105 @@ def brain_calibration_ev():
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/brain/specialist/status')
+def brain_specialist_status():
+    """Snapshot dos 3 brains specialist (B3/NYSE/CRYPTO) — paralelos ao unified.
+
+    Retorna ultima run de cada market + top/bottom features + symbol skill.
+    """
+    try:
+        from modules.brain_calibrator.learner import _get_conn
+        conn = _get_conn()
+        if not conn: return jsonify({'error': 'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+
+        markets_data = {}
+        for m in ('B3', 'NYSE', 'CRYPTO'):
+            d = {'market': m}
+            # Ultima calibracao
+            cur.execute("""SELECT n_trades_used, baseline_wr, features_updated,
+                                  combos_updated, symbols_updated, calibration_quality,
+                                  avg_adj_pts, duration_seconds, run_ts
+                           FROM brain_specialist_calibration_history
+                           WHERE market=%s ORDER BY run_ts DESC LIMIT 1""", (m,))
+            last = cur.fetchone()
+            if last:
+                d['last_run'] = {k: (v.isoformat() if hasattr(v,'isoformat') else float(v) if hasattr(v,'__float__') else v)
+                                  for k, v in last.items()}
+            # Top 5 features positivas
+            cur.execute("""SELECT feature_name, feature_value, n_samples, win_rate, adj_pts, expected_value
+                           FROM brain_specialist_feature_weights
+                           WHERE market=%s AND adj_pts > 0
+                           ORDER BY adj_pts DESC LIMIT 5""", (m,))
+            d['top_positive_features'] = [{k: (float(v) if hasattr(v,'__float__') else v) for k,v in r.items()} for r in cur.fetchall()]
+            # Top 5 features negativas
+            cur.execute("""SELECT feature_name, feature_value, n_samples, win_rate, adj_pts, expected_value
+                           FROM brain_specialist_feature_weights
+                           WHERE market=%s AND adj_pts < 0
+                           ORDER BY adj_pts ASC LIMIT 5""", (m,))
+            d['top_negative_features'] = [{k: (float(v) if hasattr(v,'__float__') else v) for k,v in r.items()} for r in cur.fetchall()]
+            # Top 5 symbols skill
+            cur.execute("""SELECT symbol, n_samples, win_rate, symbol_skill_pts, expected_value
+                           FROM brain_specialist_symbol_stats
+                           WHERE market=%s ORDER BY symbol_skill_pts DESC LIMIT 5""", (m,))
+            d['top_symbols'] = [{k: (float(v) if hasattr(v,'__float__') else v) for k,v in r.items()} for r in cur.fetchall()]
+            cur.execute("""SELECT symbol, n_samples, win_rate, symbol_skill_pts, expected_value
+                           FROM brain_specialist_symbol_stats
+                           WHERE market=%s ORDER BY symbol_skill_pts ASC LIMIT 5""", (m,))
+            d['worst_symbols'] = [{k: (float(v) if hasattr(v,'__float__') else v) for k,v in r.items()} for r in cur.fetchall()]
+            markets_data[m] = d
+
+        cur.close()
+        try: conn.close()
+        except: pass
+
+        return jsonify({
+            'enabled': os.environ.get('DISABLE_BRAIN_SPECIALIST', 'false').lower() != 'true',
+            'mode': os.environ.get('BRAIN_SPECIALIST_MODE', 'shadow'),
+            'markets': markets_data,
+            'timestamp': datetime.utcnow().isoformat(),
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/brain/specialist/ab')
+def brain_specialist_ab():
+    """A/B log: comparacao unified vs specialist scores (ultimos 100)."""
+    try:
+        from modules.brain_calibrator.learner import _get_conn
+        conn = _get_conn()
+        if not conn: return jsonify({'error': 'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        market_filter = request.args.get('market', '').upper()
+        if market_filter in ('B3', 'NYSE', 'CRYPTO'):
+            cur.execute("""SELECT * FROM brain_specialist_ab_log
+                           WHERE market=%s ORDER BY ts DESC LIMIT 100""", (market_filter,))
+        else:
+            cur.execute("""SELECT * FROM brain_specialist_ab_log
+                           ORDER BY ts DESC LIMIT 100""")
+        rows = []
+        for r in cur.fetchall():
+            rows.append({k: (v.isoformat() if hasattr(v,'isoformat') else float(v) if hasattr(v,'__float__') else v) for k, v in r.items()})
+        # Agregado
+        cur.execute("""SELECT market,
+                              COUNT(*) as n,
+                              AVG(score_specialist - score_unified) as avg_diff,
+                              SUM(CASE WHEN pnl_pct > 0 AND score_specialist > score_unified THEN 1 ELSE 0 END) as specialist_better_wins,
+                              SUM(CASE WHEN pnl_pct > 0 AND score_unified > score_specialist THEN 1 ELSE 0 END) as unified_better_wins
+                       FROM brain_specialist_ab_log
+                       WHERE pnl_pct IS NOT NULL
+                       GROUP BY market""")
+        summary = {r['market']: {k: (float(v) if hasattr(v,'__float__') else v) for k,v in r.items()} for r in cur.fetchall()}
+        cur.close()
+        try: conn.close()
+        except: pass
+        return jsonify({'rows': rows, 'summary': summary,
+                        'timestamp': datetime.utcnow().isoformat()}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/brain/calibration/test')
 def brain_calibration_test():

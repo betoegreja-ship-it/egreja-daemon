@@ -10312,6 +10312,152 @@ def brain_specialist_status():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/brain/specialist/dashboard')
+def brain_specialist_dashboard():
+    """Metricas ricas pros 3 brains specialist comparados com unified.
+
+    Por market retorna:
+    - n_trades (30d), win_rate (30d), total_pnl, total_pnl_pct, avg_pnl_per_trade
+    - last_calibration: trades_used, features, combos, symbols, quality
+    - vs unified: quantas features tem sinal OPOSTO (= disagreement)
+    - quantas features positivas/negativas, magnitude media
+    - top 3 winners, top 3 losers (com WR e n)
+    - sample size confidence (n_total > N pra cada market)
+    """
+    try:
+        from modules.brain_calibrator.learner import _get_conn
+        from modules.brain_specialist import detect_market
+        conn = _get_conn()
+        if not conn: return jsonify({'error': 'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+
+        # 1. Pega trades dos ultimos 30d sanitizados
+        cur.execute("""SELECT id, symbol, asset_type, direction, pnl, pnl_pct, opened_at, closed_at
+                       FROM trades
+                       WHERE status='CLOSED'
+                         AND closed_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+                         AND pnl IS NOT NULL AND pnl != 0
+                         AND ABS(pnl_pct) < 50
+                         AND (close_reason IS NULL OR close_reason != 'VOIDED')""")
+        all_trades = cur.fetchall()
+
+        # 2. Agrupa por market
+        market_trades = {'B3': [], 'NYSE': [], 'CRYPTO': []}
+        for t in all_trades:
+            m = detect_market(t.get('symbol'), t.get('asset_type'))
+            if m in market_trades:
+                market_trades[m].append(t)
+
+        out = {}
+        for market in ('B3', 'NYSE', 'CRYPTO'):
+            trades = market_trades[market]
+            n = len(trades)
+            wins = sum(1 for t in trades if (t.get('pnl') or 0) > 0)
+            losses = sum(1 for t in trades if (t.get('pnl') or 0) < 0)
+            total_pnl = sum(float(t.get('pnl') or 0) for t in trades)
+            avg_pnl_pct = (sum(float(t.get('pnl_pct') or 0) for t in trades) / max(n, 1))
+            wr = (wins / max(n, 1)) * 100
+            # Calibration history
+            cur.execute("""SELECT n_trades_used, features_updated, combos_updated,
+                                  symbols_updated, calibration_quality, avg_adj_pts,
+                                  baseline_wr, run_ts
+                           FROM brain_specialist_calibration_history
+                           WHERE market=%s ORDER BY run_ts DESC LIMIT 1""", (market,))
+            calib = cur.fetchone()
+            # Top features specialist
+            cur.execute("""SELECT feature_name, feature_value, n_samples, win_rate, adj_pts
+                           FROM brain_specialist_feature_weights
+                           WHERE market=%s AND ABS(adj_pts) >= 1.0
+                           ORDER BY ABS(adj_pts) DESC LIMIT 8""", (market,))
+            top_features = []
+            for r in cur.fetchall():
+                top_features.append({
+                    'name': r['feature_name'], 'value': r['feature_value'],
+                    'n': int(r['n_samples']), 'wr': float(r['win_rate']),
+                    'adj': float(r['adj_pts']),
+                })
+            # Top/bottom symbols
+            cur.execute("""SELECT symbol, n_samples, win_rate, symbol_skill_pts,
+                                  total_pnl_pct, ewma_pnl_pct
+                           FROM brain_specialist_symbol_stats
+                           WHERE market=%s AND n_samples >= 10
+                           ORDER BY symbol_skill_pts DESC LIMIT 5""", (market,))
+            top_symbols = [{'symbol': r['symbol'], 'n': int(r['n_samples']),
+                            'wr': float(r['win_rate']), 'skill': float(r['symbol_skill_pts']),
+                            'total_pnl_pct': float(r['total_pnl_pct'] or 0),
+                            'ewma_pnl_pct': float(r['ewma_pnl_pct'] or 0)}
+                           for r in cur.fetchall()]
+            cur.execute("""SELECT symbol, n_samples, win_rate, symbol_skill_pts,
+                                  total_pnl_pct, ewma_pnl_pct
+                           FROM brain_specialist_symbol_stats
+                           WHERE market=%s AND n_samples >= 10
+                           ORDER BY symbol_skill_pts ASC LIMIT 5""", (market,))
+            worst_symbols = [{'symbol': r['symbol'], 'n': int(r['n_samples']),
+                              'wr': float(r['win_rate']), 'skill': float(r['symbol_skill_pts']),
+                              'total_pnl_pct': float(r['total_pnl_pct'] or 0),
+                              'ewma_pnl_pct': float(r['ewma_pnl_pct'] or 0)}
+                             for r in cur.fetchall()]
+            # vs unified: conta features OPOSTAS (sinal trocado)
+            cur.execute("""SELECT s.feature_name, s.feature_value, s.adj_pts as spec_adj, u.adj_pts as uni_adj
+                           FROM brain_specialist_feature_weights s
+                           LEFT JOIN brain_feature_weights u
+                             ON s.feature_name=u.feature_name
+                            AND s.feature_value=u.feature_value
+                            AND u.asset_scope='ALL'
+                           WHERE s.market=%s AND u.adj_pts IS NOT NULL""", (market,))
+            cmp_rows = cur.fetchall()
+            opposite_signs = sum(1 for r in cmp_rows
+                                  if float(r['spec_adj'] or 0) * float(r['uni_adj'] or 0) < 0)
+            total_compared = len(cmp_rows)
+            opposite_pct = (opposite_signs / max(total_compared, 1)) * 100
+            avg_abs_diff = (sum(abs(float(r['spec_adj'] or 0) - float(r['uni_adj'] or 0))
+                                for r in cmp_rows) / max(total_compared, 1))
+
+            out[market] = {
+                'period_30d': {
+                    'n_trades': n,
+                    'wins': wins, 'losses': losses,
+                    'win_rate': round(wr, 2),
+                    'total_pnl': round(total_pnl, 2),
+                    'avg_pnl_pct': round(avg_pnl_pct, 3),
+                    'best_pnl': round(max((float(t.get('pnl') or 0) for t in trades), default=0), 2),
+                    'worst_pnl': round(min((float(t.get('pnl') or 0) for t in trades), default=0), 2),
+                },
+                'specialist_calibration': {
+                    'n_trades_used': int(calib['n_trades_used']) if calib else 0,
+                    'features_updated': int(calib['features_updated']) if calib else 0,
+                    'combos_updated': int(calib['combos_updated']) if calib else 0,
+                    'symbols_updated': int(calib['symbols_updated']) if calib else 0,
+                    'quality': float(calib['calibration_quality']) if calib else 0,
+                    'avg_adj_pts': float(calib['avg_adj_pts']) if calib else 0,
+                    'baseline_wr': float(calib['baseline_wr']) if calib else 0,
+                    'last_run': calib['run_ts'].isoformat() if calib and calib.get('run_ts') else None,
+                },
+                'vs_unified': {
+                    'features_compared': total_compared,
+                    'opposite_signs': opposite_signs,
+                    'opposite_pct': round(opposite_pct, 1),
+                    'avg_abs_difference': round(avg_abs_diff, 2),
+                },
+                'top_features': top_features,
+                'top_symbols': top_symbols,
+                'worst_symbols': worst_symbols,
+            }
+
+        cur.close()
+        try: conn.close()
+        except: pass
+        return jsonify({
+            'enabled': os.environ.get('DISABLE_BRAIN_SPECIALIST', 'false').lower() != 'true',
+            'mode': os.environ.get('BRAIN_SPECIALIST_MODE', 'shadow'),
+            'markets': out,
+            'timestamp': datetime.utcnow().isoformat(),
+        }), 200
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/brain/specialist/ab')
 def brain_specialist_ab():
     """A/B log: comparacao unified vs specialist scores (ultimos 100)."""

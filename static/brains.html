@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Brains Specialist - Egreja Investment AI</title>
+<style>
+  :root {
+    --bg: #0a0e16;
+    --bg2: #11161f;
+    --line: rgba(255,255,255,0.08);
+    --text1: #e6edf3;
+    --text2: #8b95a7;
+    --text3: #5a6478;
+    --blue: #4a9eff;
+    --green: #22C55E;
+    --red: #EF4444;
+    --yellow: #f1c40f;
+    --orange: #e67e22;
+    --b3: #f1c40f;
+    --nyse: #4a9eff;
+    --crypto: #c850c0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text1); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.4; padding: 20px; }
+  h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+  .subtitle { color: var(--text2); font-size: 13px; margin-bottom: 20px; }
+  .header { display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+  .mode-pill { display:inline-block; padding:5px 12px; border-radius:14px; font-size:11px; font-weight:600; font-family: monospace; }
+  .mode-shadow { background: rgba(241,196,15,0.15); color: var(--yellow); border:1px solid rgba(241,196,15,0.3); }
+  .mode-specialist { background: rgba(34,197,94,0.15); color: var(--green); border:1px solid rgba(34,197,94,0.3); }
+  .links a { color: var(--text2); margin-left:14px; text-decoration:none; font-size:13px; }
+  .links a:hover { color: var(--blue); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+  }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .market-title { font-size: 18px; font-weight: 700; display:flex; align-items:center; gap:8px; }
+  .market-dot { width:12px; height:12px; border-radius:50%; }
+  .market-B3 .market-dot { background: var(--b3); }
+  .market-NYSE .market-dot { background: var(--nyse); }
+  .market-CRYPTO .market-dot { background: var(--crypto); }
+  .market-B3 .market-title { color: var(--b3); }
+  .market-NYSE .market-title { color: var(--nyse); }
+  .market-CRYPTO .market-title { color: var(--crypto); }
+
+  .badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-family: monospace; }
+  .badge-quality { background: rgba(74,158,255,0.15); color: var(--blue); }
+
+  .metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .metric {
+    background: rgba(255,255,255,0.02);
+    padding: 10px;
+    border-radius: 6px;
+  }
+  .metric-label {
+    font-size: 10px;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 4px;
+  }
+  .metric-value {
+    font-size: 20px;
+    font-weight: 700;
+    font-family: 'SF Mono', Menlo, monospace;
+  }
+  .metric-sub {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 2px;
+  }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .neu { color: var(--text2); }
+
+  .section-title {
+    font-size: 11px;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 14px 0 8px;
+    font-weight: 600;
+  }
+
+  .wr-bar {
+    height: 8px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 8px 0;
+    position: relative;
+  }
+  .wr-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--green), #16a34a);
+    border-radius: 4px;
+    transition: width 0.4s ease;
+  }
+  .wr-marker {
+    position: absolute;
+    top: -2px; bottom: -2px;
+    width: 2px;
+    background: var(--text2);
+  }
+
+  .feature-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-radius: 4px;
+    margin-bottom: 3px;
+    font-size: 12px;
+    background: rgba(255,255,255,0.02);
+  }
+  .feature-name {
+    font-family: monospace;
+    flex: 1;
+    color: var(--text1);
+  }
+  .feature-stats {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-family: monospace;
+    font-size: 11px;
+  }
+  .feature-wr { color: var(--text2); min-width: 38px; text-align: right; }
+  .feature-n { color: var(--text3); min-width: 30px; text-align: right; }
+  .feature-adj { font-weight: 700; min-width: 50px; text-align: right; padding: 1px 6px; border-radius: 4px; }
+  .feature-adj.pos { background: rgba(34,197,94,0.12); color: var(--green); }
+  .feature-adj.neg { background: rgba(239,68,68,0.12); color: var(--red); }
+
+  .sym-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 8px;
+    background: rgba(255,255,255,0.02);
+    border-radius: 4px;
+    margin-bottom: 3px;
+    font-size: 12px;
+    font-family: monospace;
+  }
+  .sym-name { font-weight: 600; min-width: 60px; }
+
+  .comparison {
+    background: rgba(74,158,255,0.06);
+    border: 1px solid rgba(74,158,255,0.18);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 16px;
+  }
+  .comparison-title {
+    font-size: 10px;
+    color: var(--blue);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .comparison-main {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--blue);
+    font-family: 'SF Mono', monospace;
+  }
+  .comparison-detail {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 4px;
+  }
+
+  .loading { text-align: center; padding: 60px; color: var(--text3); }
+  .error { background: rgba(239,68,68,0.15); border: 1px solid var(--red); padding: 16px; border-radius: 6px; }
+
+  .insights-card {
+    grid-column: 1 / -1;
+    background: linear-gradient(135deg, rgba(74,158,255,0.06), rgba(200,80,192,0.06));
+    border: 1px solid rgba(74,158,255,0.2);
+  }
+  .insight-list { list-style: none; padding: 0; }
+  .insight-list li { padding: 8px 0; border-bottom: 1px dotted rgba(255,255,255,0.05); font-size: 13px; }
+  .insight-list li:last-child { border-bottom: none; }
+  .insight-mkt {
+    display: inline-block;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 700;
+    margin-right: 8px;
+    font-family: monospace;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>🧠 Brains Specialist</h1>
+    <div class="subtitle">3 cerebros independentes (B3, NYSE, CRYPTO) aprendendo isolados</div>
+  </div>
+  <div>
+    <span id="mode-pill" class="mode-pill mode-shadow">SHADOW</span>
+    <div class="links" style="display:inline-block; margin-left:18px;">
+      <a href="/">← Dashboard</a>
+      <a href="/inteligencia.html">Inteligencia</a>
+      <a href="/brain/specialist/dashboard" target="_blank">JSON</a>
+    </div>
+  </div>
+</div>
+
+<div id="content" class="loading">Carregando dados dos 3 brains...</div>
+
+<script>
+async function loadData() {
+  try {
+    const r = await fetch('/brain/specialist/dashboard');
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    render(d);
+  } catch (e) {
+    document.getElementById('content').innerHTML =
+      `<div class="error">Erro ao carregar: ${e.message}</div>`;
+  }
+}
+
+function render(d) {
+  // Mode pill
+  const pill = document.getElementById('mode-pill');
+  if (d.mode === 'specialist') {
+    pill.className = 'mode-pill mode-specialist';
+    pill.textContent = 'ESPECIALIST ATIVO';
+  } else {
+    pill.className = 'mode-pill mode-shadow';
+    pill.textContent = `${d.mode || 'shadow'} - so aprendendo, nao decide`;
+  }
+
+  // Coletar insights cross-market
+  const insights = collectInsights(d.markets);
+
+  let html = '<div class="grid">';
+  for (const market of ['B3', 'NYSE', 'CRYPTO']) {
+    const md = d.markets[market];
+    if (!md) continue;
+    html += renderMarket(market, md);
+  }
+
+  // Card de insights agregados
+  html += `<div class="card insights-card">
+    <div class="section-title">🎯 Insights principais — porque separar foi a decisao certa</div>
+    <ul class="insight-list">
+      ${insights.map(i => `<li><span class="insight-mkt" style="background:${i.color};color:#0a0e16">${i.market}</span>${i.text}</li>`).join('')}
+    </ul>
+  </div>`;
+
+  html += '</div>';
+  document.getElementById('content').innerHTML = html;
+}
+
+function renderMarket(market, md) {
+  const p = md.period_30d;
+  const c = md.specialist_calibration;
+  const v = md.vs_unified;
+
+  // WR colors
+  const wrColor = p.win_rate >= 50 ? 'pos' : p.win_rate >= 40 ? 'neu' : 'neg';
+  const pnlColor = p.total_pnl >= 0 ? 'pos' : 'neg';
+  const wrPct = Math.min(100, Math.max(0, p.win_rate));
+
+  return `<div class="card market-${market}">
+    <div class="card-header">
+      <div class="market-title">
+        <span class="market-dot"></span>${market}
+      </div>
+      <span class="badge badge-quality">Qualidade ${(c.quality * 100).toFixed(1)}%</span>
+    </div>
+
+    <div class="metrics">
+      <div class="metric">
+        <div class="metric-label">Trades 30d</div>
+        <div class="metric-value">${p.n_trades}</div>
+        <div class="metric-sub">${p.wins}W / ${p.losses}L</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Win Rate 30d</div>
+        <div class="metric-value ${wrColor}">${p.win_rate.toFixed(1)}%</div>
+        <div class="wr-bar">
+          <div class="wr-fill" style="width:${wrPct}%"></div>
+          <div class="wr-marker" style="left:50%"></div>
+        </div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">PnL Total 30d</div>
+        <div class="metric-value ${pnlColor}">${fmtBRL(p.total_pnl)}</div>
+        <div class="metric-sub">avg ${p.avg_pnl_pct.toFixed(3)}%/trade</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Best / Worst</div>
+        <div class="metric-value" style="font-size:14px">
+          <span class="pos">+${fmtBRL(p.best_pnl)}</span><br>
+          <span class="neg">${fmtBRL(p.worst_pnl)}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="comparison">
+      <div class="comparison-title">Divergencia vs Brain Unified</div>
+      <div class="comparison-main">${v.opposite_pct.toFixed(1)}%</div>
+      <div class="comparison-detail">
+        ${v.opposite_signs} de ${v.features_compared} features tem sinal OPOSTO ao unified.<br>
+        Magnitude media diferenca: ${v.avg_abs_difference.toFixed(2)} pts.
+        <strong>${v.opposite_pct >= 25 ? '⚡ Justifica separacao!' : v.opposite_pct >= 10 ? 'Divergencia moderada' : 'Pouca divergencia'}</strong>
+      </div>
+    </div>
+
+    <div class="section-title">📚 Aprendizado base</div>
+    <div style="display:flex; gap:10px; font-size:12px; color:var(--text2); flex-wrap:wrap;">
+      <span><strong style="color:var(--text1)">${c.n_trades_used}</strong> trades</span>
+      <span><strong style="color:var(--text1)">${c.features_updated}</strong> features</span>
+      <span><strong style="color:var(--text1)">${c.combos_updated}</strong> combos</span>
+      <span><strong style="color:var(--text1)">${c.symbols_updated}</strong> simbolos</span>
+    </div>
+
+    <div class="section-title">🎯 Top Features (que o brain aprendeu)</div>
+    ${md.top_features.map(f => `
+      <div class="feature-row">
+        <span class="feature-name">${f.name}=${f.value}</span>
+        <span class="feature-stats">
+          <span class="feature-wr">${f.wr.toFixed(1)}%</span>
+          <span class="feature-n">n=${f.n}</span>
+          <span class="feature-adj ${f.adj >= 0 ? 'pos' : 'neg'}">${f.adj >= 0 ? '+' : ''}${f.adj.toFixed(2)}</span>
+        </span>
+      </div>
+    `).join('')}
+
+    <div class="section-title">⭐ Melhores Simbolos</div>
+    ${md.top_symbols.length === 0 ? '<div style="color:var(--text3);font-size:12px;padding:8px;">Sem amostras suficientes</div>' :
+      md.top_symbols.slice(0,4).map(s => `
+        <div class="sym-row">
+          <span class="sym-name">${s.symbol}</span>
+          <span style="color:var(--text2)">${s.wr.toFixed(1)}% WR · n=${s.n}</span>
+          <span class="pos">+${s.skill.toFixed(2)}</span>
+        </div>
+      `).join('')}
+
+    <div class="section-title">⚠️ Piores Simbolos</div>
+    ${md.worst_symbols.length === 0 ? '<div style="color:var(--text3);font-size:12px;padding:8px;">Sem amostras suficientes</div>' :
+      md.worst_symbols.slice(0,4).map(s => `
+        <div class="sym-row">
+          <span class="sym-name">${s.symbol}</span>
+          <span style="color:var(--text2)">${s.wr.toFixed(1)}% WR · n=${s.n}</span>
+          <span class="neg">${s.skill.toFixed(2)}</span>
+        </div>
+      `).join('')}
+  </div>`;
+}
+
+function collectInsights(markets) {
+  const colors = { B3: '#f1c40f', NYSE: '#4a9eff', CRYPTO: '#c850c0' };
+  const insights = [];
+
+  // Para cada market: pega top feature positiva e mostra
+  for (const m of ['B3', 'NYSE', 'CRYPTO']) {
+    const md = markets[m]; if (!md) continue;
+    const top = md.top_features.find(f => f.adj > 0);
+    const bot = md.top_features.find(f => f.adj < 0);
+    if (top) {
+      insights.push({
+        market: m, color: colors[m],
+        text: `Top sinal positivo: <strong style="color:#fff;font-family:monospace">${top.name}=${top.value}</strong> tem ${top.wr.toFixed(1)}% win-rate (${top.n} trades) — ajusta score em <strong style="color:var(--green)">+${top.adj.toFixed(2)} pts</strong>`
+      });
+    }
+    if (bot) {
+      insights.push({
+        market: m, color: colors[m],
+        text: `Pior sinal: <strong style="color:#fff;font-family:monospace">${bot.name}=${bot.value}</strong> so tem ${bot.wr.toFixed(1)}% win-rate — ajusta <strong style="color:var(--red)">${bot.adj.toFixed(2)} pts</strong>`
+      });
+    }
+  }
+  // Divergencia comparativa
+  const div_summary = ['B3', 'NYSE', 'CRYPTO']
+    .filter(m => markets[m])
+    .map(m => `${m} <strong style="color:${colors[m]}">${markets[m].vs_unified.opposite_pct.toFixed(0)}%</strong>`)
+    .join(' · ');
+  insights.push({
+    market: 'TODOS', color: '#22C55E',
+    text: `Features com sinal OPOSTO ao brain unified: ${div_summary}. Isso valida porque trabalhar separado e melhor.`
+  });
+  return insights;
+}
+
+function fmtBRL(v) {
+  const sign = v >= 0 ? '+' : '-';
+  const abs = Math.abs(v);
+  if (abs >= 1000000) return sign + 'R$' + (abs/1000000).toFixed(2) + 'M';
+  if (abs >= 1000) return sign + 'R$' + (abs/1000).toFixed(1) + 'k';
+  return sign + 'R$' + abs.toFixed(2);
+}
+
+loadData();
+setInterval(loadData, 60000); // refresh 1 min
+</script>
+
+</body>
+</html>

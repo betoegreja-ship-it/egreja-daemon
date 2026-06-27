@@ -232,6 +232,97 @@ def apply_specialist_calibration(score_original: int, market: str, symbol: str,
     }
 
 
+def apply_calibration_routed(score_original: int, symbol: str, asset_type: str,
+                              features: dict, direction: str = None,
+                              hour_utc: int = None,
+                              unified_apply_fn=None) -> dict:
+    """[HYBRID 27-jun-2026] Wrapper que decide unified vs specialist por mode.
+
+    BRAIN_SPECIALIST_MODE:
+    - 'shadow' (default): unified decide, specialist calcula em paralelo + loga AB
+    - 'hybrid': specialist decide por market (B3/NYSE/CRYPTO), unified fica como
+                fallback se specialist nao tem dados suficientes (quality < 0.05)
+    - 'specialist': specialist sempre decide, unified ignorado
+
+    Returns dict com:
+      score_adjusted, adj_total, adj_breakdown, used (unified|specialist|fallback),
+      mode, market, unified_score (sempre presente pra A/B log)
+    """
+    from . import detect_market
+    market = detect_market(symbol, asset_type)
+    mode = os.environ.get('BRAIN_SPECIALIST_MODE', 'shadow').lower()
+
+    # Calcula unified (sempre, pra log)
+    unified_adj = 0.0
+    unified_breakdown = []
+    unified_score = float(score_original)
+    if unified_apply_fn:
+        try:
+            u_score, u_total, u_bd = unified_apply_fn(
+                int(score_original), features, symbol, asset_type, direction,
+                hour_utc if hour_utc is not None else features.get('hour'))
+            unified_score = float(u_score)
+            unified_adj = float(u_total)
+            unified_breakdown = u_bd
+        except Exception as e:
+            log.debug(f'[routed] unified fn falhou {symbol}: {e}')
+
+    # Calcula specialist
+    spec = apply_specialist_calibration(int(score_original), market, symbol,
+                                         features, direction=direction)
+    specialist_score = spec.get('score_adjusted', float(score_original))
+    specialist_adj = spec.get('adj_total', 0.0)
+    specialist_breakdown = spec.get('adj_breakdown', [])
+
+    # Decide quem usa
+    used = 'unified'
+    final_score = unified_score
+    final_adj = unified_adj
+    final_breakdown = unified_breakdown
+
+    if mode == 'specialist':
+        used = 'specialist'
+        final_score = specialist_score
+        final_adj = specialist_adj
+        final_breakdown = specialist_breakdown
+    elif mode == 'hybrid':
+        # Specialist se tem dados; fallback unified caso contrario
+        if len(specialist_breakdown) >= 2 or abs(specialist_adj) >= 0.5:
+            used = 'specialist'
+            final_score = specialist_score
+            final_adj = specialist_adj
+            final_breakdown = specialist_breakdown
+        else:
+            used = 'fallback'  # specialist sem dados, usa unified
+    # shadow: ja esta com unified
+
+    # SEMPRE loga A/B se mode != off
+    if mode in ('shadow', 'hybrid', 'specialist'):
+        try:
+            log_ab_decision(market, symbol, direction,
+                            int(score_original), float(unified_score),
+                            float(specialist_score),
+                            float(unified_adj), float(specialist_adj),
+                            specialist_breakdown,
+                            decision_unified='APPROVED' if unified_score >= 60 else 'REJECTED',
+                            decision_specialist='APPROVED' if specialist_score >= 60 else 'REJECTED')
+        except Exception as e:
+            log.debug(f'[routed] log_ab fail {symbol}: {e}')
+
+    return {
+        'score_adjusted': final_score,
+        'adj_total': final_adj,
+        'adj_breakdown': final_breakdown,
+        'used': used,
+        'mode': mode,
+        'market': market,
+        'unified_score': unified_score,
+        'unified_adj': unified_adj,
+        'specialist_score': specialist_score,
+        'specialist_adj': specialist_adj,
+    }
+
+
 def log_ab_decision(market: str, symbol: str, direction: str,
                     score_original: int, score_unified: float, score_specialist: float,
                     adj_unified: float = 0.0, adj_specialist: float = 0.0,

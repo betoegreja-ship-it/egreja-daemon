@@ -29,6 +29,7 @@
   .mode-pill { display:inline-block; padding:5px 12px; border-radius:14px; font-size:11px; font-weight:600; font-family: monospace; }
   .mode-shadow { background: rgba(241,196,15,0.15); color: var(--yellow); border:1px solid rgba(241,196,15,0.3); }
   .mode-specialist { background: rgba(34,197,94,0.15); color: var(--green); border:1px solid rgba(34,197,94,0.3); }
+  .mode-hybrid { background: rgba(74,158,255,0.15); color: var(--blue); border:1px solid rgba(74,158,255,0.3); }
   .links a { color: var(--text2); margin-left:14px; text-decoration:none; font-size:13px; }
   .links a:hover { color: var(--blue); }
 
@@ -246,6 +247,35 @@
 
 <div id="content" class="loading">Carregando dados dos 3 brains...</div>
 
+<!-- DECISOES RECENTES: unified vs specialist -->
+<div class="card" style="margin-top: 18px;">
+  <div class="card-header">
+    <div class="market-title" style="color:var(--text1)">⚡ Decisões recentes — unified vs specialist (últimas 50 com diferença ≥2pts)</div>
+    <span id="decisions-summary" class="badge badge-quality">carregando...</span>
+  </div>
+  <div style="overflow-x: auto;">
+    <table id="decisions-table" style="width:100%; border-collapse: collapse; font-size: 12px;">
+      <thead style="background: rgba(255,255,255,0.04); color: var(--text2); font-size: 11px; text-transform: uppercase;">
+        <tr>
+          <th style="padding:8px; text-align:left;">Hora</th>
+          <th style="padding:8px; text-align:left;">Market</th>
+          <th style="padding:8px; text-align:left;">Símbolo</th>
+          <th style="padding:8px; text-align:center;">Dir</th>
+          <th style="padding:8px; text-align:right;">Score</th>
+          <th style="padding:8px; text-align:right;">Unified</th>
+          <th style="padding:8px; text-align:right;">Specialist</th>
+          <th style="padding:8px; text-align:right;">Δ</th>
+          <th style="padding:8px; text-align:center;">Decisões</th>
+          <th style="padding:8px; text-align:right;">PnL%</th>
+        </tr>
+      </thead>
+      <tbody id="decisions-tbody">
+        <tr><td colspan="10" style="padding:30px; text-align:center; color: var(--text3);">Aguardando primeiras decisões... (atualiza a cada 60s)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 
 <script>
@@ -253,19 +283,68 @@ let timelineChart = null;
 
 async function loadData() {
   try {
-    const [r1, r2] = await Promise.all([
+    const [r1, r2, r3] = await Promise.all([
       fetch('/brain/specialist/dashboard'),
-      fetch('/brain/specialist/timeline?weeks=14')
+      fetch('/brain/specialist/timeline?weeks=14'),
+      fetch('/brain/specialist/decisions?limit=50&only_diff=1&min_diff=2')
     ]);
     const d = await r1.json();
     const tl = await r2.json();
+    const dec = await r3.json();
     if (d.error) throw new Error(d.error);
     render(d);
     if (!tl.error) renderTimeline(tl);
+    if (!dec.error) renderDecisions(dec);
   } catch (e) {
     document.getElementById('content').innerHTML =
       `<div class="error">Erro ao carregar: ${e.message}</div>`;
   }
+}
+
+function renderDecisions(d) {
+  const tbody = document.getElementById('decisions-tbody');
+  const sum = document.getElementById('decisions-summary');
+  const rows = d.rows || [];
+  if (!rows.length) {
+    sum.textContent = `Mode: ${d.mode} — aguardando decisões`;
+    tbody.innerHTML = '<tr><td colspan="10" style="padding:30px; text-align:center; color: var(--text3);">Sem decisões registradas ainda. Quando houver scoring de stocks ou crypto, aparecem aqui.</td></tr>';
+    return;
+  }
+  // Summary
+  let totalToday = 0, agreed = 0;
+  for (const [m, s] of Object.entries(d.summary_24h || {})) {
+    totalToday += s.n || 0;
+    agreed += s.agree || 0;
+  }
+  const agreePct = totalToday ? ((agreed/totalToday)*100).toFixed(0) : '-';
+  sum.textContent = `${rows.length} divergências | 24h: ${totalToday} decisões, ${agreePct}% concordância | Mode: ${d.mode}`;
+
+  const colors = { B3: 'var(--b3)', NYSE: 'var(--nyse)', CRYPTO: 'var(--crypto)' };
+  tbody.innerHTML = rows.map(r => {
+    const time = r.ts ? new Date(r.ts).toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'}) : '-';
+    const date = r.ts ? new Date(r.ts).toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit'}) : '';
+    const dirColor = r.direction === 'LONG' ? 'var(--green)' : r.direction === 'SHORT' ? 'var(--red)' : 'var(--text2)';
+    const diffColor = r.diff >= 0 ? 'var(--green)' : 'var(--red)';
+    const decAgree = r.decision_unified === r.decision_specialist;
+    const decisionStr = decAgree
+      ? `<span style="color:var(--text2)">${r.decision_unified || '-'}</span>`
+      : `<span style="color:var(--blue)">${r.decision_unified || '-'} ⇄ ${r.decision_specialist || '-'}</span>`;
+    const pnlStr = r.pnl_pct == null
+      ? '<span style="color:var(--text3)">aberta</span>'
+      : `<span style="color:${r.pnl_pct >= 0 ? 'var(--green)' : 'var(--red)'}">${r.pnl_pct >= 0 ? '+' : ''}${r.pnl_pct.toFixed(2)}%</span>`;
+    return `<tr style="border-bottom:1px solid var(--line);">
+      <td style="padding:6px 8px; color:var(--text2); font-family:monospace;">${date} ${time}</td>
+      <td style="padding:6px 8px;"><span style="color:${colors[r.market]||'var(--text2)'}; font-weight:600;">${r.market}</span></td>
+      <td style="padding:6px 8px; font-weight:600;">${r.symbol}</td>
+      <td style="padding:6px 8px; text-align:center; color:${dirColor}; font-weight:600;">${r.direction || '-'}</td>
+      <td style="padding:6px 8px; text-align:right; font-family:monospace;">${r.score_original || '-'}</td>
+      <td style="padding:6px 8px; text-align:right; font-family:monospace;">${(r.score_unified||0).toFixed(1)}</td>
+      <td style="padding:6px 8px; text-align:right; font-family:monospace; font-weight:600;">${(r.score_specialist||0).toFixed(1)}</td>
+      <td style="padding:6px 8px; text-align:right; font-family:monospace; color:${diffColor}; font-weight:700;">${r.diff >= 0 ? '+' : ''}${r.diff.toFixed(1)}</td>
+      <td style="padding:6px 8px; text-align:center; font-size:11px;">${decisionStr}</td>
+      <td style="padding:6px 8px; text-align:right; font-family:monospace;">${pnlStr}</td>
+    </tr>`;
+  }).join('');
 }
 
 function renderTimeline(tl) {
@@ -369,12 +448,16 @@ function renderTimeline(tl) {
 function render(d) {
   // Mode pill
   const pill = document.getElementById('mode-pill');
-  if (d.mode === 'specialist') {
+  const mode = (d.mode || 'shadow').toLowerCase();
+  if (mode === 'specialist') {
     pill.className = 'mode-pill mode-specialist';
-    pill.textContent = 'ESPECIALIST ATIVO';
+    pill.textContent = '⚡ SPECIALIST — decide tudo';
+  } else if (mode === 'hybrid') {
+    pill.className = 'mode-pill mode-hybrid';
+    pill.textContent = '🧠×3 HYBRID — cada market com seu cerebro';
   } else {
     pill.className = 'mode-pill mode-shadow';
-    pill.textContent = `${d.mode || 'shadow'} - so aprendendo, nao decide`;
+    pill.textContent = `${mode} — so aprendendo, nao decide`;
   }
 
   // Coletar insights cross-market

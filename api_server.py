@@ -7298,15 +7298,34 @@ def stock_execution_worker():
                         }
                         _score_pre_calib = score
                         _calib_dir = 'LONG' if score > 50 else 'SHORT'
-                        _adj_score, _adj_total, _adj_bd = _apply_calibration(
-                            int(score), _calib_feats_stk, sym, 'stock',
-                            _calib_dir, _now_s.hour)
-                        if abs(_adj_total) >= 1:
-                            log.debug(f"CALIB stock {sym}: {_score_pre_calib}→{_adj_score:.1f} "
-                                      f"(adj={_adj_total:+.1f})")
-                        if os.environ.get('CALIBRATOR_LIVE_STOCK','false').lower() == 'true':
-                            # LIVE: substitui o score
-                            score = int(round(_adj_score))
+                        # [HYBRID 27-jun-2026] Usa routed que roteia unified vs specialist
+                        try:
+                            from modules.brain_specialist.scorer import apply_calibration_routed
+                            _routed = apply_calibration_routed(
+                                int(score), sym, 'stock',
+                                _calib_feats_stk, direction=_calib_dir,
+                                hour_utc=_now_s.hour,
+                                unified_apply_fn=_apply_calibration)
+                            _adj_score = _routed['score_adjusted']
+                            _adj_total = _routed['adj_total']
+                            _adj_bd = _routed['adj_breakdown']
+                            if abs(_adj_total) >= 1:
+                                log.debug(f"CALIB[{_routed['used']}] stock {sym}: "
+                                          f"{_score_pre_calib}→{_adj_score:.1f} "
+                                          f"(adj={_adj_total:+.1f} mkt={_routed['market']})")
+                            # LIVE quando: CALIBRATOR_LIVE_STOCK=true OU mode=specialist/hybrid
+                            _mode = os.environ.get('BRAIN_SPECIALIST_MODE', 'shadow').lower()
+                            if (os.environ.get('CALIBRATOR_LIVE_STOCK','false').lower() == 'true'
+                                or _mode in ('hybrid', 'specialist')):
+                                score = int(round(_adj_score))
+                        except Exception as _re:
+                            # Fallback caso routed falhe: usa unified puro
+                            log.debug(f'[routed] {sym} fallback unified: {_re}')
+                            _adj_score, _adj_total, _adj_bd = _apply_calibration(
+                                int(score), _calib_feats_stk, sym, 'stock',
+                                _calib_dir, _now_s.hour)
+                            if os.environ.get('CALIBRATOR_LIVE_STOCK','false').lower() == 'true':
+                                score = int(round(_adj_score))
                     except Exception as _ce:
                         log.debug(f'[CALIB] stock {sym}: {_ce}')
                 # ═══ FIM CALIBRATOR ════════════════════════════════════
@@ -8018,6 +8037,37 @@ def auto_trade_crypto():
                 # [v10.24.2-FIX] _crypto_composite_score() já inverte o score para SHORT
                 # (linha 4650: composite = 100 - composite). Portanto score ALTO = sinal
                 # forte para AMBAS as direções. Threshold único: score >= MIN_SCORE_AUTO_CRYPTO.
+
+                # [HYBRID 27-jun-2026] Aplica routed calibration pra crypto tambem
+                try:
+                    from modules.brain_specialist.scorer import apply_calibration_routed
+                    _crypto_feats = {
+                        'time_bucket': _feats_c.get('time_bucket') if '_feats_c' in dir() else None,
+                        'ema_alignment': _feats_c.get('ema_alignment') if '_feats_c' in dir() else None,
+                        'volume_bucket': _feats_c.get('volume_bucket') if '_feats_c' in dir() else None,
+                        'atr_bucket': _feats_c.get('atr_bucket') if '_feats_c' in dir() else None,
+                        'rsi_bucket': _feats_c.get('rsi_bucket') if '_feats_c' in dir() else None,
+                        'market_type': 'CRYPTO',
+                        'regime': regime_v2_c,
+                        'signal_type': signal_v2_c,
+                        'direction': direction,
+                    }
+                    _score_pre_routed = score
+                    _routed_c = apply_calibration_routed(
+                        int(score), display, 'crypto',
+                        _crypto_feats, direction=direction,
+                        hour_utc=_h_utc_c if '_h_utc_c' in dir() else None,
+                        unified_apply_fn=_apply_calibration)
+                    _mode_c = os.environ.get('BRAIN_SPECIALIST_MODE', 'shadow').lower()
+                    if _mode_c in ('hybrid', 'specialist') and abs(_routed_c['adj_total']) >= 0.5:
+                        score = int(round(_routed_c['score_adjusted']))
+                        if score != _score_pre_routed:
+                            log.info(f"[ROUTED-CRYPTO] {display}: {_score_pre_routed} -> {score} "
+                                     f"(used={_routed_c['used']} mkt={_routed_c['market']} "
+                                     f"adj={_routed_c['adj_total']:+.1f})")
+                except Exception as _rce:
+                    log.debug(f'[routed-crypto] {display}: {_rce}')
+
                 _entry_ok = score >= MIN_SCORE_AUTO_CRYPTO
                 if not _entry_ok:
                     log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
@@ -10451,6 +10501,73 @@ def brain_specialist_dashboard():
             'enabled': os.environ.get('DISABLE_BRAIN_SPECIALIST', 'false').lower() != 'true',
             'mode': os.environ.get('BRAIN_SPECIALIST_MODE', 'shadow'),
             'markets': out,
+            'timestamp': datetime.utcnow().isoformat(),
+        }), 200
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/brain/specialist/decisions')
+def brain_specialist_decisions():
+    """Ultimas N decisoes onde unified e specialist discordaram (ou todas).
+
+    Retorna pra cada decisao: ts, market, symbol, direction,
+    score_unified, score_specialist, diff, decisao_unified vs specialist,
+    pnl (se trade ja fechou).
+    """
+    try:
+        from modules.brain_calibrator.learner import _get_conn
+        limit = min(int(request.args.get('limit', 50)), 200)
+        only_diff = request.args.get('only_diff', '1') == '1'
+        min_diff = float(request.args.get('min_diff', 2.0))
+        market = request.args.get('market', '').upper()
+
+        conn = _get_conn()
+        if not conn: return jsonify({'error': 'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        where = ['1=1']
+        params = []
+        if market in ('B3', 'NYSE', 'CRYPTO'):
+            where.append('market = %s')
+            params.append(market)
+        if only_diff:
+            where.append('ABS(score_specialist - score_unified) >= %s')
+            params.append(min_diff)
+        params.append(limit)
+        cur.execute(f"""SELECT ts, market, symbol, direction, score_original,
+                              score_unified, score_specialist,
+                              adj_unified, adj_specialist,
+                              decision_unified, decision_specialist,
+                              trade_id, pnl_pct
+                       FROM brain_specialist_ab_log
+                       WHERE {' AND '.join(where)}
+                       ORDER BY ts DESC LIMIT %s""", params)
+        rows = []
+        for r in cur.fetchall():
+            d = {k: (v.isoformat() if hasattr(v,'isoformat') else float(v) if hasattr(v,'__float__') else v) for k, v in r.items()}
+            d['diff'] = round(d['score_specialist'] - d['score_unified'], 2)
+            rows.append(d)
+
+        # Summary 24h: quantas decisoes, divergencias, % de agreement
+        cur.execute("""SELECT market,
+                              COUNT(*) as n,
+                              SUM(CASE WHEN decision_unified=decision_specialist THEN 1 ELSE 0 END) as agree,
+                              AVG(score_specialist - score_unified) as avg_diff,
+                              SUM(CASE WHEN pnl_pct IS NOT NULL AND pnl_pct > 0 AND score_specialist > score_unified THEN 1 ELSE 0 END) as spec_winners,
+                              SUM(CASE WHEN pnl_pct IS NOT NULL AND pnl_pct < 0 AND score_specialist < score_unified THEN 1 ELSE 0 END) as spec_avoided_losses
+                       FROM brain_specialist_ab_log
+                       WHERE ts >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                       GROUP BY market""")
+        summary_24h = {r['market']: {k: (float(v) if hasattr(v,'__float__') else v) for k,v in r.items()} for r in cur.fetchall()}
+        cur.close()
+        try: conn.close()
+        except: pass
+        return jsonify({
+            'rows': rows,
+            'summary_24h': summary_24h,
+            'filters': {'limit': limit, 'only_diff': only_diff, 'min_diff': min_diff, 'market': market or 'ALL'},
+            'mode': os.environ.get('BRAIN_SPECIALIST_MODE', 'shadow'),
             'timestamp': datetime.utcnow().isoformat(),
         }), 200
     except Exception as e:

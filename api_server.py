@@ -10458,6 +10458,92 @@ def brain_specialist_dashboard():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/brain/specialist/timeline')
+def brain_specialist_timeline():
+    """Timeline semanal de WR e PnL por market (ultimas N semanas).
+
+    Mostra rotacao de lider entre mercados - prova matematica de que
+    brain unified estava sendo sabotado pela troca de regime.
+    """
+    try:
+        from modules.brain_calibrator.learner import _get_conn
+        from modules.brain_specialist import detect_market
+        weeks_back = min(int(request.args.get('weeks', 14)), 52)
+        conn = _get_conn()
+        if not conn: return jsonify({'error': 'no_db'}), 500
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT symbol, asset_type, pnl, pnl_pct, closed_at
+                       FROM trades
+                       WHERE status='CLOSED'
+                         AND closed_at >= DATE_SUB(NOW(), INTERVAL %s WEEK)
+                         AND pnl IS NOT NULL AND pnl != 0
+                         AND ABS(pnl_pct) < 50
+                         AND (close_reason IS NULL OR close_reason != 'VOIDED')
+                       ORDER BY closed_at""", (weeks_back,))
+        trades = cur.fetchall()
+        cur.close()
+        try: conn.close()
+        except: pass
+
+        from collections import defaultdict
+        week_market = defaultdict(lambda: defaultdict(list))
+        for t in trades:
+            m = detect_market(t.get('symbol'), t.get('asset_type'))
+            year, week, _ = t['closed_at'].isocalendar()
+            wk = f'{year}-W{week:02d}'
+            week_market[wk][m].append(t)
+
+        weeks_sorted = sorted(week_market.keys())
+        cum = {'B3': 0, 'NYSE': 0, 'CRYPTO': 0}
+        timeline = []
+        leader_changes = 0
+        prev_leader = None
+        for wk in weeks_sorted:
+            row = {'week': wk}
+            week_pnls = {}
+            for m in ('B3', 'NYSE', 'CRYPTO'):
+                ts = week_market[wk].get(m, [])
+                n = len(ts)
+                wins = sum(1 for t in ts if (t.get('pnl') or 0) > 0)
+                pnl = round(sum(float(t.get('pnl') or 0) for t in ts), 2)
+                cum[m] += pnl
+                row[m] = {
+                    'n': n,
+                    'wins': wins, 'losses': n - wins,
+                    'wr': round((wins/n)*100, 1) if n else 0,
+                    'pnl': pnl,
+                    'cum_pnl': round(cum[m], 2),
+                }
+                week_pnls[m] = pnl
+            leader = max(week_pnls.items(), key=lambda x: x[1])[0] if any(week_pnls.values()) else None
+            row['leader'] = leader
+            if prev_leader and leader and leader != prev_leader:
+                leader_changes += 1
+                row['leader_changed'] = True
+            else:
+                row['leader_changed'] = False
+            prev_leader = leader
+            timeline.append(row)
+
+        # Sumario
+        from collections import Counter
+        leaders = [r['leader'] for r in timeline if r.get('leader')]
+        leader_count = dict(Counter(leaders))
+
+        return jsonify({
+            'timeline': timeline,
+            'cumulative_100d': {'B3': cum['B3'], 'NYSE': cum['NYSE'], 'CRYPTO': cum['CRYPTO']},
+            'leader_count': leader_count,
+            'leader_changes': leader_changes,
+            'total_weeks': len(timeline),
+            'change_rate_pct': round(leader_changes / max(len(timeline)-1, 1) * 100, 1),
+            'timestamp': datetime.utcnow().isoformat(),
+        }), 200
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/brain/specialist/ab')
 def brain_specialist_ab():
     """A/B log: comparacao unified vs specialist scores (ultimos 100)."""

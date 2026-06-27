@@ -232,19 +232,138 @@
   </div>
 </div>
 
+<!-- TIMELINE: PnL semanal acumulado por market -->
+<div class="card" style="margin-bottom: 18px;">
+  <div class="card-header">
+    <div class="market-title" style="color:var(--text1)">📈 Timeline 14 semanas — Rotação de líder entre mercados</div>
+    <span id="timeline-summary" class="badge badge-quality">carregando...</span>
+  </div>
+  <div style="position:relative; height:340px;">
+    <canvas id="timelineChart"></canvas>
+  </div>
+  <div id="timeline-insights" style="margin-top:14px; font-size:12px; color:var(--text2); padding: 10px; background: rgba(255,255,255,0.02); border-radius: 6px;"></div>
+</div>
+
 <div id="content" class="loading">Carregando dados dos 3 brains...</div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+
 <script>
+let timelineChart = null;
+
 async function loadData() {
   try {
-    const r = await fetch('/brain/specialist/dashboard');
-    const d = await r.json();
+    const [r1, r2] = await Promise.all([
+      fetch('/brain/specialist/dashboard'),
+      fetch('/brain/specialist/timeline?weeks=14')
+    ]);
+    const d = await r1.json();
+    const tl = await r2.json();
     if (d.error) throw new Error(d.error);
     render(d);
+    if (!tl.error) renderTimeline(tl);
   } catch (e) {
     document.getElementById('content').innerHTML =
       `<div class="error">Erro ao carregar: ${e.message}</div>`;
   }
+}
+
+function renderTimeline(tl) {
+  const labels = tl.timeline.map(r => r.week);
+  // PnL acumulado
+  const datasets = [
+    {
+      label: 'B3 acumulado',
+      data: tl.timeline.map(r => r.B3.cum_pnl / 1000),
+      borderColor: '#f1c40f',
+      backgroundColor: 'rgba(241,196,15,0.1)',
+      borderWidth: 2.5,
+      tension: 0.25,
+      pointRadius: 4,
+      pointHoverRadius: 6,
+    },
+    {
+      label: 'NYSE acumulado',
+      data: tl.timeline.map(r => r.NYSE.cum_pnl / 1000),
+      borderColor: '#4a9eff',
+      backgroundColor: 'rgba(74,158,255,0.1)',
+      borderWidth: 2.5,
+      tension: 0.25,
+      pointRadius: 4,
+      pointHoverRadius: 6,
+    },
+    {
+      label: 'CRYPTO acumulado',
+      data: tl.timeline.map(r => r.CRYPTO.cum_pnl / 1000),
+      borderColor: '#c850c0',
+      backgroundColor: 'rgba(200,80,192,0.1)',
+      borderWidth: 2.5,
+      tension: 0.25,
+      pointRadius: 4,
+      pointHoverRadius: 6,
+    },
+  ];
+  if (timelineChart) timelineChart.destroy();
+  const ctx = document.getElementById('timelineChart').getContext('2d');
+  timelineChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#e6edf3', font: { size: 12 } } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const wk = tl.timeline[ctx.dataIndex];
+              const m = ctx.dataset.label.split(' ')[0];
+              const md = wk[m] || {};
+              return `${m}: ${md.n||0} trades, WR ${md.wr||0}%, semana R$${(md.pnl||0).toLocaleString('pt-BR')}, cum R$${(md.cum_pnl||0).toLocaleString('pt-BR')}`;
+            },
+            afterBody: (ctx) => {
+              const wk = tl.timeline[ctx[0].dataIndex];
+              return wk.leader_changed ? `\n⚡ Líder mudou para ${wk.leader}` : `\nLíder: ${wk.leader || '-'}`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          ticks: { color: '#8b95a7', callback: v => 'R$' + v + 'k' },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          title: { display: true, text: 'PnL Acumulado (mil R$)', color: '#8b95a7' }
+        },
+        x: {
+          ticks: { color: '#8b95a7', font: { size: 11 } },
+          grid: { color: 'rgba(255,255,255,0.05)' }
+        }
+      }
+    }
+  });
+
+  // Summary
+  const lc = tl.leader_count;
+  const total = tl.total_weeks;
+  const summary = Object.entries(lc).map(([m,n])=>`${m}: ${n}x`).join(' | ');
+  document.getElementById('timeline-summary').textContent = `${tl.leader_changes} trocas de líder em ${total-1} transições (${tl.change_rate_pct}%)`;
+
+  // Insights
+  const cum = tl.cumulative_100d;
+  const total_pnl = (cum.B3 + cum.NYSE + cum.CRYPTO);
+  const formatBRL = (v) => (v >= 0 ? '+R$' : '-R$') + Math.abs(v).toLocaleString('pt-BR', {maximumFractionDigits: 0});
+  const insightsEl = document.getElementById('timeline-insights');
+  insightsEl.innerHTML = `
+    <strong>Dominância por semana:</strong> ${Object.entries(lc).map(([m,n])=>`<span style="color:${m==='B3'?'var(--b3)':m==='NYSE'?'var(--nyse)':'var(--crypto)'}">${m} ${n}x</span>`).join(' · ')}
+    &nbsp;|&nbsp; <strong>PnL 100d:</strong>
+    <span style="color:${cum.B3>=0?'var(--green)':'var(--red)'}">B3 ${formatBRL(cum.B3)}</span> ·
+    <span style="color:${cum.NYSE>=0?'var(--green)':'var(--red)'}">NYSE ${formatBRL(cum.NYSE)}</span> ·
+    <span style="color:${cum.CRYPTO>=0?'var(--green)':'var(--red)'}">CRYPTO ${formatBRL(cum.CRYPTO)}</span>
+    &nbsp;|&nbsp; <strong>Total:</strong> <span style="color:${total_pnl>=0?'var(--green)':'var(--red)'}">${formatBRL(total_pnl)}</span>
+    <br><br>
+    <em style="color:var(--text3)">Linhas convergem e divergem várias vezes — cada cruzamento é uma "troca de cadeira" entre mercados.
+    O brain unified ficou sempre 1-2 semanas atrasado, calibrando pro líder anterior. Brains specialist eliminam isso.</em>
+  `;
 }
 
 function render(d) {

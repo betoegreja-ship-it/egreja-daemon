@@ -150,9 +150,12 @@ def recalibrate_specialist(market: str, lookback_days: int = None) -> dict:
                 elif fname == 'weekday': v = r['dow']
                 elif fname == 'direction': v = r['direction']
                 else: v = r['_feats'].get(fname)
+                # [P0-FIX 28-jun-2026] Skip UNKNOWN/null/empty — eram aprendidos
+                # como "sinal" mas sao apenas ausencia de dado (bug RSI=50 corrompia tudo)
                 if v is None or v == '': continue
-                v = str(v)
-                buckets[v].append(r)
+                v_str = str(v).strip()
+                if v_str.upper() in ('UNKNOWN', 'NONE', 'NULL', 'N/A', ''): continue
+                buckets[v_str].append(r)
 
             for v, rs in buckets.items():
                 n = len(rs)
@@ -202,8 +205,12 @@ def recalibrate_specialist(market: str, lookback_days: int = None) -> dict:
                 if f2 == 'hour': v2 = r['hr']
                 elif f2 == 'direction': v2 = r['direction']
                 else: v2 = r['_feats'].get(f2)
+                # [P0-FIX 28-jun-2026] Skip UNKNOWN nos combos tambem
                 if v1 is None or v2 is None: continue
-                key = f'{v1}/{v2}'
+                v1s = str(v1).strip(); v2s = str(v2).strip()
+                if v1s.upper() in ('UNKNOWN', 'NONE', 'NULL', 'N/A', ''): continue
+                if v2s.upper() in ('UNKNOWN', 'NONE', 'NULL', 'N/A', ''): continue
+                key = f'{v1s}/{v2s}'
                 buckets[key].append(r)
 
             for combo_val, rs in buckets.items():

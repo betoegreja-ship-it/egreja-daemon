@@ -7982,8 +7982,52 @@ def auto_trade_crypto():
                     _capped_t = max(_total_t, -20) if _total_t < 0 else _total_t
                     score = max(0, min(100, score + _capped_t))
                 # [v10.13] Padrões compostos
-                _rsi_c = float(ticker_data.get('rsi',50) or 50)
-                _feats_disc_c = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bucket(_rsi_c),
+                # [P0-FIX 28-jun-2026] ESPECIALISTA achou bug critico: ticker_data nunca tem 'rsi'
+                # entao todas as 5989 trades crypto historicas aprenderam com rsi_bucket=NEUTRAL
+                # corrompendo o brain. Aqui calculamos RSI/EMA/ATR REAIS dos closes da Binance.
+                _rsi_c_real = 50.0
+                _ema_alignment_real = 'UNKNOWN'
+                _atr_bucket_real = 'UNKNOWN'
+                _volume_bucket_real = 'NORMAL'
+                try:
+                    if len(closes_k) >= 15:
+                        _rsi_c_real = _rsi(closes_k)
+                    if len(closes_k) >= 50:
+                        _ema9 = _ema(closes_k, 9)
+                        _ema21 = _ema(closes_k, 21)
+                        _ema50 = _ema(closes_k, 50)
+                        if _ema9 and _ema21 and _ema50:
+                            if _ema9 > _ema21 > _ema50:
+                                _ema_alignment_real = 'BULLISH_STACK'
+                            elif _ema9 < _ema21 < _ema50:
+                                _ema_alignment_real = 'BEARISH_STACK'
+                            elif _ema9 > _ema21 and _ema21 < _ema50:
+                                _ema_alignment_real = 'BULLISH_CROSS'
+                            elif _ema9 < _ema21 and _ema21 > _ema50:
+                                _ema_alignment_real = 'BEARISH_CROSS'
+                            else:
+                                _ema_alignment_real = 'MIXED'
+                    # atr_pct_c ja foi calculado linhas acima — usa
+                    if atr_pct_c > 0:
+                        if atr_pct_c < 0.5: _atr_bucket_real = 'VERY_LOW'
+                        elif atr_pct_c < 1.0: _atr_bucket_real = 'LOW'
+                        elif atr_pct_c < 2.0: _atr_bucket_real = 'NORMAL'
+                        elif atr_pct_c < 3.5: _atr_bucket_real = 'HIGH'
+                        else: _atr_bucket_real = 'EXTREME'
+                    # vol_ratio do crypto_tickers
+                    _vr = float(ticker_data.get('vol_ratio', 1.0) or 1.0)
+                    if _vr >= 3.0: _volume_bucket_real = 'SURGE'
+                    elif _vr >= 1.5: _volume_bucket_real = 'HIGH'
+                    elif _vr >= 0.7: _volume_bucket_real = 'NORMAL'
+                    else: _volume_bucket_real = 'LOW'
+                except Exception as _fe:
+                    log.debug(f'[CRYPTO-FEAT] {display} computing real features: {_fe}')
+                _rsi_c = _rsi_c_real  # legado: codigo abaixo pode usar
+                _feats_disc_c = {'score_bucket': _score_bucket(score),
+                                 'rsi_bucket': _rsi_bucket(_rsi_c_real),
+                                 'ema_alignment': _ema_alignment_real,
+                                 'atr_bucket': _atr_bucket_real,
+                                 'volume_bucket': _volume_bucket_real,
                                  'weekday': str(_now_c.weekday()), 'hour_utc': str(_now_c.hour),
                                  'time_bucket': _time_bucket(_now_c), 'asset_type': 'crypto',
                                  'market_type': 'CRYPTO', 'direction': direction,
@@ -8039,14 +8083,15 @@ def auto_trade_crypto():
                 # forte para AMBAS as direções. Threshold único: score >= MIN_SCORE_AUTO_CRYPTO.
 
                 # [HYBRID 27-jun-2026] Aplica routed calibration pra crypto tambem
+                # [P0-FIX 28-jun-2026] usa features REAIS calculadas em _feats_disc_c (com RSI/EMA reais)
                 try:
                     from modules.brain_specialist.scorer import apply_calibration_routed
                     _crypto_feats = {
-                        'time_bucket': _feats_c.get('time_bucket') if '_feats_c' in dir() else None,
-                        'ema_alignment': _feats_c.get('ema_alignment') if '_feats_c' in dir() else None,
-                        'volume_bucket': _feats_c.get('volume_bucket') if '_feats_c' in dir() else None,
-                        'atr_bucket': _feats_c.get('atr_bucket') if '_feats_c' in dir() else None,
-                        'rsi_bucket': _feats_c.get('rsi_bucket') if '_feats_c' in dir() else None,
+                        'time_bucket': _feats_disc_c.get('time_bucket'),
+                        'ema_alignment': _feats_disc_c.get('ema_alignment'),
+                        'volume_bucket': _feats_disc_c.get('volume_bucket'),
+                        'atr_bucket': _feats_disc_c.get('atr_bucket'),
+                        'rsi_bucket': _feats_disc_c.get('rsi_bucket'),
                         'market_type': 'CRYPTO',
                         'regime': regime_v2_c,
                         'signal_type': signal_v2_c,

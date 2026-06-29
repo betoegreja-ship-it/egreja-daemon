@@ -10884,10 +10884,18 @@ def _meta_provider_context():
     qualities = []
     stale_count = 0
     for row in dq_rows:
-        b = _meta_source_bucket(row.get('source'))
+        if isinstance(row, dict):
+            source = row.get('source')
+            quality = row.get('quality')
+            stale = row.get('stale')
+        else:
+            source = None
+            quality = row if isinstance(row, (int, float)) else 0
+            stale = False
+        b = _meta_source_bucket(source)
         dq_sources[b] = dq_sources.get(b, 0) + 1
-        qualities.append(float(row.get('quality') or 0))
-        if row.get('stale'):
+        qualities.append(float(quality or 0))
+        if stale:
             stale_count += 1
     data_quality_snapshot = {
         'observations': len(dq_rows),
@@ -10901,7 +10909,8 @@ def _meta_provider_context():
         stock_items = list(stock_prices.values())
         crypto_items = list(crypto_prices.values())
     for row in stock_items + crypto_items:
-        b = _meta_source_bucket(row.get('source'))
+        source = row.get('source') if isinstance(row, dict) else None
+        b = _meta_source_bucket(source)
         source_counts[b] = source_counts.get(b, 0) + 1
 
     return {

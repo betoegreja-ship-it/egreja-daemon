@@ -8030,6 +8030,9 @@ def auto_trade_crypto():
                 # entao todas as 5989 trades crypto historicas aprenderam com rsi_bucket=NEUTRAL
                 # corrompendo o brain. Aqui calculamos RSI/EMA/ATR REAIS dos closes da Binance.
                 _rsi_c_real = 50.0
+                _ema9_c_real = 0.0
+                _ema21_c_real = 0.0
+                _ema50_c_real = 0.0
                 _ema_alignment_real = 'UNKNOWN'
                 _atr_bucket_real = 'UNKNOWN'
                 _volume_bucket_real = 'NORMAL'
@@ -8037,17 +8040,17 @@ def auto_trade_crypto():
                     if len(closes_k) >= 15:
                         _rsi_c_real = _rsi(closes_k)
                     if len(closes_k) >= 50:
-                        _ema9 = _ema(closes_k, 9)
-                        _ema21 = _ema(closes_k, 21)
-                        _ema50 = _ema(closes_k, 50)
-                        if _ema9 and _ema21 and _ema50:
-                            if _ema9 > _ema21 > _ema50:
+                        _ema9_c_real = _ema(closes_k, 9)
+                        _ema21_c_real = _ema(closes_k, 21)
+                        _ema50_c_real = _ema(closes_k, 50)
+                        if _ema9_c_real and _ema21_c_real and _ema50_c_real:
+                            if _ema9_c_real > _ema21_c_real > _ema50_c_real:
                                 _ema_alignment_real = 'BULLISH_STACK'
-                            elif _ema9 < _ema21 < _ema50:
+                            elif _ema9_c_real < _ema21_c_real < _ema50_c_real:
                                 _ema_alignment_real = 'BEARISH_STACK'
-                            elif _ema9 > _ema21 and _ema21 < _ema50:
+                            elif _ema9_c_real > _ema21_c_real and _ema21_c_real < _ema50_c_real:
                                 _ema_alignment_real = 'BULLISH_CROSS'
-                            elif _ema9 < _ema21 and _ema21 > _ema50:
+                            elif _ema9_c_real < _ema21_c_real and _ema21_c_real > _ema50_c_real:
                                 _ema_alignment_real = 'BEARISH_CROSS'
                             else:
                                 _ema_alignment_real = 'MIXED'
@@ -8266,11 +8269,20 @@ def auto_trade_crypto():
                 sig_enriched_c = {
                     'symbol': display, 'asset_type': 'crypto', 'market_type': 'CRYPTO',
                     'signal': 'COMPRA' if direction == 'LONG' else 'VENDA',
-                    'score': score, 'price': price, 'rsi': 50,
+                    'score': score, 'price': price, 'rsi': _rsi_c_real,
+                    'ema9': _ema9_c_real, 'ema21': _ema21_c_real, 'ema50': _ema50_c_real,
+                    'change_pct': change_24h, 'change_24h': change_24h,
                     'atr_pct': atr_pct_c,         # [v10.4]
                     'volume_ratio': vol_ratio_c,   # [v10.4]
                 }
                 features_c  = extract_features(sig_enriched_c, dict(market_regime), dq_score_c, now_dt_c)
+                # Mantem o aprendizado alinhado ao mesmo vetor usado na calibracao roteada.
+                features_c.update({
+                    'rsi_bucket': _feats_disc_c.get('rsi_bucket', features_c.get('rsi_bucket')),
+                    'ema_alignment': _feats_disc_c.get('ema_alignment', features_c.get('ema_alignment')),
+                    'atr_bucket': _feats_disc_c.get('atr_bucket', features_c.get('atr_bucket')),
+                    'volume_bucket': _feats_disc_c.get('volume_bucket', features_c.get('volume_bucket')),
+                })
                 features_c['_dq_score'] = dq_score_c
                 feat_hash_c = make_feature_hash(features_c)
                 conf_c      = calc_learning_confidence(sig_enriched_c, features_c, feat_hash_c)
@@ -12425,6 +12437,12 @@ def debug_crypto_filter_trace():
             lows_k   = klines_data.get('lows', [])
             vols_k   = klines_data.get('volumes', [])
             atr_pct_c = 0.0
+            vol_ratio_c = 0.0
+            _rsi_c_real = 50.0
+            _ema9_c_real = 0.0
+            _ema21_c_real = 0.0
+            _ema50_c_real = 0.0
+            _ema_alignment_real = 'UNKNOWN'
             if ticker_data and len(closes_k) >= 30:
                 row['score_source'] = 'v3'
                 try:
@@ -12441,6 +12459,28 @@ def debug_crypto_filter_trace():
                     out['symbols'].append(row); continue
                 atr_c = _calc_atr(closes_k, highs_k, lows_k, 14) if len(closes_k) >= 15 else 0.0
                 atr_pct_c = round((atr_c / price) * 100, 3) if price > 0 and atr_c > 0 else 0.0
+                avg_vol20_c = sum(vols_k[-20:]) / len(vols_k[-20:]) if len(vols_k) >= 20 else 0
+                vol_ratio_c = round(ticker_data.get('vol_quote', 0) / avg_vol20_c, 3) if avg_vol20_c > 0 else 0.0
+                try:
+                    if len(closes_k) >= 15:
+                        _rsi_c_real = _rsi(closes_k)
+                    if len(closes_k) >= 50:
+                        _ema9_c_real = _ema(closes_k, 9)
+                        _ema21_c_real = _ema(closes_k, 21)
+                        _ema50_c_real = _ema(closes_k, 50)
+                        if _ema9_c_real and _ema21_c_real and _ema50_c_real:
+                            if _ema9_c_real > _ema21_c_real > _ema50_c_real:
+                                _ema_alignment_real = 'BULLISH_STACK'
+                            elif _ema9_c_real < _ema21_c_real < _ema50_c_real:
+                                _ema_alignment_real = 'BEARISH_STACK'
+                            elif _ema9_c_real > _ema21_c_real and _ema21_c_real < _ema50_c_real:
+                                _ema_alignment_real = 'BULLISH_CROSS'
+                            elif _ema9_c_real < _ema21_c_real and _ema21_c_real > _ema50_c_real:
+                                _ema_alignment_real = 'BEARISH_CROSS'
+                            else:
+                                _ema_alignment_real = 'MIXED'
+                except Exception as _fe:
+                    row['feature_calc_err'] = str(_fe)
             elif ticker_data and len(closes_k) < 30:
                 row['blocked_at'] = f'NO_KLINES_CACHED (closes={len(closes_k)}<30; loop busca inline no ciclo)'
                 out['symbols'].append(row); continue
@@ -12451,6 +12491,10 @@ def debug_crypto_filter_trace():
                 if direction == 'SHORT': score = 100 - score
                 row['score_v3_raw'] = score
             row['atr_pct'] = atr_pct_c
+            row['volume_ratio'] = vol_ratio_c
+            row['rsi'] = round(_rsi_c_real, 2)
+            row['rsi_bucket'] = _rsi_bucket(_rsi_c_real)
+            row['ema_alignment'] = _ema_alignment_real
             # 5) temporal block
             if _t_blocked0:
                 row['blocked_at'] = f'CRYPTO-TBLOCK ({_t_reason0})'
@@ -12466,8 +12510,7 @@ def debug_crypto_filter_trace():
             score = max(0, min(100, score + _capped))
             row['score_after_temporal'] = score
             # 7) composite (CBLOCK / disc adj) — espelha get_composite_score_adj
-            _rsi_c = float(ticker_data.get('rsi', 50) or 50)
-            _feats = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bucket(_rsi_c),
+            _feats = {'score_bucket': _score_bucket(score), 'rsi_bucket': _rsi_bucket(_rsi_c_real),
                       'weekday': str(_now_c.weekday()), 'hour_utc': str(_now_c.hour),
                       'time_bucket': _time_bucket(_now_c), 'asset_type': 'crypto',
                       'market_type': 'CRYPTO', 'direction': direction,
@@ -12477,8 +12520,9 @@ def debug_crypto_filter_trace():
                       # [FIX especialista 24-jun-2026] features que vinham vazias
                       'signal_v2': row.get('signal_v2') or row.get('signal') or 'MANTER',
                       'regime': row.get('regime_v2') or row.get('regime') or 'UNKNOWN',
-                      'ema_alignment': row.get('ema_alignment') or 'MIXED',
-                      'atr_bucket': row.get('atr_bucket') or ('EXTREME' if atr_pct_c>4 else ('HIGH' if atr_pct_c>2.5 else 'NORMAL'))}
+                      'ema_alignment': _ema_alignment_real,
+                      'atr_bucket': _atr_bucket(atr_pct_c),
+                      'volume_bucket': _volume_bucket(vol_ratio_c)}
             try:
                 _disc_adj, _disc_blocked, _disc_key = get_composite_score_adj(_feats)
             except Exception:
@@ -12559,10 +12603,18 @@ def debug_crypto_filter_trace():
             try:
                 _sig = {'symbol': display, 'asset_type': 'crypto', 'market_type': 'CRYPTO',
                         'signal': 'COMPRA' if direction == 'LONG' else 'VENDA',
-                        'score': score, 'price': price, 'rsi': 50,
-                        'atr_pct': atr_pct_c, 'volume_ratio': 0.0}
+                        'score': score, 'price': price, 'rsi': _rsi_c_real,
+                        'ema9': _ema9_c_real, 'ema21': _ema21_c_real, 'ema50': _ema50_c_real,
+                        'change_pct': change_24h, 'change_24h': change_24h,
+                        'atr_pct': atr_pct_c, 'volume_ratio': vol_ratio_c}
                 _dq = get_dq_score(display)
                 _feats_c = extract_features(_sig, dict(market_regime), _dq, _now_c)
+                _feats_c.update({
+                    'rsi_bucket': _feats.get('rsi_bucket', _feats_c.get('rsi_bucket')),
+                    'ema_alignment': _feats.get('ema_alignment', _feats_c.get('ema_alignment')),
+                    'atr_bucket': _feats.get('atr_bucket', _feats_c.get('atr_bucket')),
+                    'volume_bucket': _feats.get('volume_bucket', _feats_c.get('volume_bucket')),
+                })
                 _fh = make_feature_hash(_feats_c)
                 row['feature_hash'] = _fh[:18]
                 _ps = pattern_stats_cache.get(_fh) if isinstance(pattern_stats_cache, dict) else None

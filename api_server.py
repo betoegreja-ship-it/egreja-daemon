@@ -6806,6 +6806,24 @@ def monitor_trades():
                             symbol_sl_count[sym] = 0  # reset ao fechar sem SL
                         _cd = SYMBOL_SL_COOLDOWNS.get(min(symbol_sl_count.get(sym,1),4), 300)
                         symbol_cooldown[sym] = time.time() + (_cd - SYMBOL_COOLDOWN_SEC)  # offset extra
+                        # [P0-FIX 28-jun-2026] Cooldown extra longo para EARLY_STOP/V3_REVERSAL
+                        # rapido (<2min). Auditor: NEAR=73 trades/perda R$16k, XLM=49 trades/perda R$15k,
+                        # ALPA4=7 trades/perda R$6.8k, todos por reentrada rapida apos stop curto.
+                        try:
+                            _open_ts = trade.get('opened_at')
+                            if isinstance(_open_ts, str):
+                                _ot = datetime.fromisoformat(_open_ts.replace('Z',''))
+                            else:
+                                _ot = _open_ts
+                            _dur_sec = (now - _ot).total_seconds() if _ot else 0
+                            if reason in ('EARLY_STOP', 'V3_REVERSAL') and _dur_sec < 120:
+                                _fast_cd = int(os.environ.get('FAST_STOP_COOLDOWN_MIN', 60)) * 60
+                                _new_cd_end = time.time() + _fast_cd
+                                if _new_cd_end > symbol_cooldown.get(sym, 0):
+                                    symbol_cooldown[sym] = _new_cd_end
+                                    log.info(f"[FAST-STOP-COOLDOWN] {sym}: {reason} em {_dur_sec:.0f}s — cooldown {_fast_cd//60}min")
+                        except Exception as _ce:
+                            log.debug(f'fast_stop_cooldown {sym}: {_ce}')
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         try:
                             apply_fee_to_trade(c)  # [v10.14] fee simulado
@@ -6978,6 +6996,21 @@ def monitor_trades():
                             'regime': market_regime.get('mode', 'UNKNOWN'),
                         })
                         symbol_cooldown[trade['symbol']]=time.time()
+                        # [P0-FIX 28-jun-2026] Cooldown extra longo crypto pra reentrada rapida
+                        # Auditor: NEAR=73 trades EARLY_STOP <2min, perda R$16k.
+                        try:
+                            _open_ts_c = trade.get('opened_at')
+                            if isinstance(_open_ts_c, str):
+                                _ot_c = datetime.fromisoformat(_open_ts_c.replace('Z',''))
+                            else:
+                                _ot_c = _open_ts_c
+                            _dur_sec_c = (now - _ot_c).total_seconds() if _ot_c else 0
+                            if reason in ('EARLY_STOP','V3_REVERSAL') and _dur_sec_c < 120:
+                                _fast_cd_c = int(os.environ.get('FAST_STOP_COOLDOWN_MIN', 60)) * 60
+                                symbol_cooldown[trade['symbol']] = time.time() + _fast_cd_c
+                                log.info(f"[FAST-STOP-COOLDOWN] {trade['symbol']}(crypto): {reason} em {_dur_sec_c:.0f}s — cooldown {_fast_cd_c//60}min")
+                        except Exception as _ce_c:
+                            log.debug(f'fast_stop_cd crypto: {_ce_c}')
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
                         try:
                             apply_fee_to_trade(c)  # [v10.14] fee simulado
@@ -7351,6 +7384,17 @@ def stock_execution_worker():
                     score = _r['score']
                     regime_v2_val = _r['regime']
                     signal_v2_val = _r['signal']
+                    # [P0-FIX 28-jun-2026] Respeitar blocked=True do compute_score_v3
+                    # Auditor especialista: score_engine_v2.py:1510 calcula blocked
+                    # mas stocks ignorava — 297 trades stocks com score>=85 deram
+                    # EARLY_STOP perdendo R$245k em 30d. Defesa estava off.
+                    if _r.get('blocked', False) and os.environ.get('RESPECT_V3_BLOCKED', 'true').lower() == 'true':
+                        _bk_reason = _r.get('block_reason', 'PATTERN_BLOCK')
+                        log.info(f"V3_BLOCKED {sym}: score={score} {_bk_reason} — trade rejeitada")
+                        record_shadow_decision(signal_id if 'signal_id' in dir() else f'stk-{sym}',
+                                                sig_enriched if 'sig_enriched' in dir() else {},
+                                                f'v3_blocked_{_bk_reason}'[:60])
+                        continue
                     # [FIX especialista 24-jun-2026] Atualizar _feats_disc com signal_v2 e regime
                     # antes do features_json ser persistido. Sem isso, esses 2 campos vinham
                     # vazios em 100% dos trades exportados.

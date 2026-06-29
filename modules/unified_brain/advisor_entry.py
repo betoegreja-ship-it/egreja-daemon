@@ -38,8 +38,12 @@ from .advisor_news import news_vote
 
 
 def _regime_vote(db_fn, log, *, asset_type: str, regime: Optional[str],
-                 direction: Optional[str]) -> Dict[str, Any]:
-    """Voto 3: performance do asset_type nesse regime+direction nos últimos 30d."""
+                 direction: Optional[str], market_type: Optional[str] = None) -> Dict[str, Any]:
+    """Voto 3: performance do asset_type+market nesse regime+direction nos últimos 30d.
+
+    [P1-FIX 28-jun-2026] Adicionado filtro market_type pra isolar B3 vs NYSE.
+    Auditor: misturar B3 e NYSE como asset_type=stock contamina aprendizado.
+    """
     if not regime:
         return {'vote': DEFAULT_NEUTRAL_VOTE, 'reason': 'no_regime'}
 
@@ -52,6 +56,10 @@ def _regime_vote(db_fn, log, *, asset_type: str, regime: Optional[str],
         sql_parts = ["asset_type=%s", "status='CLOSED'",
                      "regime_v2=%s", "closed_at > NOW() - INTERVAL 30 DAY"]
         params = [asset_type, regime]
+        # [P1-FIX] Filtra B3 ou NYSE se market_type fornecido
+        if market_type in ('B3', 'NYSE', 'NASDAQ'):
+            sql_parts.append("market=%s")
+            params.append(market_type)
         if direction in ('LONG', 'SHORT'):
             sql_parts.append("direction=%s")
             params.append(direction)

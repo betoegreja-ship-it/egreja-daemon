@@ -22,19 +22,26 @@ from .isolation import should_bypass_adaptive_learning
 
 
 _CACHE_TTL_SEC = 3600  # 1 hora
-_pattern_cache: Dict[Tuple[str, str], Tuple[float, Optional[str]]] = {}
+_pattern_cache: Dict[Tuple[str, str, str], Tuple[float, Optional[str]]] = {}
 _conf_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _cache_lock = threading.Lock()
 
 
-def get_pattern_verdict(db_fn, log, pattern_hash, asset_type):
+def _market_scope(asset_type: str, market_type: Optional[str] = None) -> str:
+    if asset_type in ('stock', 'stocks') and market_type in ('B3', 'NYSE', 'NASDAQ'):
+        return f'stock:{market_type}'
+    return asset_type
+
+
+def get_pattern_verdict(db_fn, log, pattern_hash, asset_type, market_type: Optional[str] = None):
     """Retorna 'GOLD'|'GREEN'|'YELLOW'|'RED'|'GREY'|None pra (hash, asset_type)."""
     if should_bypass_adaptive_learning(asset_type):
         return None
     if not pattern_hash:
         return None
 
-    key = (pattern_hash, asset_type)
+    scope = _market_scope(asset_type, market_type)
+    key = (pattern_hash, asset_type, scope)
     now = time.time()
     with _cache_lock:
         cached = _pattern_cache.get(key)
@@ -48,10 +55,12 @@ def get_pattern_verdict(db_fn, log, pattern_hash, asset_type):
         if not conn:
             return None
         c = conn.cursor()
+        # pattern_hash ja inclui market_type no feature_hash canonico. Tentamos
+        # primeiro o escopo market-specific, depois o asset_type legado.
         c.execute("""SELECT actionability FROM learning_pattern_intelligence
-                     WHERE pattern_hash = %s AND asset_type = %s
+                     WHERE pattern_hash = %s AND asset_type IN (%s, %s)
                      ORDER BY id DESC LIMIT 1""",
-                  (pattern_hash, asset_type))
+                  (pattern_hash, scope, asset_type))
         r = c.fetchone()
         if r:
             verdict = r[0]
@@ -67,16 +76,17 @@ def get_pattern_verdict(db_fn, log, pattern_hash, asset_type):
     return verdict
 
 
-def get_confidence_penalty(db_fn, log, asset_type, confidence_value):
+def get_confidence_penalty(db_fn, log, asset_type, confidence_value, market_type: Optional[str] = None):
     """Retorna int penalty pra score baseado em calibração da confidence band."""
     if should_bypass_adaptive_learning(asset_type):
         return 0
     if confidence_value is None:
         return 0
 
+    scope = _market_scope(asset_type, market_type)
     now = time.time()
     with _cache_lock:
-        cached = _conf_cache.get(asset_type)
+        cached = _conf_cache.get(scope)
         if cached and (now - cached[0]) < _CACHE_TTL_SEC:
             return _apply_penalty(cached[1], confidence_value)
 
@@ -91,8 +101,12 @@ def get_confidence_penalty(db_fn, log, asset_type, confidence_value):
                             recommended_dead_zone, sample_size, total_pnl
                      FROM learning_confidence_calibration
                      WHERE asset_type = %s
-                     ORDER BY id DESC LIMIT 20""", (asset_type,))
+                     ORDER BY id DESC LIMIT 20""", (scope,))
         rows = c.fetchall()
+        if not rows and scope != asset_type and asset_type in ('stock', 'stocks'):
+            # Fail-safe: nao aplicar penalidade agregada de stock em B3/NYSE.
+            # Sem calibracao market-specific, o voto deve ser neutro.
+            rows = []
         seen = set()
         for r in rows:
             k = (float(r['band_lower']), float(r['band_upper']))
@@ -108,7 +122,7 @@ def get_confidence_penalty(db_fn, log, asset_type, confidence_value):
             except Exception: pass
 
     with _cache_lock:
-        _conf_cache[asset_type] = (now, bands)
+        _conf_cache[scope] = (now, bands)
     return _apply_penalty(bands, confidence_value)
 
 

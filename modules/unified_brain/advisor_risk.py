@@ -14,7 +14,8 @@ from .advisor_common import get_cache, DEFAULT_NEUTRAL_VOTE
 
 def risk_vote(db_fn, log, *,
               asset_type: str,
-              portfolio_state: Optional[Dict] = None) -> Dict[str, Any]:
+              portfolio_state: Optional[Dict] = None,
+              market_type: Optional[str] = None) -> Dict[str, Any]:
     """Voto 0..1 — ALTO = seguro abrir trade, BAIXO = dia ruim, pare.
 
     Retorna {
@@ -25,7 +26,8 @@ def risk_vote(db_fn, log, *,
     }
     """
     cache = get_cache()
-    key = f'risk:{asset_type}'
+    mkt_key = market_type or 'any'
+    key = f'risk:{asset_type}:{mkt_key}'
     cached = cache.get(key)
     if cached is not None:
         return cached
@@ -43,7 +45,12 @@ def risk_vote(db_fn, log, *,
         if not conn:
             return result
         c = conn.cursor(dictionary=True)
-        c.execute("""
+        where_parts = ["asset_type=%s", "status='CLOSED'", "closed_at > CURDATE()"]
+        params = [asset_type]
+        if market_type in ('B3', 'NYSE', 'NASDAQ', 'CRYPTO'):
+            where_parts.append("market=%s")
+            params.append(market_type)
+        sql = f"""
             SELECT 
               COUNT(*) as n_closed,
               SUM(CASE WHEN close_reason LIKE 'STOP_LOSS%%' THEN 1 ELSE 0 END) as n_stops,
@@ -51,9 +58,9 @@ def risk_vote(db_fn, log, *,
               SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as n_losses,
               SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as n_wins
             FROM trades 
-            WHERE asset_type=%s AND status='CLOSED'
-              AND closed_at > CURDATE()
-        """, (asset_type,))
+            WHERE {' AND '.join(where_parts)}
+        """
+        c.execute(sql, tuple(params))
         r = c.fetchone()
         c.close()
     except Exception as e:
@@ -126,14 +133,16 @@ def risk_vote(db_fn, log, *,
 def risk_exit_vote(db_fn, log, *,
                    asset_type: str,
                    current_pnl: float,
-                   portfolio_state: Optional[Dict] = None) -> Dict[str, Any]:
+                   portfolio_state: Optional[Dict] = None,
+                   market_type: Optional[str] = None) -> Dict[str, Any]:
     """Para Exit Advisor: voto ALTO = feche agora (risco alto).
     Simétrico inverso do risk_vote do Entry.
     """
     # Inverte a semântica: se dia está ruim E a trade atual está positiva,
     # sinal pra proteger lucro (fechar)
     entry = risk_vote(db_fn, log, asset_type=asset_type,
-                      portfolio_state=portfolio_state)
+                      portfolio_state=portfolio_state,
+                      market_type=market_type)
     entry_vote = entry['vote']
 
     # Se dia está ruim (entry_vote baixo) E trade em lucro → exit_vote alto
@@ -154,4 +163,3 @@ def risk_exit_vote(db_fn, log, *,
         'n_stops_today': entry['n_stops_today'],
         'reason': reason,
     }
-

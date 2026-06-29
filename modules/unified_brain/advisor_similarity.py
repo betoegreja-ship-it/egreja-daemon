@@ -19,7 +19,8 @@ MIN_EVIDENCE = 5
 
 def similarity_vote(db_fn, log, *,
                     symbol: str, asset_type: str,
-                    regime: Optional[str], direction: Optional[str]) -> Dict[str, Any]:
+                    regime: Optional[str], direction: Optional[str],
+                    market_type: Optional[str] = None) -> Dict[str, Any]:
     """Voto 0..1 baseado em histórico de trades similares.
 
     Retorna {
@@ -31,7 +32,8 @@ def similarity_vote(db_fn, log, *,
     }
     """
     cache = get_cache()
-    key = f'sim:{symbol}:{asset_type}:{regime or "any"}:{direction or "any"}'
+    mkt_key = market_type or 'any'
+    key = f'sim:{symbol}:{asset_type}:{mkt_key}:{regime or "any"}:{direction or "any"}'
     cached = cache.get(key)
     if cached is not None:
         return cached
@@ -55,6 +57,9 @@ def similarity_vote(db_fn, log, *,
         where_parts = ["symbol=%s", "asset_type=%s", "status='CLOSED'",
                        f"closed_at > NOW() - INTERVAL {LOOKBACK_DAYS} DAY"]
         params = [symbol, asset_type]
+        if market_type in ('B3', 'NYSE', 'NASDAQ', 'CRYPTO'):
+            where_parts.append("market=%s")
+            params.append(market_type)
         if direction in ('LONG', 'SHORT'):
             where_parts.append("direction=%s")
             params.append(direction)
@@ -113,7 +118,8 @@ def similarity_vote(db_fn, log, *,
 def exit_similarity_outcome(db_fn, log, *,
                             symbol: str, asset_type: str,
                             current_pnl_pct: float,
-                            holding_minutes: int) -> Dict[str, Any]:
+                            holding_minutes: int,
+                            market_type: Optional[str] = None) -> Dict[str, Any]:
     """Para exits: consulta trades similares que chegaram em pnl semelhante.
     Quantos continuaram subindo? Quantos reverteram?
 
@@ -132,14 +138,20 @@ def exit_similarity_outcome(db_fn, log, *,
             return result
         c = conn.cursor(dictionary=True)
         # Trades do mesmo símbolo que atingiram pnl_pct >= current em histórico
-        c.execute("""
+        where_parts = ["symbol=%s", "asset_type=%s", "status='CLOSED'",
+                       "peak_pnl_pct >= %s",
+                       "closed_at > NOW() - INTERVAL 30 DAY"]
+        params = [symbol, asset_type, float(current_pnl_pct) - 0.2]
+        if market_type in ('B3', 'NYSE', 'NASDAQ', 'CRYPTO'):
+            where_parts.append("market=%s")
+            params.append(market_type)
+        sql = f"""
             SELECT peak_pnl_pct, pnl_pct
             FROM trades
-            WHERE symbol=%s AND asset_type=%s AND status='CLOSED'
-              AND peak_pnl_pct >= %s
-              AND closed_at > NOW() - INTERVAL 30 DAY
+            WHERE {' AND '.join(where_parts)}
             ORDER BY closed_at DESC LIMIT 20
-        """, (symbol, asset_type, float(current_pnl_pct) - 0.2))
+        """
+        c.execute(sql, tuple(params))
         rows = c.fetchall()
         c.close()
     except Exception as e:
@@ -166,4 +178,3 @@ def exit_similarity_outcome(db_fn, log, *,
         'reason': f'n{len(rows)}_revprob{int(rev_prob*100)}',
     })
     return result
-

@@ -170,11 +170,14 @@ def evaluate_entry(db_fn, log, *,
     # 3) Coletar os 5 votos
     try:
         v_sim = similarity_vote(db_fn, log, symbol=symbol, asset_type=asset_type,
-                                 regime=regime_v3, direction=direction)
+                                 regime=regime_v3, direction=direction,
+                                 market_type=market_type)
         v_risk = risk_vote(db_fn, log, asset_type=asset_type,
-                            portfolio_state=portfolio_state)
+                            portfolio_state=portfolio_state,
+                            market_type=market_type)
         v_regime = _regime_vote(db_fn, log, asset_type=asset_type,
-                                regime=regime_v3, direction=direction)
+                                regime=regime_v3, direction=direction,
+                                market_type=market_type)
         v_cal = _calendar_vote(asset_type=asset_type,
                                hour_of_day=hour_of_day, weekday=weekday)
         v_news = news_vote(db_fn, log, symbol=symbol, asset_type=asset_type,
@@ -213,8 +216,8 @@ def evaluate_entry(db_fn, log, *,
             get_pattern_verdict as _get_verdict,
             get_confidence_penalty as _get_conf_pen,
         )
-        verdict = _get_verdict(db_fn, log, feature_hash, asset_type)
-        conf_pen = _get_conf_pen(db_fn, log, asset_type, learning_confidence)
+        verdict = _get_verdict(db_fn, log, feature_hash, asset_type, market_type)
+        conf_pen = _get_conf_pen(db_fn, log, asset_type, learning_confidence, market_type)
         adaptive_overlay['pattern_verdict'] = verdict
         adaptive_overlay['confidence_penalty'] = conf_pen
 
@@ -291,4 +294,3 @@ def evaluate_entry(db_fn, log, *,
         'bypassed': False,
         'adaptive_overlay': adaptive_overlay,
     }
-

@@ -233,54 +233,89 @@ def recalibrate_brain(lookback_days=None) -> dict:
 
         # ═══ 3. COMBO WEIGHTS ═══
         for f1, f2 in LEARNED_COMBOS:
-            buckets = defaultdict(list)
+            scoped_buckets = {
+                'ALL': defaultdict(list),
+                'stock': defaultdict(list),
+                'crypto': defaultdict(list),
+                'B3': defaultdict(list),
+                'NYSE': defaultdict(list),
+            }
             for r in rows:
                 v1 = r['hr'] if f1 == 'hour' else r['_feats'].get(f1) if f1 != 'direction' else r['direction']
                 v2 = r['hr'] if f2 == 'hour' else r['_feats'].get(f2) if f2 != 'direction' else r['direction']
                 if v1 is None or v2 is None: continue
-                key = f'{v1}/{v2}'
-                buckets[key].append(r)
+                v1s = str(v1).strip(); v2s = str(v2).strip()
+                if v1s.upper() in ('UNKNOWN', 'NONE', 'NULL', 'N/A', ''): continue
+                if v2s.upper() in ('UNKNOWN', 'NONE', 'NULL', 'N/A', ''): continue
+                key = f'{v1s}/{v2s}'
+                scoped_buckets['ALL'][key].append(r)
+                if r['asset_type'] in ('stock','stocks'):
+                    scoped_buckets['stock'][key].append(r)
+                elif r['asset_type'] == 'crypto':
+                    scoped_buckets['crypto'][key].append(r)
+                if r['market'] == 'B3':
+                    scoped_buckets['B3'][key].append(r)
+                elif r['market'] in ('NYSE','NASDAQ'):
+                    scoped_buckets['NYSE'][key].append(r)
 
-            for combo_val, rs in buckets.items():
-                n = len(rs)
-                if n < MIN_SAMPLES: continue
-                wins = sum(r['_win'] for r in rs)
-                wr = 100 * wins / n
-                avg = sum(r['_pnl'] for r in rs) / n
-                # Expected Value tambem em combos (especialista identificou combos
-                # perdedores com win-rate normal mas EV muito negativo):
-                # crypto LONG OVERNIGHT SURGE: 962 trades, 49.7% win, -R$ 51.747
-                win_pnls = [r['_pnl'] for r in rs if r['_pnl'] > 0]
-                loss_pnls = [r['_pnl'] for r in rs if r['_pnl'] <= 0]
-                avg_win = sum(win_pnls)/len(win_pnls) if win_pnls else 0.0
-                avg_loss = sum(loss_pnls)/len(loss_pnls) if loss_pnls else 0.0
-                p_w = wr/100; p_l = 1-p_w
-                ev = p_w * avg_win + p_l * avg_loss
-                adj_wr = (wr - baseline) * SCALE_FACTOR * 0.7
-                adj_ev = ev * 7.0  # combos: peso EV um pouco menor
-                adj_raw = 0.6 * adj_wr + 0.4 * adj_ev
-                adj = _clip(_shrinkage(adj_raw, n))
-                if abs(adj) < 0.5: continue
-                combo_key = f'{f1}×{f2}'
-                try:
-                    cur.execute("""INSERT INTO brain_combo_weights
-                        (combo_key, combo_value, asset_scope, n_samples,
-                         win_rate, avg_pnl_pct, expected_value, adj_pts)
-                        VALUES (%s,%s,'ALL',%s,%s,%s,%s,%s)
-                        ON DUPLICATE KEY UPDATE
-                          n_samples=VALUES(n_samples), win_rate=VALUES(win_rate),
-                          avg_pnl_pct=VALUES(avg_pnl_pct),
-                          expected_value=VALUES(expected_value),
-                          adj_pts=VALUES(adj_pts)""",
-                        (combo_key[:128], combo_val[:128], n, round(wr,2),
-                         round(avg,4), round(ev,4), round(adj,2)))
-                    combos_updated += 1
-                except Exception as e:
-                    log.debug(f'combo insert {combo_key}/{combo_val}: {e}')
+            scope_baselines = {
+                'ALL': baseline,
+                'stock': baseline_stock,
+                'crypto': baseline_crypto,
+                'B3': baseline_b3,
+                'NYSE': baseline_nyse,
+            }
+            for scope, buckets in scoped_buckets.items():
+                base = scope_baselines.get(scope, baseline)
+                for combo_val, rs in buckets.items():
+                    n = len(rs)
+                    if n < MIN_SAMPLES: continue
+                    wins = sum(r['_win'] for r in rs)
+                    wr = 100 * wins / n
+                    avg = sum(r['_pnl'] for r in rs) / n
+                    # Expected Value tambem em combos (especialista identificou combos
+                    # perdedores com win-rate normal mas EV muito negativo):
+                    # crypto LONG OVERNIGHT SURGE: 962 trades, 49.7% win, -R$ 51.747
+                    win_pnls = [r['_pnl'] for r in rs if r['_pnl'] > 0]
+                    loss_pnls = [r['_pnl'] for r in rs if r['_pnl'] <= 0]
+                    avg_win = sum(win_pnls)/len(win_pnls) if win_pnls else 0.0
+                    avg_loss = sum(loss_pnls)/len(loss_pnls) if loss_pnls else 0.0
+                    p_w = wr/100; p_l = 1-p_w
+                    ev = p_w * avg_win + p_l * avg_loss
+                    adj_wr = (wr - base) * SCALE_FACTOR * 0.7
+                    adj_ev = ev * 7.0  # combos: peso EV um pouco menor
+                    adj_raw = 0.6 * adj_wr + 0.4 * adj_ev
+                    adj = _clip(_shrinkage(adj_raw, n))
+                    if abs(adj) < 0.5: continue
+                    combo_key = f'{f1}×{f2}'
+                    try:
+                        cur.execute("""INSERT INTO brain_combo_weights
+                            (combo_key, combo_value, asset_scope, n_samples,
+                             win_rate, avg_pnl_pct, expected_value, adj_pts)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON DUPLICATE KEY UPDATE
+                              n_samples=VALUES(n_samples), win_rate=VALUES(win_rate),
+                              avg_pnl_pct=VALUES(avg_pnl_pct),
+                              expected_value=VALUES(expected_value),
+                              adj_pts=VALUES(adj_pts)""",
+                            (combo_key[:128], combo_val[:128], scope, n, round(wr,2),
+                             round(avg,4), round(ev,4), round(adj,2)))
+                        combos_updated += 1
+                    except Exception as e:
+                        log.debug(f'combo insert {combo_key}/{combo_val}/{scope}: {e}')
 
         # ═══ 4. SYMBOL STATS ═══
         sym_buckets = defaultdict(list)
-        for r in rows: sym_buckets[(r['symbol'], r['asset_type'])].append(r)
+        for r in rows:
+            if r['asset_type'] == 'crypto':
+                scope = 'crypto'
+            elif r['market'] == 'B3':
+                scope = 'B3'
+            elif r['market'] in ('NYSE','NASDAQ'):
+                scope = 'NYSE'
+            else:
+                scope = 'stock' if r['asset_type'] in ('stock','stocks') else r['asset_type']
+            sym_buckets[(r['symbol'], scope)].append(r)
         # P1: meia-vida 30d — trades recentes pesam mais
         # Para cada trade, calcular weight = 0.5^(days_old / 30)
         from datetime import datetime as _dt
@@ -314,7 +349,14 @@ def recalibrate_brain(lookback_days=None) -> dict:
             avg_loss = sum(loss_pnls)/len(loss_pnls) if loss_pnls else 0.0
             p_w = wr/100; p_l = 1-p_w
             sym_ev = p_w * avg_win + p_l * avg_loss
-            base = baseline_stock if atype in ('stock','stocks') else baseline_crypto
+            if atype == 'B3':
+                base = baseline_b3
+            elif atype == 'NYSE':
+                base = baseline_nyse
+            elif atype == 'crypto':
+                base = baseline_crypto
+            else:
+                base = baseline_stock if atype in ('stock','stocks') else baseline
             # P1: usar metricas RECENTES (com decay 30d) pra evitar "Halo Effect" historico
             # AZEV4 perdeu 100% trades — mas se eram todos antigos e ele virou, o decay reage rapido
             adj_wr = (wr_recent - base) * 0.8

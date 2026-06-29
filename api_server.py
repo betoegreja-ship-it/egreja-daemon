@@ -6683,7 +6683,8 @@ def monitor_trades():
                             regime_v3_entry=trade.get('regime_v2'),
                             regime_v3_current=None,
                             direction=trade.get('direction'),
-                            portfolio_state={'open_positions': len(stocks_open)})
+                            portfolio_state={'open_positions': len(stocks_open)},
+                            market_type=mkt)
                         if _exit_adv_stk and not _exit_adv_stk.get('bypassed'):
                             try:
                                 _exlog_s(get_db, log,
@@ -6890,7 +6891,8 @@ def monitor_trades():
                             regime_v3_entry=trade.get('regime_v2'),
                             regime_v3_current=None,
                             direction=trade.get('direction'),
-                            portfolio_state={'open_positions': len(crypto_open)})
+                            portfolio_state={'open_positions': len(crypto_open)},
+                            market_type='CRYPTO')
                         if _exit_adv_cry and not _exit_adv_cry.get('bypassed'):
                             try:
                                 _exlog_c(get_db, log,
@@ -10368,7 +10370,7 @@ def brain_calibration_ev():
                        WHERE expected_value IS NOT NULL
                        ORDER BY expected_value ASC LIMIT 30""")
         bot_ev = cur.fetchall()
-        cur.execute("""SELECT combo_key, combo_value, n_samples, win_rate,
+        cur.execute("""SELECT combo_key, combo_value, asset_scope, n_samples, win_rate,
                               expected_value, adj_pts FROM brain_combo_weights
                        WHERE expected_value IS NOT NULL
                        ORDER BY expected_value ASC LIMIT 20""")
@@ -10548,14 +10550,15 @@ def brain_specialist_dashboard():
                               'total_pnl_pct': float(r['total_pnl_pct'] or 0),
                               'ewma_pnl_pct': float(r['ewma_pnl_pct'] or 0)}
                              for r in cur.fetchall()]
-            # vs unified: conta features OPOSTAS (sinal trocado)
+            # vs unified: conta features OPOSTAS (sinal trocado), no mesmo escopo.
+            _uni_scope = market if market in ('B3', 'NYSE') else ('crypto' if market == 'CRYPTO' else market)
             cur.execute("""SELECT s.feature_name, s.feature_value, s.adj_pts as spec_adj, u.adj_pts as uni_adj
                            FROM brain_specialist_feature_weights s
                            LEFT JOIN brain_feature_weights u
                              ON s.feature_name=u.feature_name
                             AND s.feature_value=u.feature_value
-                            AND u.asset_scope='ALL'
-                           WHERE s.market=%s AND u.adj_pts IS NOT NULL""", (market,))
+                            AND u.asset_scope=%s
+                           WHERE s.market=%s AND u.adj_pts IS NOT NULL""", (_uni_scope, market))
             cmp_rows = cur.fetchall()
             opposite_signs = sum(1 for r in cmp_rows
                                   if float(r['spec_adj'] or 0) * float(r['uni_adj'] or 0) < 0)

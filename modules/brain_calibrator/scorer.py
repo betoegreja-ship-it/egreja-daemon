@@ -50,10 +50,10 @@ def _reload_cache():
             key = (r['feature_name'], str(r['feature_value']), r['asset_scope'])
             feats[key] = float(r['adj_pts'] or 0)
 
-        cur.execute("SELECT combo_key, combo_value, adj_pts FROM brain_combo_weights")
+        cur.execute("SELECT combo_key, combo_value, asset_scope, adj_pts FROM brain_combo_weights")
         combos = {}
         for r in cur.fetchall():
-            key = (r['combo_key'], r['combo_value'])
+            key = (r['combo_key'], r['combo_value'], r.get('asset_scope') or 'ALL')
             combos[key] = float(r['adj_pts'] or 0)
 
         cur.execute("SELECT symbol, asset_type, symbol_skill_pts FROM brain_symbol_stats")
@@ -120,17 +120,20 @@ def apply_calibration(score_original: int, features: dict, symbol: str,
     asset_norm = 'stock' if asset_type in ('stock','stocks') else asset_type
 
     # ── 1. Features universais ──
+    market_raw = (features.get('market') or features.get('market_type') or '').upper()
+    market_scope = 'NYSE' if market_raw == 'NASDAQ' else market_raw
+
     feature_values = {
         'time_bucket': features.get('time_bucket'),
         'ema_alignment': features.get('ema_alignment'),
         'volume_bucket': features.get('volume_bucket'),
         'atr_bucket': features.get('atr_bucket'),
         'rsi_bucket': features.get('rsi_bucket'),
-        'market_type': features.get('market_type'),
+        'market_type': market_scope or features.get('market_type'),
         'regime': features.get('regime'),
         'signal_type': features.get('signal_type') or features.get('signal_v2'),
         'direction': direction,
-        'market': features.get('market'),
+        'market': market_scope,
     }
     if hour_utc is not None:
         feature_values['hour'] = hour_utc
@@ -140,13 +143,19 @@ def apply_calibration(score_original: int, features: dict, symbol: str,
         combos_cache = dict(_weights_cache['combos'])
         syms_cache = dict(_weights_cache['symbols'])
 
-    # P1: scope chain agora inclui mercado (B3/NYSE) antes do asset_type
-    # market vem do feature_values['market']
-    market = feature_values.get('market', '')
+    # P1/P0: evitar contaminacao cross-market. Por padrao, B3/NYSE/CRYPTO
+    # usam apenas o proprio escopo; fallback global so via env explicito.
     scope_chain = []
-    if market in ('B3', 'NYSE'): scope_chain.append(market)
-    scope_chain.append(asset_norm)
-    scope_chain.append('ALL')
+    if market_scope in ('B3', 'NYSE'):
+        scope_chain.append(market_scope)
+    elif asset_norm == 'crypto':
+        scope_chain.append('crypto')
+    else:
+        scope_chain.append(asset_norm)
+    if os.environ.get('CALIBRATOR_ALLOW_GLOBAL_FALLBACK', 'false').lower() == 'true':
+        if asset_norm not in scope_chain:
+            scope_chain.append(asset_norm)
+        scope_chain.append('ALL')
 
     for fname, fval in feature_values.items():
         if fval is None or fval == '': continue
@@ -174,16 +183,25 @@ def apply_calibration(score_original: int, features: dict, symbol: str,
 
     for ckey, cval in combos_check:
         if '/' in cval and cval not in ('/',):
-            adj = combos_cache.get((ckey, cval))
-            if adj is not None and adj != 0:
-                adj_total += adj
-                breakdown.append({'src': f'combo:{ckey}={cval}', 'pts': round(adj, 2)})
+            for scope in scope_chain:
+                adj = combos_cache.get((ckey, cval, scope))
+                if adj is not None and adj != 0:
+                    adj_total += adj
+                    breakdown.append({'src': f'combo:{ckey}={cval}({scope})', 'pts': round(adj, 2)})
+                    break
 
     # ── 3. Symbol skill ──
-    sym_adj = syms_cache.get((symbol, asset_norm))
+    sym_scope_chain = [s for s in scope_chain if s != 'ALL']
+    sym_adj = None
+    sym_scope_used = None
+    for scope in sym_scope_chain:
+        sym_adj = syms_cache.get((symbol, scope))
+        if sym_adj is not None:
+            sym_scope_used = scope
+            break
     if sym_adj is not None and sym_adj != 0:
         adj_total += sym_adj
-        breakdown.append({'src': f'symbol:{symbol}({asset_norm})', 'pts': round(sym_adj, 2)})
+        breakdown.append({'src': f'symbol:{symbol}({sym_scope_used})', 'pts': round(sym_adj, 2)})
 
     # Cap total adjustment pra evitar amplificacao extrema
     MAX_TOTAL_ADJ = float(os.environ.get('CALIBRATOR_MAX_TOTAL_ADJ', 25.0))

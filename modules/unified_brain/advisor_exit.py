@@ -131,7 +131,8 @@ def evaluate_exit(db_fn, log, *,
                   regime_v3_entry: Optional[str] = None,
                   regime_v3_current: Optional[str] = None,
                   direction: Optional[str] = None,
-                  portfolio_state: Optional[Dict] = None) -> Dict[str, Any]:
+                  portfolio_state: Optional[Dict] = None,
+                  market_type: Optional[str] = None) -> Dict[str, Any]:
     """Avalia exit de uma trade aberta. Retorna decisão estruturada."""
     # 1) Bypass absoluto
     if should_bypass_ai(asset_type, strategy):
@@ -168,7 +169,8 @@ def evaluate_exit(db_fn, log, *,
                                    current_pnl_pct=cur_pnl_pct)
         v_risk = risk_exit_vote(db_fn, log, asset_type=asset_type,
                                  current_pnl=float(current_pnl or 0),
-                                 portfolio_state=portfolio_state)
+                                 portfolio_state=portfolio_state,
+                                 market_type=market_type)
     except Exception as e:
         log.error(f'[ADVISOR:exit] vote err {trade_id}: {e}')
         d = _bypass_exit()
@@ -259,4 +261,3 @@ def evaluate_exit(db_fn, log, *,
         'shadow': shadow,
         'bypassed': False,
     }
-

@@ -10802,6 +10802,222 @@ def brain_specialist_ab():
         return jsonify({'error': str(e)}), 500
 
 
+def _meta_days_arg(default=30):
+    try:
+        return max(1, min(int(request.args.get('days', default)), 120))
+    except Exception:
+        return default
+
+
+def _meta_source_bucket(source):
+    s = (source or '').lower()
+    if 'cedro' in s:
+        return 'cedro-socket'
+    if 'brapi' in s:
+        return 'brapi'
+    if 'polygon' in s:
+        return 'polygon'
+    if 'binance' in s:
+        return 'binance'
+    if 'fmp' in s:
+        return 'fmp'
+    if 'yahoo' in s:
+        return 'yahoo'
+    return s or 'unknown'
+
+
+def _meta_provider_context():
+    """Read-only provider snapshot for Meta-Brain. Never exposes secrets."""
+    providers = {
+        'polygon': {
+            'configured': bool(POLYGON_API_KEY),
+            'ws_loaded': bool(_polygon_ws_loaded),
+            'connected': False,
+            'cached_symbols': 0,
+            'role': 'NYSE/NASDAQ real-time, snapshots, candles and news',
+        },
+        'brapi': {
+            'configured': bool(BRAPI_TOKEN),
+            'connected': bool(BRAPI_TOKEN),
+            'role': 'B3 quotes, candles, fundamentals, dividends and FX/macro fallback',
+        },
+        'cedro': {
+            'configured': bool(os.environ.get('CEDRO_USER') and os.environ.get('CEDRO_PASSWORD')),
+            'connected': False,
+            'enabled': bool(_cedro_socket and getattr(_cedro_socket, 'enabled', False)),
+            'cached_symbols': 0,
+            'subscriptions': 0,
+            'role': 'B3 real-time socket, dense history, market depth and derivatives context',
+        },
+    }
+
+    if _polygon_ws_loaded:
+        try:
+            st = _polygon_ws_status()
+            providers['polygon'].update({
+                'connected': bool(st.get('connected')),
+                'cached_symbols': int(st.get('cached_symbols') or 0),
+                'reconnects': int(st.get('reconnects') or 0),
+                'uptime_s': st.get('uptime_s'),
+            })
+        except Exception as _pse:
+            providers['polygon']['error'] = type(_pse).__name__
+
+    if _cedro_socket:
+        try:
+            ch = _cedro_socket.healthcheck()
+            providers['cedro'].update({
+                'connected': bool(ch.get('connected')),
+                'cached_symbols': int(ch.get('cached_symbols') or 0),
+                'subscriptions': int(ch.get('subscriptions') or 0),
+                'msg_count': int(ch.get('msg_count') or 0),
+                'reconnects': int(ch.get('reconnects') or 0),
+                'last_msg_age_s': ch.get('last_msg_age_s'),
+                'uptime_s': ch.get('uptime_s'),
+            })
+        except Exception as _cse:
+            providers['cedro']['error'] = type(_cse).__name__
+
+    with dq_lock:
+        dq_rows = list(data_quality.values())
+    dq_sources = {}
+    qualities = []
+    stale_count = 0
+    for row in dq_rows:
+        b = _meta_source_bucket(row.get('source'))
+        dq_sources[b] = dq_sources.get(b, 0) + 1
+        qualities.append(float(row.get('quality') or 0))
+        if row.get('stale'):
+            stale_count += 1
+    data_quality_snapshot = {
+        'observations': len(dq_rows),
+        'source_counts': dq_sources,
+        'avg_quality': round(sum(qualities) / len(qualities), 2) if qualities else None,
+        'stale_count': stale_count,
+    }
+
+    source_counts = {}
+    with state_lock:
+        stock_items = list(stock_prices.values())
+        crypto_items = list(crypto_prices.values())
+    for row in stock_items + crypto_items:
+        b = _meta_source_bucket(row.get('source'))
+        source_counts[b] = source_counts.get(b, 0) + 1
+
+    return {
+        'providers': providers,
+        'data_quality': data_quality_snapshot,
+        'market_cache': {
+            'stock_symbols': len(stock_items),
+            'crypto_symbols': len(crypto_items),
+            'source_counts': source_counts,
+        },
+    }
+
+
+@app.route('/meta/status')
+def meta_status():
+    """Meta-Brain MVP: read-only operational awareness snapshot."""
+    try:
+        from modules.meta_brain import build_meta_status
+        return jsonify(build_meta_status(get_db, lookback_days=_meta_days_arg(), provider_context=_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/meta/briefing')
+def meta_briefing():
+    """Human-readable Meta-Brain briefing. Read-only."""
+    try:
+        from modules.meta_brain import build_briefing
+        return jsonify(build_briefing(get_db, lookback_days=_meta_days_arg(), provider_context=_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/meta/market-edge')
+def meta_market_edge():
+    """Ranks B3/NYSE/CRYPTO by current operational edge. Read-only."""
+    try:
+        from modules.meta_brain import build_market_edge
+        return jsonify(build_market_edge(get_db, lookback_days=_meta_days_arg(), provider_context=_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/meta/errors')
+def meta_errors():
+    """Lists the most painful recent errors by market/symbol. Read-only."""
+    try:
+        from modules.meta_brain import build_error_report
+        return jsonify(build_error_report(get_db, lookback_days=_meta_days_arg(), provider_context=_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/meta/capital-gate')
+def meta_capital_gate():
+    """Recommends capital gates. It never changes capital by itself."""
+    try:
+        from modules.meta_brain import build_capital_gate
+        return jsonify(build_capital_gate(get_db, lookback_days=_meta_days_arg(), provider_context=_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/meta/patterns')
+def meta_patterns():
+    """Pattern mining by market. Read-only."""
+    try:
+        from modules.meta_brain import build_patterns
+        return jsonify(build_patterns(get_db, lookback_days=_meta_days_arg(), provider_context=_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/meta/recommendations')
+def meta_recommendations():
+    """Meta-Brain recommendations. It never executes actions."""
+    try:
+        from modules.meta_brain import build_recommendations
+        return jsonify(build_recommendations(get_db, lookback_days=_meta_days_arg(), provider_context=_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/meta/intelligence')
+def meta_intelligence():
+    """Full Meta-Brain intelligence payload for dashboard/chat. Read-only."""
+    try:
+        from modules.meta_brain import build_intelligence
+        return jsonify(build_intelligence(get_db, lookback_days=_meta_days_arg(), provider_context=_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/meta/data-sources')
+def meta_data_sources():
+    """Read-only Polygon/BRAPI/Cedro source snapshot for Meta-Brain."""
+    try:
+        from modules.meta_brain import build_data_sources
+        return jsonify(build_data_sources(_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/meta/chat', methods=['POST'])
+def meta_chat():
+    """Small deterministic chat over Meta-Brain state. No execution actions."""
+    try:
+        body = request.get_json(silent=True) or {}
+        msg = body.get('message') or body.get('question') or ''
+        days = max(1, min(int(body.get('days', 30)), 120))
+        from modules.meta_brain import answer_question
+        return jsonify(answer_question(get_db, msg, lookback_days=days, provider_context=_meta_provider_context())), 200
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/brain/calibration/test')
 def brain_calibration_test():
     """Testa apply_calibration com query params. Para debug.

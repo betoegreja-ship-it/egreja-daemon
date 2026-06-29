@@ -755,9 +755,15 @@ def compute_score_v2(
         for key, ps in list(pattern_stats_cache.items())[:200]:
             n_samples = ps.get('total_samples', 0)
             wins = ps.get('wins', 0)
-            if n_samples >= 30 and wins / n_samples < 0.40:
+            losses = ps.get('losses', 0)
+            real_trades = wins + losses
+            if real_trades < 10:
+                continue  # [29-jun-2026 FIX] skip patterns FLAT-only
+            real_wr = wins / real_trades if real_trades > 0 else 0.5
+            ev = ps.get('expectancy', 0)
+            if n_samples >= 30 and real_wr < 0.40:
                 ewma_hit = ps.get('ewma_hit_rate', 1.0)
-                if ewma_hit < 0.45:
+                if ewma_hit < 0.45 and ev < 0:
                     blocked = True
                     block_reason = f'PATTERN_BLOCK_{key}'
                     break
@@ -1498,15 +1504,28 @@ def compute_score_v3(
     convergence = abs(weighted_sum / total_weight) if total_weight > 0 else 0
 
     # ── Pattern block ──
+    # [29-jun-2026 FIX P0] Antes bloqueava padroes FLAT (wins=0 losses=0 flat=N)
+    # como se fossem perdedores (WR=0%). Bug: 6.199 patterns no banco com wins+losses=0
+    # ate 100% flat eram marcados toxicos. Resultado: hoje (29/06) zero trades stocks
+    # abertas porque 46 stocks foram bloqueadas por padroes FLAT, nao tóxicos.
+    # NOVO CRITERIO: bloquear so se (wins+losses) >= 10 (dados REAIS) E
+    #   wr<40% E ewma<0.45 E expectancy<0 (perda esperada negativa real)
     blocked = False
     block_reason = ''
     if pattern_stats_cache:
         for key, ps in list(pattern_stats_cache.items())[:200]:
             n_samples = ps.get('total_samples', 0)
             wins = ps.get('wins', 0)
-            if n_samples >= 30 and wins / n_samples < 0.40:
+            losses = ps.get('losses', 0)
+            real_trades = wins + losses  # exclui flat_count
+            if real_trades < 10:
+                continue  # SKIP padroes sem dados reais suficientes
+            real_wr = wins / real_trades if real_trades > 0 else 0.5
+            ev = ps.get('expectancy', 0)
+            if n_samples >= 30 and real_wr < 0.40:
                 ewma_hit = ps.get('ewma_hit_rate', 1.0)
-                if ewma_hit < 0.45:
+                # Exigir tambem expectancy negativa (perda real esperada)
+                if ewma_hit < 0.45 and ev < 0:
                     blocked = True
                     block_reason = f'PATTERN_BLOCK_{key}'
                     break

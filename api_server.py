@@ -7397,16 +7397,22 @@ def stock_execution_worker():
                     regime_v2_val = _r['regime']
                     signal_v2_val = _r['signal']
                     # [P0-FIX 28-jun-2026] Respeitar blocked=True do compute_score_v3
-                    # Auditor especialista: score_engine_v2.py:1510 calcula blocked
-                    # mas stocks ignorava — 297 trades stocks com score>=85 deram
-                    # EARLY_STOP perdendo R$245k em 30d. Defesa estava off.
+                    # [29-jun HOTFIX] Bug: bloqueava trades SCORE 100 (AMD/UNH/QQQ).
+                    # Score forte (>=85) deve passar mesmo com pattern moderadamente ruim.
+                    # Pre-filter (linha 7251) ja faz isso: so bloqueia se score_weak tambem.
+                    # Replicar essa logica: bloquear blocked=True SO se score for medio/fraco.
                     if _r.get('blocked', False) and os.environ.get('RESPECT_V3_BLOCKED', 'true').lower() == 'true':
-                        _bk_reason = _r.get('block_reason', 'PATTERN_BLOCK')
-                        log.info(f"V3_BLOCKED {sym}: score={score} {_bk_reason} — trade rejeitada")
-                        record_shadow_decision(signal_id if 'signal_id' in dir() else f'stk-{sym}',
-                                                sig_enriched if 'sig_enriched' in dir() else {},
-                                                f'v3_blocked_{_bk_reason}'[:60])
-                        continue
+                        # Strong score override: nao bloqueia score forte (>=85 LONG ou <=15 SHORT)
+                        _is_strong = score >= 85 or score <= 15
+                        if not _is_strong:
+                            _bk_reason = _r.get('block_reason', 'PATTERN_BLOCK')
+                            log.info(f"V3_BLOCKED {sym}: score={score} {_bk_reason} — trade rejeitada")
+                            record_shadow_decision(signal_id if 'signal_id' in dir() else f'stk-{sym}',
+                                                    sig_enriched if 'sig_enriched' in dir() else {},
+                                                    f'v3_blocked_{_bk_reason}'[:60])
+                            continue
+                        else:
+                            log.info(f"V3_BLOCKED_OVERRIDE {sym}: score={score} (forte) — pattern fraco mas score V3 forte, deixando passar")
                     # [FIX especialista 24-jun-2026] Atualizar _feats_disc com signal_v2 e regime
                     # antes do features_json ser persistido. Sem isso, esses 2 campos vinham
                     # vazios em 100% dos trades exportados.

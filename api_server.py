@@ -6807,9 +6807,11 @@ def monitor_trades():
                             symbol_sl_count[sym] = 0  # reset ao fechar sem SL
                         _cd = SYMBOL_SL_COOLDOWNS.get(min(symbol_sl_count.get(sym,1),4), 300)
                         symbol_cooldown[sym] = time.time() + (_cd - SYMBOL_COOLDOWN_SEC)  # offset extra
-                        # [P0-FIX 28-jun-2026] Cooldown extra longo para EARLY_STOP/V3_REVERSAL
-                        # rapido (<2min). Auditor: NEAR=73 trades/perda R$16k, XLM=49 trades/perda R$15k,
-                        # ALPA4=7 trades/perda R$6.8k, todos por reentrada rapida apos stop curto.
+                        # [P0-FIX 28-jun-2026] Cooldown extra longo para EARLY_STOP/V3_REVERSAL rapido (<2min).
+                        # [30-jun HOTFIX] Bug do fix anterior: setei symbol_cooldown[sym]=time.time()+fast_cd
+                        # mas _second_validation faz time.time()-symbol_cooldown < SYMBOL_COOLDOWN_SEC.
+                        # Se valor é FUTURO, subtracao da negativo, bloqueia eternamente.
+                        # Forma correta (igual linha 6808): offset = fast_cd - SYMBOL_COOLDOWN_SEC.
                         try:
                             _open_ts = trade.get('opened_at')
                             if isinstance(_open_ts, str):
@@ -6819,10 +6821,13 @@ def monitor_trades():
                             _dur_sec = (now - _ot).total_seconds() if _ot else 0
                             if reason in ('EARLY_STOP', 'V3_REVERSAL') and _dur_sec < 120:
                                 _fast_cd = int(os.environ.get('FAST_STOP_COOLDOWN_MIN', 60)) * 60
-                                _new_cd_end = time.time() + _fast_cd
-                                if _new_cd_end > symbol_cooldown.get(sym, 0):
-                                    symbol_cooldown[sym] = _new_cd_end
-                                    log.info(f"[FAST-STOP-COOLDOWN] {sym}: {reason} em {_dur_sec:.0f}s — cooldown {_fast_cd//60}min")
+                                # offset positivo = cooldown EXTRA alem do normal SYMBOL_COOLDOWN_SEC
+                                _offset = max(_fast_cd - SYMBOL_COOLDOWN_SEC, 0)
+                                _new_ts = time.time() + _offset
+                                # so substitui se o novo cooldown for MAIOR que o atual
+                                if _new_ts > symbol_cooldown.get(sym, 0):
+                                    symbol_cooldown[sym] = _new_ts
+                                    log.info(f"[FAST-STOP-COOLDOWN] {sym}: {reason} em {_dur_sec:.0f}s — cooldown {_fast_cd//60}min total")
                         except Exception as _ce:
                             log.debug(f'fast_stop_cooldown {sym}: {_ce}')
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
@@ -6998,8 +7003,8 @@ def monitor_trades():
                             'regime': market_regime.get('mode', 'UNKNOWN'),
                         })
                         symbol_cooldown[trade['symbol']]=time.time()
-                        # [P0-FIX 28-jun-2026] Cooldown extra longo crypto pra reentrada rapida
-                        # Auditor: NEAR=73 trades EARLY_STOP <2min, perda R$16k.
+                        # [P0-FIX 28-jun-2026] Cooldown extra longo crypto pra reentrada rapida.
+                        # [30-jun HOTFIX] Mesmo bug do stocks corrigido aqui.
                         try:
                             _open_ts_c = trade.get('opened_at')
                             if isinstance(_open_ts_c, str):
@@ -7009,8 +7014,9 @@ def monitor_trades():
                             _dur_sec_c = (now - _ot_c).total_seconds() if _ot_c else 0
                             if reason in ('EARLY_STOP','V3_REVERSAL') and _dur_sec_c < 120:
                                 _fast_cd_c = int(os.environ.get('FAST_STOP_COOLDOWN_MIN', 60)) * 60
-                                symbol_cooldown[trade['symbol']] = time.time() + _fast_cd_c
-                                log.info(f"[FAST-STOP-COOLDOWN] {trade['symbol']}(crypto): {reason} em {_dur_sec_c:.0f}s — cooldown {_fast_cd_c//60}min")
+                                _offset_c = max(_fast_cd_c - SYMBOL_COOLDOWN_SEC, 0)
+                                symbol_cooldown[trade['symbol']] = time.time() + _offset_c
+                                log.info(f"[FAST-STOP-COOLDOWN] {trade['symbol']}(crypto): {reason} em {_dur_sec_c:.0f}s — cooldown {_fast_cd_c//60}min total")
                         except Exception as _ce_c:
                             log.debug(f'fast_stop_cd crypto: {_ce_c}')
                         c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})

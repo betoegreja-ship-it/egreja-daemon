@@ -1012,12 +1012,13 @@ HARD_BLACKLIST_CRYPTO = set(
 )
 # [HARD_BLACKLIST_STOCKS 01-jul-2026] Stocks destruidoras — skip silencioso.
 # Usuario pode overrider via env var HARD_BLACKLIST_STOCKS=SYM1,SYM2,SYM3.
-# Default INCLUI ALPA4 conforme decisao usuario (30-jun-2026) + tox validados
-# via SQL nos ultimos 60d (n>=15, WR<40%, total_pnl < -$5k).
+# Default vazio: usuario prefere observar 1 semana apos as mudancas
+# de pattern_block/V3_BLOCKED antes de blacklistar por hist. Mecanismo
+# fica pronto para uso caso queira ativar depois.
 HARD_BLACKLIST_STOCKS = set(
     s.strip().upper() for s in os.environ.get(
         'HARD_BLACKLIST_STOCKS',
-        'ALPA4'
+        ''
     ).split(',') if s.strip()
 )
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
@@ -5627,7 +5628,7 @@ STOCK_SYMBOLS_B3 = [
     'NTCO3.SA',                         # Natura/Grupo Boticário
     'AZUL4.SA',                         # Azul Airlines
     'CCRO3.SA',                         # CCR concessões
-    'MDIA3.SA','POMO4.SA',  # consumo — [01-jul-2026] ALPA4 removida (WR 30% 60d, decisao usuario)
+    'MDIA3.SA','ALPA4.SA','POMO4.SA',  # consumo — [01-jul-2026] ALPA4 reativada (observar 1sem)
     'AMER3.SA','RECV3.SA',             # Americanas + PetroRecôncavo
 ]
 STOCK_SYMBOLS_US = [

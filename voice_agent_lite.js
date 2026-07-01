@@ -144,14 +144,24 @@ class CallManager {
 }
 
 const callManager = new CallManager();
+const ALLOWED_ORIGINS = new Set([
+  'https://www.egreja.net',
+  'https://egreja.net',
+  'https://egreja.com',
+  'https://www.egreja.com',
+  'http://localhost:3000',
+]);
 
 // ============================================
 // HTTP SERVER
 // ============================================
 
 const server = http.createServer((req, res) => {
-  // CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  if (ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');

@@ -19,17 +19,17 @@
    [9] CHARTS (Chart.js): _pc registry, _dc, _mc, barChart
    ═══════════════════════════════════════════════════════════════════════ */
 
-const API_BASE='https://diligent-spirit-production.up.railway.app';
-// Reverido em 25-jun-2026: cookie cross-site nao persistia (Vercel -> Railway).
-// Por enquanto X-API-Key + credentials:include (suporta ambos: sessao e key).
-// Futuro: implementar CSRF token via endpoint /api/csrf-token quando frontend
-// e backend estiverem no mesmo dominio.
-const API_KEY='262b29fb9a2d2b407fc3a2bbe9c48e819cc7a41b34195f9729b9612f6dc01c26';
+const API_BASE='';
 function apiFetch(url, opts){
   opts=opts||{};
-  opts.credentials='include';
-  opts.headers=Object.assign({'X-API-Key':API_KEY,'Content-Type':'application/json'},opts.headers||{});
-  return fetch(url, opts);
+  opts.credentials=opts.credentials||'same-origin';
+  opts.headers=Object.assign({'Content-Type':'application/json'},opts.headers||{});
+  return fetch(url, opts).then(function(r){
+    if(r.status===401 && location.pathname!=='/login'){
+      location.href='/login';
+    }
+    return r;
+  });
 }
 let allSignals=[],statsData={},currentFilter='ALL';
 

@@ -8,9 +8,19 @@ import http from 'http';
 import { URL } from 'url';
 
 const PORT = process.env.PORT || 3001;
+const ALLOWED_ORIGINS = new Set([
+  'https://www.egreja.net',
+  'https://egreja.net',
+  'https://egreja.com',
+  'https://www.egreja.com',
+]);
 
 const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  if (ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Content-Type', 'application/json');
 
   const url = new URL(req.url || '/', `http://${req.headers.host}`);

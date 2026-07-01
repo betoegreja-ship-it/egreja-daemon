@@ -272,8 +272,11 @@ class BinanceClient:
 def main():
     """Teste do cliente Binance"""
     # Carregar chaves do ambiente
-    api_key = os.getenv('BINANCE_API_KEY', 'p5TNE1CcjtO2ldYfcXmyV2t7dnousf4UQJHR0fdCgykbzDNxRtwzGxFGQT3uVOKU')
-    api_secret = os.getenv('BINANCE_API_SECRET', 'nHyzsYTiQWqMkiYy5FZPkEk13vpqvi21oJ8sRzeTq24q7McNsdij5XChjTT2Qa2b')
+    api_key = os.getenv('BINANCE_API_KEY')
+    api_secret = os.getenv('BINANCE_API_SECRET')
+    if not api_key or not api_secret:
+        logger.error("Configure BINANCE_API_KEY e BINANCE_API_SECRET no ambiente.")
+        return
     
     # Criar cliente
     client = BinanceClient(api_key, api_secret, testnet=True)

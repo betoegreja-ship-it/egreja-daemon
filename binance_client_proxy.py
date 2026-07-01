@@ -275,9 +275,12 @@ def find_working_proxy() -> Optional[str]:
 
 def main():
     """Teste do cliente com proxy"""
-    api_key = os.getenv('BINANCE_API_KEY', 'p5TNE1CcjtO2ldYfcXmyV2t7dnousf4UQJHR0fdCgykbzDNxRtwzGxFGQT3uVOKU')
-    api_secret = os.getenv('BINANCE_API_SECRET', 'nHyzsYTiQWqMkiYy5FZPkEk13vpqvi21oJ8sRzeTq24q7McNsdij5XChjTT2Qa2b')
+    api_key = os.getenv('BINANCE_API_KEY')
+    api_secret = os.getenv('BINANCE_API_SECRET')
     proxy_url = os.getenv('BINANCE_PROXY', None)
+    if not api_key or not api_secret:
+        logger.error("Configure BINANCE_API_KEY e BINANCE_API_SECRET no ambiente.")
+        return
     
     logger.info("\n" + "="*60)
     logger.info("ArbitrageAI v2 - Cliente Binance com Proxy")

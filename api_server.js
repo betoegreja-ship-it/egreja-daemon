@@ -4,6 +4,21 @@ const path = require('path');
 
 const PORT = process.env.PORT || 8000;
 const SIGNALS_FILE = '/tmp/egreja-signals.json';
+const ALLOWED_ORIGINS = new Set([
+  'https://www.egreja.net',
+  'https://egreja.net',
+  'https://egreja.com',
+  'https://www.egreja.com',
+]);
+
+function setCors(req, res) {
+  const origin = req.headers.origin;
+  if (ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+}
 
 // Função para ler sinais do arquivo JSON
 function getSignals() {
@@ -20,9 +35,7 @@ function getSignals() {
 
 // Criar server HTTP
 const server = http.createServer((req, res) => {
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  setCors(req, res);
   res.setHeader('Content-Type', 'application/json');
 
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);

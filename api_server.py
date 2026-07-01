@@ -723,6 +723,28 @@ CORS(app, origins=_allowed_origins, supports_credentials=True,
      expose_headers=['Content-Type'])
 log.info(f'[SECURITY-P0] CORS restrito a: {_allowed_origins}')
 
+SECURITY_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com data:; "
+    "img-src 'self' data: https:; "
+    "connect-src 'self' https://www.egreja.net https://egreja.net; "
+    "object-src 'none'; base-uri 'self'; form-action 'self'; "
+    "frame-ancestors 'none'; upgrade-insecure-requests"
+)
+
+@app.after_request
+def add_security_headers(resp):
+    """Headers defensivos para dashboard/API sem interferir na allowlist CORS."""
+    resp.headers.setdefault('Content-Security-Policy', SECURITY_CSP)
+    resp.headers.setdefault('X-Frame-Options', 'DENY')
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    resp.headers.setdefault('Permissions-Policy', 'geolocation=(), microphone=(), camera=()')
+    resp.headers.setdefault('X-Robots-Tag', 'noindex, nofollow, noarchive')
+    return resp
+
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════

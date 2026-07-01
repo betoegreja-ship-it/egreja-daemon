@@ -5630,6 +5630,15 @@ STOCK_SYMBOLS_B3 = [
     'CCRO3.SA',                         # CCR concessões
     'MDIA3.SA','ALPA4.SA','POMO4.SA',  # consumo — [01-jul-2026] ALPA4 reativada (observar 1sem)
     'AMER3.SA','RECV3.SA',             # Americanas + PetroRecôncavo
+    # ── [01-jul-2026] Expansao: 8 papeis IBOV liquidos que faltavam ─────────
+    'B3SA3.SA',                         # bolsa brasileira — top-5 IBOV
+    'BRAV3.SA',                         # Brava Energia (3R + Enauta fusao)
+    'ASAI3.SA',                         # Assai Atacadista
+    'RAIL3.SA',                         # Rumo Logistica
+    'CYRE3.SA',                         # Cyrela (construcao)
+    'BEEF3.SA',                         # Minerva Foods
+    'STBP3.SA',                         # Santos Brasil (portos)
+    'ELET3.SA',                         # Eletrobras ON
 ]
 STOCK_SYMBOLS_US = [
     # ── Blue chips originais ──────────────────────────────
@@ -5643,6 +5652,15 @@ STOCK_SYMBOLS_US = [
     'BABA',                             # China tech
     'LLY','TME',                        # pharma + Tencent Music
     'PLTR','OKLO','TGT',               # watchlist usuário
+    # ── [01-jul-2026] Expansao: 8 mega caps US que faltavam ────────────────
+    'BRK.B',                            # Berkshire Hathaway
+    'COST',                             # Costco (defensivo forte)
+    'MRK',                              # Merck (pharma diversifica LLY/PFE/JNJ)
+    'ABT',                              # Abbott (dispositivos medicos)
+    'CAT',                              # Caterpillar (industria ciclica)
+    'BA',                               # Boeing (mean-reversion)
+    'AMAT',                             # Applied Materials (semicondutores)
+    'XLK',                              # Tech Sector ETF (hedge/regime)
 ]
 ALL_STOCK_SYMBOLS = STOCK_SYMBOLS_B3 + STOCK_SYMBOLS_US
 

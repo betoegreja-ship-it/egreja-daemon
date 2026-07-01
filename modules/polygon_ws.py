@@ -49,6 +49,8 @@ DEFAULT_UNIVERSE = [
     'UNH', 'PFE', 'JNJ', 'LLY', 'TSM', 'BABA', 'PDD', 'BBD', 'PBR', 'VALE',
     'ITUB', 'NU', 'IWM', 'QQQ', 'SPY', 'CROX', 'HOOD', 'SMCI', 'NOW',
     'SNDK', 'EPAM', 'CNI', 'VSAT', 'MU',
+    # [01-jul-2026] Expansao: 8 mega caps US que faltavam
+    'BRK.B', 'COST', 'MRK', 'ABT', 'CAT', 'BA', 'AMAT', 'XLK',
 ]
 
 

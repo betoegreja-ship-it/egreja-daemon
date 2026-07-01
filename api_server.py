@@ -1164,29 +1164,95 @@ _db_pool = None
 _db_pool_lock = threading.Lock()
 
 def _get_pool():
-    """Inicializa o pool na primeira chamada (lazy) e retorna a instância."""
+    """Inicializa o pool na primeira chamada (lazy) e retorna a instância.
+
+    [01-jul-2026] retry com backoff exponencial + auto-kill de idle orphans:
+    quando deploy sucede em rapida sequencia, conexoes leaked do processo
+    anterior podem estourar max_connections do Railway MySQL. Antes de
+    inicializar o pool, tentamos matar nossas proprias conexoes SLEEP
+    > 300s. Se ainda falhar por 1040, aguarda 2^n segundos e tenta de novo.
+    """
     global _db_pool
     if _db_pool is not None:
         return _db_pool
     with _db_pool_lock:
         if _db_pool is not None:
             return _db_pool
+        from mysql.connector.pooling import MySQLConnectionPool
+        pool_cfg = dict(db_config)
+        pool_cfg.pop('autocommit', None)
+        pool_cfg.pop('connection_timeout', None)
+        _pool_sz = min(int(os.environ.get('MYSQL_POOL_SIZE', 32)), 32)
+
+        # Retry com backoff — cobre 1040 Too many connections e transient errors
+        max_attempts = int(os.environ.get('MYSQL_POOL_INIT_RETRIES', 6))
+        for attempt in range(1, max_attempts + 1):
+            try:
+                # Tenta limpar leaks antes de subir o pool (idempotente, best-effort)
+                if attempt > 1:
+                    try: _kill_stale_conns()
+                    except Exception: pass
+                _db_pool = MySQLConnectionPool(
+                    pool_name='egreja', pool_size=_pool_sz,
+                    pool_reset_session=False,
+                    autocommit=True, connection_timeout=10,
+                    **pool_cfg)
+                log.info(f'[v10.7] MySQL pool inicializado (size={_pool_sz}, attempt={attempt})')
+                return _db_pool
+            except Exception as e:
+                emsg = str(e)
+                is_1040 = '1040' in emsg or 'Too many connections' in emsg
+                if attempt < max_attempts:
+                    backoff = min(30, 2 ** attempt)
+                    log.warning(f'MySQL pool init falhou (attempt {attempt}/{max_attempts}): {e} — retry em {backoff}s')
+                    time.sleep(backoff)
+                else:
+                    log.error(f'MySQL pool init: {e} (esgotou {max_attempts} tentativas)')
+        return _db_pool
+
+
+def _kill_stale_conns(idle_threshold_s: int = 300) -> int:
+    """Mata conexoes SLEEP >N segundos deste MESMO USER do MySQL.
+    Best-effort: retorna quantidade eliminada. Usado no init do pool e num
+    janitor background pra evitar acumulo entre deploys.
+    """
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT CONNECTION_ID() AS me")
+        me = cur.fetchone()['me']
+        # Filtra por usuario (evita matar outras apps) e SLEEP
+        cur.execute("SHOW PROCESSLIST")
+        killed = 0
+        for r in cur.fetchall():
+            if (r.get('Command') == 'Sleep'
+                and int(r.get('Time') or 0) > idle_threshold_s
+                and int(r.get('Id') or 0) != me
+                and (r.get('User') or '') == db_config.get('user')):
+                try:
+                    cur.execute(f"KILL {r['Id']}")
+                    killed += 1
+                except Exception:
+                    pass
+        cur.close(); conn.close()
+        if killed > 0:
+            log.info(f'[mysql-janitor] killed {killed} idle conns >{idle_threshold_s}s')
+        return killed
+    except Exception as e:
+        log.debug(f'[mysql-janitor] fail: {e}')
+        return 0
+
+
+def _mysql_janitor_loop():
+    """Background loop: mata idle orphans a cada 5min."""
+    interval = int(os.environ.get('MYSQL_JANITOR_INTERVAL_S', 300))
+    threshold = int(os.environ.get('MYSQL_JANITOR_IDLE_S', 300))
+    while True:
         try:
-            from mysql.connector.pooling import MySQLConnectionPool
-            pool_cfg = dict(db_config)
-            pool_cfg.pop('autocommit', None)   # pooling não aceita autocommit no config
-            pool_cfg.pop('connection_timeout', None)
-            # mysql.connector pool size tem HARD CAP = 32
-            _pool_sz = min(int(os.environ.get('MYSQL_POOL_SIZE', 32)), 32)
-            _db_pool = MySQLConnectionPool(
-                pool_name='egreja', pool_size=_pool_sz,
-                pool_reset_session=False,  # [28abr] mais leve, evita reset overhead
-                autocommit=True, connection_timeout=10,
-                **pool_cfg)
-            log.info(f'[v10.7] MySQL connection pool inicializado (size={_pool_sz})')
-        except Exception as e:
-            log.error(f'MySQL pool init: {e}')
-    return _db_pool
+            _kill_stale_conns(idle_threshold_s=threshold)
+        except Exception:
+            pass
+        time.sleep(interval)
 
 def get_db():
     """Retorna uma conexão do pool. Caller é responsável por chamar .close()
@@ -10077,6 +10143,14 @@ def start_background_threads():
         t=threading.Thread(target=fn,daemon=True); t.start()
         thread_health[name]=t
         log.info(f'Thread started: {name} (hb_timeout={THREAD_HEARTBEAT_TIMEOUT.get(name,DEFAULT_HB_TIMEOUT)}s)')
+    # [01-jul-2026] MySQL janitor — mata idle orphans a cada 5min pra evitar
+    # acumulo entre deploys que estourava max_connections do Railway (152/151).
+    try:
+        _jt = threading.Thread(target=_mysql_janitor_loop, daemon=True, name='mysql-janitor')
+        _jt.start()
+        log.info('Thread started: mysql-janitor (kill idle SLEEP>300s a cada 5min)')
+    except Exception as _e:
+        log.warning(f'mysql-janitor start failed: {_e}')
 
 # ═══════════════════════════════════════════════════════════════
 # WATCHLIST
@@ -13768,6 +13842,81 @@ def api_info():
         'deploy_mode':'single-process',
         'degraded': _read_degraded()['active'],   # [V91-5] flag rápida
     })
+
+@app.route('/providers/health')
+def providers_health():
+    """[01-jul-2026] Health dos provedores de dados.
+
+    Hierarquia oficial (primary -> fallback):
+      B3      : Cedro (socket RT) -> Brapi (REST batch)
+      NYSE    : Polygon (WebSocket RT) -> Yahoo (REST) -> FMP
+      Crypto  : Binance (REST direto) -> Yahoo
+
+    Cada provider retorna: connected, last_msg_age_s, healthy (bool), notes.
+    Consumido pelo dashboard pra mostrar tag verde/amarelo/vermelho.
+    """
+    out = {'ts': datetime.utcnow().isoformat(), 'providers': {}}
+
+    # Cedro (B3 primary)
+    cedro = {'name': 'Cedro', 'market': 'B3', 'role': 'primary'}
+    try:
+        hc = _cedro_socket.healthcheck() if _cedro_socket else {}
+        age = hc.get('last_msg_age_s')
+        cedro['connected'] = bool(hc.get('connected'))
+        cedro['last_msg_age_s'] = age
+        cedro['cached_symbols'] = hc.get('cached_symbols', 0)
+        cedro['healthy'] = bool(hc.get('connected')) and (age is not None and age < 60)
+    except Exception as e:
+        cedro['error'] = str(e)[:120]
+        cedro['healthy'] = False
+    out['providers']['cedro'] = cedro
+
+    # Brapi (B3 fallback)
+    brapi = {'name': 'Brapi', 'market': 'B3', 'role': 'fallback',
+             'configured': bool(BRAPI_TOKEN)}
+    brapi['healthy'] = bool(BRAPI_TOKEN)  # REST — nao mantemos state
+    out['providers']['brapi'] = brapi
+
+    # Polygon WS (NYSE primary)
+    poly = {'name': 'Polygon', 'market': 'NYSE', 'role': 'primary'}
+    try:
+        import modules.polygon_ws as _pws
+        st = _pws.status() if hasattr(_pws, 'status') else {}
+        age = time.time() - float(st.get('last_message_ts') or 0) if st.get('last_message_ts') else None
+        poly['connected'] = bool(st.get('connected'))
+        poly['last_msg_age_s'] = round(age, 2) if age is not None else None
+        poly['cached_symbols'] = st.get('cached_symbols', 0)
+        poly['disabled_until'] = st.get('disabled_until')
+        poly['healthy'] = bool(st.get('connected')) and (age is not None and age < 60)
+    except Exception as e:
+        poly['error'] = str(e)[:120]
+        poly['healthy'] = False
+    out['providers']['polygon_ws'] = poly
+
+    # Yahoo (NYSE + Crypto fallback)
+    out['providers']['yahoo'] = {'name': 'Yahoo Finance', 'role': 'fallback (NYSE + Crypto)',
+                                  'configured': True, 'healthy': True}
+
+    # Binance (Crypto primary)
+    binance = {'name': 'Binance', 'market': 'CRYPTO', 'role': 'primary'}
+    try:
+        binance['cached_prices'] = len(crypto_prices) if isinstance(crypto_prices, dict) else 0
+        binance['healthy'] = binance['cached_prices'] > 0
+    except Exception:
+        binance['healthy'] = False
+    out['providers']['binance'] = binance
+
+    # Overall
+    b3_ok = cedro.get('healthy') or brapi.get('healthy')
+    nyse_ok = poly.get('healthy') or out['providers']['yahoo'].get('healthy')
+    crypto_ok = binance.get('healthy') or out['providers']['yahoo'].get('healthy')
+    out['markets'] = {
+        'b3': {'ok': b3_ok, 'active_source': 'cedro' if cedro.get('healthy') else 'brapi'},
+        'nyse': {'ok': nyse_ok, 'active_source': 'polygon' if poly.get('healthy') else 'yahoo'},
+        'crypto': {'ok': crypto_ok, 'active_source': 'binance' if binance.get('healthy') else 'yahoo'},
+    }
+    return jsonify(out)
+
 
 @app.route('/api/modules-debug')
 def modules_debug():

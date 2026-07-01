@@ -87,6 +87,42 @@
     {
       "source": "/risk/:path*",
       "destination": "https://diligent-spirit-production.up.railway.app/risk/:path*"
+    },
+    {
+      "source": "/learning/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/learning/:path*"
+    },
+    {
+      "source": "/performance/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/performance/:path*"
+    },
+    {
+      "source": "/shadow/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/shadow/:path*"
+    },
+    {
+      "source": "/watchlist/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/watchlist/:path*"
+    },
+    {
+      "source": "/portfolio/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/portfolio/:path*"
+    },
+    {
+      "source": "/brains/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/brains/:path*"
+    },
+    {
+      "source": "/reports/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/reports/:path*"
+    },
+    {
+      "source": "/degraded",
+      "destination": "https://diligent-spirit-production.up.railway.app/degraded"
+    },
+    {
+      "source": "/audit/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/audit/:path*"
     }
   ],
   "headers": [

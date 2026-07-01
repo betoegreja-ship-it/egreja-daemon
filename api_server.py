@@ -7380,9 +7380,23 @@ def stock_execution_worker():
                 # [v10.14-FIX] Temporal block NÃO bloqueia SHORTs — foi calibrado só com LONGs
                 # SHORTs têm comportamento diferente em janelas ruins para LONGs
                 _pre_temporal_dir = 'SHORT' if score <= 50 else 'LONG'
-                if _st_blocked and _pre_temporal_dir == 'LONG':
-                    log.warning(f"STOCK_TEMPORAL_BLOCK: {sym} — {_st_reason}")
-                    continue
+                # [01-jul-2026] TEMPORAL_BLOCK_OVERRIDE: sinal muito forte (>=90 LONG ou <=10 SHORT)
+                # NAO deve ser bloqueado por janela historica de WR baixo.
+                # Motivo: janela (2,19) Qua19h_WR25pct bloqueava 100% dos stocks e sistema parava.
+                # Override via env: TEMPORAL_BLOCK_STRONG_OVERRIDE=false para desligar.
+                _strong = (score >= 90) or (score <= 10)
+                _t_override = os.environ.get('TEMPORAL_BLOCK_STRONG_OVERRIDE', 'true').lower() == 'true'
+                # Desligar completamente via env: TEMPORAL_BLOCK_ENABLED=false
+                _t_enabled = os.environ.get('TEMPORAL_BLOCK_ENABLED', 'true').lower() == 'true'
+                if not _t_enabled:
+                    _st_blocked = False
+                elif _st_blocked and _pre_temporal_dir == 'LONG':
+                    if _strong and _t_override:
+                        log.info(f"STOCK_TEMPORAL_BLOCK_OVERRIDE: {sym} score={score} — {_st_reason} (score forte, deixando passar)")
+                        _st_blocked = False
+                    else:
+                        log.warning(f"STOCK_TEMPORAL_BLOCK: {sym} — {_st_reason}")
+                        continue
                 elif _st_blocked and _pre_temporal_dir == 'SHORT':
                     _st_adj = -5  # penaliza leve mas não bloqueia SHORT
                 _score_before_t = score

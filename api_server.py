@@ -1890,6 +1890,12 @@ def _trigger_kill_switch(dd_pct, period):
     global RISK_KILL_SWITCH
     RISK_KILL_SWITCH = True
     audit('KILL_SWITCH_ACTIVATED',{'drawdown_pct':round(dd_pct,2),'period':period})
+    # [FIX 01-jul-2026] send_whatsapp estava orfao no fim de _auto_reset_kill_switch_if_safe,
+    # gerando NameError toda vez que check_risk rodava (auto_trade_crypto quebrava a cada 5min).
+    try:
+        send_whatsapp(f'KILL SWITCH ATIVADO — drawdown {period}: {dd_pct:.2f}%')
+    except Exception as _e:
+        log.warning(f'send_whatsapp kill_switch fail: {_e}')
 
 def _auto_reset_kill_switch_if_safe():
     """[v10.14] Auto-reset do kill_switch no início de um novo dia se drawdown < limite."""
@@ -1913,7 +1919,6 @@ def _auto_reset_kill_switch_if_safe():
             audit('KILL_SWITCH_AUTO_RESET', {'dd_today': round(dd_today,2), 'threshold': MAX_DAILY_DRAWDOWN_PCT})
     except Exception as e:
         log.warning(f'auto_reset_ks: {e}')
-    send_whatsapp(f'KILL SWITCH ATIVADO — drawdown {period}: {dd_pct:.2f}%')
 
 def _second_validation(symbol, market_type, strategy):
     """Segunda validação leve DENTRO do state_lock"""

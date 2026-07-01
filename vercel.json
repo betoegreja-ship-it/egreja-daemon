@@ -67,6 +67,26 @@
     {
       "source": "/providers/:path*",
       "destination": "https://diligent-spirit-production.up.railway.app/providers/:path*"
+    },
+    {
+      "source": "/auth/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/auth/:path*"
+    },
+    {
+      "source": "/ops",
+      "destination": "https://diligent-spirit-production.up.railway.app/ops"
+    },
+    {
+      "source": "/kill-switch/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/kill-switch/:path*"
+    },
+    {
+      "source": "/data/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/data/:path*"
+    },
+    {
+      "source": "/risk/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/risk/:path*"
     }
   ],
   "headers": [

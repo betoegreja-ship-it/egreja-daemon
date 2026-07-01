@@ -63,6 +63,10 @@
     {
       "source": "/polygon/:path*",
       "destination": "https://diligent-spirit-production.up.railway.app/polygon/:path*"
+    },
+    {
+      "source": "/providers/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/providers/:path*"
     }
   ],
   "headers": [

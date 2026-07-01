@@ -13843,6 +13843,7 @@ def api_info():
         'degraded': _read_degraded()['active'],   # [V91-5] flag rápida
     })
 
+@app.route('/api/providers/health')
 @app.route('/providers/health')
 def providers_health():
     """[01-jul-2026] Health dos provedores de dados.

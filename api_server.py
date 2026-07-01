@@ -798,7 +798,7 @@ B3_ADR_SYMBOLS = set(B3_TO_ADR.values())
 if not FMP_API_KEY and not POLYGON_API_KEY:
     log.warning('Nenhuma API key configurada — usando Yahoo Finance (não recomendado em produção)')
 
-PUBLIC_ROUTES = {'/', '/health', '/degraded', '/sync/export', '/sync/import',
+PUBLIC_ROUTES = {'/', '/health', '/degraded',
                  '/login', '/logout', '/auth/status'}  # [v10.52] login endpoints
 
 TWILIO_SID     = os.environ.get('TWILIO_ACCOUNT_SID', '')
@@ -1483,53 +1483,41 @@ def alert_worker():
 # ═══════════════════════════════════════════════════════════════
 @app.before_request
 def auth_check():
-    """[SECURITY-P0 24-jun-2026] Auth split por metodo HTTP.
-    Antes: prefixos /trades, /arbitrage, /brain, /strategies eram TOTALMENTE PUBLICOS
-           (nao exigiam nem X-API-Key) — risco P0 expondo /trades/purge, /brain/force-seed etc.
-    Agora: GET nesses prefixos continua publico (dashboards funcionam).
-           POST/PUT/DELETE EXIGE X-API-Key — protege endpoints destrutivos.
-    """
+    """[SECURITY-P0] Protege dados operacionais por sessao ou X-API-Key."""
     if request.method == 'OPTIONS':
         return None
     if not API_SECRET_KEY:
         return None
 
-    # Lista de prefixos publicos APENAS PARA LEITURA (GET):
-    _public_read_prefixes = ('/health', '/strategies', '/brain', '/long-horizon',
-                              '/signals', '/stats', '/trades', '/arbitrage',
-                              '/prices', '/performance', '/reports', '/static/',
-                              '/pairs',  # [v11-PAIRS] endpoints publicos GET
-                              '/cedro',  # [25-jun-2026] cedro history wrapper
-                              '/polygon',  # [v13-POLYGON-WS] real-time quotes status
-                              '/api/brain/proposals',  # [25-jun-2026] propostas GET publico
-                              '/api/brain/nightly',    # GET (POST eh autenticado)
-                              '/debug/b3-prices', '/debug/b3-trades-pricing',
-                              '/debug/batch-void-stale-feed-',
-                              '/debug/reload-stocks-closed-from-db',
-                              '/debug/recalc-arbi-fx', '/debug/reload-arbi-from-db',
-                              '/debug/crypto-filter-trace')
-    _public_any_method = ('/derivatives', '/api/info', '/api/modules-debug',
-                          '/api/ticker-tape', '/api/fx-rates', '/ticker-tape.js')
+    # Publico de verdade: login, health, assets e pequenos indicadores sem segredo.
+    # Todo dado operacional (/trades, /brain, /sync, /reports etc.) exige sessao.
+    _public_read_exact = {
+        '/api/info',
+        '/api/fx-rates',
+        '/api/ticker-tape',
+        '/ticker-tape.js',
+    }
+    _public_read_prefixes = ('/static/', '/assets/')
 
     # 1. Rotas sempre publicas (info estatica, OPTIONS preflight ja tratado)
-    if request.path in PUBLIC_ROUTES or request.path in _public_any_method:
+    if request.path in PUBLIC_ROUTES:
         return None
 
-    # 2. Prefixos de leitura: APENAS GET/HEAD eh publico
+    # 2. Leituras publicas muito limitadas
     if request.method in ('GET', 'HEAD'):
+        if request.path in _public_read_exact:
+            return None
         for _pfx in _public_read_prefixes:
             if request.path.startswith(_pfx):
                 return None
 
-    # 3. Tudo mais (incluindo POST/PUT/DELETE em prefixos acima): exige X-API-Key
-    #    OU session cookie autenticado (P0 especialista 24-jun-2026):
-    #    permite frontend remover API_KEY hardcoded — usa sessao via cookie.
+    # 3. Todo o restante exige sessao web ou chave de API server-side.
     if _is_session_authed():
         return None
     key = request.headers.get('X-API-Key', '').strip()
     if key != API_SECRET_KEY:
         log.warning(f'[SECURITY-P0] Unauthorized: {request.remote_addr} {request.method} {request.path}')
-        return jsonify({'error': 'Unauthorized — X-API-Key required for mutating requests'}), 401
+        return jsonify({'error': 'Unauthorized - login session or X-API-Key required'}), 401
 
 def require_auth(f):
     """[FIX-1] Decorador de documentação — autenticação real feita pelo before_request.
@@ -15530,8 +15518,7 @@ def shadow_status():
     except Exception as e:
         return jsonify({'error': str(e), 'timestamp': datetime.utcnow().isoformat()})
 
-# Adicionar rotas de learning a PUBLIC_ROUTES (somente status básico)
-PUBLIC_ROUTES.add('/learning/status')
+# Learning/status contem metricas operacionais; auth_check protege por sessao/chave.
 
 # ═══════════════════════════════════════════════════════════════
 # [SYNC] NETWORK INTELLIGENCE — TROCA ENTRE SISTEMAS EGREJA
@@ -15542,7 +15529,7 @@ SYNC_PEER_URL = os.environ.get('SYNC_PEER_URL', 'https://manus.up.railway.app') 
 
 @app.route('/sync/export')
 def sync_export():
-    """Exporta inteligência aprendida para troca entre sistemas Egreja. [PUBLIC — sem auth]"""
+    """Exporta inteligencia aprendida para troca entre sistemas Egreja. Requer sessao/chave."""
     try:
         # 1. Padrões aprendidos (top 50 por confiança)
         with learning_lock:
@@ -15650,7 +15637,7 @@ def sync_export():
 
 @app.route('/sync/import', methods=['POST'])
 def sync_import():
-    """Recebe inteligência de outro sistema Egreja. [PUBLIC — sem auth]"""
+    """Recebe inteligencia de outro sistema Egreja. Requer sessao/chave."""
     try:
         data = request.get_json(force=True)
         if not data:

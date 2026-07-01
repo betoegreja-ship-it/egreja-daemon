@@ -30,9 +30,37 @@ pairs_history_cache: Dict[str, Dict] = {}  # cache historico por simbolo (refres
 
 # Capital paper para pairs (separado do arbi)
 PAIRS_CAPITAL = float(os.environ.get('PAIRS_CAPITAL', 1_000_000.0))  # R$ 1MM default
-PAIRS_MAX_POSITIONS = int(os.environ.get('PAIRS_MAX_POSITIONS', 5))  # max 5 trades simultaneas
+# [01-jul-2026] Sizing dinamico: aloca ate esgotar PAIRS_CAPITAL, respeitando
+# minimo por trade. Antes: 5 posicoes fixas de R$200k. Agora: min R$100k/trade,
+# max ceil (PAIRS_CAPITAL / PAIRS_MIN_INVESTMENT) posicoes simultaneas.
+PAIRS_MIN_INVESTMENT = float(os.environ.get('PAIRS_MIN_INVESTMENT', 100_000.0))  # min R$100k/trade
+PAIRS_MAX_POSITIONS = int(os.environ.get('PAIRS_MAX_POSITIONS', 10))  # ceiling de posicoes (safety)
 PAIRS_SCAN_INTERVAL_S = int(os.environ.get('PAIRS_SCAN_INTERVAL_S', 30))  # scan a cada 30s
 PAIRS_MIN_CORRELATION = float(os.environ.get('PAIRS_MIN_CORRELATION', 0.5))
+# [01-jul-2026] SWAP: se capital cheio e sinal novo tem |z| bem melhor,
+# fecha a trade aberta mais fraca (menor |current_z|) e abre a nova.
+PAIRS_SWAP_ENABLED = os.environ.get('PAIRS_SWAP_ENABLED', 'true').lower() == 'true'
+PAIRS_SWAP_Z_MARGIN = float(os.environ.get('PAIRS_SWAP_Z_MARGIN', 0.5))  # |z_new| >= |z_worst| + margin
+
+
+def _deployed_capital() -> float:
+    """Soma o position_size das trades abertas (usar dentro do lock)."""
+    return sum(float(t.get('position_size', 0) or 0) for t in pairs_open)
+
+
+def _available_capital() -> float:
+    """Capital ainda nao alocado (usar dentro do lock)."""
+    return max(PAIRS_CAPITAL - _deployed_capital(), 0.0)
+
+
+def _worst_open_trade() -> Optional[Dict]:
+    """Trade aberta com menor |current_z| (candidata a ser trocada)."""
+    if not pairs_open:
+        return None
+    def _key(t):
+        z = t.get('current_z', t.get('entry_z', 0)) or 0
+        return abs(z)
+    return min(pairs_open, key=_key)
 
 
 def _gen_trade_id():
@@ -187,12 +215,10 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
                  f'{PAIRS_MIN_CORRELATION:.2f} — entry SKIPPED')
         return None
 
+    swap_victim = None  # trade que sera fechada para dar lugar (se SWAP)
     with pairs_state_lock:
         # Nao abrir 2 trades no mesmo par
         if any(t['pair_id'] == signal['pair_id'] for t in pairs_open):
-            return None
-        if len(pairs_open) >= PAIRS_MAX_POSITIONS:
-            log.info(f'[PAIRS] max positions ({PAIRS_MAX_POSITIONS}) reached — skip {signal["pair_id"]}')
             return None
 
         # [25-jun-2026] WATCH tier: nao opera, so observa
@@ -202,11 +228,35 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
             log.info(f'[PAIRS] {signal["pair_id"]} tier=WATCH — skip entry (apenas observacao)')
             return None
 
-        # Position size = capital / max_positions
-        # Tier B: sizing reduzido a 60% (validar antes de full)
-        pos_size = round(PAIRS_CAPITAL / PAIRS_MAX_POSITIONS, 2)
+        # [01-jul-2026] Sizing dinamico: pos_size = capital disponivel, floor R$100k.
+        # Se disponivel < min, tenta SWAP (fecha trade aberta mais fraca).
+        available = _available_capital()
+        pos_size = max(min(available, PAIRS_MIN_INVESTMENT), PAIRS_MIN_INVESTMENT)
+        # tier B: sizing reduzido a 60% do min (respeitando piso de investimento)
         if tier == 'B':
-            pos_size *= 0.6
+            pos_size = max(pos_size * 0.6, PAIRS_MIN_INVESTMENT * 0.6)
+
+        # Ceiling de posicoes (safety) + capital deployed check
+        cap_full = (len(pairs_open) >= PAIRS_MAX_POSITIONS) or (available < PAIRS_MIN_INVESTMENT)
+        if cap_full:
+            # Tenta SWAP: se novo |z| >= worst |z| + margin, fecha worst e abre novo
+            if PAIRS_SWAP_ENABLED:
+                worst = _worst_open_trade()
+                z_new = abs(signal.get('z_score', 0) or 0)
+                z_worst = abs((worst or {}).get('current_z', (worst or {}).get('entry_z', 0)) or 0) if worst else 0
+                if worst and z_new >= z_worst + PAIRS_SWAP_Z_MARGIN:
+                    swap_victim = worst
+                    log.info(f'[PAIRS] SWAP candidato: fechar {worst["pair_id"]} (|z|={z_worst:.2f}) '
+                             f'para abrir {signal["pair_id"]} (|z|={z_new:.2f}, margin={PAIRS_SWAP_Z_MARGIN})')
+                else:
+                    log.info(f'[PAIRS] capital cheio ({_deployed_capital():,.0f}/{PAIRS_CAPITAL:,.0f}) '
+                             f'e SWAP nao aplicavel (|z_new|={z_new:.2f} vs |z_worst|={z_worst:.2f}) '
+                             f'— skip {signal["pair_id"]}')
+                    return None
+            else:
+                log.info(f'[PAIRS] capital cheio ({_deployed_capital():,.0f}/{PAIRS_CAPITAL:,.0f}) '
+                         f'— skip {signal["pair_id"]}')
+                return None
         hedge_ratio = signal.get('hedge_ratio', 1.0)
         # Qty leg_a = capital_a / price_a
         # Qty leg_b = qty_a * hedge_ratio  (na quantidade que faz a perna B financeiramente equilibrada)
@@ -244,14 +294,34 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
 
     log.info(f'[PAIRS] OPEN {trade_id} {signal["pair_id"]} dir={signal["direction"]} '
              f'z={signal["z_score"]:+.2f} corr={signal["correlation_60d"]:.2f} '
-             f'qty_a={qty_a} qty_b={qty_b}')
+             f'qty_a={qty_a} qty_b={qty_b} pos_size=R${pos_size:,.0f}')
     # PERSIST: nunca perder esta trade
     try: _persist.persist_trade_open(trade)
     except Exception as e: log.warning(f'[PAIRS] persist OPEN failed: {e}')
     if audit_fn:
         try: audit_fn('PAIRS_OPENED', {'id': trade_id, 'pair_id': signal['pair_id'],
-                                        'z': signal['z_score'], 'direction': signal['direction']})
+                                        'z': signal['z_score'], 'direction': signal['direction'],
+                                        'pos_size': pos_size,
+                                        'swap_of': (swap_victim or {}).get('id')})
         except Exception: pass
+    # [01-jul-2026] SWAP: fecha a trade fraca APOS abrir a nova (paper mode).
+    # Usa signal atual da victima (que ja pode ser calculado independente),
+    # aqui vamos usar o proprio signal atual como referencia de preco (aprox).
+    if swap_victim is not None:
+        try:
+            # Reconstroi um signal minimo com precos correntes da victima
+            # (se nao tiver, cai pra usar entry como exit -> pnl 0)
+            v_pair_id = swap_victim.get('pair_id')
+            v_snap = pairs_spreads.get(v_pair_id) or {}
+            v_signal = {
+                'z_score': v_snap.get('z_score', swap_victim.get('current_z', swap_victim.get('entry_z', 0))),
+                'spread_current': v_snap.get('spread_current', swap_victim.get('entry_spread', 0)),
+                'price_a': v_snap.get('price_a', swap_victim.get('price_a_entry')),
+                'price_b': v_snap.get('price_b', swap_victim.get('price_b_entry')),
+            }
+            close_pair_trade(swap_victim, v_signal, reason='SWAPPED_OUT', audit_fn=audit_fn)
+        except Exception as e:
+            log.warning(f'[PAIRS] SWAP close failed pair={swap_victim.get("pair_id")}: {e}')
     return trade
 
 

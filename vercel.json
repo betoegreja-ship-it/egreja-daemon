@@ -123,6 +123,14 @@
     {
       "source": "/audit/:path*",
       "destination": "https://diligent-spirit-production.up.railway.app/audit/:path*"
+    },
+    {
+      "source": "/arbitrage/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/arbitrage/:path*"
+    },
+    {
+      "source": "/sync/:path*",
+      "destination": "https://diligent-spirit-production.up.railway.app/sync/:path*"
     }
   ],
   "headers": [

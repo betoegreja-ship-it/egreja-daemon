@@ -1010,6 +1010,16 @@ HARD_BLACKLIST_CRYPTO = set(
         ''
     ).split(',') if s.strip()
 )
+# [HARD_BLACKLIST_STOCKS 01-jul-2026] Stocks destruidoras — skip silencioso.
+# Usuario pode overrider via env var HARD_BLACKLIST_STOCKS=SYM1,SYM2,SYM3.
+# Default INCLUI ALPA4 conforme decisao usuario (30-jun-2026) + tox validados
+# via SQL nos ultimos 60d (n>=15, WR<40%, total_pnl < -$5k).
+HARD_BLACKLIST_STOCKS = set(
+    s.strip().upper() for s in os.environ.get(
+        'HARD_BLACKLIST_STOCKS',
+        'ALPA4'
+    ).split(',') if s.strip()
+)
 # ── [v10.16] ATR-based adaptive stop-loss ─────────────────────────────────
 ATR_SL_MULTIPLIER_STOCK  = float(os.environ.get('ATR_SL_MULTIPLIER_STOCK', 2.5))  # SL = ATR * 2.5 para stocks
 ATR_SL_MULTIPLIER_CRYPTO = float(os.environ.get('ATR_SL_MULTIPLIER_CRYPTO', 2.0)) # SL = ATR * 2.0 para crypto
@@ -5617,7 +5627,7 @@ STOCK_SYMBOLS_B3 = [
     'NTCO3.SA',                         # Natura/Grupo Boticário
     'AZUL4.SA',                         # Azul Airlines
     'CCRO3.SA',                         # CCR concessões
-    'MDIA3.SA','ALPA4.SA','POMO4.SA',  # consumo
+    'MDIA3.SA','POMO4.SA',  # consumo — [01-jul-2026] ALPA4 removida (WR 30% 60d, decisao usuario)
     'AMER3.SA','RECV3.SA',             # Americanas + PetroRecôncavo
 ]
 STOCK_SYMBOLS_US = [
@@ -7762,6 +7772,12 @@ def stock_execution_worker():
                 _bl_blocked_s, _bl_reason_s = is_symbol_blacklisted(sym)
                 if _bl_blocked_s:
                     log.info(f'[STK-BL-BLOCK] {sym}: {_bl_reason_s}')
+                    continue
+                # [HARD_BLACKLIST_STOCKS 01-jul-2026] skip silencioso de stocks
+                # destruidoras (ex: ALPA4 conforme decisao usuario).
+                _sym_bare = sym.replace('.SA','').upper()
+                if _sym_bare in HARD_BLACKLIST_STOCKS or sym.upper() in HARD_BLACKLIST_STOCKS:
+                    log.info(f'[HARD-BL-STOCK] {sym}: em HARD_BLACKLIST_STOCKS — skip')
                     continue
                 # [v10.17] Directional exposure check
                 _dir_blocked_s, _dir_reason_s, _dir_stats_s = check_directional_exposure(direction, 'stocks')

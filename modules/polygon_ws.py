@@ -23,6 +23,8 @@ log = logging.getLogger('egreja.polygon_ws')
 POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY', '').strip()
 POLYGON_WS_URL = os.environ.get('POLYGON_WS_URL', 'wss://socket.polygon.io/stocks')
 POLYGON_WS_ENABLED = os.environ.get('POLYGON_WS_ENABLED', 'true').lower() == 'true'
+POLYGON_WS_RECONNECT_S = int(os.environ.get('POLYGON_WS_RECONNECT_S', '10'))
+POLYGON_WS_MAX_CONN_BACKOFF_S = int(os.environ.get('POLYGON_WS_MAX_CONN_BACKOFF_S', '900'))
 
 # Cache: symbol -> {price, bid, ask, ts (epoch s), source}
 _cache = {}
@@ -37,6 +39,7 @@ _state = {
     'reconnects': 0,
     'subscribed_symbols': [],
     'last_error': None,
+    'disabled_until': 0,
 }
 _state_lock = threading.Lock()
 
@@ -92,6 +95,20 @@ def _on_message(ws, message):
                     with _state_lock:
                         _state['connected'] = True
                         _state['connected_since'] = time.time()
+                elif status == 'max_connections' or 'Maximum number of websocket connections exceeded' in msg:
+                    disabled_until = time.time() + POLYGON_WS_MAX_CONN_BACKOFF_S
+                    with _state_lock:
+                        _state['connected'] = False
+                        _state['last_error'] = 'max_connections'
+                        _state['disabled_until'] = disabled_until
+                    log.warning(
+                        '[polygon-ws] max_connections: pausando reconexao por %ss',
+                        POLYGON_WS_MAX_CONN_BACKOFF_S,
+                    )
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
             with _state_lock:
                 _state['last_message_ts'] = time.time()
                 _state['messages_received'] += 1
@@ -140,6 +157,13 @@ def _run_ws():
         except: return
 
     while True:
+        with _state_lock:
+            disabled_until = float(_state.get('disabled_until') or 0)
+        if disabled_until > time.time():
+            sleep_s = min(60, max(1, int(disabled_until - time.time())))
+            log.info(f'[polygon-ws] circuit breaker ativo; nova tentativa em {sleep_s}s')
+            time.sleep(sleep_s)
+            continue
         try:
             log.info(f'[polygon-ws] conectando {POLYGON_WS_URL}...')
             ws = WebSocketApp(POLYGON_WS_URL,
@@ -153,8 +177,15 @@ def _run_ws():
         with _state_lock:
             _state['connected'] = False
             _state['reconnects'] += 1
-        log.info('[polygon-ws] reconectando em 5s...')
-        time.sleep(5)
+            last_error = _state.get('last_error')
+            disabled_until = float(_state.get('disabled_until') or 0)
+        if disabled_until > time.time() or last_error == 'max_connections':
+            sleep_s = min(60, max(1, int(disabled_until - time.time())))
+            log.info(f'[polygon-ws] reconexao pausada por limite da conta ({sleep_s}s)')
+            time.sleep(sleep_s)
+        else:
+            log.info(f'[polygon-ws] reconectando em {POLYGON_WS_RECONNECT_S}s...')
+            time.sleep(POLYGON_WS_RECONNECT_S)
 
 
 def start_worker(beat_fn=None):
@@ -213,4 +244,6 @@ def status():
     st['sample_quotes'] = sample
     if st.get('connected_since'):
         st['uptime_s'] = round(time.time() - st['connected_since'], 0)
+    if st.get('disabled_until'):
+        st['disabled_for_s'] = max(0, round(st['disabled_until'] - time.time(), 0))
     return st

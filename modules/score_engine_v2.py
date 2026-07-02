@@ -23,6 +23,7 @@ AUTOR: Refatoração Claude Opus 4.7 + Beto Egreja — 17/abr/2026
 """
 from __future__ import annotations
 import math
+import os
 from typing import List, Dict, Tuple, Optional
 
 
@@ -749,9 +750,16 @@ def compute_score_v2(
 
 
     # ── Bloqueio por pattern stats ruim ──
+    # [P0-FIX 02-jul-2026] SCAN GLOBAL DESATIVADO POR DEFAULT.
+    # Bug: este loop varria os primeiros 200 patterns do cache GLOBAL e
+    # bloqueava o sinal se QUALQUER um fosse ruim — sem relação com o padrão
+    # do sinal atual. Um único pattern ruim no top-200 virava "bloqueador
+    # universal" de todos os símbolos. O bloqueio correto por padrão tóxico
+    # (feature_hash do PRÓPRIO sinal) já existe no api_server.
+    # Reativar comportamento antigo: PATTERN_BLOCK_GLOBAL_SCAN=true.
     blocked = False
     block_reason = ''
-    if pattern_stats_cache:
+    if pattern_stats_cache and os.environ.get('PATTERN_BLOCK_GLOBAL_SCAN', 'false').lower() == 'true':
         for key, ps in list(pattern_stats_cache.items())[:200]:
             n_samples = ps.get('total_samples', 0)
             wins = ps.get('wins', 0)
@@ -1510,9 +1518,17 @@ def compute_score_v3(
     # abertas porque 46 stocks foram bloqueadas por padroes FLAT, nao tóxicos.
     # NOVO CRITERIO: bloquear so se (wins+losses) >= 10 (dados REAIS) E
     #   wr<40% E ewma<0.45 E expectancy<0 (perda esperada negativa real)
+    # [P0-FIX 02-jul-2026] SCAN GLOBAL DESATIVADO POR DEFAULT (mesmo bug da
+    # cópia v2 acima): varria os primeiros 200 patterns do cache GLOBAL e
+    # bloqueava QUALQUER símbolo se um deles fosse ruim. 01/jul: 16.707
+    # sinais stock bloqueados por PATTERN_BLOCK_00279; 02/jul: 6.7k por
+    # 0bb02/01264/00279 após a purga reordenar o cache — aberturas de stock
+    # caíram ~85% (4.526→866 sinais). O bloqueio por padrão tóxico correto
+    # (feature_hash do PRÓPRIO sinal) já existe no api_server.
+    # Reativar comportamento antigo: PATTERN_BLOCK_GLOBAL_SCAN=true.
     blocked = False
     block_reason = ''
-    if pattern_stats_cache:
+    if pattern_stats_cache and os.environ.get('PATTERN_BLOCK_GLOBAL_SCAN', 'false').lower() == 'true':
         for key, ps in list(pattern_stats_cache.items())[:200]:
             n_samples = ps.get('total_samples', 0)
             wins = ps.get('wins', 0)

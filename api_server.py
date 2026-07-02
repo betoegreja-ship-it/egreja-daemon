@@ -7422,18 +7422,26 @@ def stock_execution_worker():
                     # 6.199 patterns falsos (patterns com flat_count=N, wins=0, losses=0).
                     # Hoje (29/06 segunda) bloqueou 47 stocks = 100% do universo.
                     # NOVO: exigir wins+losses >= 10 (dados REAIS) e expectancy<0 (perda real)
-                    for _ph, _ps in list(pattern_stats_cache.items())[:200]:
-                        _pn = _ps.get('total_samples',0)
-                        _pw = _ps.get('wins',0)
-                        _pl = _ps.get('losses',0)
-                        _real = _pw + _pl
-                        if _real < 10:
-                            continue  # skip patterns FLAT-only
-                        _real_wr = _pw / _real if _real > 0 else 0.5
-                        _pev = _ps.get('expectancy', 0)
-                        if _pn >= 30 and _real_wr < 0.40 and _ps.get('ewma_hit_rate',1) < 0.45 and _pev < 0:
-                            _pattern_blocked = True
-                            break
+                    # [P0-FIX 02-jul-2026] TERCEIRA cópia do scan global aleatório —
+                    # varria os primeiros 200 patterns do cache GLOBAL (sem relação com
+                    # o sinal atual) e marcava _pattern_blocked p/ QUALQUER símbolo.
+                    # 02/jul 17h: pattern_weak=123 de 125 símbolos no [STOCK-LOOP-END].
+                    # Desativado por default (mesmo env das outras 2 cópias no
+                    # score_engine_v2). Proteção por hash do PRÓPRIO sinal continua
+                    # ativa (KRYPTONITA-BLOCK linha ~7869). PATTERN_BLOCK_GLOBAL_SCAN=true reativa.
+                    if os.environ.get('PATTERN_BLOCK_GLOBAL_SCAN', 'false').lower() == 'true':
+                        for _ph, _ps in list(pattern_stats_cache.items())[:200]:
+                            _pn = _ps.get('total_samples',0)
+                            _pw = _ps.get('wins',0)
+                            _pl = _ps.get('losses',0)
+                            _real = _pw + _pl
+                            if _real < 10:
+                                continue  # skip patterns FLAT-only
+                            _real_wr = _pw / _real if _real > 0 else 0.5
+                            _pev = _ps.get('expectancy', 0)
+                            if _pn >= 30 and _real_wr < 0.40 and _ps.get('ewma_hit_rate',1) < 0.45 and _pev < 0:
+                                _pattern_blocked = True
+                                break
                 score = max(0, min(100, score + _score_adj))
                 # [v10.14-FIX] _pattern_blocked: checar por DIREÇÃO
                 # LONG fraco: score < 75 → bloquear

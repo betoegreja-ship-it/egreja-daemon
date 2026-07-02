@@ -23,6 +23,7 @@ Author: Claude Agent (Anthropic)
 Version: Phase 4a
 """
 
+import os
 import time
 import threading
 import requests
@@ -667,12 +668,17 @@ def stock_execution_worker(ctx):
                     _fs_dir = ctx['factor_stats_cache'].get(('direction', _direction), {})
                     if _fs_dir.get('total_samples',0) >= 5:
                         _score_adj += int(_fs_dir.get('confidence_weight',0) * 6)
-                    for _ph, _ps in list(ctx['pattern_stats_cache'].items())[:200]:
-                        _pn = _ps.get('total_samples',0)
-                        _pw = _ps.get('wins',0)
-                        if _pn >= 30 and _pw/_pn < 0.40 and _ps.get('ewma_hit_rate',1) < 0.45:
-                            _pattern_blocked = True
-                            break
+                    # [P0-FIX 02-jul-2026] Scan global aleatório desativado por default
+                    # (4a cópia do mesmo bug — ver score_engine_v2.py e api_server.py:
+                    # varria 200 patterns do cache global sem relação com o sinal atual
+                    # e bloqueava qualquer símbolo). PATTERN_BLOCK_GLOBAL_SCAN=true reativa.
+                    if os.environ.get('PATTERN_BLOCK_GLOBAL_SCAN', 'false').lower() == 'true':
+                        for _ph, _ps in list(ctx['pattern_stats_cache'].items())[:200]:
+                            _pn = _ps.get('total_samples',0)
+                            _pw = _ps.get('wins',0)
+                            if _pn >= 30 and _pw/_pn < 0.40 and _ps.get('ewma_hit_rate',1) < 0.45:
+                                _pattern_blocked = True
+                                break
                 score = max(0, min(100, score + _score_adj))
                 _pre_dir = 'LONG' if score > 50 else 'SHORT'
                 _is_weak_long  = (_pre_dir == 'LONG'  and score < ctx['MIN_SCORE_AUTO'] + 5)

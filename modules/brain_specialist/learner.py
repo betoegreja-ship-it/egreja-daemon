@@ -127,11 +127,24 @@ def recalibrate_specialist(market: str, lookback_days: int = None) -> dict:
 
         cur = conn.cursor(dictionary=True)
 
+        # [P1-FIX 02-jul-2026] Custo round-trip (fee+slippage) descontado do
+        # pnl_pct BRUTO lido do MySQL. Antes o specialist aprendia em P&L de
+        # custo zero — WR/EV superestimados exatamente nos buckets de churn.
+        # Env: LEARNING_USE_NET=false para voltar ao bruto.
+        _cost_pct = 0.0
+        if os.environ.get('LEARNING_USE_NET', 'true').lower() != 'false':
+            try:
+                from modules.fees import learn_cost_pct
+                _atype = 'crypto' if market == 'CRYPTO' else 'stock'
+                _cost_pct = learn_cost_pct(market, _atype)
+            except Exception as _fe:
+                log.debug(f'[specialist:{market}] learn_cost_pct indisponivel: {_fe}')
+
         # Parse features
         for r in rows:
             try: r['_feats'] = json.loads(r['features_json'])
             except Exception: r['_feats'] = {}
-            r['_pnl'] = float(r['pnl_pct'] or 0)
+            r['_pnl'] = float(r['pnl_pct'] or 0) - _cost_pct
             r['_win'] = 1 if r['_pnl'] > 0 else 0
 
         baseline = 100 * sum(r['_win'] for r in rows) / n_trades

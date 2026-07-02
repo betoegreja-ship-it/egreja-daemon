@@ -101,15 +101,54 @@ def calc_fee(position_value: float, market: str, asset_type: str = 'stock',
 
     return round(pv * rate, 2)
 
+# ═══════════════════════════════════════════════════════════════
+# [P1-FIX 02-jul-2026] SLIPPAGE ESTIMADO (bps round-trip por mercado)
+# Auditoria 02/jul: o learning treinava em P&L BRUTO (custo zero) —
+# otimizando para um simulador que não existe. Estes valores alimentam
+# pnl_learn/pnl_learn_pct, o alvo correto do aprendizado.
+# Arbi NÃO usa isto: já modela fee+FX+slippage+aluguel no próprio P&L.
+# ═══════════════════════════════════════════════════════════════
+SLIPPAGE_BPS = {
+    'CRYPTO': float(os.environ.get('SLIPPAGE_BPS_CRYPTO', 5.0)),   # majors líquidas ~2-3bps/lado
+    'B3':     float(os.environ.get('SLIPPAGE_BPS_B3', 8.0)),       # spread médio large caps
+    'NYSE':   float(os.environ.get('SLIPPAGE_BPS_NYSE', 4.0)),     # large caps líquidas
+    'ARBI':   0.0,   # já embutido em total_cost_estimated
+}
+
+def calc_slippage(position_value: float, market: str) -> float:
+    """Slippage estimado round-trip em moeda para uma posição."""
+    pv = abs(float(position_value or 0))
+    bps = SLIPPAGE_BPS.get(market, SLIPPAGE_BPS['NYSE'])
+    return round(pv * bps / 10000.0, 2)
+
+def learn_cost_pct(market: str, asset_type: str = 'stock',
+                   vip_tier: int = None, use_bnb: bool = None) -> float:
+    """Custo percentual round-trip (fee + slippage) para ajustar métricas de
+    aprendizado calculadas a partir de pnl_pct bruto (ex.: brain_calibrator/
+    brain_specialist, que leem pnl_pct direto do MySQL)."""
+    fees = get_fees(vip_tier, use_bnb)
+    if asset_type == 'crypto' or market == 'CRYPTO':
+        rate = fees['CRYPTO']
+    elif market in fees:
+        rate = fees[market]
+    else:
+        rate = fees['NYSE']
+    slip_pct = SLIPPAGE_BPS.get(market, SLIPPAGE_BPS['NYSE']) / 100.0 / 100.0
+    return round(rate * 100 + slip_pct * 100, 4)   # em %
+
 def apply_fee_to_trade(trade: dict, vip_tier: int = None, use_bnb: bool = None) -> dict:
     """[v10.14] Calcula e registra a taxa estimada de corretagem.
-    IMPORTANTE: pnl e pnl_pct NÃO são alterados — permanecem como bruto.
-    O sistema interno (capital, learning, WR, SL, TP) usa sempre o bruto.
-    Campos adicionados para exibição no frontend:
+    IMPORTANTE: pnl e pnl_pct NÃO são alterados — permanecem como bruto
+    (capital/display). [P1-FIX 02-jul-2026] O LEARNING agora usa os novos
+    campos líquidos pnl_learn/pnl_learn_pct (fee + slippage descontados).
+    Campos adicionados:
       - trade['pnl_gross']    = cópia do pnl bruto (igual a pnl)
       - trade['fee_estimated'] = taxa calculada
-      - trade['pnl_net']      = pnl - fee (só para display)
+      - trade['slippage_estimated'] = slippage estimado round-trip
+      - trade['pnl_net']      = pnl - fee (display)
       - trade['pnl_net_pct']  = pnl_net / position_value × 100
+      - trade['pnl_learn']    = pnl - fee - slippage (ALVO DO LEARNING)
+      - trade['pnl_learn_pct'] = pnl_learn / position_value × 100
 
     Args:
         trade: Trade dict
@@ -138,10 +177,21 @@ def apply_fee_to_trade(trade: dict, vip_tier: int = None, use_bnb: bool = None) 
     net   = round(gross - fee, 2)
     net_pct = round(net / pv * 100, 4) if pv > 0 else 0
 
-    # NUNCA sobrescreve pnl ou pnl_pct — lógica interna usa bruto
+    # [P1-FIX 02-jul-2026] slippage estimado (arbi: já dentro de total_cost_estimated)
+    if atype in ('arbitrage', 'arbi') or mkt == 'ARBI':
+        slip = 0.0
+    else:
+        slip = calc_slippage(pv, mkt)
+    learn = round(gross - fee - slip, 2)
+    learn_pct = round(learn / pv * 100, 4) if pv > 0 else 0
+
+    # NUNCA sobrescreve pnl ou pnl_pct — capital/display usam bruto
     trade['pnl_gross']     = gross   # igual a pnl (bruto)
     trade['fee_estimated'] = fee
-    trade['pnl_net']       = net     # líquido = só para display
+    trade['slippage_estimated'] = slip
+    trade['pnl_net']       = net     # líquido = display
     trade['pnl_net_pct']   = net_pct
+    trade['pnl_learn']     = learn      # [P1-FIX] alvo do learning
+    trade['pnl_learn_pct'] = learn_pct  # [P1-FIX]
     trade['_fee_applied']  = True
     return trade

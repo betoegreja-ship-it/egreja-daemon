@@ -45,6 +45,12 @@ def _ema(closes, period):
 def _rsi(closes, period=14):
     """[v10.4] Relative Strength Index.
 
+    [P1-FIX 02-jul-2026] UNIFICADO com score_engine_v2.rsi (fórmula Wilder,
+    série completa + suavização). Antes usava média simples dos últimos 14
+    deltas — divergia materialmente do RSI usado pelo score. Resultado:
+    o RSI que decidia o score era diferente do RSI que rotulava o learning
+    (linhagem do bug RSI=50 de 28/jun). Agora há UMA implementação.
+
     Pure mathematical function — no side effects.
 
     Args:
@@ -52,21 +58,16 @@ def _rsi(closes, period=14):
         period (int): RSI period (default 14)
 
     Returns:
-        float: RSI value (0-100)
+        float: RSI value (0-100); 50.0 se dados insuficientes (compat legado)
     """
     if len(closes) < period + 1:
         return 50.0
-    gains = []
-    losses = []
-    for i in range(1, period + 1):
-        d = closes[-period + i] - closes[-period + i - 1]
-        gains.append(d if d > 0 else 0)
-        losses.append(abs(d) if d < 0 else 0)
-    ag = sum(gains) / period
-    al = sum(losses) / period
-    if al == 0:
-        return 100.0
-    return round(100 - 100 / (1 + ag / al), 1)
+    try:
+        from modules.score_engine_v2 import rsi as _wilder_rsi
+    except ImportError:
+        from score_engine_v2 import rsi as _wilder_rsi
+    val = _wilder_rsi(list(closes), period)
+    return round(val, 1) if val is not None else 50.0
 
 
 def _calc_atr(closes: list, highs: list = None, lows: list = None, period: int = 14) -> float:

@@ -3534,10 +3534,14 @@ def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
             klines = _get_cached_candles(f'klines:{sym}', ttl_min=5) or {}  # [v10.49] 60→5min
             if not klines or len(klines.get('closes', [])) < 30:
                 return False, None, None, 'crypto_no_klines'
+            # [P0-FIX 02-jul-2026] asset_type='crypto' — antes usava o default 'stock',
+            # ou seja: a decisão de fechar crypto por "reversão" era recalculada com a
+            # matriz de pesos de AÇÕES (motor diferente do que abriu o trade).
             r = compute_score_v3(klines['closes'], klines.get('highs', []),
                                  klines.get('lows', []), klines.get('volumes', []),
                                  factor_stats_cache=factor_stats_cache,
-                                 pattern_stats_cache=pattern_stats_cache)
+                                 pattern_stats_cache=pattern_stats_cache,
+                                 asset_type='crypto')
         else:  # stock
             sym = trade['symbol']
             # [2026-04-20 deadlock fix] state_lock removido: esta função é
@@ -3553,7 +3557,8 @@ def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
                 return False, None, None, 'stock_no_series'
             r = compute_score_v3(c, h, l, v,
                                  factor_stats_cache=factor_stats_cache,
-                                 pattern_stats_cache=pattern_stats_cache)
+                                 pattern_stats_cache=pattern_stats_cache,
+                                 asset_type='stock')  # [P0-FIX 02-jul-2026] explícito
 
         new_regime = r.get('regime')
         new_signal = r.get('signal')
@@ -4255,6 +4260,15 @@ def process_trade_outcome(trade: dict):
     try:
         pnl       = trade.get('pnl', 0)
         pnl_pct   = trade.get('pnl_pct', 0)
+        # [P1-FIX 02-jul-2026] LEARNING USA P&L LÍQUIDO (fee + slippage).
+        # Antes: todo o aprendizado (pattern/factor stats, WR, EV, calibração)
+        # treinava em P&L BRUTO — otimizando para um simulador de custo zero.
+        # apply_fee_to_trade() roda antes deste ponto e popula pnl_learn/_pct.
+        # Env: LEARNING_USE_NET=false para voltar ao comportamento antigo.
+        if os.environ.get('LEARNING_USE_NET', 'true').lower() != 'false':
+            if trade.get('pnl_learn') is not None:
+                pnl = trade.get('pnl_learn', pnl)
+                pnl_pct = trade.get('pnl_learn_pct', pnl_pct)
         sig_id    = trade.get('signal_id', '')
         feat_hash = trade.get('feature_hash', '')
 
@@ -4497,6 +4511,17 @@ def update_composite_pattern(features: dict, pnl: float, pnl_pct: float):
             s['updated'] = now_iso
             _composite_patterns[key] = s
 
+def _learning_frozen() -> bool:
+    """[P0-FIX 02-jul-2026] Interruptor mestre de congelamento do aprendizado.
+    LEARNING_FREEZE=true desliga a APLICAÇÃO de ajustes auto-recalibrados
+    (composite, calibração specialist/unified) e pausa os loops de
+    recalibração (calibrator/specialist/pattern_discovery/brain_evolution).
+    A coleta de dados (trades, features, stats) continua normal.
+    Motivo (auditoria 02/jul): 5+ camadas recalibrando de hora em hora sobre
+    amostras de 10 trades e P&L bruto = curve-fitting em ruído. Congelar por
+    ~14 dias permite medir o efeito real das correções P0/P1 isoladamente."""
+    return os.environ.get('LEARNING_FREEZE', 'false').lower() == 'true'
+
 def get_composite_score_adj(features: dict) -> tuple:
     """
     [v10.13] Consulta todos os padrões compostos e retorna o ajuste de score agregado.
@@ -4505,6 +4530,8 @@ def get_composite_score_adj(features: dict) -> tuple:
     """
     if not _composite_patterns or not LEARNING_ENABLED:
         return 0, False, ''
+    if _learning_frozen():
+        return 0, False, ''  # [P0-FIX 02-jul-2026] freeze: sem ajuste nem block
 
     enriched = _enrich_features_for_discovery(features)
     adj_total = 0
@@ -4689,14 +4716,17 @@ def pattern_discovery_loop():
     for _ in range(18):  # 3 minutos em intervals de 10s
         beat('pattern_discovery')
         time.sleep(10)
-    try: run_pattern_discovery()
-    except: pass
+    if not _learning_frozen():  # [P0-FIX 02-jul-2026]
+        try: run_pattern_discovery()
+        except: pass
     while True:
         # Dormir em pequenos incrementos batendo coração — evita FROZEN
         for _ in range(int(6*3600/30)):  # 6h em pedaços de 30s
             beat('pattern_discovery')
             time.sleep(30)
         beat('pattern_discovery')
+        if _learning_frozen():
+            continue  # [P0-FIX 02-jul-2026] LEARNING_FREEZE pausa mineração
         try: run_pattern_discovery()
         except Exception as e: log.error(f'pattern_discovery_loop: {e}')
 
@@ -5769,12 +5799,18 @@ else:
         return ema
 
     def _rsi(closes, period=14):
+        # [P1-FIX 02-jul-2026] Unificado com score_engine_v2.rsi (Wilder,
+        # série completa + suavização). Antes: média simples dos últimos 14
+        # deltas — divergia do RSI usado pelo score.
         if len(closes) < period+1: return 50.0
         gains=[]; losses=[]
-        for i in range(1,period+1):
-            d=closes[-period+i]-closes[-period+i-1]
-            gains.append(d if d>0 else 0); losses.append(abs(d) if d<0 else 0)
-        ag=sum(gains)/period; al=sum(losses)/period
+        for i in range(1, len(closes)):
+            d = closes[i]-closes[i-1]
+            gains.append(max(d,0)); losses.append(max(-d,0))
+        ag=sum(gains[:period])/period; al=sum(losses[:period])/period
+        for i in range(period, len(gains)):
+            ag=(ag*(period-1)+gains[i])/period
+            al=(al*(period-1)+losses[i])/period
         if al==0: return 100.0
         return round(100-100/(1+ag/al),1)
 
@@ -6849,11 +6885,26 @@ def monitor_trades():
                         _peak_pos_s = float(trade.get('peak_pnl_pct', 0) or 0)
                         _min_pnl_s = trade.setdefault('min_pnl_pct', trade['pnl_pct'])
                         trade['min_pnl_pct'] = round(min(_min_pnl_s, trade['pnl_pct']), 2)
-                        if _peak_pos_s < 0.4:
+                        # [P0-FIX 02-jul-2026] EARLY_STOP REFORMADO (mesma lógica do crypto).
+                        # Auditoria: -R$589.0k em 574 trades stock (WR 0%), duração mediana
+                        # 10min, peak mediano 0.00%. NYSE: early_stop cresceu -7.3k(abr) →
+                        # -116.0k(mai) → -186.7k(jun) — foi ELE que degradou o NYSE.
+                        _es_min_hold_s = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN', 90))
+                        _es_atr_mult_s = float(os.environ.get('EARLY_STOP_ATR_MULT', 1.0))
+                        _es_atr_pct_s = float(trade.get('_atr_pct') or 0)
+                        if _es_atr_pct_s > 0:
+                            _early_stop_pct_s = min(_early_stop_pct_s, -_es_atr_mult_s * _es_atr_pct_s)
+                        try:
+                            _es_hold_min_s = (now - datetime.fromisoformat(str(trade['opened_at']).replace('Z',''))).total_seconds() / 60
+                            _es_hold_ok_s = _es_hold_min_s >= _es_min_hold_s
+                        except Exception:
+                            _es_hold_ok_s = True
+                        if _peak_pos_s < 0.4 and _es_hold_ok_s:
                             if trade['pnl_pct'] <= _early_stop_pct_s:
                                 reason = 'EARLY_STOP'
                                 log.info(f"[EARLY-STOP] {trade['symbol']}(stock): pnl={trade['pnl_pct']:+.2f}% "
-                                         f"peak={_peak_pos_s:+.2f}% — cortando antes de STOP_LOSS")
+                                         f"peak={_peak_pos_s:+.2f}% thr={_early_stop_pct_s:.2f}% "
+                                         f"(ATR%={_es_atr_pct_s:.2f}) — cortando antes de STOP_LOSS")
                             elif trade['pnl_pct'] <= _early_alert_pct_s:
                                 if not trade.get('_early_alerted'):
                                     trade['_early_alerted'] = True
@@ -7057,12 +7108,28 @@ def monitor_trades():
                         _peak_pos = float(trade.get('peak_pnl_pct', 0) or 0)
                         _min_pnl = trade.setdefault('min_pnl_pct', trade['pnl_pct'])
                         trade['min_pnl_pct'] = round(min(_min_pnl, trade['pnl_pct']), 2)
+                        # [P0-FIX 02-jul-2026] EARLY_STOP REFORMADO. Auditoria: -R$699.6k em
+                        # 1.707 trades crypto (WR 0%), duração mediana 13min, peak mediano
+                        # +0.09% — cortava RUÍDO, não risco (trades em TIMEOUT terminavam ~0%).
+                        # 1) Tempo mínimo de posição (default 90min): antes disso é ruído.
+                        # 2) Gatilho escalado por ATR: nunca mais apertado que 1.0×ATR% do ativo.
+                        _es_min_hold = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN', 90))
+                        _es_atr_mult = float(os.environ.get('EARLY_STOP_ATR_MULT', 1.0))
+                        _es_atr_pct = float(trade.get('_atr_pct') or 0)
+                        if _es_atr_pct > 0:
+                            _early_stop_pct = min(_early_stop_pct, -_es_atr_mult * _es_atr_pct)
+                        try:
+                            _es_hold_min = (now - datetime.fromisoformat(str(trade['opened_at']).replace('Z',''))).total_seconds() / 60
+                            _es_hold_ok = _es_hold_min >= _es_min_hold
+                        except Exception:
+                            _es_hold_ok = True  # sem opened_at parseável: comportamento legado
                         # Só considera stop se peak NUNCA passou de 0.4 (senão trailing cuida)
-                        if _peak_pos < 0.4:
+                        if _peak_pos < 0.4 and _es_hold_ok:
                             if trade['pnl_pct'] <= _early_stop_pct:
                                 reason = 'EARLY_STOP'
                                 log.info(f"[EARLY-STOP] {trade['symbol']}: pnl={trade['pnl_pct']:+.2f}% "
-                                         f"peak={_peak_pos:+.2f}% — cortando antes de virar STOP_LOSS")
+                                         f"peak={_peak_pos:+.2f}% thr={_early_stop_pct:.2f}% "
+                                         f"(ATR%={_es_atr_pct:.2f}) — cortando antes de virar STOP_LOSS")
                             elif trade['pnl_pct'] <= _early_alert_pct:
                                 # Throttle: alerta 1x por trade (usa _early_alerted flag)
                                 if not trade.get('_early_alerted'):
@@ -7489,8 +7556,10 @@ def stock_execution_worker():
                                           f"{_score_pre_calib}→{_adj_score:.1f} "
                                           f"(adj={_adj_total:+.1f} mkt={_routed['market']})")
                             # LIVE quando: CALIBRATOR_LIVE_STOCK=true OU mode=specialist/hybrid
+                            # [P0-FIX 02-jul-2026] LEARNING_FREEZE força shadow
                             _mode = os.environ.get('BRAIN_SPECIALIST_MODE', 'shadow').lower()
-                            if (os.environ.get('CALIBRATOR_LIVE_STOCK','false').lower() == 'true'
+                            if not _learning_frozen() and (
+                                os.environ.get('CALIBRATOR_LIVE_STOCK','false').lower() == 'true'
                                 or _mode in ('hybrid', 'specialist')):
                                 score = int(round(_adj_score))
                         except Exception as _re:
@@ -7499,7 +7568,7 @@ def stock_execution_worker():
                             _adj_score, _adj_total, _adj_bd = _apply_calibration(
                                 int(score), _calib_feats_stk, sym, 'stock',
                                 _calib_dir, _now_s.hour)
-                            if os.environ.get('CALIBRATOR_LIVE_STOCK','false').lower() == 'true':
+                            if not _learning_frozen() and os.environ.get('CALIBRATOR_LIVE_STOCK','false').lower() == 'true':
                                 score = int(round(_adj_score))
                     except Exception as _ce:
                         log.debug(f'[CALIB] stock {sym}: {_ce}')
@@ -8305,6 +8374,8 @@ def auto_trade_crypto():
                         hour_utc=_h_utc_c if '_h_utc_c' in dir() else None,
                         unified_apply_fn=_apply_calibration)
                     _mode_c = os.environ.get('BRAIN_SPECIALIST_MODE', 'shadow').lower()
+                    if _learning_frozen():
+                        _mode_c = 'shadow'  # [P0-FIX 02-jul-2026] freeze força shadow
                     if _mode_c in ('hybrid', 'specialist') and abs(_routed_c['adj_total']) >= 0.5:
                         score = int(round(_routed_c['score_adjusted']))
                         if score != _score_pre_routed:
@@ -8318,6 +8389,22 @@ def auto_trade_crypto():
                 if not _entry_ok:
                     log.info(f'[CRYPTO-THRESHOLD] {display}: score={score} dir={direction} threshold={MIN_SCORE_AUTO_CRYPTO} -> BLOCKED')
                     continue
+
+                # [P1-FIX 02-jul-2026] COERÊNCIA DIREÇÃO × SINAL V3.
+                # Bug estrutural da auditoria 02/jul: direction vem do momentum 24h
+                # (linha ~8115) mas o v3 pode discordar (signal_v2_c). Trades abertas
+                # com essa contradição eram fechadas pelo V3_REVERSAL logo em seguida
+                # (110 trades, WR 14.5%, -R$45.6k) — whipsaw sistemático.
+                # Regra: não abrir LONG se v3 diz VENDA, nem SHORT se v3 diz COMPRA.
+                # MANTER passa (sem tese v3 = sem reavaliação de reversão).
+                # Env: CRYPTO_REQUIRE_V3_COHERENCE=false para desligar.
+                if os.environ.get('CRYPTO_REQUIRE_V3_COHERENCE', 'true').lower() != 'false':
+                    _sig_v3_c = locals().get('signal_v2_c')
+                    if (_sig_v3_c == 'VENDA' and direction == 'LONG') or \
+                       (_sig_v3_c == 'COMPRA' and direction == 'SHORT'):
+                        log.info(f'[CRYPTO-V3-INCOHERENT] {display}: dir={direction} (momentum 24h) '
+                                 f'contradiz v3 signal={_sig_v3_c} — entrada bloqueada')
+                        continue
 
                 # [CRYPTO-24/7 04/mai/2026] Hard-blocks REMOVIDOS — alinhamento com decisao do
                 # commit 84de0f0 ("DECISAO DO USUARIO: operar 24/7 mantido. Forca maxima em horas
@@ -9973,6 +10060,8 @@ def brain_evolution_loop():
         now_ts = time.time()
         if now_ts - _last_update < interval:
             continue
+        if _learning_frozen():
+            continue  # [P0-FIX 02-jul-2026] LEARNING_FREEZE pausa evolucao do brain
         _last_update = now_ts
         try:
             engine = _get_brain_engine()
@@ -10064,7 +10153,9 @@ def start_background_threads():
     # [v12-CALIBRATOR 24-jun-2026] Worker que recalibra brain a cada hora
     # Lê os 12k+ trades historicos, calcula pesos data-driven, atualiza MySQL.
     # Default ENABLED. Desliga via DISABLE_BRAIN_CALIBRATOR=true
-    _disable_calib = os.environ.get('DISABLE_BRAIN_CALIBRATOR', 'false').lower() == 'true'
+    # [P0-FIX 02-jul-2026] LEARNING_FREEZE também desliga o calibrator
+    _disable_calib = (os.environ.get('DISABLE_BRAIN_CALIBRATOR', 'false').lower() == 'true'
+                      or _learning_frozen())
     if _calibrator_loaded and not _disable_calib:
         def _calib_loop_wrapper():
             try:
@@ -10081,7 +10172,9 @@ def start_background_threads():
     # Roda em paralelo ao brain_calibrator unified (NAO substitui).
     # Cada market recalibra suas trades isoladas hora-a-hora.
     # Default ENABLED. Desliga via DISABLE_BRAIN_SPECIALIST=true
-    _disable_specialist = os.environ.get('DISABLE_BRAIN_SPECIALIST', 'false').lower() == 'true'
+    # [P0-FIX 02-jul-2026] LEARNING_FREEZE também desliga o specialist
+    _disable_specialist = (os.environ.get('DISABLE_BRAIN_SPECIALIST', 'false').lower() == 'true'
+                           or _learning_frozen())
     if not _disable_specialist:
         try:
             from modules.brain_specialist.worker import specialist_loop as _spec_loop

@@ -136,11 +136,28 @@ def recalibrate_brain(lookback_days=None) -> dict:
             log.warning(f'[calibrator] poucos trades ({n_trades}) — pulando')
             return {'skipped': True, 'n_trades': n_trades}
 
+        # [P1-FIX 02-jul-2026] Custo round-trip (fee+slippage) por mercado
+        # descontado do pnl_pct BRUTO. Env: LEARNING_USE_NET=false p/ bruto.
+        _use_net = os.environ.get('LEARNING_USE_NET', 'true').lower() != 'false'
+        _cost_by_mkt = {}
+        if _use_net:
+            try:
+                from modules.fees import learn_cost_pct
+                _cost_by_mkt = {
+                    'B3': learn_cost_pct('B3', 'stock'),
+                    'NYSE': learn_cost_pct('NYSE', 'stock'),
+                    'NASDAQ': learn_cost_pct('NYSE', 'stock'),
+                    'CRYPTO': learn_cost_pct('CRYPTO', 'crypto'),
+                }
+            except Exception as _fe:
+                log.debug(f'[calibrator] learn_cost_pct indisponivel: {_fe}')
+
         # Parse features
         for r in rows:
             try: r['_feats'] = json.loads(r['features_json'])
             except Exception: r['_feats'] = {}
-            r['_pnl'] = float(r['pnl_pct'] or 0)
+            _c = _cost_by_mkt.get(r.get('market') or '', 0.0)
+            r['_pnl'] = float(r['pnl_pct'] or 0) - _c
             r['_win'] = 1 if r['_pnl'] > 0 else 0
 
         baseline = 100 * sum(r['_win'] for r in rows) / n_trades

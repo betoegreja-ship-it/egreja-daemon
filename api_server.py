@@ -6929,6 +6929,25 @@ def monitor_trades():
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else:                                      reason='TIMEOUT'
                     elif not market_open_for(mkt) and age_h>0.5:   reason='MARKET_CLOSE'
+                    # ═══ [HOLD-TEST 06-jul-2026] Experimento controlado pelo Beto ═══
+                    # Suprime QUALQUER fechamento automático de trades listadas em
+                    # HOLD_TEST_TRADE_IDS (csv de ids) até HOLD_TEST_UNTIL (ISO UTC).
+                    # Uso: testar ao vivo a hipótese hold-3d (doc SIMULACAO_HOLD_3DIAS).
+                    # Guarda de desastre: se pnl <= -8%, o fechamento NÃO é suprimido.
+                    # Envs vazias (default) = comportamento normal para tudo.
+                    if reason:
+                        try:
+                            _ht_ids = [x.strip() for x in os.environ.get('HOLD_TEST_TRADE_IDS','').split(',') if x.strip()]
+                            if trade['id'] in _ht_ids:
+                                _ht_until = os.environ.get('HOLD_TEST_UNTIL','')
+                                if _ht_until and now.isoformat() < _ht_until and trade['pnl_pct'] > -8.0:
+                                    if not trade.get('_ht_logged') or (time.time() - trade.get('_ht_logged', 0)) > 1800:
+                                        trade['_ht_logged'] = time.time()
+                                        log.info(f"[HOLD-TEST] {trade['symbol']} {trade['id']}: exit '{reason}' "
+                                                 f"suprimido (pnl={trade['pnl_pct']:+.2f}%, teste até {_ht_until})")
+                                    reason = None
+                        except Exception as _hte:
+                            log.debug(f'[HOLD-TEST] check: {_hte}')
                     if reason:
                         # [v10.7-Fix2] Devolução de capital correta para LONG e SHORT:
                         # Debitado na abertura: position_value = entry_price * qty

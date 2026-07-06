@@ -155,19 +155,19 @@ tr:hover{background:#0a1018}
     <table id="closed-table">
       <thead>
         <tr>
-          <th>Quando</th>
+          <th>Fechou em</th>
           <th>Par</th>
-          <th>Direção</th>
-          <th>Entry z</th>
-          <th>Exit z</th>
-          <th>Razão</th>
+          <th>Investido</th>
+          <th>Ganho R$</th>
+          <th>Ganho %</th>
           <th>Duração</th>
-          <th>PnL</th>
+          <th>Como fechou</th>
         </tr>
       </thead>
       <tbody id="closed-tbody">
-        <tr><td colspan="8" class="empty">Nenhuma trade fechada ainda. Sistema rodando em paper.</td></tr>
+        <tr><td colspan="7" class="empty">Nenhuma trade fechada ainda. Sistema rodando em paper.</td></tr>
       </tbody>
+      <tfoot id="closed-tfoot"></tfoot>
     </table>
   </div>
 
@@ -276,25 +276,45 @@ async function loadPairs(){
   }
 }
 
+let _lastPairsData = null;
+let _lastTradesData = null;
+
 async function loadTrades(){
   try {
     const r = await fetch(API_BASE + '/pairs/trades', {cache:'no-cache'});
     const d = await r.json();
+    _lastTradesData = d;
     renderOpenTrades(d.open_trades || []);
     renderClosedTrades(d.closed_trades || []);
+    if (_lastPairsData) renderStats(_lastPairsData);  // re-render cards com dados de trades
   } catch(e) {
-    document.getElementById('closed-tbody').innerHTML = `<tr><td colspan="8" class="empty">Erro: ${e.message}</td></tr>`;
+    document.getElementById('closed-tbody').innerHTML = `<tr><td colspan="7" class="empty">Erro: ${e.message}</td></tr>`;
   }
 }
 
 function renderStats(d){
+  _lastPairsData = d;
   const totalPairs = (d.pairs || []).length;
   const active = (d.pairs || []).filter(p => p.z_score !== null).length;
+  const td = _lastTradesData;
+  // Métricas da estratégia (o que importa): resultado, % sobre capital, win rate, capital em uso
+  let extra = '';
+  if (td) {
+    const cap = td.capital_paper || 1000000;
+    const pnl = td.closed_pnl_total || 0;
+    const pctCap = cap > 0 ? (100 * pnl / cap) : 0;
+    const pnlCls = pnl > 0 ? 'green' : (pnl < 0 ? 'red' : '');
+    const emUso = (td.open_trades || []).reduce((s,t) => s + (parseFloat(t.position_size) || 0), 0);
+    extra = `
+    <div class="stat"><div class="label">Resultado fechadas (${td.closed_count})</div><div class="value ${pnlCls}">${pnl >= 0 ? '+' : ''}R$ ${pnl.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0})}</div></div>
+    <div class="stat"><div class="label">% sobre capital inicial</div><div class="value ${pnlCls}">${pctCap >= 0 ? '+' : ''}${pctCap.toFixed(2)}%</div></div>
+    <div class="stat"><div class="label">Win rate</div><div class="value cyan">${(td.win_rate || 0).toFixed(0)}%</div></div>
+    <div class="stat"><div class="label">Capital em uso</div><div class="value">${fmt_money(emUso)} <span style="font-size:12px;color:var(--mute)">de ${fmt_money(cap)}</span></div></div>`;
+  }
   const html = `
-    <div class="stat"><div class="label">Capital paper</div><div class="value gold">${fmt_money(d.capital_paper)}</div></div>
+    ${extra}
     <div class="stat"><div class="label">Pares monitorados</div><div class="value cyan">${active}/${totalPairs}</div></div>
-    <div class="stat"><div class="label">Trades abertas</div><div class="value">${d.open_count}/${d.max_positions}</div></div>
-    <div class="stat"><div class="label">Trades fechadas</div><div class="value">${d.closed_count}</div></div>
+    <div class="stat"><div class="label">Trades abertas</div><div class="value">${d.open_count}${d.max_positions ? '/' + d.max_positions : ''}</div></div>
   `;
   document.getElementById('stats-row').innerHTML = html;
 }
@@ -347,25 +367,63 @@ function renderOpenTrades(trades){
   document.getElementById('open-tbody').innerHTML = rows;
 }
 
+// Motivos de fechamento em linguagem clara
+const REASON_LABELS = {
+  'CONVERGED':     ['✓ Convergiu (lucro realizado)', 'var(--green)'],
+  'CROSS_ZERO':    ['✓ Convergiu (cruzou a média)', 'var(--green)'],
+  'STOP_LOSS':     ['✗ Stop (spread continuou esticando)', 'var(--red)'],
+  'SWAPPED_OUT':   ['↷ Trocado por par com z-score melhor', 'var(--cyan)'],
+  'TIMEOUT':       ['⏱ Tempo máximo atingido', 'var(--orange)'],
+  'MANUAL_ORPHAN': ['⚙ Ajuste técnico (sem P&L)', 'var(--mute)'],
+};
+function fmt_reason(r){
+  const [label, color] = REASON_LABELS[r] || [r || '—', 'var(--mute)'];
+  return `<span style="font-size:11px;color:${color};font-weight:600">${label}</span>`;
+}
+function fmt_pct(v){
+  if (v === null || v === undefined) return '—';
+  const cls = v > 0 ? 'z-neg' : (v < 0 ? 'z-pos' : 'z-zero');
+  return `<span class="${cls} mono" style="font-weight:700">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`;
+}
+
 function renderClosedTrades(trades){
   if (!trades.length){
-    document.getElementById('closed-tbody').innerHTML = `<tr><td colspan="8" class="empty">Nenhuma trade fechada ainda. Sistema rodando em paper.</td></tr>`;
+    document.getElementById('closed-tbody').innerHTML = `<tr><td colspan="7" class="empty">Nenhuma trade fechada ainda. Sistema rodando em paper.</td></tr>`;
     return;
   }
   const sorted = [...trades].reverse().slice(0, 50);
-  const rows = sorted.map(t => `
+  const rows = sorted.map(t => {
+    const inv = parseFloat(t.position_size) || ((t.qty_a||0)*(t.price_a_entry||0) + (t.qty_b||0)*(t.price_b_entry||0));
+    const pct = (t.pnl_pct !== null && t.pnl_pct !== undefined) ? parseFloat(t.pnl_pct)
+              : (inv > 0 ? 100 * (t.pnl || 0) / inv : null);
+    return `
     <tr>
       <td class="mono" style="font-size:11px">${fmt_datetime(t.closed_at)}</td>
-      <td><strong>${t.pair_id}</strong></td>
-      <td>${t.direction || '—'}</td>
-      <td>${fmt_z(t.entry_z)}</td>
-      <td>${fmt_z(t.exit_z)}</td>
-      <td><span style="font-size:10px;color:var(--mute)">${t.close_reason || '—'}</span></td>
-      <td>${fmt_duration_s(t.duration_seconds)}</td>
+      <td><strong>${t.pair_id}</strong><br><span style="font-size:10px;color:var(--mute)">${t.direction === 'SHORT_A' ? 'vendeu A / comprou B' : 'comprou A / vendeu B'}</span></td>
+      <td class="mono">${fmt_money(inv)}</td>
       <td>${fmt_pnl(t.pnl)}</td>
-    </tr>
-  `).join('');
+      <td>${fmt_pct(pct)}</td>
+      <td>${fmt_duration_s(t.duration_seconds)}</td>
+      <td>${fmt_reason(t.close_reason)}</td>
+    </tr>`;
+  }).join('');
   document.getElementById('closed-tbody').innerHTML = rows;
+
+  // Linha de total: soma R$, % sobre o investido somado, duração média
+  const withPnl = sorted.filter(t => (parseFloat(t.position_size) || 0) > 0);
+  const totPnl = sorted.reduce((s,t) => s + (parseFloat(t.pnl) || 0), 0);
+  const totInv = withPnl.reduce((s,t) => s + (parseFloat(t.position_size) || 0), 0);
+  const totPct = totInv > 0 ? 100 * totPnl / totInv : 0;
+  const avgDur = withPnl.length ? withPnl.reduce((s,t) => s + (t.duration_seconds || 0), 0) / withPnl.length : 0;
+  document.getElementById('closed-tfoot').innerHTML = `
+    <tr style="background:#0a1018;font-weight:700">
+      <td colspan="2" style="color:var(--gold)">TOTAL (${sorted.length} trades)</td>
+      <td class="mono">${fmt_money(totInv)}</td>
+      <td>${fmt_pnl(totPnl)}</td>
+      <td>${fmt_pct(totPct)}</td>
+      <td>${fmt_duration_s(Math.round(avgDur))} <span style="font-size:10px;color:var(--mute)">média</span></td>
+      <td></td>
+    </tr>`;
 }
 
 // Boot

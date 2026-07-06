@@ -11386,16 +11386,25 @@ def pairs_trades():
         return jsonify({'enabled': False}), 200
     limit = min(int(request.args.get('limit', 50)), 500)
     include_open = request.args.get('include_open', '1') == '1'
-    closed_total_pnl = sum(t.get('pnl', 0) for t in _pairs_closed)
-    closed_n = len(_pairs_closed)
-    wins = sum(1 for t in _pairs_closed if t.get('pnl', 0) > 0)
+    # [06-jul-2026] Fechamentos TÉCNICOS (orphan/void — trade que nem chegou a
+    # operar, P&L nulo) ficam FORA das estatísticas e da lista: contaminavam o
+    # win rate (100% real aparecia como 80%). O MySQL preserva tudo; use
+    # ?include_technical=1 para auditoria.
+    _TECH_REASONS = ('MANUAL_ORPHAN', 'VOIDED')
+    _include_tech = request.args.get('include_technical', '0') == '1'
+    _closed_real = [t for t in _pairs_closed if t.get('close_reason') not in _TECH_REASONS]
+    _closed_view = list(_pairs_closed) if _include_tech else _closed_real
+    closed_total_pnl = sum(t.get('pnl', 0) for t in _closed_real)
+    closed_n = len(_closed_real)
+    wins = sum(1 for t in _closed_real if t.get('pnl', 0) > 0)
     return jsonify({
         'open_count': len(_pairs_open),
         'closed_count': closed_n,
         'closed_pnl_total': round(closed_total_pnl, 2),
         'win_rate': round(100 * wins / closed_n, 2) if closed_n else 0,
         'open_trades': list(_pairs_open) if include_open else [],
-        'closed_trades': list(_pairs_closed[-limit:]),
+        'closed_trades': _closed_view[-limit:],
+        'technical_closes': len(_pairs_closed) - len(_closed_real),
         'capital_paper': _PAIRS_CAPITAL,
         'timestamp': datetime.utcnow().isoformat(),
     }), 200

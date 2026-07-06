@@ -257,6 +257,73 @@ def bulk_upsert_daily_bars(symbol: str, bars: List[Dict], source: str = 'brapi')
         except Exception: pass
 
 
+def load_closed_trades_from_db(limit: int = 500) -> List[Dict]:
+    """[P0-FIX 06-jul-2026] Restaura pairs_closed do MySQL no boot.
+
+    Bug relatado pelo Beto: as trades fechadas 'sumiram' da pagina de Pairs.
+    Nada foi apagado — o MySQL preserva tudo — mas pairs_closed era uma
+    lista APENAS em memoria: cada deploy/restart zerava e o /pairs/trades
+    voltava vazio. So as OPEN eram restauradas (load_open_trades_from_db).
+    Este loader espelha aquele, para status='CLOSED'.
+    """
+    conn = _get_conn()
+    if not conn: return []
+    out = []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT id, pair_id, pair_name, pair_type, leg_a, leg_b,
+                              direction, mode, status,
+                              opened_at, closed_at, close_reason,
+                              entry_z, exit_z, hedge_ratio,
+                              price_a_entry, price_b_entry,
+                              price_a_exit, price_b_exit, qty_a, qty_b,
+                              position_size, pnl, pnl_pct, duration_seconds
+                       FROM pairs_trades
+                       WHERE status='CLOSED'
+                       ORDER BY closed_at ASC
+                       LIMIT %s""", (int(limit),))
+        rows = cur.fetchall()
+        cur.close()
+        for r in rows:
+            try:
+                out.append({
+                    'id': r['id'],
+                    'pair_id': r['pair_id'],
+                    'name': r['pair_name'],
+                    'leg_a': r['leg_a'], 'leg_b': r['leg_b'],
+                    'direction': r['direction'],
+                    'pair_type': r['pair_type'],
+                    'mode': r['mode'] or 'paper',
+                    'status': 'CLOSED',
+                    'opened_at': r['opened_at'].isoformat() if hasattr(r['opened_at'],'isoformat') else str(r['opened_at']),
+                    'closed_at': r['closed_at'].isoformat() if hasattr(r['closed_at'],'isoformat') else str(r['closed_at']),
+                    'close_reason': r['close_reason'],
+                    'entry_z': float(r['entry_z']) if r['entry_z'] is not None else None,
+                    'exit_z': float(r['exit_z']) if r['exit_z'] is not None else None,
+                    'hedge_ratio': float(r['hedge_ratio']) if r['hedge_ratio'] is not None else 1.0,
+                    'price_a_entry': float(r['price_a_entry']) if r['price_a_entry'] is not None else 0,
+                    'price_b_entry': float(r['price_b_entry']) if r['price_b_entry'] is not None else 0,
+                    'price_a_exit': float(r['price_a_exit']) if r['price_a_exit'] is not None else 0,
+                    'price_b_exit': float(r['price_b_exit']) if r['price_b_exit'] is not None else 0,
+                    'qty_a': int(r['qty_a'] or 0),
+                    'qty_b': int(r['qty_b'] or 0),
+                    'position_size': float(r['position_size']) if r['position_size'] is not None else 0,
+                    'pnl': float(r['pnl'] or 0),
+                    'pnl_pct': float(r['pnl_pct'] or 0),
+                    'duration_seconds': int(r['duration_seconds'] or 0),
+                    'asset_type': 'pairs',
+                })
+            except Exception as e:
+                log.warning(f'[pairs.persist] load_closed_trades parse: {e}')
+        return out
+    except Exception as e:
+        log.warning(f'[pairs.persist] load_closed_trades_from_db: {e}')
+        return []
+    finally:
+        try: conn.close()
+        except: pass
+
+
 def load_open_trades_from_db() -> List[Dict]:
     """[25-jun-2026] Restaura pairs_open do MySQL no boot.
 

@@ -459,6 +459,20 @@ def pairs_scan_loop(beat_fn=None, audit_fn=None, enqueue_fn=None):
     except Exception as e:
         log.error(f'[PAIRS] falha ao restaurar open trades: {e}')
 
+    # [P0-FIX 06-jul-2026] Restaurar tambem as CLOSED. Sem isso, cada deploy
+    # zerava pairs_closed (lista so em memoria) e a pagina/API mostravam
+    # "nenhuma trade fechada" — parecia que o historico tinha sido apagado,
+    # mas o MySQL preserva tudo (nenhuma trade jamais e deletada).
+    try:
+        restored_c = _persist.load_closed_trades_from_db()
+        if restored_c:
+            with pairs_state_lock:
+                pairs_closed.extend(restored_c)
+            log.info(f'[PAIRS] RESTAURADAS {len(restored_c)} trades CLOSED do MySQL '
+                     f'(pnl total R${sum(t["pnl"] for t in restored_c):,.2f})')
+    except Exception as e:
+        log.error(f'[PAIRS] falha ao restaurar closed trades: {e}')
+
     # Signal persist sample rate (1 = todos, 2 = a cada 2 scans, etc)
     # Default 4 = ~uma persist por minuto por par (scan 30s × 4 = 2min)
     signal_persist_every = int(os.environ.get('PAIRS_SIGNAL_PERSIST_EVERY', 4))

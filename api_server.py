@@ -15890,6 +15890,47 @@ def shadow_status():
 SYNC_VERSION = "1.0"
 SYNC_PEER_URL = os.environ.get('SYNC_PEER_URL', 'https://manus.up.railway.app')  # URL do sistema Manus
 
+@app.route('/sync/prices')
+def sync_prices():
+    """[P3-NETWORK 07-jul-2026] Gateway de precos em tempo real para o peer
+    (Manus/laboratorio). Serve o cache em memoria alimentado por Cedro (B3),
+    Polygon WS (NYSE) e Binance (crypto) — o peer nao precisa de credenciais
+    proprias nem de novas assinaturas, e NAO deve conectar direto na Cedro
+    (sessao unica) nem abrir WebSocket Polygon (1 conexao por conta).
+    Autorizado pela SYNC_API_KEY (escopo /sync/*). Cada preco vem com
+    updated_at para o peer validar frescor antes de usar."""
+    try:
+        out = {'b3': {}, 'nyse': {}, 'crypto': {}, 'fx': {},
+               'server_time_utc': datetime.utcnow().isoformat() + 'Z',
+               'sources': {'b3': 'cedro_rt', 'nyse': 'polygon_ws', 'crypto': 'binance'}}
+        with state_lock:
+            sp = dict(stock_prices)
+            cp = dict(crypto_prices)
+            fx = dict(fx_rates)
+        for sym, pd_ in sp.items():
+            if not pd_ or not isinstance(pd_, dict):
+                continue
+            px = pd_.get('price', 0)
+            if not px:
+                continue
+            entry = {'price': px, 'updated_at': pd_.get('updated_at', ''),
+                     'change_pct': pd_.get('change_pct')}
+            if re.match(r'^[A-Z]{4}[0-9]+$', sym):
+                out['b3'][sym] = entry
+            else:
+                out['nyse'][sym] = entry
+        _now_iso = datetime.utcnow().isoformat()
+        for sym, px in cp.items():
+            if px:
+                out['crypto'][sym] = {'price': px, 'updated_at': _now_iso}
+        out['fx'] = fx
+        out['counts'] = {k: len(out[k]) for k in ('b3', 'nyse', 'crypto')}
+        return jsonify(out)
+    except Exception as e:
+        log.error(f'sync_prices: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/sync/export')
 def sync_export():
     """Exporta inteligencia aprendida para troca entre sistemas Egreja. Requer sessao/chave."""

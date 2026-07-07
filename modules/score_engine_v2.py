@@ -1145,6 +1145,22 @@ def _detect_trend_direction(ema_val, macd_val, adx_val, super_val) -> int:
     return 0
 
 
+def _fs_get(cache: Dict, ftype: str, fval: str, market_type: Optional[str],
+            min_scoped_samples: int = 30) -> Dict:
+    """[P2-FIX 06-jul-2026] Lookup de factor_stats POR MERCADO com fallback.
+    Antes: lookup global (fator, valor) — o aprendizado do crypto contaminava
+    o score de B3/NYSE e vice-versa. Agora: prefere a entrada escopada
+    'VALOR|MERCADO' quando tem amostra suficiente; senão usa a global.
+    Env FACTOR_STATS_PER_MARKET=false volta ao comportamento antigo."""
+    if not cache:
+        return {}
+    if market_type and os.environ.get('FACTOR_STATS_PER_MARKET', 'true').lower() != 'false':
+        scoped = cache.get((ftype, f'{fval}|{market_type.upper()}'))
+        if scoped and scoped.get('total_samples', 0) >= min_scoped_samples:
+            return scoped
+    return cache.get((ftype, fval), {})
+
+
 def compute_score_v3(
     closes: List[float],
     highs: List[float],
@@ -1155,6 +1171,7 @@ def compute_score_v3(
     pattern_stats_cache: Optional[Dict] = None,
     temporal_adj: float = 0.0,
     asset_type: str = 'stock',  # [SEPARACAO 29/abr] 'stock' ou 'crypto' — usa pesos diferentes
+    market_type: Optional[str] = None,  # [P2-FIX 06-jul] 'CRYPTO'/'B3'/'NYSE' p/ learning escopado
 ) -> Dict:
     """Score regime-aware — v3.
 
@@ -1289,26 +1306,28 @@ def compute_score_v3(
                 'LOW' if rsi_val and rsi_val < 45 else (
                 'HIGH' if rsi_val and rsi_val > 55 else 'NEUTRAL')))
         rsi_b_fs = _translate_rsi_bucket_for_fs(rsi_b)
-        fs = factor_stats_cache.get(('rsi_bucket', rsi_b_fs), {})
+        # [P2-FIX 06-jul-2026] lookups escopados por mercado (fallback global)
+        _mkt_fs = market_type or ('CRYPTO' if asset_type == 'crypto' else None)
+        fs = _fs_get(factor_stats_cache, 'rsi_bucket', rsi_b_fs, _mkt_fs)
         if fs.get('total_samples', 0) >= 30:
             ewma = float(fs.get('ewma_pnl_pct', 0))
             learning_adj += max(-12, min(12, ewma * 16))
         # EMA — traduz STRONG_BULL -> BULLISH_STACK
         if ema_val:
             ema_align_fs = _translate_ema_alignment_for_fs(ema_val['alignment'])
-            fs = factor_stats_cache.get(('ema_alignment', ema_align_fs), {})
+            fs = _fs_get(factor_stats_cache, 'ema_alignment', ema_align_fs, _mkt_fs)
             if fs.get('total_samples', 0) >= 30:
                 ewma = float(fs.get('ewma_pnl_pct', 0))
                 learning_adj += max(-12, min(12, ewma * 16))
         # Volatility — factor_stats usa atr_bucket, não volatility_bucket
         vol_b = 'LOW' if atr_val and atr_val < 1 else (
                 'HIGH' if atr_val and atr_val > 3 else 'NORMAL')
-        fs = factor_stats_cache.get(('atr_bucket', vol_b), {})
+        fs = _fs_get(factor_stats_cache, 'atr_bucket', vol_b, _mkt_fs)
         if fs.get('total_samples', 0) >= 30:
             ewma = float(fs.get('ewma_pnl_pct', 0))
             learning_adj += max(-8, min(8, ewma * 10))
         # Regime
-        fs = factor_stats_cache.get(('regime_mode', regime), {})
+        fs = _fs_get(factor_stats_cache, 'regime_mode', regime, _mkt_fs)
         if fs.get('total_samples', 0) >= 30:
             ewma = float(fs.get('ewma_pnl_pct', 0))
             learning_adj += max(-6, min(6, ewma * 8))

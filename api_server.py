@@ -2630,28 +2630,41 @@ def update_factor_stats(features: dict, pnl: float, pnl_pct: float):
         ('atr_bucket',        features.get('atr_bucket', '')),      # [v10.4]
         ('volume_bucket',     features.get('volume_bucket', '')),   # [v10.4]
     ]
+    # [P2-FIX 06-jul-2026] SEPARAÇÃO POR MERCADO. Antes a chave era só
+    # (fator, valor) — global: o que o crypto aprendia sobre RSI OVERSOLD
+    # ajustava o score de ações B3/NYSE e vice-versa, misturando físicas
+    # opostas (B3 reversora vs NYSE drift — SIMULACAO_HOLD_3DIAS).
+    # Agora: gravação DUPLA — global (compat) + escopada "VALOR|MERCADO".
+    # As entradas escopadas usam o MESMO schema/tabela (factor_value com
+    # sufixo), então persistência e boot funcionam sem migração.
+    _fs_mkt = str(features.get('market_type') or features.get('asset_type') or '').upper()
+    if _fs_mkt in ('STOCK', 'STOCKS'):  # asset_type genérico não separa B3/NYSE
+        _fs_mkt = ''
     with learning_lock:
         for ftype, fval in factors:
             if not fval: continue
-            key = (ftype, fval)
-            s   = factor_stats_cache.get(key) or _empty_factor_stats(ftype, fval)
-            s['total_samples'] += 1
-            n = s['total_samples']
-            if pnl_pct > 0.1:    s['wins'] += 1
-            elif pnl_pct < -0.1: s['losses'] += 1
-            s['avg_pnl_pct']   += (pnl_pct - s['avg_pnl_pct']) / n
-            s['ewma_pnl_pct']   = _update_ewma(s['ewma_pnl_pct'], pnl_pct, alpha)
-            hit = 1.0 if pnl_pct > 0.1 else 0.0
-            hit_rate = _update_ewma(s.get('_ewma_hit', 0.5), hit, alpha)
-            s['_ewma_hit'] = hit_rate
-            s['expectancy'] = round(hit_rate * max(s['avg_pnl_pct'], 0)
-                                    - (1 - hit_rate) * abs(min(s['avg_pnl_pct'], 0)), 4)
-            loss_rate = s['losses'] / n if n > 0 else 0
-            s['downside_score'] = round(loss_rate * abs(min(s['avg_pnl_pct'], 0)) * 10, 4)
-            s['confidence_weight'] = _calc_confidence_weight(
-                n, hit_rate, s['expectancy'], s['downside_score'])
-            s['last_seen_at'] = now_s; s['updated_at'] = now_s
-            factor_stats_cache[key] = s
+            _keys = [(ftype, fval)]
+            if _fs_mkt and ftype not in ('asset_type', 'market_type'):
+                _keys.append((ftype, f'{fval}|{_fs_mkt}'))
+            for key in _keys:
+                s   = factor_stats_cache.get(key) or _empty_factor_stats(key[0], key[1])
+                s['total_samples'] += 1
+                n = s['total_samples']
+                if pnl_pct > 0.1:    s['wins'] += 1
+                elif pnl_pct < -0.1: s['losses'] += 1
+                s['avg_pnl_pct']   += (pnl_pct - s['avg_pnl_pct']) / n
+                s['ewma_pnl_pct']   = _update_ewma(s['ewma_pnl_pct'], pnl_pct, alpha)
+                hit = 1.0 if pnl_pct > 0.1 else 0.0
+                hit_rate = _update_ewma(s.get('_ewma_hit', 0.5), hit, alpha)
+                s['_ewma_hit'] = hit_rate
+                s['expectancy'] = round(hit_rate * max(s['avg_pnl_pct'], 0)
+                                        - (1 - hit_rate) * abs(min(s['avg_pnl_pct'], 0)), 4)
+                loss_rate = s['losses'] / n if n > 0 else 0
+                s['downside_score'] = round(loss_rate * abs(min(s['avg_pnl_pct'], 0)) * 10, 4)
+                s['confidence_weight'] = _calc_confidence_weight(
+                    n, hit_rate, s['expectancy'], s['downside_score'])
+                s['last_seen_at'] = now_s; s['updated_at'] = now_s
+                factor_stats_cache[key] = s
 
 # ═══════════════════════════════════════════════════════════════
 # [L-5] CONFIDENCE ENGINE — aprendizado explicável
@@ -2698,13 +2711,23 @@ def calc_learning_confidence(sig: dict, features: dict, feature_hash: str) -> di
     pattern_score = 0.5 + 0.5 * p_cw   # mapeia [-1,1] → [0,1]
 
     # ── Fatores individuais ───────────────────────────────────
+    # [P2-FIX 06-jul-2026] lookup escopado por mercado (fallback global)
     relevant = ['score_bucket','rsi_bucket','ema_alignment','regime_mode','direction']
+    _clc_mkt = str(features.get('market_type') or features.get('asset_type') or '').upper()
+    if _clc_mkt in ('STOCK', 'STOCKS'): _clc_mkt = ''
+    _fs_per_mkt = os.environ.get('FACTOR_STATS_PER_MARKET', 'true').lower() != 'false'
     factor_scores = []
     with learning_lock:
         for ftype in relevant:
             fval = features.get(ftype, '')
             if not fval: continue
-            fs = factor_stats_cache.get((ftype, fval), {})
+            fs = {}
+            if _clc_mkt and _fs_per_mkt:
+                fs = factor_stats_cache.get((ftype, f'{fval}|{_clc_mkt}'), {})
+                if fs.get('total_samples', 0) < 30:
+                    fs = {}
+            if not fs:
+                fs = factor_stats_cache.get((ftype, fval), {})
             if fs.get('total_samples', 0) >= 5:
                 factor_scores.append(0.5 + 0.5 * fs.get('confidence_weight', 0.0))
     factor_score = (sum(factor_scores) / len(factor_scores)) if factor_scores else 0.5
@@ -3541,7 +3564,7 @@ def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
                                  klines.get('lows', []), klines.get('volumes', []),
                                  factor_stats_cache=factor_stats_cache,
                                  pattern_stats_cache=pattern_stats_cache,
-                                 asset_type='crypto')
+                                 asset_type='crypto', market_type='CRYPTO')
         else:  # stock
             sym = trade['symbol']
             # [2026-04-20 deadlock fix] state_lock removido: esta função é
@@ -3555,10 +3578,12 @@ def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
             v = pd_data.get('volumes_series', [])
             if len(c) < 30:
                 return False, None, None, 'stock_no_series'
+            _mkt_rev = trade.get('market') or ('B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE')
             r = compute_score_v3(c, h, l, v,
                                  factor_stats_cache=factor_stats_cache,
                                  pattern_stats_cache=pattern_stats_cache,
-                                 asset_type='stock')  # [P0-FIX 02-jul-2026] explícito
+                                 asset_type='stock',  # [P0-FIX 02-jul-2026] explícito
+                                 market_type=_mkt_rev)  # [P2-FIX 06-jul]
 
         new_regime = r.get('regime')
         new_signal = r.get('signal')
@@ -4298,6 +4323,10 @@ def process_trade_outcome(trade: dict):
                 'time_bucket', 'weekday',               # [v10.5-4]
                 'asset_type', 'market_type', 'dq_bucket',  # [v10.5-4]
             ]
+            # [P2-FIX 06-jul-2026] persiste também as entradas ESCOPADAS por mercado
+            _pt_mkt = str(features.get('market_type') or features.get('asset_type') or '').upper()
+            if _pt_mkt in ('STOCK', 'STOCKS'):
+                _pt_mkt = ''
             with learning_lock:
                 for ftype in ALL_FACTOR_KEYS:
                     fval = str(features.get(ftype, ''))
@@ -4305,6 +4334,10 @@ def process_trade_outcome(trade: dict):
                         fs_copy = dict(factor_stats_cache.get((ftype, fval), {}))
                         if fs_copy:
                             enqueue_persist('factor_stats', fs_copy)
+                        if _pt_mkt and ftype not in ('asset_type', 'market_type'):
+                            fs_scoped = dict(factor_stats_cache.get((ftype, f'{fval}|{_pt_mkt}'), {}))
+                            if fs_scoped:
+                                enqueue_persist('factor_stats', fs_scoped)
         elif feat_hash:
             log.debug(f'process_trade_outcome: sem features para {trade.get("id")} — só pattern_stats atualizado')
 
@@ -7618,7 +7651,8 @@ def stock_execution_worker():
                                factor_stats_cache=factor_stats_cache,
                                pattern_stats_cache=pattern_stats_cache,
                                temporal_adj=float(_st_adj_effective or 0),
-                               asset_type='stock')
+                               asset_type='stock',
+                               market_type=_mkt_type)  # [P2-FIX 06-jul] learning escopado B3/NYSE
                     score = _r['score']
                     regime_v2_val = _r['regime']
                     signal_v2_val = _r['signal']
@@ -8236,7 +8270,8 @@ def auto_trade_crypto():
                         _rc = _csv3c(closes_k, highs_k, lows_k, vols_k,
                                      factor_stats_cache=factor_stats_cache,
                                      pattern_stats_cache=pattern_stats_cache,
-                                     asset_type='crypto')
+                                     asset_type='crypto',
+                                     market_type='CRYPTO')  # [P2-FIX 06-jul]
                         score = _rc['score']
                         regime_v2_c = _rc['regime']
                         signal_v2_c = _rc['signal']

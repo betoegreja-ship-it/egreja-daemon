@@ -1603,6 +1603,14 @@ def auth_check():
     if _is_session_authed():
         return None
     key = request.headers.get('X-API-Key', '').strip()
+    # [P3-NETWORK 07-jul-2026] Chave DEDICADA de sincronizacao (escopo minimo):
+    # SYNC_API_KEY so autoriza os endpoints /sync/* (import/export/peer-data).
+    # Motivo: o peer Manus precisa sincronizar sem receber a chave mestra,
+    # que abre endpoints operacionais (purge, config, kill switch).
+    # Revogavel trocando a env sem afetar a chave principal.
+    _sync_key = os.environ.get('SYNC_API_KEY', '').strip()
+    if _sync_key and key == _sync_key and request.path.startswith('/sync/'):
+        return None
     if key != API_SECRET_KEY:
         log.warning(f'[SECURITY-P0] Unauthorized: {request.remote_addr} {request.method} {request.path}')
         return jsonify({'error': 'Unauthorized - login session or X-API-Key required'}), 401

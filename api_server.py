@@ -3557,6 +3557,17 @@ def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
     if not opened_signal or opened_signal == 'MANTER':
         return False, None, None, 'no_v3_thesis'  # trade não tem tese v3, não reavaliar
 
+    # [FIX 10-jul-2026] Min-hold: V3_REVERSAL não pode fechar trade recém-aberta.
+    # 10/jul: 12 trades abriram e fecharam em 0–6s com PnL bruto 0 (só fees),
+    # porque o recheck divergia do score de entrada em símbolos marginais.
+    try:
+        _mh_min = float(os.environ.get('V3_REVERSAL_MIN_HOLD_MIN', 5))
+        _age_rev_s = (datetime.now() - datetime.fromisoformat(str(trade.get('opened_at', '')).replace('Z', ''))).total_seconds()
+        if _age_rev_s < _mh_min * 60:
+            return False, None, None, f'min_hold_{int(_age_rev_s)}s'
+    except Exception:
+        pass
+
     try:
         from modules.score_engine_v2 import compute_score_v3
         # Puxar dados de mercado atuais
@@ -3591,6 +3602,7 @@ def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
                                  factor_stats_cache=factor_stats_cache,
                                  pattern_stats_cache=pattern_stats_cache,
                                  asset_type='stock',  # [P0-FIX 02-jul-2026] explícito
+                                 temporal_adj=float(trade.get('_temporal_adj') or 0),  # [FIX 10-jul-2026] entrada somava temporal_adj; recheck sem ele fechava trades marginais em segundos
                                  market_type=_mkt_rev)  # [P2-FIX 06-jul]
 
         new_regime = r.get('regime')
@@ -7720,6 +7732,7 @@ def stock_execution_worker():
                     'score_v2': score,  # [v10.47] sempre v3
                     'regime_v2': regime_v2_val,
                     'signal_v2': signal_v2_val,
+                    '_temporal_adj': float(_st_adj_effective or 0),  # [FIX 10-jul-2026] simetria entrada/recheck
                     'market_type': mkt_type, 'asset_type': 'stock',
                     'rsi': rsi, 'ema9': ema9, 'ema21': ema21,
                     'ema50': pd_data.get('ema50', 0) or 0,
@@ -8183,6 +8196,7 @@ def stock_execution_worker():
                             'score_v2':            sig.get('score_v2'),
                             'regime_v2':           sig.get('regime_v2'),
                             'signal_v2':           sig.get('signal_v2'),
+                            '_temporal_adj':       float(sig.get('_temporal_adj') or 0),  # [FIX 10-jul-2026]
                         }
                         stocks_open.append(trade)
                     else:

@@ -6922,6 +6922,16 @@ def monitor_trades():
                     if reason is None and os.environ.get('BREAKEVEN_PROTECT_ENABLED','true').lower()!='false':
                         _be_trigger = float(os.environ.get('BE_PROTECT_TRIGGER_PCT', 0.4))
                         _be_floor   = float(os.environ.get('BE_PROTECT_FLOOR_PCT', -0.10))
+                        # [P2 10-jul-2026] DEGRAU DE PROTEÇÃO DE LUCRO (caso EMBJ3 06/jul):
+                        # trade que ganhou bem NÃO pode sair zerada. Se peak >= STEP_TRIGGER
+                        # (default 0.6%), o piso sobe para +STEP_FLOOR (default +0.2%) e a
+                        # saída trava parte do lucro. Motivação: BREAKEVEN_PROTECT fechou
+                        # 12 trades na janela 02-10/jul com WR 0% (-R$7.1k) — a proteção
+                        # antiga só realizava prejuízo (piso -0.10%).
+                        _be_step_trigger = float(os.environ.get('BE_PROTECT_STEP_TRIGGER_PCT', 0.6))
+                        _be_step_floor   = float(os.environ.get('BE_PROTECT_STEP_FLOOR_PCT', 0.2))
+                        if peak >= _be_step_trigger:
+                            _be_floor = max(_be_floor, _be_step_floor)
                         if peak >= _be_trigger and trade['pnl_pct'] <= _be_floor:
                             reason = 'BREAKEVEN_PROTECT'
                             log.info(f"[BE-PROTECT] {trade['symbol']}(stock): peak={peak:+.2f}% "
@@ -6942,7 +6952,16 @@ def monitor_trades():
                         # Auditoria: -R$589.0k em 574 trades stock (WR 0%), duração mediana
                         # 10min, peak mediano 0.00%. NYSE: early_stop cresceu -7.3k(abr) →
                         # -116.0k(mai) → -186.7k(jun) — foi ELE que degradou o NYSE.
-                        _es_min_hold_s = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN', 90))
+                        # [P2 10-jul-2026] Min-hold POR MERCADO. B3 LIVRE (default 0):
+                        # a B3 ganha/perde rápido (dinheiro nos primeiros 60min) e o mínimo
+                        # de 90min criava zona morta de stop — trades que nunca positivaram
+                        # (peak=0.0%) sangravam ~2h até o TIMEOUT (semana 06-10/jul: 7 piores
+                        # TIMEOUTs somaram -R$24.7k, TODAS com peak=0.0%). NYSE mantém 90min.
+                        if mkt == 'B3':
+                            _es_min_hold_s = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN_B3', 0))
+                        else:
+                            _es_min_hold_s = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN_NYSE',
+                                                   os.environ.get('EARLY_STOP_MIN_HOLD_MIN', 90)))
                         _es_atr_mult_s = float(os.environ.get('EARLY_STOP_ATR_MULT', 1.0))
                         _es_atr_pct_s = float(trade.get('_atr_pct') or 0)
                         if _es_atr_pct_s > 0:

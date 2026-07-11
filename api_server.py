@@ -6938,6 +6938,20 @@ def monitor_trades():
                                      f"pnl={trade['pnl_pct']:+.2f}% — protegendo (devolveu {peak - trade['pnl_pct']:.2f}pp)")
                     # ═══ FIM BREAKEVEN PROTECT ═══════════════════════════════
 
+                    # ═══ [P2 10-jul-2026] HARD STOP NYSE -0.5% (decisão Beto) ═
+                    # Estudo 22/abr-10/jul (snapshots do exit advisor): 149 trades
+                    # NYSE tocaram -0.5% e só 11.4% reverteram para ganho; o grupo
+                    # fechou -R$170.5k vs -R$149.2k se cortado a -0.5%. Em -1.0% a
+                    # reversão cai a 2.4% — trade a -0.5% está estatisticamente morta.
+                    # Guard market_open: evita corte com preço stale fora do pregão.
+                    # Env: HARD_STOP_NYSE_PCT (default -0.5); -99 desliga.
+                    if reason is None and mkt == 'NYSE' and market_open_for(mkt):
+                        _hs_nyse = float(os.environ.get('HARD_STOP_NYSE_PCT', -0.5))
+                        if _hs_nyse > -90 and trade['pnl_pct'] <= _hs_nyse:
+                            reason = 'HARD_STOP'
+                            log.info(f"[HARD-STOP] {trade['symbol']}(NYSE): pnl={trade['pnl_pct']:+.2f}% "
+                                     f"<= {_hs_nyse:.2f}% — corte imediato (só 11% revertem)")
+
                     # ═══ [adaptive-v1] EARLY STOP STOCK ═══════════════════
                     # Corta trades stock afundando ANTES de virar STOP_LOSS catastrao.
                     # So ativa se peak < 0.4 (trade nunca foi lucrativa — trailing cuida do resto).
@@ -7804,6 +7818,19 @@ def stock_execution_worker():
                 if is_short:
                     log.info(f'[SHORT-DBG] {sym} score={score} _eff_min={_eff_min} is_short={is_short} signal_val={signal_val}')
                 if not (is_long or is_short): continue
+
+                # [P2 10-jul-2026] COERÊNCIA DIREÇÃO × V3 para STOCKS — espelho do
+                # gate crypto de 02/jul (que levou o WR crypto de 33%→60%: % de
+                # trades que chegam a lucrar saltou de 32.9%→57.4%). Não abrir
+                # LONG se o v3 diz VENDA, nem SHORT se diz COMPRA — essas trades
+                # nascem contraditórias e morrem no V3_REVERSAL/stop logo depois.
+                # Env: STOCKS_REQUIRE_V3_COHERENCE=false para desligar.
+                if os.environ.get('STOCKS_REQUIRE_V3_COHERENCE', 'true').lower() != 'false':
+                    _sig_v3_s = sig.get('signal_v2')
+                    if (_sig_v3_s == 'VENDA' and is_long) or (_sig_v3_s == 'COMPRA' and is_short):
+                        log.info(f'[STOCK-V3-INCOHERENT] {sym}: dir={"LONG" if is_long else "SHORT"} '
+                                 f'contradiz v3 signal={_sig_v3_s} — entrada bloqueada')
+                        continue
 
                 # [BAD-HOURS-BLOCK 29/abr/2026] Filtro de horarios catastroficos B3 LONG.
                 # Backtested em 3548 trades historicas:

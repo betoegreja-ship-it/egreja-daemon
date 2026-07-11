@@ -7180,6 +7180,15 @@ def monitor_trades():
                     if reason is None and os.environ.get('BREAKEVEN_PROTECT_CRYPTO_ENABLED','true').lower()!='false':
                         _be_trigger_c = float(os.environ.get('BE_PROTECT_CRYPTO_TRIGGER_PCT', 0.6))
                         _be_floor_c   = float(os.environ.get('BE_PROTECT_CRYPTO_FLOOR_PCT', -0.15))
+                        # [P2 10-jul-2026] DEGRAU DE PROTEÇÃO DE LUCRO (mesma regra da B3,
+                        # limiares escalados para a vol da crypto): se peak >= 1.0%, o piso
+                        # sobe para +0.3% — trade que ganhou bem não devolve tudo no limbo
+                        # peak 1.0-1.5% (abaixo do TRAILING_PEAK_CRYPTO=1.5).
+                        # Rollback: BE_PROTECT_CRYPTO_STEP_TRIGGER_PCT=999.
+                        _be_step_trigger_c = float(os.environ.get('BE_PROTECT_CRYPTO_STEP_TRIGGER_PCT', 1.0))
+                        _be_step_floor_c   = float(os.environ.get('BE_PROTECT_CRYPTO_STEP_FLOOR_PCT', 0.3))
+                        if peak >= _be_step_trigger_c:
+                            _be_floor_c = max(_be_floor_c, _be_step_floor_c)
                         if peak >= _be_trigger_c and trade['pnl_pct'] <= _be_floor_c:
                             reason = 'BREAKEVEN_PROTECT'
                             log.info(f"[BE-PROTECT] {trade['symbol']}(crypto): peak={peak:+.2f}% "
@@ -7204,7 +7213,14 @@ def monitor_trades():
                         # +0.09% — cortava RUÍDO, não risco (trades em TIMEOUT terminavam ~0%).
                         # 1) Tempo mínimo de posição (default 90min): antes disso é ruído.
                         # 2) Gatilho escalado por ATR: nunca mais apertado que 1.0×ATR% do ativo.
-                        _es_min_hold = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN', 90))
+                        # [P2 10-jul-2026] Crypto LIBERADA do min-hold (default 0, como B3).
+                        # Dados 02-10/jul: <60min = +R$59.2k (WR 73-81%); 1-4h = -R$43.8k
+                        # (WR 33%) — o min-hold de 90min empurrava perdedores para a zona
+                        # 1-4h onde viravam STOP_LOSS cheio (-R$745 médio vs -R$240 do ES).
+                        # A guarda de ATR abaixo (nunca mais apertado que 1×ATR) é o que
+                        # evita repetir o bug antigo de cortar ruído (auditoria -R$699.6k).
+                        # Rollback: EARLY_STOP_MIN_HOLD_MIN_CRYPTO=90.
+                        _es_min_hold = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN_CRYPTO', 0))
                         _es_atr_mult = float(os.environ.get('EARLY_STOP_ATR_MULT', 1.0))
                         _es_atr_pct = float(trade.get('_atr_pct') or 0)
                         if _es_atr_pct > 0:

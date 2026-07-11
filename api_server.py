@@ -1080,6 +1080,53 @@ def _trailing_drop_for(market):
 def _early_stop_pct_for(market):
     """[v3.2] Retorna early stop pct baseado no mercado (B3/NYSE)."""
     return EARLY_STOP_B3_PCT if market == 'B3' else EARLY_STOP_NYSE_PCT
+
+# ── [P2 10-jul-2026] FILTRO DE REGIME DO ÍNDICE (NYSE) ────────────────────
+# Estudo W18-22 vs resto de 2026: as mesmas features NYSE renderam +R$125k
+# com QQQ em rally (+11.2%) e -R$56k fora dele. O detector interno rotulou
+# RANGING durante o rally (bug ADX) — este filtro usa o ÍNDICE como fonte
+# de verdade: QQQ diário vs EMA50 + retorno 20d.
+#   UP      = close > EMA50 e ret20d > 0  → LONGs liberados
+#   DOWN    = close < EMA50 e ret20d < 0  → NOVOS LONGs NYSE bloqueados
+#   NEUTRAL = misto                        → passa (hard stop -0.5% protege)
+# Fail-open: sem dados (Polygon fora) → UNKNOWN, não bloqueia.
+# Envs: NYSE_REGIME_FILTER_ENABLED (true) | NYSE_REGIME_SYMBOL (QQQ)
+_nyse_regime_cache = {'ts': 0, 'regime': 'UNKNOWN', 'detail': ''}
+
+def _nyse_index_regime():
+    """Regime do índice US (QQQ) com cache de 1h. UP/DOWN/NEUTRAL/UNKNOWN."""
+    import time as _t
+    if _t.time() - _nyse_regime_cache['ts'] < 3600:
+        return _nyse_regime_cache['regime']
+    try:
+        _sym = os.environ.get('NYSE_REGIME_SYMBOL', 'QQQ')
+        _end = datetime.utcnow().strftime('%Y-%m-%d')
+        _start = (datetime.utcnow() - timedelta(days=130)).strftime('%Y-%m-%d')
+        _rc = requests.get(
+            f'https://api.polygon.io/v2/aggs/ticker/{_sym}/range/1/day/{_start}/{_end}',
+            params={'apiKey': POLYGON_API_KEY, 'adjusted': 'true', 'sort': 'asc', 'limit': 130},
+            timeout=8)
+        _closes = [float(b['c']) for b in (_rc.json().get('results') or [])] if _rc.status_code == 200 else []
+        if len(_closes) < 55:
+            _nyse_regime_cache.update({'ts': _t.time(), 'regime': 'UNKNOWN', 'detail': f'dados insuficientes ({len(_closes)})'})
+            return 'UNKNOWN'
+        _ema = _closes[0]
+        _k = 2.0 / (50 + 1)
+        for _c in _closes[1:]:
+            _ema = _c * _k + _ema * (1 - _k)
+        _last = _closes[-1]
+        _ret20 = (_last / _closes[-21] - 1) * 100 if len(_closes) >= 21 else 0.0
+        if _last > _ema and _ret20 > 0:   _reg = 'UP'
+        elif _last < _ema and _ret20 < 0: _reg = 'DOWN'
+        else:                              _reg = 'NEUTRAL'
+        _nyse_regime_cache.update({'ts': _t.time(), 'regime': _reg,
+                                   'detail': f'{_sym} close={_last:.2f} ema50={_ema:.2f} ret20d={_ret20:+.1f}%'})
+        log.info(f"[NYSE-REGIME] {_reg} ({_nyse_regime_cache['detail']})")
+        return _reg
+    except Exception as _e:
+        log.warning(f'[NYSE-REGIME] falha ao computar regime: {_e} — fail-open (UNKNOWN)')
+        _nyse_regime_cache.update({'ts': _t.time(), 'regime': 'UNKNOWN', 'detail': str(_e)[:80]})
+        return 'UNKNOWN'
 # ── [v10.17] Directional exposure limit ───────────────────────────────────
 MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))       # max 70% das posições na mesma direção (stocks)
 MAX_DIRECTIONAL_PCT_CRYPTO = float(os.environ.get('MAX_DIRECTIONAL_PCT_CRYPTO', 100))  # [v10.24.4] crypto: 100% — mercado correlacionado, diversificação é entre moedas
@@ -6944,13 +6991,16 @@ def monitor_trades():
                     # fechou -R$170.5k vs -R$149.2k se cortado a -0.5%. Em -1.0% a
                     # reversão cai a 2.4% — trade a -0.5% está estatisticamente morta.
                     # Guard market_open: evita corte com preço stale fora do pregão.
-                    # Env: HARD_STOP_NYSE_PCT (default -0.5); -99 desliga.
-                    if reason is None and mkt == 'NYSE' and market_open_for(mkt):
-                        _hs_nyse = float(os.environ.get('HARD_STOP_NYSE_PCT', -0.5))
-                        if _hs_nyse > -90 and trade['pnl_pct'] <= _hs_nyse:
+                    # [10-jul-2026] Estendido para B3 (decisão Beto: todas as estratégias).
+                    # Estudo B3: 74 trades tocaram -0.5%, só 9.5% reverteram (-R$71.4k
+                    # vs -R$59.0k com stop). Envs: HARD_STOP_NYSE_PCT / HARD_STOP_B3_PCT
+                    # (default -0.5); -99 desliga.
+                    if reason is None and market_open_for(mkt):
+                        _hs_stk = float(os.environ.get(f'HARD_STOP_{mkt}_PCT', -0.5))
+                        if _hs_stk > -90 and trade['pnl_pct'] <= _hs_stk:
                             reason = 'HARD_STOP'
-                            log.info(f"[HARD-STOP] {trade['symbol']}(NYSE): pnl={trade['pnl_pct']:+.2f}% "
-                                     f"<= {_hs_nyse:.2f}% — corte imediato (só 11% revertem)")
+                            log.info(f"[HARD-STOP] {trade['symbol']}({mkt}): pnl={trade['pnl_pct']:+.2f}% "
+                                     f"<= {_hs_stk:.2f}% — corte imediato (só ~10% revertem)")
 
                     # ═══ [adaptive-v1] EARLY STOP STOCK ═══════════════════
                     # Corta trades stock afundando ANTES de virar STOP_LOSS catastrao.
@@ -7208,6 +7258,19 @@ def monitor_trades():
                             log.info(f"[BE-PROTECT] {trade['symbol']}(crypto): peak={peak:+.2f}% "
                                      f"pnl={trade['pnl_pct']:+.2f}% — protegendo (devolveu {peak - trade['pnl_pct']:.2f}pp)")
                     # ═══ FIM BREAKEVEN PROTECT CRYPTO ════════════════════════
+
+                    # ═══ [P2 10-jul-2026] HARD STOP CRYPTO -0.5% (decisão Beto:
+                    # todas as estratégias). Estudo 22/abr-10/jul: 635 trades
+                    # crypto tocaram -0.5% e só 11.2% reverteram; grupo fechou
+                    # -R$261.6k vs -R$228.2k com corte a -0.5% (economia R$33.5k).
+                    # Crypto 24/7: sem guard de pregão. Env: HARD_STOP_CRYPTO_PCT
+                    # (default -0.5); -99 desliga.
+                    if reason is None:
+                        _hs_cry = float(os.environ.get('HARD_STOP_CRYPTO_PCT', -0.5))
+                        if _hs_cry > -90 and trade['pnl_pct'] <= _hs_cry:
+                            reason = 'HARD_STOP'
+                            log.info(f"[HARD-STOP] {trade['symbol']}(crypto): pnl={trade['pnl_pct']:+.2f}% "
+                                     f"<= {_hs_cry:.2f}% — corte imediato (só 11% revertem)")
 
                     # ═══ [adaptive-v1] EARLY STOP CRYPTO ═══════════════════
                     # Corta trades que estão afundando ANTES de virar STOP_LOSS catastrão.
@@ -7830,6 +7893,18 @@ def stock_execution_worker():
                     if (_sig_v3_s == 'VENDA' and is_long) or (_sig_v3_s == 'COMPRA' and is_short):
                         log.info(f'[STOCK-V3-INCOHERENT] {sym}: dir={"LONG" if is_long else "SHORT"} '
                                  f'contradiz v3 signal={_sig_v3_s} — entrada bloqueada')
+                        continue
+
+                # [P2 10-jul-2026] FILTRO DE REGIME DO ÍNDICE — só NYSE, só LONG.
+                # Regime DOWN no QQQ (abaixo da EMA50 e ret20d<0) bloqueia NOVOS
+                # LONGs NYSE. Estudo: NYSE long-only perde -R$30-40k/semana fora
+                # de rally. Env: NYSE_REGIME_FILTER_ENABLED=false para desligar.
+                if is_long and mkt_type == 'NYSE' and \
+                   os.environ.get('NYSE_REGIME_FILTER_ENABLED', 'true').lower() != 'false':
+                    _reg_idx = _nyse_index_regime()
+                    if _reg_idx == 'DOWN':
+                        log.info(f'[NYSE-REGIME-BLOCK] {sym}: LONG bloqueado — regime do índice DOWN '
+                                 f'({_nyse_regime_cache.get("detail","")})')
                         continue
 
                 # [BAD-HOURS-BLOCK 29/abr/2026] Filtro de horarios catastroficos B3 LONG.

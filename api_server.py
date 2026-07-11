@@ -7218,9 +7218,11 @@ def monitor_trades():
                         # (WR 33%) — o min-hold de 90min empurrava perdedores para a zona
                         # 1-4h onde viravam STOP_LOSS cheio (-R$745 médio vs -R$240 do ES).
                         # A guarda de ATR abaixo (nunca mais apertado que 1×ATR) é o que
-                        # evita repetir o bug antigo de cortar ruído (auditoria -R$699.6k).
-                        # Rollback: EARLY_STOP_MIN_HOLD_MIN_CRYPTO=90.
-                        _es_min_hold = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN_CRYPTO', 0))
+                        # evita repetir o bug antigo de cortar ruído (auditoria -R$699.6k,
+                        # cortes com mediana de 13min). Piso de 15min (decisão Beto 10/jul):
+                        # não corta nos primeiros minutos (ruído), mas age na zona 15min+
+                        # onde os perdedores reais se formam. Rollback: env=90.
+                        _es_min_hold = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN_CRYPTO', 15))
                         _es_atr_mult = float(os.environ.get('EARLY_STOP_ATR_MULT', 1.0))
                         _es_atr_pct = float(trade.get('_atr_pct') or 0)
                         if _es_atr_pct > 0:

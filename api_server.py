@@ -10422,6 +10422,25 @@ def start_background_threads():
             log.info('[SPECIALIST] worker adicionado: B3/NYSE/CRYPTO cada 1h (paralelo ao unified)')
         except Exception as _se:
             log.warning(f'[SPECIALIST] setup falhou: {_se}')
+
+    # [P2 10-jul-2026] MOTOR US PAIRS — SHADOW (paper, capital separado).
+    # Motor SEPARADO do pairs_engine B3: 10 pares CORE operaveis + 4 WATCH,
+    # z 2.0/0.4/3.5, timeout 25 pregoes, beta reavaliado diariamente.
+    # Cadencia diaria pos-fechamento NYSE. Tabelas uspairs_shadow_*.
+    # Desliga via USPAIRS_SHADOW_ENABLED=false.
+    if os.environ.get('USPAIRS_SHADOW_ENABLED', 'true').lower() != 'false':
+        try:
+            from modules.uspairs_shadow import uspairs_shadow_loop as _usp_loop
+            def _usp_loop_wrapper():
+                try:
+                    _usp_loop(beat_fn=beat)
+                except Exception as _ue:
+                    log.error(f'[USPAIRS] crash: {_ue}')
+                    import traceback; traceback.print_exc()
+            defs['uspairs_shadow_loop'] = _usp_loop_wrapper
+            log.info('[USPAIRS] motor shadow US pairs adicionado (14 pares, cadencia diaria)')
+        except Exception as _ue:
+            log.warning(f'[USPAIRS] setup falhou: {_ue}')
     else:
         log.info('[SPECIALIST] DISABLE_BRAIN_SPECIALIST=true — desligado')
 

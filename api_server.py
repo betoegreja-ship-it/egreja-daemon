@@ -7259,18 +7259,13 @@ def monitor_trades():
                                      f"pnl={trade['pnl_pct']:+.2f}% — protegendo (devolveu {peak - trade['pnl_pct']:.2f}pp)")
                     # ═══ FIM BREAKEVEN PROTECT CRYPTO ════════════════════════
 
-                    # ═══ [P2 10-jul-2026] HARD STOP CRYPTO -0.5% (decisão Beto:
-                    # todas as estratégias). Estudo 22/abr-10/jul: 635 trades
-                    # crypto tocaram -0.5% e só 11.2% reverteram; grupo fechou
-                    # -R$261.6k vs -R$228.2k com corte a -0.5% (economia R$33.5k).
-                    # Crypto 24/7: sem guard de pregão. Env: HARD_STOP_CRYPTO_PCT
-                    # (default -0.5); -99 desliga.
-                    if reason is None:
-                        _hs_cry = float(os.environ.get('HARD_STOP_CRYPTO_PCT', -0.5))
-                        if _hs_cry > -90 and trade['pnl_pct'] <= _hs_cry:
-                            reason = 'HARD_STOP'
-                            log.info(f"[HARD-STOP] {trade['symbol']}(crypto): pnl={trade['pnl_pct']:+.2f}% "
-                                     f"<= {_hs_cry:.2f}% — corte imediato (só 11% revertem)")
+                    # ═══ [REVERTIDO 12-jul-2026] HARD STOP CRYPTO -0.5% removido. ═══
+                    # Live 10-12/jul: 77 trades HARD_STOP = -$31.4k (avg -$408/trade);
+                    # ATR mediano dos cortados 1.22% >> 0.5% (stop dentro do ruído);
+                    # 51/77 reentraram <30min no mesmo símbolo (loop stop-reentra-stop,
+                    # trades/dia 90→141); WR 59.3%→46.2%. Corte de perdedor real fica
+                    # com o EARLY_STOP (gatilho 1×ATR, min-hold 15min). NYSE/B3 mantêm
+                    # seu hard stop próprio (books e parâmetros separados).
 
                     # ═══ [adaptive-v1] EARLY STOP CRYPTO ═══════════════════
                     # Corta trades que estão afundando ANTES de virar STOP_LOSS catastrão.

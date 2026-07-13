@@ -8267,6 +8267,17 @@ def stock_execution_worker():
                                 continue
                         _mp = market_pulse(mkt_type)
                         _mp_pen = float(os.environ.get('MP_SCORE_PENALTY', 10))
+                        # ═══ [SHORT-RISKOFF 13-jul-2026, decisao Beto] Short em ═══
+                        # stocks (B3 e NYSE) religado (ALLOW_SHORT_STOCKS=true),
+                        # mas SO em dia RISK_OFF do proprio mercado — a favor da
+                        # mare, nunca contra. Historico: shorts as cegas em abril
+                        # = -$74.6k; em marco (calibracao sa) = +$8.8k. Env:
+                        # STOCKS_SHORT_REQUIRE_RISKOFF=false libera geral.
+                        if is_short and _mp.get('state') != 'RISK_OFF' and \
+                           os.environ.get('STOCKS_SHORT_REQUIRE_RISKOFF', 'true').lower() != 'false':
+                            log.info(f"[SHORT-RISKOFF-GATE] {sym}({mkt_type}): dia {_mp.get('state')} "
+                                     f"— short stocks so em RISK_OFF — {_mp.get('detail', '')}")
+                            continue
                         if _mp.get('state') == 'RISK_OFF' and is_long and score < _eff_min + _mp_pen:
                             log.info(f"[MP-RISKOFF-BLOCK] {sym}({mkt_type}): LONG em dia RISK_OFF exige "
                                      f"score>={_eff_min + _mp_pen:.0f} (score={score}) — {_mp.get('detail', '')}")

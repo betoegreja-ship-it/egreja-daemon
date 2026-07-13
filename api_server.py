@@ -1243,18 +1243,60 @@ def market_pulse(mkt):
     log.info(f"[MARKET-PULSE] {mkt}: {_state} — {_c['detail']}")
     return _c
 
-def _mp_preopen_bias():
-    """[MARKET-PULSE 13-jul-2026] Vies pre-abertura NYSE via pre-market
-    SPY/QQQ (Polygon, barra min inclui pre-market). UP/DOWN/NEUTRAL."""
-    _idx, _det = _mp_index_intraday('NYSE')
+def _mp_polygon_premarket_chg(_sym):
+    """Variacao % do dia (pre-market incluso) de um ticker US via snapshot
+    Polygon. Fora do pregao usa a barra 'min' (inclui pre-market) vs
+    prevDay.c. None se sem dados."""
+    try:
+        _rs = requests.get(
+            f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{_sym}',
+            params={'apiKey': POLYGON_API_KEY}, timeout=6)
+        if _rs.status_code != 200:
+            return None
+        _tk = (_rs.json() or {}).get('ticker') or {}
+        _chg = _tk.get('todaysChangePerc')
+        _prev = float(((_tk.get('prevDay') or {}).get('c')) or 0)
+        _minc = float(((_tk.get('min') or {}).get('c')) or 0)
+        if (not _chg) and _prev > 0 and _minc > 0:
+            _chg = (_minc / _prev - 1.0) * 100.0
+        return float(_chg) if _chg is not None else None
+    except Exception:
+        return None
+
+def _mp_preopen_bias(mkt='NYSE'):
+    """[MARKET-PULSE v2 13-jul-2026] Dossie pre-abertura por mercado (decisao
+    Beto: os maiores ganhos de stocks estao NA abertura — o cerebro chega no
+    sino ja com o mercado lido, em vez de esperar). Combina, ponderado:
+    - SPY/QQQ pre-market via Polygon (sentimento US/global, peso 1.0)
+    - EWZ pre-market via Polygon (proxy direto do Brasil, peso 2.0, so B3)
+    - BTC 24h em memoria (risco overnight 24/7, peso 0.3)
+    UP/DOWN/NEUTRAL + detalhe. Fail-open: NEUTRAL."""
+    _parts = []
+    _dets = []
+    for _px in (('SPY', 1.0), ('QQQ', 1.0)):
+        _v = _mp_polygon_premarket_chg(_px[0])
+        if _v is not None:
+            _parts.append((_v, _px[1]))
+            _dets.append(f'{_px[0]} {_v:+.2f}%')
+    if mkt == 'B3':
+        _ewz = _mp_polygon_premarket_chg('EWZ')
+        if _ewz is not None:
+            _parts.append((_ewz, 2.0))
+            _dets.append(f'EWZ {_ewz:+.2f}%')
+    try:
+        _btc = float(crypto_momentum.get('BTCUSDT', 0) or 0)
+        if _btc:
+            _parts.append((_btc, 0.3))
+            _dets.append(f'BTC24h {_btc:+.1f}%')
+    except Exception:
+        pass
+    if not _parts:
+        return 'NEUTRAL', 'sem dados pre-abertura'
+    _wsum = sum(_w for _, _w in _parts)
+    _sc = sum(_v * _w for _v, _w in _parts) / _wsum
     _th = float(os.environ.get('MP_PREOPEN_IDX_PCT', 0.25))
-    if _idx is None:
-        return 'NEUTRAL', _det
-    if _idx >= _th:
-        return 'UP', _det
-    if _idx <= -_th:
-        return 'DOWN', _det
-    return 'NEUTRAL', _det
+    _bias = 'UP' if _sc >= _th else ('DOWN' if _sc <= -_th else 'NEUTRAL')
+    return _bias, f'{_sc:+.2f}% [' + ', '.join(_dets) + ']' 
 
 def _mp_minutes_since_open(mkt):
     """Minutos desde a abertura do pregao de hoje; None se mercado fechado."""
@@ -8065,16 +8107,16 @@ def stock_execution_worker():
                         _mp_wu = float(os.environ.get(f'MP_WARMUP_{mkt_type}_MIN',
                                                       20 if mkt_type == 'NYSE' else 15))
                         if _mp_since is not None and _mp_since < _mp_wu:
-                            if mkt_type == 'NYSE':
-                                _mp_bias, _mp_bdet = _mp_preopen_bias()
-                                if (is_long and _mp_bias != 'UP') or (is_short and _mp_bias != 'DOWN'):
-                                    log.info(f"[MP-WARMUP-BLOCK] {sym}({mkt_type}): {_mp_since:.0f}min<"
-                                             f"{_mp_wu:.0f}min pos-abertura, vies pre-market={_mp_bias} "
-                                             f"({_mp_bdet}) — {'LONG' if is_long else 'SHORT'} bloqueado")
-                                    continue
-                            else:
-                                log.info(f"[MP-WARMUP-BLOCK] {sym}(B3): {_mp_since:.0f}min<"
-                                         f"{_mp_wu:.0f}min pos-abertura — aguardando o dia se definir")
+                            # [v2 13-jul-2026, decisao Beto] A abertura e a melhor
+                            # janela (PRE 02-10/jul: fechamentos <45min WR 73-82%).
+                            # NAO esperar: entrar no sino COM o dossie pre-abertura
+                            # (SPY/QQQ + EWZ + BTC). Bloqueia APENAS entrada
+                            # CONTRARIA ao vies; alinhado ou NEUTRAL passa.
+                            _mp_bias, _mp_bdet = _mp_preopen_bias(mkt_type)
+                            if (is_long and _mp_bias == 'DOWN') or (is_short and _mp_bias == 'UP'):
+                                log.info(f"[MP-WARMUP-BLOCK] {sym}({mkt_type}): {_mp_since:.0f}min<"
+                                         f"{_mp_wu:.0f}min pos-abertura, vies pre-abertura={_mp_bias} "
+                                         f"({_mp_bdet}) — {'LONG' if is_long else 'SHORT'} contrario bloqueado")
                                 continue
                         _mp = market_pulse(mkt_type)
                         _mp_pen = float(os.environ.get('MP_SCORE_PENALTY', 10))
@@ -16290,11 +16332,13 @@ def sync_prices():
 def debug_market_pulse():
     """[MARKET-PULSE 13-jul-2026] Estado atual do sensor de tendencia do dia."""
     try:
-        _bias, _bdet = _mp_preopen_bias()
+        _bn, _bdn = _mp_preopen_bias('NYSE')
+        _bb, _bdb = _mp_preopen_bias('B3')
         return jsonify({
             'B3': {k: v for k, v in market_pulse('B3').items() if k != 'ts'},
             'NYSE': {k: v for k, v in market_pulse('NYSE').items() if k != 'ts'},
-            'nyse_preopen_bias': {'bias': _bias, 'detail': _bdet},
+            'preopen_bias': {'NYSE': {'bias': _bn, 'detail': _bdn},
+                             'B3': {'bias': _bb, 'detail': _bdb}},
             'warmup': {'B3_min_since_open': _mp_minutes_since_open('B3'),
                        'NYSE_min_since_open': _mp_minutes_since_open('NYSE')},
             'enabled': os.environ.get('MARKET_PULSE_ENABLED', 'true')})

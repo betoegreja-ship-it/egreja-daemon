@@ -1186,6 +1186,10 @@ def market_pulse(mkt):
         return _c
     _up = _dn = 0
     _chgs = []
+    # [MP-v3 13-jul-2026] NYSE: breadth do mercado US INTEIRO (Full Market
+    # Snapshot) quando disponivel — amostra de ~60 simbolos vira censo de
+    # milhares. B3 e fallback continuam no universo interno.
+    _uswide = _mp_us_market_breadth() if mkt == 'NYSE' else None
     try:
         with state_lock:
             _sp = dict(stock_prices)
@@ -1207,6 +1211,10 @@ def market_pulse(mkt):
             _dn += 1
     _n = len(_chgs)
     _avg = (sum(_chgs) / _n) if _n else 0.0
+    _src_breadth = 'universo'
+    if _uswide:
+        _up, _dn, _n, _avg = _uswide['up'], _uswide['dn'], _uswide['n'], _uswide['avg']
+        _src_breadth = 'US-wide'
     _up_pct = (_up / _n * 100.0) if _n else 0.0
     _dn_pct = (_dn / _n * 100.0) if _n else 0.0
     _idx, _idx_det = _mp_index_intraday(mkt)
@@ -1239,7 +1247,7 @@ def market_pulse(mkt):
                'breadth_up_pct': round(_up_pct, 1), 'breadth_dn_pct': round(_dn_pct, 1),
                'avg_change_pct': round(_avg, 3), 'n_symbols': _n,
                'index_chg_pct': _idx,
-               'detail': f'breadth {_up}u/{_dn}d (n={_n}) avg={_avg:+.2f}% | {_idx_det}'})
+               'detail': f'breadth[{_src_breadth}] {_up}u/{_dn}d (n={_n}) avg={_avg:+.2f}% | {_idx_det}'})
     log.info(f"[MARKET-PULSE] {mkt}: {_state} — {_c['detail']}")
     return _c
 
@@ -1297,6 +1305,77 @@ def _mp_preopen_bias(mkt='NYSE'):
     _th = float(os.environ.get('MP_PREOPEN_IDX_PCT', 0.25))
     _bias = 'UP' if _sc >= _th else ('DOWN' if _sc <= -_th else 'NEUTRAL')
     return _bias, f'{_sc:+.2f}% [' + ', '.join(_dets) + ']' 
+
+_mp_us_breadth_cache = {'ts': 0}
+
+def _mp_us_market_breadth():
+    """[MP-v3 13-jul-2026] Breadth do mercado US INTEIRO via Full Market
+    Snapshot Polygon/Massive (1 chamada, todos os tickers). Filtra por volume
+    do dia >= MP_US_BREADTH_MIN_VOL (default 300k) para olhar so o mercado
+    liquido. Cache proprio MP_US_BREADTH_CACHE_MIN (default 5min).
+    Retorna dict {'up','dn','n','avg'} ou None (fail-open p/ breadth do
+    universo interno)."""
+    import time as _t
+    _ttl = float(os.environ.get('MP_US_BREADTH_CACHE_MIN', 5)) * 60.0
+    if _t.time() - _mp_us_breadth_cache.get('ts', 0) < _ttl:
+        return _mp_us_breadth_cache.get('data')
+    _data = None
+    try:
+        _rs = requests.get(
+            'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers',
+            params={'apiKey': POLYGON_API_KEY}, timeout=15)
+        if _rs.status_code == 200:
+            _min_vol = float(os.environ.get('MP_US_BREADTH_MIN_VOL', 300000))
+            _up = _dn = 0
+            _sum = 0.0
+            _n = 0
+            for _tk in (_rs.json() or {}).get('tickers', []):
+                _v = float((_tk.get('day') or {}).get('v') or 0)
+                if _v < _min_vol:
+                    continue
+                _ch = _tk.get('todaysChangePerc')
+                if _ch is None:
+                    continue
+                _n += 1
+                _sum += float(_ch)
+                if _ch > 0:
+                    _up += 1
+                elif _ch < 0:
+                    _dn += 1
+            if _n >= 100:
+                _data = {'up': _up, 'dn': _dn, 'n': _n, 'avg': _sum / _n}
+    except Exception as _e:
+        log.warning(f'[MP-US-BREADTH] falha: {str(_e)[:80]} — fallback universo interno')
+    _mp_us_breadth_cache.update({'ts': _t.time(), 'data': _data})
+    return _data
+
+_earnings_cal_cache = {'ts': 0, 'dates': {}}
+
+def _earnings_today_map():
+    """[EARNINGS-FILTER 13-jul-2026] Simbolos com earnings HOJE ou AMANHA
+    (FMP rota /stable/ — a rota v3 legada foi descontinuada). Dia de
+    resultado = gap risk que o V3 nao enxerga (13/jul: sistema estava LONG
+    JNJ com earnings em 15/jul). Cache EARNINGS_CACHE_H (default 6h).
+    Fail-open: dict vazio."""
+    import time as _t
+    if _t.time() - _earnings_cal_cache['ts'] < float(os.environ.get('EARNINGS_CACHE_H', 6)) * 3600.0:
+        return _earnings_cal_cache['dates']
+    _out = {}
+    try:
+        _d0 = datetime.utcnow().strftime('%Y-%m-%d')
+        _d1 = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')
+        _rs = requests.get('https://financialmodelingprep.com/stable/earnings-calendar',
+                           params={'from': _d0, 'to': _d1, 'apikey': FMP_API_KEY}, timeout=10)
+        if _rs.status_code == 200:
+            for _e in (_rs.json() or []):
+                _s = str(_e.get('symbol', '')).upper()
+                if _s and '.' not in _s:
+                    _out[_s] = str(_e.get('date', ''))
+            log.info(f'[EARNINGS-CAL] {len(_out)} simbolos US com earnings hoje/amanha')
+    except Exception as _e:
+        log.warning(f'[EARNINGS-CAL] falha: {str(_e)[:80]} — fail-open')
+    _earnings_cal_cache.update({'ts': _t.time(), 'dates': _out})
+    return _earnings_cal_cache['dates']
 
 def _mp_minutes_since_open(mkt):
     """Minutos desde a abertura do pregao de hoje; None se mercado fechado."""
@@ -8130,6 +8209,21 @@ def stock_execution_worker():
                             continue
                     except Exception as _mp_e:
                         log.warning(f'[MARKET-PULSE] erro no gate ({sym}): {_mp_e} — fail-open')
+
+                # ═══ [EARNINGS-FILTER 13-jul-2026] Sem entrada em dia de ═══
+                # earnings (hoje/amanha) — gap de resultado e risco binario
+                # que o score tecnico nao enxerga. So NYSE (calendario FMP
+                # cobre US). Env: EARNINGS_FILTER_ENABLED=false desliga.
+                if mkt_type == 'NYSE' and \
+                   os.environ.get('EARNINGS_FILTER_ENABLED', 'true').lower() != 'false':
+                    try:
+                        _ecal = _earnings_today_map()
+                        if sym.upper() in _ecal:
+                            log.info(f'[EARNINGS-BLOCK] {sym}: earnings em {_ecal[sym.upper()]} '
+                                     f'— entrada bloqueada (gap risk)')
+                            continue
+                    except Exception as _ee:
+                        log.warning(f'[EARNINGS-FILTER] erro ({sym}): {_ee} — fail-open')
 
 
                 # [BAD-HOURS-BLOCK 29/abr/2026] Filtro de horarios catastroficos B3 LONG.
@@ -16341,6 +16435,7 @@ def debug_market_pulse():
                              'B3': {'bias': _bb, 'detail': _bdb}},
             'warmup': {'B3_min_since_open': _mp_minutes_since_open('B3'),
                        'NYSE_min_since_open': _mp_minutes_since_open('NYSE')},
+            'earnings_today_tomorrow': len(_earnings_today_map()),
             'enabled': os.environ.get('MARKET_PULSE_ENABLED', 'true')})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

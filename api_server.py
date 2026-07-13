@@ -16098,6 +16098,63 @@ def sync_prices():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/sync/signals')
+def sync_signals():
+    """[P3-NETWORK 13-jul-2026] Sinais ativos do Signal Monitor para o peer
+    Manus (DualMatch: trade so abre quando score+tendencia batem nas duas
+    plataformas). Mesmo motor do /signals (tela). Contrato Manus:
+    - so BUY/SELL (MANTER omitido); forca do sinal >= 50 (env SYNC_SIGNALS_MIN_SCORE)
+    - score = forca 0-100 NA DIRECAO: BUY usa o score da tela; SELL vai como
+      100-score (na tela VENDA e score baixo) para o peer comparar na mesma
+      escala. score_raw preserva o valor exato da tela.
+    - generated_at ISO-8601 UTC com sufixo Z (Manus rejeita sinais >45min)
+    - crypto no formato exchange (BTC -> BTCUSDT); b3/nyse inalterados
+    - filtro opcional: ?market=crypto|b3|nyse
+    Autorizado pela SYNC_API_KEY (escopo /sync/*), como os demais /sync/*."""
+    try:
+        _resp = signals()
+        _payload = _resp[0].get_json() if isinstance(_resp, tuple) else _resp.get_json()
+        if not _payload or 'signals' not in _payload:
+            return jsonify({'error': 'signal monitor indisponivel'}), 503
+        _mkt_map = {'CRYPTO': 'crypto', 'B3': 'b3', 'NYSE': 'nyse'}
+        _min_strength = float(os.environ.get('SYNC_SIGNALS_MIN_SCORE', 50))
+        _only = (request.args.get('market') or '').strip().lower()
+        out = []
+        for s in _payload['signals']:
+            _sig = s.get('signal')
+            if _sig not in ('COMPRA', 'VENDA'):
+                continue
+            _mkt = _mkt_map.get(str(s.get('market_type', '')).upper())
+            if not _mkt or (_only and _mkt != _only):
+                continue
+            _raw = float(s.get('score') or 0)
+            _direction = 'BUY' if _sig == 'COMPRA' else 'SELL'
+            _strength = _raw if _direction == 'BUY' else 100.0 - _raw
+            if _strength < _min_strength:
+                continue
+            _sym = str(s.get('symbol', ''))
+            if _mkt == 'crypto' and not _sym.endswith('USDT'):
+                _sym = f'{_sym}USDT'
+            _gen = str(s.get('created_at') or datetime.utcnow().isoformat())
+            if not _gen.endswith('Z'):
+                _gen += 'Z'
+            _item = {'symbol': _sym, 'market': _mkt, 'direction': _direction,
+                     'score': round(_strength, 1), 'score_raw': _raw,
+                     'price': s.get('price'), 'generated_at': _gen}
+            for _opt in ('rsi', 'ema9', 'ema21'):
+                if s.get(_opt) not in (None, 0, ''):
+                    _item[_opt] = s.get(_opt)
+            if s.get('confidence') is not None:
+                _item['confidence'] = s.get('confidence')
+            out.append(_item)
+        out.sort(key=lambda x: -x['score'])
+        return jsonify({'timestamp': datetime.utcnow().isoformat() + 'Z',
+                        'count': len(out), 'signals': out})
+    except Exception as e:
+        log.error(f'sync_signals: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/sync/export')
 def sync_export():
     """Exporta inteligencia aprendida para troca entre sistemas Egreja. Requer sessao/chave."""

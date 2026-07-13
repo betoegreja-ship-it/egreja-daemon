@@ -1127,6 +1127,152 @@ def _nyse_index_regime():
         log.warning(f'[NYSE-REGIME] falha ao computar regime: {_e} — fail-open (UNKNOWN)')
         _nyse_regime_cache.update({'ts': _t.time(), 'regime': 'UNKNOWN', 'detail': str(_e)[:80]})
         return 'UNKNOWN'
+
+
+_market_pulse_cache = {'B3': {'ts': 0}, 'NYSE': {'ts': 0}}
+
+def _mp_index_intraday(mkt):
+    """[MARKET-PULSE 13-jul-2026] Variacao intradiaria (%) do indice de
+    referencia. NYSE: media SPY+QQQ via snapshot Polygon — todaysChangePerc
+    cobre o pregao; fora dele, a barra 'min' (que INCLUI pre-market) vs
+    prevDay.c da o vies pre-abertura que o Beto pediu. B3: ^BVSP via brapi.
+    Fail-open: (None, detalhe) se sem dados."""
+    try:
+        if mkt == 'NYSE':
+            _chgs = []
+            for _sym in ('SPY', 'QQQ'):
+                _rs = requests.get(
+                    f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{_sym}',
+                    params={'apiKey': POLYGON_API_KEY}, timeout=6)
+                if _rs.status_code != 200:
+                    continue
+                _tk = (_rs.json() or {}).get('ticker') or {}
+                _chg = _tk.get('todaysChangePerc')
+                _prev = float(((_tk.get('prevDay') or {}).get('c')) or 0)
+                _minc = float(((_tk.get('min') or {}).get('c')) or 0)
+                if (not _chg) and _prev > 0 and _minc > 0:
+                    _chg = (_minc / _prev - 1.0) * 100.0
+                if _chg is not None:
+                    _chgs.append(float(_chg))
+            if _chgs:
+                _m = sum(_chgs) / len(_chgs)
+                return _m, f'SPY/QQQ {_m:+.2f}%'
+            return None, 'polygon sem dados'
+        else:
+            _pr = {'token': BRAPI_TOKEN} if BRAPI_TOKEN else {}
+            _rs = requests.get('https://brapi.dev/api/quote/^BVSP', params=_pr, timeout=6)
+            _q = (((_rs.json() or {}).get('results') or [{}])[0]) if _rs.status_code == 200 else {}
+            _chg = _q.get('regularMarketChangePercent')
+            if _chg is not None:
+                return float(_chg), f'IBOV {float(_chg):+.2f}%'
+            return None, 'brapi sem dados'
+    except Exception as _e:
+        return None, f'idx err: {str(_e)[:60]}'
+
+def market_pulse(mkt):
+    """[MARKET-PULSE 13-jul-2026] Sensor de tendencia DO DIA por mercado
+    (B3/NYSE separados — regra do Beto). Motivo: 10 e 13/jul o cerebro abriu
+    100% LONG em dias de queda generalizada (13/jul: WR 30%, -$17.5k, breadth
+    B3 70% caindo) — o V3 e bottom-up e nao enxerga o mercado agregado.
+    Camada 1: breadth do universo em memoria (change_pct de stock_prices,
+    custo zero). Camada 2: indice intradiario (SPY/QQQ Polygon; IBOV brapi).
+    Consenso: breadth manda; indice confirma; discordancia direta = NEUTRAL.
+    Estados: RISK_ON / RISK_OFF / NEUTRAL. Cache MP_CACHE_MIN (default 5min).
+    Fail-open: sem dados = NEUTRAL (nunca trava o sistema)."""
+    import time as _t
+    _c = _market_pulse_cache.setdefault(mkt, {'ts': 0})
+    _ttl = float(os.environ.get('MP_CACHE_MIN', 5)) * 60.0
+    if _t.time() - _c.get('ts', 0) < _ttl and _c.get('state'):
+        return _c
+    _up = _dn = 0
+    _chgs = []
+    try:
+        with state_lock:
+            _sp = dict(stock_prices)
+    except Exception:
+        _sp = {}
+    for _sym, _pd in _sp.items():
+        if not _pd or not isinstance(_pd, dict):
+            continue
+        _is_b3 = bool(re.match(r'^[A-Z]{4}[0-9]+$', _sym))
+        if (mkt == 'B3') != _is_b3:
+            continue
+        _ch = _pd.get('change_pct')
+        if _ch is None:
+            continue
+        _chgs.append(float(_ch))
+        if _ch > 0:
+            _up += 1
+        elif _ch < 0:
+            _dn += 1
+    _n = len(_chgs)
+    _avg = (sum(_chgs) / _n) if _n else 0.0
+    _up_pct = (_up / _n * 100.0) if _n else 0.0
+    _dn_pct = (_dn / _n * 100.0) if _n else 0.0
+    _idx, _idx_det = _mp_index_intraday(mkt)
+    _th_b = float(os.environ.get('MP_BREADTH_PCT', 60))
+    _th_avg = float(os.environ.get('MP_AVG_CHG_PCT', 0.3))
+    _th_idx = float(os.environ.get('MP_IDX_CHG_PCT', 0.4))
+    if _dn_pct >= _th_b and _avg <= -_th_avg:
+        _b_state = 'RISK_OFF'
+    elif _up_pct >= _th_b and _avg >= _th_avg:
+        _b_state = 'RISK_ON'
+    else:
+        _b_state = 'NEUTRAL'
+    if _idx is None:
+        _i_state = 'NEUTRAL'
+    elif _idx <= -_th_idx:
+        _i_state = 'RISK_OFF'
+    elif _idx >= _th_idx:
+        _i_state = 'RISK_ON'
+    else:
+        _i_state = 'NEUTRAL'
+    if _n < 10:
+        _state = _i_state
+    elif _b_state == 'NEUTRAL':
+        _state = _i_state
+    elif _i_state != 'NEUTRAL' and _i_state != _b_state:
+        _state = 'NEUTRAL'
+    else:
+        _state = _b_state
+    _c.update({'ts': _t.time(), 'state': _state,
+               'breadth_up_pct': round(_up_pct, 1), 'breadth_dn_pct': round(_dn_pct, 1),
+               'avg_change_pct': round(_avg, 3), 'n_symbols': _n,
+               'index_chg_pct': _idx,
+               'detail': f'breadth {_up}u/{_dn}d (n={_n}) avg={_avg:+.2f}% | {_idx_det}'})
+    log.info(f"[MARKET-PULSE] {mkt}: {_state} — {_c['detail']}")
+    return _c
+
+def _mp_preopen_bias():
+    """[MARKET-PULSE 13-jul-2026] Vies pre-abertura NYSE via pre-market
+    SPY/QQQ (Polygon, barra min inclui pre-market). UP/DOWN/NEUTRAL."""
+    _idx, _det = _mp_index_intraday('NYSE')
+    _th = float(os.environ.get('MP_PREOPEN_IDX_PCT', 0.25))
+    if _idx is None:
+        return 'NEUTRAL', _det
+    if _idx >= _th:
+        return 'UP', _det
+    if _idx <= -_th:
+        return 'DOWN', _det
+    return 'NEUTRAL', _det
+
+def _mp_minutes_since_open(mkt):
+    """Minutos desde a abertura do pregao de hoje; None se mercado fechado."""
+    try:
+        if mkt == 'B3':
+            if not is_b3_open():
+                return None
+            _nw = datetime.now(TZ_SAO_PAULO)
+            _open_h = 10.0
+        else:
+            if not is_nyse_open():
+                return None
+            _nw = datetime.now(TZ_NEW_YORK)
+            _open_h = 9.5
+        return max(0.0, (_nw.hour + _nw.minute / 60.0 + _nw.second / 3600.0 - _open_h) * 60.0)
+    except Exception:
+        return None
+
 # ── [v10.17] Directional exposure limit ───────────────────────────────────
 MAX_DIRECTIONAL_PCT       = float(os.environ.get('MAX_DIRECTIONAL_PCT', 70))       # max 70% das posições na mesma direção (stocks)
 MAX_DIRECTIONAL_PCT_CRYPTO = float(os.environ.get('MAX_DIRECTIONAL_PCT_CRYPTO', 100))  # [v10.24.4] crypto: 100% — mercado correlacionado, diversificação é entre moedas
@@ -6985,22 +7131,13 @@ def monitor_trades():
                                      f"pnl={trade['pnl_pct']:+.2f}% — protegendo (devolveu {peak - trade['pnl_pct']:.2f}pp)")
                     # ═══ FIM BREAKEVEN PROTECT ═══════════════════════════════
 
-                    # ═══ [P2 10-jul-2026] HARD STOP NYSE -0.5% (decisão Beto) ═
-                    # Estudo 22/abr-10/jul (snapshots do exit advisor): 149 trades
-                    # NYSE tocaram -0.5% e só 11.4% reverteram para ganho; o grupo
-                    # fechou -R$170.5k vs -R$149.2k se cortado a -0.5%. Em -1.0% a
-                    # reversão cai a 2.4% — trade a -0.5% está estatisticamente morta.
-                    # Guard market_open: evita corte com preço stale fora do pregão.
-                    # [10-jul-2026] Estendido para B3 (decisão Beto: todas as estratégias).
-                    # Estudo B3: 74 trades tocaram -0.5%, só 9.5% reverteram (-R$71.4k
-                    # vs -R$59.0k com stop). Envs: HARD_STOP_NYSE_PCT / HARD_STOP_B3_PCT
-                    # (default -0.5); -99 desliga.
-                    if reason is None and market_open_for(mkt):
-                        _hs_stk = float(os.environ.get(f'HARD_STOP_{mkt}_PCT', -0.5))
-                        if _hs_stk > -90 and trade['pnl_pct'] <= _hs_stk:
-                            reason = 'HARD_STOP'
-                            log.info(f"[HARD-STOP] {trade['symbol']}({mkt}): pnl={trade['pnl_pct']:+.2f}% "
-                                     f"<= {_hs_stk:.2f}% — corte imediato (só ~10% revertem)")
+                    # ═══ [REVERTIDO 13-jul-2026] HARD STOP -0.5% stocks removido ═══
+                    # (mesmo tratamento da crypto em 12/jul). Live 13/jul: 15 de 23
+                    # trades stocks morreram no HARD_STOP na 1a hora de pregao — CMIN3
+                    # aberto e stopado no MESMO minuto: stop fixo dentro do ruido da
+                    # abertura. Corte de perdedor real fica com EARLY_STOP (1xATR,
+                    # min-hold por mercado) + STOP_LOSS ATRxregime. Envs
+                    # HARD_STOP_NYSE_PCT / HARD_STOP_B3_PCT ficam inertes.
 
                     # ═══ [adaptive-v1] EARLY STOP STOCK ═══════════════════
                     # Corta trades stock afundando ANTES de virar STOP_LOSS catastrao.
@@ -7024,8 +7161,10 @@ def monitor_trades():
                         if mkt == 'B3':
                             _es_min_hold_s = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN_B3', 0))
                         else:
+                        # [13-jul-2026] NYSE 90 -> 15min: mesma licao da crypto — 90min
+                        # empurrava perdedores para a zona morta 90-180min (WR 19%).
                             _es_min_hold_s = float(os.environ.get('EARLY_STOP_MIN_HOLD_MIN_NYSE',
-                                                   os.environ.get('EARLY_STOP_MIN_HOLD_MIN', 90)))
+                                                   os.environ.get('EARLY_STOP_MIN_HOLD_MIN', 15)))
                         _es_atr_mult_s = float(os.environ.get('EARLY_STOP_ATR_MULT', 1.0))
                         _es_atr_pct_s = float(trade.get('_atr_pct') or 0)
                         if _es_atr_pct_s > 0:
@@ -7853,6 +7992,10 @@ def stock_execution_worker():
 
             for sig in rows:
                 score=sig.get('score',0); mkt=sig.get('market_type','')
+                # [P0-FIX 13-jul-2026] mkt_type ficava STALE aqui (vinha da ultima
+                # iteracao do loop de sinais anterior), fazendo NYSE-REGIME e
+                # BAD-HOURS mirarem o mercado ERRADO. Recalcular por sinal:
+                mkt_type = mkt if mkt in ('B3', 'NYSE') else ('B3' if re.match(r'^[A-Z]{4}[0-9]+$', sig.get('symbol', '')) else 'NYSE')
                 signal_val=sig.get('signal',''); sym=sig.get('symbol','')
                 price=sig.get('price', 0)
                 if price<=0: continue
@@ -7901,6 +8044,51 @@ def stock_execution_worker():
                         log.info(f'[NYSE-REGIME-BLOCK] {sym}: LONG bloqueado — regime do índice DOWN '
                                  f'({_nyse_regime_cache.get("detail","")})')
                         continue
+
+                # ═══ [MARKET-PULSE 13-jul-2026] Tendencia DO DIA na entrada ═══
+                # Aprovado pelo Beto 13/jul. Motivo: 10 e 13/jul, 100% LONG em
+                # dias de queda (13/jul: 23 trades, WR 30%, -$17.5k, 15 mortos
+                # no hard stop na 1a hora). O V3 e bottom-up e nao ve o agregado.
+                # 1) WARM-UP: primeiros N min do pregao. NYSE: so abre alinhado
+                #    ao vies pre-market SPY/QQQ (Polygon). B3 (sem pre-market):
+                #    bloqueia entradas novas ate o mercado definir o dia.
+                # 2) Dia RISK_OFF: LONG exige score >= _eff_min + MP_SCORE_PENALTY.
+                #    Dia RISK_ON: espelho para SHORT. Graduado, nao hard-block
+                #    (principio: graduated thresholds over hard blocks).
+                # Envs: MARKET_PULSE_ENABLED(true), MP_WARMUP_B3_MIN(15),
+                # MP_WARMUP_NYSE_MIN(20), MP_SCORE_PENALTY(10), MP_BREADTH_PCT(60),
+                # MP_AVG_CHG_PCT(0.3), MP_IDX_CHG_PCT(0.4), MP_PREOPEN_IDX_PCT(0.25),
+                # MP_CACHE_MIN(5). Fail-open em erro/sem dados.
+                if os.environ.get('MARKET_PULSE_ENABLED', 'true').lower() != 'false':
+                    try:
+                        _mp_since = _mp_minutes_since_open(mkt_type)
+                        _mp_wu = float(os.environ.get(f'MP_WARMUP_{mkt_type}_MIN',
+                                                      20 if mkt_type == 'NYSE' else 15))
+                        if _mp_since is not None and _mp_since < _mp_wu:
+                            if mkt_type == 'NYSE':
+                                _mp_bias, _mp_bdet = _mp_preopen_bias()
+                                if (is_long and _mp_bias != 'UP') or (is_short and _mp_bias != 'DOWN'):
+                                    log.info(f"[MP-WARMUP-BLOCK] {sym}({mkt_type}): {_mp_since:.0f}min<"
+                                             f"{_mp_wu:.0f}min pos-abertura, vies pre-market={_mp_bias} "
+                                             f"({_mp_bdet}) — {'LONG' if is_long else 'SHORT'} bloqueado")
+                                    continue
+                            else:
+                                log.info(f"[MP-WARMUP-BLOCK] {sym}(B3): {_mp_since:.0f}min<"
+                                         f"{_mp_wu:.0f}min pos-abertura — aguardando o dia se definir")
+                                continue
+                        _mp = market_pulse(mkt_type)
+                        _mp_pen = float(os.environ.get('MP_SCORE_PENALTY', 10))
+                        if _mp.get('state') == 'RISK_OFF' and is_long and score < _eff_min + _mp_pen:
+                            log.info(f"[MP-RISKOFF-BLOCK] {sym}({mkt_type}): LONG em dia RISK_OFF exige "
+                                     f"score>={_eff_min + _mp_pen:.0f} (score={score}) — {_mp.get('detail', '')}")
+                            continue
+                        if _mp.get('state') == 'RISK_ON' and is_short and score > (100 - _eff_min) - _mp_pen:
+                            log.info(f"[MP-RISKON-BLOCK] {sym}({mkt_type}): SHORT em dia RISK_ON exige "
+                                     f"score<={(100 - _eff_min) - _mp_pen:.0f} (score={score}) — {_mp.get('detail', '')}")
+                            continue
+                    except Exception as _mp_e:
+                        log.warning(f'[MARKET-PULSE] erro no gate ({sym}): {_mp_e} — fail-open')
+
 
                 # [BAD-HOURS-BLOCK 29/abr/2026] Filtro de horarios catastroficos B3 LONG.
                 # Backtested em 3548 trades historicas:
@@ -16096,6 +16284,23 @@ def sync_prices():
     except Exception as e:
         log.error(f'sync_prices: {e}')
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/market-pulse')
+def debug_market_pulse():
+    """[MARKET-PULSE 13-jul-2026] Estado atual do sensor de tendencia do dia."""
+    try:
+        _bias, _bdet = _mp_preopen_bias()
+        return jsonify({
+            'B3': {k: v for k, v in market_pulse('B3').items() if k != 'ts'},
+            'NYSE': {k: v for k, v in market_pulse('NYSE').items() if k != 'ts'},
+            'nyse_preopen_bias': {'bias': _bias, 'detail': _bdet},
+            'warmup': {'B3_min_since_open': _mp_minutes_since_open('B3'),
+                       'NYSE_min_since_open': _mp_minutes_since_open('NYSE')},
+            'enabled': os.environ.get('MARKET_PULSE_ENABLED', 'true')})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 
 @app.route('/sync/signals')

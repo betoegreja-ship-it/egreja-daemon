@@ -1159,13 +1159,19 @@ def _mp_index_intraday(mkt):
                 return _m, f'SPY/QQQ {_m:+.2f}%'
             return None, 'polygon sem dados'
         else:
+            # [MP-v4 13-jul-2026] IBOV em tempo real pelo socket Cedro
+            # (primario B3, observacao do Beto); brapi vira fallback.
+            _cs = os.environ.get('MP_B3_INDEX_SYMBOL', 'IBOV')
+            _cv = _mp_cedro_chg(_cs)
+            if _cv is not None:
+                return _cv, f'{_cs}(cedro) {_cv:+.2f}%'
             _pr = {'token': BRAPI_TOKEN} if BRAPI_TOKEN else {}
             _rs = requests.get('https://brapi.dev/api/quote/^BVSP', params=_pr, timeout=6)
             _q = (((_rs.json() or {}).get('results') or [{}])[0]) if _rs.status_code == 200 else {}
             _chg = _q.get('regularMarketChangePercent')
             if _chg is not None:
-                return float(_chg), f'IBOV {float(_chg):+.2f}%'
-            return None, 'brapi sem dados'
+                return float(_chg), f'IBOV(brapi) {float(_chg):+.2f}%'
+            return None, 'sem indice B3'
     except Exception as _e:
         return None, f'idx err: {str(_e)[:60]}'
 
@@ -1287,6 +1293,12 @@ def _mp_preopen_bias(mkt='NYSE'):
             _parts.append((_v, _px[1]))
             _dets.append(f'{_px[0]} {_v:+.2f}%')
     if mkt == 'B3':
+        # [MP-v4 13-jul-2026] WINFUT (mini-indice) abre 9h BRT — 1h ANTES do
+        # pregao. E o ES/NQ brasileiro: melhor preditor pre-abertura da B3.
+        _fut = _mp_cedro_chg(os.environ.get('MP_B3_FUT_SYMBOL', 'WINFUT'))
+        if _fut is not None:
+            _parts.append((_fut, 3.0))
+            _dets.append(f'WINFUT {_fut:+.2f}%')
         _ewz = _mp_polygon_premarket_chg('EWZ')
         if _ewz is not None:
             _parts.append((_ewz, 2.0))
@@ -1305,6 +1317,28 @@ def _mp_preopen_bias(mkt='NYSE'):
     _th = float(os.environ.get('MP_PREOPEN_IDX_PCT', 0.25))
     _bias = 'UP' if _sc >= _th else ('DOWN' if _sc <= -_th else 'NEUTRAL')
     return _bias, f'{_sc:+.2f}% [' + ', '.join(_dets) + ']' 
+
+def _mp_cedro_chg(_sym, _wait_ms=1200):
+    """[MP-v4 13-jul-2026] Variacao % do dia de um simbolo via socket Cedro
+    ja aberto (indices e futuros B3: IBOV, WINFUT, DOLFUT...). A Cedro cobre
+    para a B3 o que a Polygon cobre para NYSE (observacao do Beto). None se
+    indisponivel — quem chama faz fallback."""
+    try:
+        if not _cedro_socket or not getattr(_cedro_socket, 'enabled', False):
+            return None
+        _q = _cedro_socket.get_quote(str(_sym).strip().upper(), wait_ms=_wait_ms)
+        if not _q:
+            return None
+        _v = _q.get('variation_pct')
+        if _v is not None:
+            return float(_v)
+        _px = float(_q.get('price') or 0)
+        _pc = float(_q.get('prev_close') or 0)
+        if _px > 0 and _pc > 0:
+            return (_px / _pc - 1.0) * 100.0
+        return None
+    except Exception:
+        return None
 
 _mp_us_breadth_cache = {'ts': 0}
 
@@ -16419,6 +16453,19 @@ def sync_prices():
         return jsonify(out)
     except Exception as e:
         log.error(f'sync_prices: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/cedro-quote')
+def debug_cedro_quote():
+    """[MP-v4] Testa um simbolo no socket Cedro (ex.: ?symbol=IBOV, WINFUT)."""
+    try:
+        _s = (request.args.get('symbol') or 'IBOV').strip().upper()
+        if not _cedro_socket or not getattr(_cedro_socket, 'enabled', False):
+            return jsonify({'error': 'cedro socket indisponivel'}), 503
+        _q = _cedro_socket.get_quote(_s, wait_ms=2500)
+        return jsonify({'symbol': _s, 'chg_pct': _mp_cedro_chg(_s), 'quote': _q})
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 

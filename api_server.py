@@ -1295,10 +1295,11 @@ def _mp_preopen_bias(mkt='NYSE'):
     if mkt == 'B3':
         # [MP-v4 13-jul-2026] WINFUT (mini-indice) abre 9h BRT — 1h ANTES do
         # pregao. E o ES/NQ brasileiro: melhor preditor pre-abertura da B3.
-        _fut = _mp_cedro_chg(os.environ.get('MP_B3_FUT_SYMBOL', 'WINFUT'))
+        _fsym = _mp_b3_fut_symbol()
+        _fut = _mp_cedro_chg(_fsym)
         if _fut is not None:
             _parts.append((_fut, 3.0))
-            _dets.append(f'WINFUT {_fut:+.2f}%')
+            _dets.append(f'{_fsym} {_fut:+.2f}%')
         _ewz = _mp_polygon_premarket_chg('EWZ')
         if _ewz is not None:
             _parts.append((_ewz, 2.0))
@@ -1339,6 +1340,39 @@ def _mp_cedro_chg(_sym, _wait_ms=1200):
         return None
     except Exception:
         return None
+
+_win_front_cache = {'ts': 0, 'sym': None}
+
+def _mp_b3_fut_symbol():
+    """[MP-v4.1 13-jul-2026] Contrato WIN (mini-indice) vigente. Cedro nao
+    tem continuo 'WINFUT' — resolve o front automaticamente: WIN + mes par
+    (G/J/M/Q/V/Z) + ano, testando no socket ate achar quote ativa (contrato
+    vira a cada 2 meses; expirado para de cotar e cai pro proximo). Cache
+    6h. Env MP_B3_FUT_SYMBOL forca um simbolo fixo."""
+    _env = os.environ.get('MP_B3_FUT_SYMBOL', '').strip().upper()
+    if _env:
+        return _env
+    import time as _t
+    if _t.time() - _win_front_cache['ts'] < 6 * 3600 and _win_front_cache['sym']:
+        return _win_front_cache['sym']
+    _codes = {2: 'G', 4: 'J', 6: 'M', 8: 'Q', 10: 'V', 12: 'Z'}
+    try:
+        _nw = datetime.now(TZ_SAO_PAULO)
+    except Exception:
+        _nw = datetime.utcnow()
+    _cands = []
+    for _i in range(0, 5):
+        _mm = _nw.month + _i
+        _yy = _nw.year + (_mm - 1) // 12
+        _mm = (_mm - 1) % 12 + 1
+        if _mm in _codes:
+            _cands.append(f'WIN{_codes[_mm]}{str(_yy)[-2:]}')
+    for _c in _cands:
+        if _mp_cedro_chg(_c) is not None:
+            _win_front_cache.update({'ts': _t.time(), 'sym': _c})
+            log.info(f'[MP-v4.1] WIN front resolvido: {_c}')
+            return _c
+    return _cands[0] if _cands else 'WINQ26'
 
 _mp_us_breadth_cache = {'ts': 0}
 

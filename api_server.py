@@ -2258,12 +2258,25 @@ def check_risk_arbi(pair_id, position_value):
     if ARBI_KILL_SWITCH: return False, 'ARBI_KILL_SWITCH', 0
     with state_lock:
         open_count=len(arbi_open); cap=arbi_capital; a_closed=list(arbi_closed)
+        a_open=list(arbi_open)
     if open_count >= ARBI_MAX_POSITIONS:
         return False, f'ARBI_MAX_POSITIONS ({open_count}/{ARBI_MAX_POSITIONS})', 0
-    if any(t.get('pair_id')==pair_id for t in arbi_open):
+    if any(t.get('pair_id')==pair_id for t in a_open):
         return False, f'ARBI_PAIR_OPEN ({pair_id})', 0
     if position_value > cap:
         return False, f'ARBI_INSUFFICIENT_CAPITAL ({cap:.0f})', 0
+    # ═══ [P0 14-jul-2026, aprovado Beto] Trava por PRIMEIROS PRINCIPIOS ═══
+    # O contador arbi_capital sofreu drift em runtime e deixou 6x$1.3M abrirem
+    # com portfolio de $6.1M (livre foi a -$1.78M). Capacidade real nao depende
+    # do contador: inicial + PnL realizado. Comprometido + nova posicao nunca
+    # pode passar disso. Env ARBI_CAPITAL_HARD_CHECK=false desliga.
+    if os.environ.get('ARBI_CAPITAL_HARD_CHECK', 'true').lower() != 'false':
+        _committed_fp = sum(float(t.get('position_size', 0) or 0) for t in a_open)
+        _realized_fp = sum(float(t.get('pnl', 0) or 0) for t in a_closed)
+        _capacity_fp = ARBI_CAPITAL + _realized_fp
+        if _committed_fp + position_value > _capacity_fp:
+            return False, (f'ARBI_CAPACITY_EXCEEDED (comprometido ${_committed_fp:,.0f} '
+                           f'+ ${position_value:,.0f} > capacidade ${_capacity_fp:,.0f})'), 0
     cutoff=(datetime.utcnow()-timedelta(days=1)).isoformat()
     daily_loss=sum(t.get('pnl',0) for t in a_closed
         if t.get('closed_at','')>=cutoff and t.get('pnl',0)<0)

@@ -6499,6 +6499,31 @@ def _fetch_brapi_batch(tickers: list) -> dict:
                 if price <= 0: continue
 
                 hist  = q.get('historicalDataPrice', [])
+
+                # ═══ [STALE-DETECT-COLD 14-jul-2026, P0] O caminho cold gravava ═══
+                # regularMarketPrice SEM checar frescor. Com a brapi servindo dados
+                # de ontem, o prev_close sobrescrevia o preco fresco da Cedro: o
+                # PnL do book B3 inteiro ia a exatamente 0 no mesmo pass e o
+                # BREAKEVEN_PROTECT fechava tudo zerado (14/jul 13:11:52 — CXSE3/
+                # ENEV3/BBSE3/BPAC11 com exit==entry==prev_close, mercado subindo).
+                # Mesma regra do warm: descarta o simbolo e o fallback leva pro Cedro.
+                _mt_c = q.get('regularMarketTime') or ''
+                _stale_c = False
+                if _mt_c:
+                    try:
+                        _mtp = datetime.fromisoformat(str(_mt_c).replace('Z', '+00:00'))
+                        _mtn = _mtp.replace(tzinfo=None) if _mtp.tzinfo else _mtp
+                        _stale_c = (datetime.utcnow() - _mtn).total_seconds() / 60 > float(os.environ.get('BRAPI_COLD_STALE_MAX_MIN', 45))
+                    except Exception:
+                        pass
+                elif hist and hist[-1].get('date'):
+                    try:
+                        _stale_c = (time.time() - float(hist[-1]['date'])) / 60 > 1200
+                    except Exception:
+                        pass
+                if _stale_c and is_b3_open():
+                    log.warning(f'[BRAPI-STALE-COLD] {sym}: cotacao velha (regularMarketTime={_mt_c}) — descartando, fallback Cedro')
+                    continue
                 closes  = [c['close']  for c in hist if c.get('close')]
                 highs   = [c['high']   for c in hist if c.get('high')]
                 lows    = [c['low']    for c in hist if c.get('low')]

@@ -15833,45 +15833,48 @@ def db_audit():
 
 @app.route('/performance/stocks')
 def performance_stocks():
-    """[v10.11] Dados detalhados de performance histórica de stocks."""
+    """[v10.11] Dados detalhados de performance histórica de stocks.
+    [15-jul-2026, pedido Beto] ?market=B3|NYSE filtra o book; sem param = total."""
     try:
+        _mkt_q = (request.args.get('market') or '').strip().upper()
+        _mkt_sql = " AND market='B3'" if _mkt_q == 'B3' else (" AND market='NYSE'" if _mkt_q == 'NYSE' else "")
         conn = get_db()
         if not conn: return jsonify({'error':'db unavailable'}), 500
         cursor = conn.cursor(dictionary=True)
         # Diário
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT DATE(closed_at) as dt,
                 COUNT(*) as n, SUM(pnl) as pnl,
                 SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
                 SUM(position_value) as deployed,
                 AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
-            FROM trades WHERE status='CLOSED' AND asset_type='stock'
+            FROM trades WHERE status='CLOSED' AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN')) AND asset_type='stock' {_mkt_sql}
             GROUP BY DATE(closed_at) ORDER BY dt""")
         daily = [{**r,'dt':str(r['dt']),'pnl':float(r['pnl'] or 0),'deployed':float(r['deployed'] or 0),
                   'n':int(r['n']),'wins':int(r['wins']),'avg_dur_h':round(float(r['avg_dur_h'] or 0),2)} for r in cursor.fetchall()]
         # Por símbolo
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT symbol, market, COUNT(*) as n, SUM(pnl) as pnl,
                 SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
                 MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl,
                 SUM(position_value) as deployed
-            FROM trades WHERE status='CLOSED' AND asset_type='stock'
+            FROM trades WHERE status='CLOSED' AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN')) AND asset_type='stock' {_mkt_sql}
             GROUP BY symbol, market ORDER BY pnl DESC""")
         by_sym = [{**r,'pnl':float(r['pnl'] or 0),'wins':int(r['wins']),'n':int(r['n']),
                    'best':float(r['best'] or 0),'worst':float(r['worst'] or 0),
                    'avg_pnl':float(r['avg_pnl'] or 0),'deployed':float(r['deployed'] or 0)} for r in cursor.fetchall()]
         # Por motivo de fechamento
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT close_reason, COUNT(*) as n, SUM(pnl) as pnl,
                 SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins
-            FROM trades WHERE status='CLOSED' AND asset_type='stock'
+            FROM trades WHERE status='CLOSED' AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN')) AND asset_type='stock' {_mkt_sql}
             GROUP BY close_reason ORDER BY n DESC""")
         by_reason = [{**r,'pnl':float(r['pnl'] or 0),'n':int(r['n']),'wins':int(r['wins'])} for r in cursor.fetchall()]
         # Global
-        cursor.execute("""SELECT COUNT(*) as n, SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
+        cursor.execute(f"""SELECT COUNT(*) as n, SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
             MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
             AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
-            FROM trades WHERE status='CLOSED' AND asset_type='stock'""")
+            FROM trades WHERE status='CLOSED' AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN')) AND asset_type='stock' {_mkt_sql}""")
         glb = cursor.fetchone()
         cursor.close(); conn.close()
         with state_lock:
@@ -15902,7 +15905,7 @@ def performance_crypto():
                 SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
                 SUM(position_value) as deployed,
                 AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
-            FROM trades WHERE status='CLOSED' AND asset_type='crypto'
+            FROM trades WHERE status='CLOSED' AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN')) AND asset_type='crypto'
             GROUP BY DATE(closed_at) ORDER BY dt""")
         daily = [{**r,'dt':str(r['dt']),'pnl':float(r['pnl'] or 0),'deployed':float(r['deployed'] or 0),
                   'n':int(r['n']),'wins':int(r['wins']),'avg_dur_h':round(float(r['avg_dur_h'] or 0),2)} for r in cursor.fetchall()]
@@ -15911,7 +15914,7 @@ def performance_crypto():
                 SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
                 MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl,
                 SUM(position_value) as deployed
-            FROM trades WHERE status='CLOSED' AND asset_type='crypto'
+            FROM trades WHERE status='CLOSED' AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN')) AND asset_type='crypto'
             GROUP BY symbol ORDER BY pnl DESC""")
         by_sym = [{**r,'pnl':float(r['pnl'] or 0),'wins':int(r['wins']),'n':int(r['n']),
                    'best':float(r['best'] or 0),'worst':float(r['worst'] or 0),
@@ -15919,13 +15922,13 @@ def performance_crypto():
         cursor.execute("""
             SELECT close_reason, COUNT(*) as n, SUM(pnl) as pnl,
                 SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins
-            FROM trades WHERE status='CLOSED' AND asset_type='crypto'
+            FROM trades WHERE status='CLOSED' AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN')) AND asset_type='crypto'
             GROUP BY close_reason ORDER BY n DESC""")
         by_reason = [{**r,'pnl':float(r['pnl'] or 0),'n':int(r['n']),'wins':int(r['wins'])} for r in cursor.fetchall()]
         cursor.execute("""SELECT COUNT(*) as n, SUM(pnl) as pnl, SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,
             MAX(pnl) as best, MIN(pnl) as worst, AVG(pnl) as avg_pnl, SUM(position_value) as deployed,
             AVG(TIMESTAMPDIFF(MINUTE,opened_at,closed_at))/60 as avg_dur_h
-            FROM trades WHERE status='CLOSED' AND asset_type='crypto'""")
+            FROM trades WHERE status='CLOSED' AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN')) AND asset_type='crypto'""")
         glb = cursor.fetchone()
         cursor.close(); conn.close()
         with state_lock:

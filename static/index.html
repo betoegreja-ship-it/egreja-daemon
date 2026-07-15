@@ -1865,7 +1865,14 @@ async function doLogout() {
 
   <!-- Histórico diário -->
   <div style="margin:0 28px 28px">
-    <div style="font-size:9px;color:var(--gold);letter-spacing:.2em;margin-bottom:8px">HISTÓRICO DIÁRIO</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="font-size:9px;color:var(--gold);letter-spacing:.2em">HISTÓRICO DIÁRIO</div>
+      <div id="sp-mkt-sel" style="display:flex;gap:6px">
+        <button class="sp-mkt-btn" data-mkt="" onclick="spSetMkt('')" style="background:var(--gold);color:#0a1628;border:1px solid var(--gold);border-radius:4px;padding:3px 12px;font-size:10px;letter-spacing:.1em;cursor:pointer">TOTAL</button>
+        <button class="sp-mkt-btn" data-mkt="B3" onclick="spSetMkt('B3')" style="background:transparent;color:#8fa3be;border:1px solid var(--line);border-radius:4px;padding:3px 12px;font-size:10px;letter-spacing:.1em;cursor:pointer">B3</button>
+        <button class="sp-mkt-btn" data-mkt="NYSE" onclick="spSetMkt('NYSE')" style="background:transparent;color:#8fa3be;border:1px solid var(--line);border-radius:4px;padding:3px 12px;font-size:10px;letter-spacing:.1em;cursor:pointer">NYSE</button>
+      </div>
+    </div>
     <div style="overflow-x:auto">
       <table id="sp-daily-table" style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr style="background:var(--navy2);border-bottom:1px solid var(--line)">
@@ -2115,9 +2122,20 @@ function _fillPerfPage(pfx, data, accent) {
   _buildPerfCharts(pfx, data.daily||[], accent, data.by_reason||[], data.by_symbol||[]);
 }
 
+var SP_MKT='';
+function spSetMkt(m){
+  SP_MKT=m;
+  document.querySelectorAll('.sp-mkt-btn').forEach(function(b){
+    var on=b.getAttribute('data-mkt')===m;
+    b.style.background=on?'var(--gold)':'transparent';
+    b.style.color=on?'#0a1628':'#8fa3be';
+    b.style.borderColor=on?'var(--gold)':'var(--line)';
+  });
+  loadStocksPerf();
+}
 async function loadStocksPerf() {
   try {
-    var r=await apiFetch(API_BASE+'/performance/stocks'), d=await r.json();
+    var r=await apiFetch(API_BASE+'/performance/stocks'+(SP_MKT?('?market='+SP_MKT):'')), d=await r.json();
     if(d.error)return;
     _fillPerfPage('sp',d,'#4a9eff');
     setTimeout(function(){makeSortable('sp-sym-table');makeSortable('sp-daily-table');},200);

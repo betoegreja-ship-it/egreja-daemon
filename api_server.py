@@ -7136,7 +7136,11 @@ def fetch_crypto_prices():
     # 3. Yahoo último recurso
     try:
         for sym in CRYPTO_SYMBOLS:
-            t0 = time.time(); display = sym.replace('USDT', '') + '-USD'
+            # [TON-FIX 15-jul-2026] 'TON-USD' no Yahoo e a Tokamak Network, nao
+            # a Toncoin — trade de 04/jun comprou 'TON' a $0.0057 (Toncoin: $1.70).
+            _YAHOO_CRYPTO_MAP = {'TON': 'TON11419-USD'}
+            _base_cy = sym.replace('USDT', '')
+            t0 = time.time(); display = _YAHOO_CRYPTO_MAP.get(_base_cy, _base_cy + '-USD')
             r = requests.get(
                 f'https://query1.finance.yahoo.com/v8/finance/chart/{display}?interval=1d&range=1d',
                 headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
@@ -7277,6 +7281,22 @@ def monitor_trades():
                     sym=trade['symbol']; pd=stock_prices.get(sym)
                     price=pd['price'] if pd else trade.get('current_price',trade['entry_price'])
                     trade['current_price']=price
+                    # [EXIT-FRESH 15-jul-2026] Preco velho nao pode decidir stop:
+                    # caso CAT 09/jul (TIMEOUT -4.58% sem stop disparar) e exit
+                    # falso da USIM5. Se a cotacao nao atualiza ha mais de
+                    # EXIT_QUOTE_MAX_AGE_MIN com pregao aberto, marca flag; stops
+                    # baseados em preco sao suprimidos (TIMEOUT/MARKET_CLOSE seguem).
+                    _px_stale_s = False
+                    try:
+                        _upd_s = str((pd or {}).get('updated_at') or '')
+                        if _upd_s and market_open_for(trade.get('market','')):
+                            _age_px = (now - datetime.fromisoformat(_upd_s.replace('Z',''))).total_seconds()/60
+                            _px_stale_s = _age_px > float(os.environ.get('EXIT_QUOTE_MAX_AGE_MIN', 5))
+                            if _px_stale_s and not trade.get('_stale_warned'):
+                                trade['_stale_warned'] = True
+                                log.warning(f'[EXIT-FRESH] {sym}: cotacao {_age_px:.0f}min velha — stops por preco suprimidos ate atualizar')
+                    except Exception:
+                        pass
                     age_h=(now-datetime.fromisoformat(trade['opened_at'])).total_seconds()/3600
                     if trade.get('direction')=='SHORT':
                         trade['pnl']=round((trade['entry_price']-price)*trade['quantity'],2)
@@ -7291,7 +7311,15 @@ def monitor_trades():
                     _adaptive_sl_s = get_adaptive_sl_pct(trade)  # [v10.16] ATR-based
                     _regime_sm, _regime_sl_m, _regime_r = get_regime_multiplier()  # [v10.17]
                     _eff_sl_s = round(_adaptive_sl_s * _regime_sl_m, 2)  # [v10.17] SL ajustado por regime
+                    # [TETO 15-jul-2026] SL nunca mais largo que MAX_STOP_PCT_STOCKS
+                    _eff_sl_s = min(_eff_sl_s, float(os.environ.get('MAX_STOP_PCT_STOCKS', 2.0)))
                     _timeout_s = get_dynamic_timeout_h(sym, 2.0)  # [v10.17] timeout dinâmico (default 2h)
+                    # ═══ [CATASTROPHIC 15-jul-2026, decisao Beto] Seguro de gap: ═══
+                    # -4% fecha SEMPRE, independente de peak/tese/advisor. Longe do
+                    # ruido (ATR tipico 1-2.5%) — so impede o -6/-8% de existir.
+                    if trade['pnl_pct'] <= -float(os.environ.get('CATASTROPHIC_STOP_PCT', 4.0)):
+                        reason = 'CATASTROPHIC_STOP'
+                        log.warning(f"[CATASTROPHIC] {sym}(stock): pnl={trade['pnl_pct']:+.2f}% — corte de emergencia")
                     # [v10.48] Trade com tese v3 válida ignora TIMEOUT — só fecha se tendência reverter
                     _has_v3_thesis = trade.get('signal_v2') in ('COMPRA', 'VENDA')
 
@@ -7414,12 +7442,18 @@ def monitor_trades():
                         _es_atr_pct_s = float(trade.get('_atr_pct') or 0)
                         if _es_atr_pct_s > 0:
                             _early_stop_pct_s = min(_early_stop_pct_s, -_es_atr_mult_s * _es_atr_pct_s)
+                        # [TETO 15-jul-2026] stop ATR nunca mais largo que MAX_STOP_PCT_STOCKS
+                        _early_stop_pct_s = max(_early_stop_pct_s, -float(os.environ.get('MAX_STOP_PCT_STOCKS', 2.0)))
                         try:
                             _es_hold_min_s = (now - datetime.fromisoformat(str(trade['opened_at']).replace('Z',''))).total_seconds() / 60
                             _es_hold_ok_s = _es_hold_min_s >= _es_min_hold_s
                         except Exception:
                             _es_hold_ok_s = True
-                        if _peak_pos_s < 0.4 and _es_hold_ok_s:
+                        # [LIMBO-FIX 15-jul-2026] ES desarmava em peak>=0.4 mas o
+                        # BE-protect so arma em 0.5 — vao sem protecao custou -$225k
+                        # (128 trades). Desarme agora cola no gatilho do BE-protect.
+                        _es_peak_off_s = float(os.environ.get('BE_PROTECT_TRIGGER_PCT', 0.5))
+                        if _peak_pos_s < _es_peak_off_s and _es_hold_ok_s:
                             if trade['pnl_pct'] <= _early_stop_pct_s:
                                 reason = 'EARLY_STOP'
                                 log.info(f"[EARLY-STOP] {trade['symbol']}(stock): pnl={trade['pnl_pct']:+.2f}% "
@@ -7449,6 +7483,10 @@ def monitor_trades():
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else:                                      reason='TIMEOUT'
                     elif not market_open_for(mkt) and age_h>0.5:   reason='MARKET_CLOSE'
+                    # [EXIT-FRESH 15-jul-2026] cotacao velha: so TIMEOUT/MARKET_CLOSE passam
+                    if reason and _px_stale_s and reason not in ('TIMEOUT', 'MARKET_CLOSE'):
+                        log.warning(f'[EXIT-FRESH] {sym}: {reason} suprimido (cotacao stale) — aguardando preco fresco')
+                        reason = None
                     # ═══ [HOLD-TEST 06-jul-2026] Experimento controlado pelo Beto ═══
                     # Suprime QUALQUER fechamento automático de trades listadas em
                     # HOLD_TEST_TRADE_IDS (csv de ids) até HOLD_TEST_UNTIL (ISO UTC).
@@ -7567,7 +7605,13 @@ def monitor_trades():
                     _adaptive_sl_c = get_adaptive_sl_pct(trade)  # [v10.16] ATR-based
                     _regime_cm, _regime_csl_m, _regime_cr = get_regime_multiplier()  # [v10.17]
                     _eff_sl_c = round(_adaptive_sl_c * _regime_csl_m, 2)  # [v10.17] SL ajustado por regime
+                    # [TETO 15-jul-2026] SL nunca mais largo que MAX_STOP_PCT_CRYPTO
+                    _eff_sl_c = min(_eff_sl_c, float(os.environ.get('MAX_STOP_PCT_CRYPTO', 2.5)))
                     _timeout_c = get_dynamic_timeout_h(trade['symbol'], 4.0)  # [v10.17] timeout dinâmico (default 4h)
+                    # ═══ [CATASTROPHIC 15-jul-2026, decisao Beto] seguro de gap -4% ═══
+                    if trade['pnl_pct'] <= -float(os.environ.get('CATASTROPHIC_STOP_PCT', 4.0)):
+                        reason = 'CATASTROPHIC_STOP'
+                        log.warning(f"[CATASTROPHIC] {trade['symbol']}(crypto): pnl={trade['pnl_pct']:+.2f}% — corte de emergencia")
                     # [v10.48] Trade com tese v3 válida ignora TIMEOUT — só fecha se tendência reverter
                     _has_v3_thesis = trade.get('signal_v2') in ('COMPRA', 'VENDA')
 
@@ -7683,13 +7727,17 @@ def monitor_trades():
                         _es_atr_pct = float(trade.get('_atr_pct') or 0)
                         if _es_atr_pct > 0:
                             _early_stop_pct = min(_early_stop_pct, -_es_atr_mult * _es_atr_pct)
+                        # [TETO 15-jul-2026] stop ATR nunca mais largo que MAX_STOP_PCT_CRYPTO
+                        _early_stop_pct = max(_early_stop_pct, -float(os.environ.get('MAX_STOP_PCT_CRYPTO', 2.5)))
                         try:
                             _es_hold_min = (now - datetime.fromisoformat(str(trade['opened_at']).replace('Z',''))).total_seconds() / 60
                             _es_hold_ok = _es_hold_min >= _es_min_hold
                         except Exception:
                             _es_hold_ok = True  # sem opened_at parseável: comportamento legado
                         # Só considera stop se peak NUNCA passou de 0.4 (senão trailing cuida)
-                        if _peak_pos < 0.4 and _es_hold_ok:
+                        # [LIMBO-FIX 15-jul-2026] idem stocks; crypto BE arma em 0.6
+                        _es_peak_off_c = float(os.environ.get('BE_PROTECT_CRYPTO_TRIGGER_PCT', 0.6))
+                        if _peak_pos < _es_peak_off_c and _es_hold_ok:
                             if trade['pnl_pct'] <= _early_stop_pct:
                                 reason = 'EARLY_STOP'
                                 log.info(f"[EARLY-STOP] {trade['symbol']}: pnl={trade['pnl_pct']:+.2f}% "
@@ -8244,6 +8292,14 @@ def stock_execution_worker():
                 signal_val=sig.get('signal',''); sym=sig.get('symbol','')
                 price=sig.get('price', 0)
                 if price<=0: continue
+                # [PENNY-BLOCK 15-jul-2026, decisao Beto] AZEV4 a R$0.13: um tick
+                # de R$0.01 = 7.7% — nenhuma protecao sobrevive. Nao ENTRA abaixo
+                # do preco minimo (simbolo continua na lista, so nao opera assim).
+                _min_px = float(os.environ.get('MIN_ENTRY_PRICE_B3', 1.0)) if re.match(r'^[A-Z]{4}[0-9]+$', sym) \
+                          else float(os.environ.get('MIN_ENTRY_PRICE_NYSE', 2.0))
+                if price < _min_px:
+                    log.info(f'[PENNY-BLOCK] {sym}: preco {price} < minimo {_min_px} — tick e % demais')
+                    continue
                 # [v10.12] Threshold variável por confiança do padrão
                 _eff_min = MIN_SCORE_AUTO
                 with learning_lock:
@@ -8619,6 +8675,18 @@ def stock_execution_worker():
                 # [v10.47] Score sizing multiplier — mais capital em scores altos
                 _score_mult = get_score_sizing_mult(score)
                 desired_pos = min(max(_pos_target * risk_mult * _regime_size_m * _score_mult, 50_000), MAX_POSITION_STOCKS)
+                # [RISK-SIZING 15-jul-2026, decisao Beto] Perda uniforme em $:
+                # posicao <= RISCO_USD / stop%. Ativo nervoso = posicao menor.
+                # Nao mexe em gatilhos (WR intocado); equaliza o dano em dolares.
+                if os.environ.get('RISK_SIZING_ENABLED', 'true').lower() != 'false':
+                    _atr_rs = float(sig.get('atr_pct') or 0) or 1.0
+                    _stop_frac_rs = min(max(0.6, _atr_rs), float(os.environ.get('MAX_STOP_PCT_STOCKS', 2.0))) / 100.0
+                    _risk_usd_rs = float(os.environ.get('RISK_PER_TRADE_USD_STOCKS', 900))
+                    _cap_rs = _risk_usd_rs / _stop_frac_rs
+                    if desired_pos > _cap_rs:
+                        log.info(f'[RISK-SIZING] {sym}: posicao {desired_pos:,.0f} -> {_cap_rs:,.0f} '
+                                 f'(stop~{_stop_frac_rs*100:.1f}%, risco ${_risk_usd_rs:,.0f})')
+                        desired_pos = _cap_rs
                 if _score_mult != 1.0:
                     log.info(f'[STK-SCORE-SIZE] {sym}: score={score} mult={_score_mult:.1f}x desired={desired_pos:,.0f}')
                 # [v10.16] Strategy daily drawdown check
@@ -9338,6 +9406,16 @@ def auto_trade_crypto():
                 # [v10.28] Mínimo por posição: 15% do slot (era 50K fixo)
                 _min_crypto_pos = max(80_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.12)
                 desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m * _wr_sizing_mult * _score_mult_c, _min_crypto_pos), _sym_max)
+                # [RISK-SIZING 15-jul-2026, decisao Beto] mesmo principio do stocks.
+                if os.environ.get('RISK_SIZING_ENABLED', 'true').lower() != 'false':
+                    _atr_rs_c = float((crypto_tickers.get(display + 'USDT', {}) or {}).get('atr_pct') or 0) or 1.5
+                    _stop_frac_rs_c = min(max(0.6, _atr_rs_c), float(os.environ.get('MAX_STOP_PCT_CRYPTO', 2.5))) / 100.0
+                    _risk_usd_rs_c = float(os.environ.get('RISK_PER_TRADE_USD_CRYPTO', 900))
+                    _cap_rs_c = _risk_usd_rs_c / _stop_frac_rs_c
+                    if desired_pos > _cap_rs_c:
+                        log.info(f'[RISK-SIZING] {display}: posicao {desired_pos:,.0f} -> {_cap_rs_c:,.0f} '
+                                 f'(stop~{_stop_frac_rs_c*100:.1f}%, risco ${_risk_usd_rs_c:,.0f})')
+                        desired_pos = _cap_rs_c
                 if _wr_sizing_mult != 1.0 or _score_mult_c != 1.0:
                     log.info(f'[CRYPTO-SIZE] {display}: wr_mult={_wr_sizing_mult:.2f} score_mult={_score_mult_c:.1f}x score={score} desired={desired_pos:,.0f}')
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')

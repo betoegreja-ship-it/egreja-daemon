@@ -6226,6 +6226,9 @@ STOCK_SYMBOLS_B3 = [
     'BEEF3.SA',                         # Minerva Foods
     'STBP3.SA',                         # Santos Brasil (portos)
     'ELET3.SA',                         # Eletrobras ON
+    # ── [16-jul-2026] Cobertura DualMatch Manus ──────────
+    'SANB11.SA',                        # Santander units
+    'GOLL4.SA',                         # Gol (obs: sujeita ao PENNY-BLOCK se < R$1)
 ]
 STOCK_SYMBOLS_US = [
     # ── Blue chips originais ──────────────────────────────
@@ -6248,6 +6251,9 @@ STOCK_SYMBOLS_US = [
     'BA',                               # Boeing (mean-reversion)
     'AMAT',                             # Applied Materials (semicondutores)
     'XLK',                              # Tech Sector ETF (hedge/regime)
+    # ── [16-jul-2026] Cobertura DualMatch Manus ──────────
+    'HD',                               # Home Depot
+    'WMT',                              # Walmart
 ]
 ALL_STOCK_SYMBOLS = STOCK_SYMBOLS_B3 + STOCK_SYMBOLS_US
 
@@ -16817,20 +16823,29 @@ def sync_signals():
         if not _payload or 'signals' not in _payload:
             return jsonify({'error': 'signal monitor indisponivel'}), 503
         _mkt_map = {'CRYPTO': 'crypto', 'B3': 'b3', 'NYSE': 'nyse'}
-        _min_strength = float(os.environ.get('SYNC_SIGNALS_MIN_SCORE', 50))
+        _min_strength = float(request.args.get('min_score',
+                              os.environ.get('SYNC_SIGNALS_MIN_SCORE', 50)))
+        # [16-jul-2026, pedido Manus] ?include_hold=1: cobertura TOTAL do
+        # universo — MANTER sai como direction=HOLD (score_raw preservado),
+        # para o DualMatch ter todos os ativos em todo poll.
+        _inc_hold = request.args.get('include_hold') == '1'
         _only = (request.args.get('market') or '').strip().lower()
         out = []
         for s in _payload['signals']:
             _sig = s.get('signal')
-            if _sig not in ('COMPRA', 'VENDA'):
+            if _sig not in ('COMPRA', 'VENDA') and not _inc_hold:
                 continue
             _mkt = _mkt_map.get(str(s.get('market_type', '')).upper())
             if not _mkt or (_only and _mkt != _only):
                 continue
             _raw = float(s.get('score') or 0)
-            _direction = 'BUY' if _sig == 'COMPRA' else 'SELL'
-            _strength = _raw if _direction == 'BUY' else 100.0 - _raw
-            if _strength < _min_strength:
+            if _sig == 'COMPRA':
+                _direction, _strength = 'BUY', _raw
+            elif _sig == 'VENDA':
+                _direction, _strength = 'SELL', 100.0 - _raw
+            else:
+                _direction, _strength = 'HOLD', _raw
+            if _direction != 'HOLD' and _strength < _min_strength:
                 continue
             _sym = str(s.get('symbol', ''))
             if _mkt == 'crypto' and not _sym.endswith('USDT'):

@@ -1779,8 +1779,7 @@ async function doLogout() {
       <div style="font-size:8px;letter-spacing:.18em;color:var(--gold);text-transform:uppercase;margin-bottom:8px">P&amp;L Total (bruto)</div>
       <div id="sp-pnl" style="font-size:26px;font-family:'EB Garamond',serif">—</div>
       <div id="sp-ret-ini" style="font-size:11px;font-family:monospace;color:var(--text3);margin-top:4px">— % s/ cap.inicial</div>
-      <div id="sp-pnl-gross" style="font-size:10px;font-family:monospace;color:var(--text3);margin-top:2px">bruto: — · taxa: —</div>
-      <div id="sp-mkt-split" style="font-size:11px;font-family:monospace;margin-top:6px;color:var(--text3)">B3: — · NYSE: —</div>
+      <div id="sp-mkt-split" style="margin-top:10px;display:flex;flex-direction:column;gap:6px"></div>
     </div>
     <div style="background:var(--navy2);padding:18px 22px">
       <div style="font-size:8px;letter-spacing:.18em;color:var(--gold);text-transform:uppercase;margin-bottom:8px">Win Rate Global</div>
@@ -1908,7 +1907,6 @@ async function doLogout() {
       <div style="font-size:8px;letter-spacing:.18em;color:#c77dff;text-transform:uppercase;margin-bottom:8px">P&amp;L Total (bruto)</div>
       <div id="cp-pnl" style="font-size:26px;font-family:'EB Garamond',serif">—</div>
       <div id="cp-ret-ini" style="font-size:11px;font-family:monospace;color:var(--text3);margin-top:4px">— % s/ cap.inicial</div>
-      <div id="cp-pnl-gross" style="font-size:10px;font-family:monospace;color:var(--text3);margin-top:2px">bruto: — · taxa: —</div>
     </div>
     <div style="background:var(--navy2);padding:18px 22px">
       <div style="font-size:8px;letter-spacing:.18em;color:#c77dff;text-transform:uppercase;margin-bottom:8px">Win Rate Global</div>
@@ -2142,9 +2140,17 @@ async function loadStocksPerf() {
     // [15-jul-2026] split B3 vs NYSE embaixo do P&L total
     try{
       var bm=d.by_market||{}, b3=bm.B3||{n:0,pnl:0,wins:0}, ny=bm.NYSE||{n:0,pnl:0,wins:0};
-      function _mkTxt(lbl,m){var wr=m.n>0?(m.wins/m.n*100).toFixed(0):'0';var c=m.pnl>=0?'#2ecc71':'#e74c3c';return lbl+': <span style="color:'+c+';font-weight:600">'+_fK(m.pnl)+'</span> <span style="color:#8fa3be">('+m.n+' tr · WR '+wr+'%)</span>';}
+      function _mkRow(lbl,m,lblColor){
+        var wr=m.n>0?(m.wins/m.n*100).toFixed(0):'0';
+        var c=m.pnl>=0?'#2ecc71':'#e74c3c';
+        return '<div style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:6px;padding:7px 12px">'
+          +'<span style="font-size:9px;letter-spacing:.18em;color:'+lblColor+';font-weight:600;min-width:38px">'+lbl+'</span>'
+          +'<span style="font-family:monospace;font-size:14px;font-weight:700;color:'+c+'">'+_fK(m.pnl)+'</span>'
+          +'<span style="font-size:10px;color:#8fa3be;text-align:right">'+m.n+' trades<br>WR '+wr+'%</span>'
+          +'</div>';
+      }
       var el=document.getElementById('sp-mkt-split');
-      if(el)el.innerHTML=_mkTxt('B3',b3)+' &nbsp;·&nbsp; '+_mkTxt('NYSE',ny);
+      if(el)el.innerHTML=_mkRow('B3',b3,'#f0c96c')+_mkRow('NYSE',ny,'#4a9eff');
     }catch(e){}
     setTimeout(function(){makeSortable('sp-sym-table');makeSortable('sp-daily-table');},200);
   } catch(e){console.error('loadStocksPerf:',e);}

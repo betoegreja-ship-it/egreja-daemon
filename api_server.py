@@ -1451,6 +1451,79 @@ def _earnings_today_map():
     _earnings_cal_cache.update({'ts': _t.time(), 'dates': _out})
     return _earnings_cal_cache['dates']
 
+# ═══ [DUALMATCH-SHADOW 16-jul-2026, decisao Beto] ═══════════════════
+# A cada entrada do Egreja, registra se o Manus CONFIRMARIA a trade
+# (mesmas regras da doc Manus v8.14: direcao igual e nao-HOLD, score
+# Egreja >= 55, combinado 0.6*Manus + 0.4*Egreja >= 60) — SEM bloquear.
+# Objetivo: validar o DualMatch com o volume do Egreja (centenas de
+# trades/dia vs ~6/dia do Manus). Verdicts vao para audit() + log; a
+# analise por rotulo (MATCH/NO_MATCH) sai em dias, nao semanas.
+# Fonte dos scores Manus: env MANUS_SIGNALS_URL (endpoint espelho que o
+# Manus vai expor — recomendacao enviada). Sem env: registra SEM_FONTE.
+_manus_sig_cache = {'ts': 0, 'by_symbol': {}}
+
+def _manus_signals():
+    import time as _t
+    _url = os.environ.get('MANUS_SIGNALS_URL', '').strip()
+    if not _url:
+        return None
+    if _t.time() - _manus_sig_cache['ts'] < float(os.environ.get('MANUS_SIGNALS_TTL_S', 120)):
+        return _manus_sig_cache['by_symbol']
+    try:
+        _hdr = {}
+        _mk = os.environ.get('MANUS_SIGNALS_KEY', '').strip()
+        if _mk:
+            _hdr['X-API-Key'] = _mk
+        _rs = requests.get(_url, headers=_hdr, timeout=8)
+        if _rs.status_code == 200:
+            _by = {}
+            _payload = _rs.json()
+            for _s in (_payload.get('signals') or _payload if isinstance(_payload, list) else _payload.get('signals', [])):
+                _by[str(_s.get('symbol', '')).upper()] = _s
+            _manus_sig_cache.update({'ts': _t.time(), 'by_symbol': _by})
+    except Exception as _e:
+        log.debug(f'[DUALMATCH-SHADOW] fonte Manus: {_e}')
+        _manus_sig_cache['ts'] = _t.time()
+    return _manus_sig_cache['by_symbol']
+
+def dualmatch_shadow(symbol, market, direction, egreja_strength, trade_id):
+    """Registra o veredito-sombra do DualMatch para uma entrada do Egreja."""
+    try:
+        if os.environ.get('DUALMATCH_SHADOW_ENABLED', 'true').lower() == 'false':
+            return
+        _by = _manus_signals()
+        _sym_m = symbol.upper() + ('USDT' if market == 'crypto' and not symbol.upper().endswith('USDT') else '')
+        if _by is None:
+            _verdict, _det = 'SEM_FONTE', 'MANUS_SIGNALS_URL nao configurada'
+            _ms = None
+        else:
+            _s = _by.get(_sym_m) or _by.get(symbol.upper())
+            if not _s:
+                _verdict, _det, _ms = 'SEM_SINAL_MANUS', f'{_sym_m} ausente no cache', None
+            else:
+                _mdir = str(_s.get('direction', '')).upper()
+                _ms = float(_s.get('score') or 0)
+                _egr = float(egreja_strength or 0)
+                _comb = _ms * 0.6 + _egr * 0.4
+                if _mdir == 'HOLD':
+                    _verdict = 'NO_MATCH_HOLD'
+                elif _mdir != direction.upper().replace('LONG', 'BUY').replace('SHORT', 'SELL'):
+                    _verdict = 'NO_MATCH_DIRECAO'
+                elif _egr < float(os.environ.get('DUALMATCH_MIN_EGREJA', 55)):
+                    _verdict = 'NO_MATCH_SCORE_EGREJA'
+                elif _comb < float(os.environ.get('DUALMATCH_MIN_COMBINED', 60)):
+                    _verdict = 'NO_MATCH_COMBINADO'
+                else:
+                    _verdict = 'MATCH'
+                _det = f'manus={_ms:.0f} dir_m={_mdir} egreja={_egr:.0f} comb={_comb:.0f}'
+        log.info(f'[DUALMATCH-SHADOW] {symbol}({market}) {direction}: {_verdict} — {_det}')
+        audit('DUALMATCH_SHADOW', {'trade_id': trade_id, 'symbol': symbol, 'market': market,
+                                   'direction': direction, 'verdict': _verdict,
+                                   'egreja_score': round(float(egreja_strength or 0), 1),
+                                   'manus_score': _ms, 'detail': _det})
+    except Exception as _e:
+        log.debug(f'[DUALMATCH-SHADOW] {symbol}: {_e}')
+
 def _mp_minutes_to_close(mkt):
     """Minutos ate o fechamento do pregao; None se mercado fechado."""
     try:
@@ -8957,6 +9030,14 @@ def stock_execution_worker():
                             '_temporal_adj':       float(sig.get('_temporal_adj') or 0),  # [FIX 10-jul-2026]
                         }
                         stocks_open.append(trade)
+                        # [DUALMATCH-SHADOW 16-jul-2026] veredito-sombra (nao bloqueia)
+                        try:
+                            _egr_str = score if direction == 'LONG' else 100 - score
+                            dualmatch_shadow(sym, 'b3' if mkt == 'B3' else 'nyse',
+                                             'BUY' if direction == 'LONG' else 'SELL',
+                                             _egr_str, pre_trade_id)
+                        except Exception:
+                            pass
                     else:
                         log.info(f'Risk-2 {sym}: {reason2 if not ok2 else "insufficient_capital"}')
                         # [L-8] Shadow: registrar sinal bloqueado no segundo nível
@@ -9608,6 +9689,16 @@ def auto_trade_crypto():
                             'signal_v2':           locals().get('signal_v2_c'),
                         }
                         crypto_open.append(trade)
+                        # [DUALMATCH-SHADOW 16-jul-2026] veredito-sombra (nao bloqueia)
+                        try:
+                            _dir_c = str(trade.get('direction', 'LONG')).upper()
+                            _sc_c = float(trade.get('score') or 50)
+                            _egr_str_c = _sc_c if _dir_c == 'LONG' else 100 - _sc_c
+                            dualmatch_shadow(trade['symbol'], 'crypto',
+                                             'BUY' if _dir_c == 'LONG' else 'SELL',
+                                             _egr_str_c, trade['id'])
+                        except Exception:
+                            pass
                     else:
                         # [v10.6.2-Fix1] 2ª validação falhou — sobrescrever 'executed' com o motivo real.
                         # Sem isso, o sinal fica marcado como 'executed' no dedup mesmo sem abrir trade,

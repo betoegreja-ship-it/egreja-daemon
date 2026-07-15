@@ -5813,6 +5813,13 @@ def init_trades_tables():
         cursor.execute("SELECT * FROM trades WHERE status='CLOSED' ORDER BY closed_at DESC")  # [v10.9] sem limite
         for r in cursor.fetchall():
             t=_row_to_trade(r)
+            # [HISTORICO-LIMPO 15-jul-2026, decisao Beto] Trades anuladas
+            # (VOIDED/CORRUPTED — 2.326 fantasmas da varredura total) ficam SO
+            # no DB como trilha de auditoria: fora da memoria = fora do
+            # historico, das contagens e do WR (diario e total). PnL delas e 0,
+            # entao o capital nao muda ao pular.
+            if t.get('close_reason') in ('VOIDED', 'CORRUPTED_DATA_FIXED', 'MANUAL_ORPHAN'):
+                continue
             if t['asset_type']=='stock':
                 if not t.get('fee_estimated') and t.get('status')=='CLOSED':
                     apply_fee_to_trade(t)  # [v10.14] fee retroativo
@@ -5829,6 +5836,8 @@ def init_trades_tables():
         cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC")  # [v10.9] sem limite
         for r in cursor.fetchall():
             at=_row_to_trade(r)
+            if at.get('close_reason') in ('VOIDED', 'CORRUPTED_DATA_FIXED', 'MANUAL_ORPHAN'):
+                continue  # [HISTORICO-LIMPO 15-jul-2026]
             if not at.get('fee_estimated'):
                 at['market']='ARBI'; apply_fee_to_trade(at)
             arbi_closed.append(at)

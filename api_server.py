@@ -8753,6 +8753,37 @@ def stock_execution_worker():
                         _adv_decision_stk = None
                     # ═══ FIM BRAIN ADVISOR ════════════════════════════════
 
+                    # ═══ [FILL-REAL 15-jul-2026, decisao Beto] O preco de abertura ═══
+                    # tem que bater com o HORARIO da abertura. Caso SNOW 15/jul:
+                    # abriu 13:45 com preco das 13:43 (-1.08% instantaneo) — o
+                    # cache REST NYSE tem 1-2min de idade. Re-cotacao no instante
+                    # do fill: NYSE via snapshot Polygon (lastTrade), B3 via socket
+                    # Cedro. Fail-open: sem resposta fresca, mantem o cache.
+                    # Env: ENTRY_FRESH_QUOTE_ENABLED=false desliga.
+                    if os.environ.get('ENTRY_FRESH_QUOTE_ENABLED', 'true').lower() != 'false':
+                        try:
+                            _fq = None
+                            if mkt == 'NYSE':
+                                _fr = requests.get(
+                                    f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{sym}',
+                                    params={'apiKey': POLYGON_API_KEY}, timeout=4)
+                                if _fr.status_code == 200:
+                                    _ftk = (_fr.json() or {}).get('ticker') or {}
+                                    _fq = float(((_ftk.get('lastTrade') or {}).get('p'))
+                                                or ((_ftk.get('min') or {}).get('c')) or 0)
+                            elif mkt == 'B3' and _cedro_socket and getattr(_cedro_socket, 'enabled', False):
+                                _cq = _cedro_socket.get_quote(sym, wait_ms=800)
+                                if _cq and _cq.get('price'):
+                                    _fq = float(_cq['price'])
+                            if _fq and _fq > 0:
+                                _dev_fq = abs(_fq / price - 1) * 100 if price else 0
+                                if _dev_fq >= 0.05:
+                                    log.info(f'[FILL-REAL] {sym}({mkt}): cache {price} -> fill real {_fq} '
+                                             f'({_dev_fq:.2f}% de defasagem corrigida)')
+                                price = _fq
+                        except Exception as _fq_e:
+                            log.debug(f'[FILL-REAL] {sym}: {_fq_e} — usando cache')
+
                     ok2,reason2=_second_validation(sym,mkt,'stocks')
                     if ok2 and stocks_capital>=price*_adv_qty_stk:
                         qty = _adv_qty_stk  # advisor pode ter ajustado qty

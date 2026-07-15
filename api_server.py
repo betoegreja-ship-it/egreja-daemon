@@ -15351,11 +15351,12 @@ def _get_db_trade_stats():
                 SUM(CASE WHEN asset_type='stock' THEN position_value ELSE 0 END) as stocks_deployed,
                 SUM(CASE WHEN asset_type='crypto' THEN position_value ELSE 0 END) as crypto_deployed
             FROM trades WHERE status='CLOSED'
+              AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN'))
         """)
         row = cursor.fetchone()
         base = {k: float(v or 0) for k, v in row.items()}
         # 2a query — arbi (cursor ainda aberto)
-        cursor.execute("SELECT SUM(position_size) as d, COUNT(*) as n FROM arbi_trades WHERE status='CLOSED'")
+        cursor.execute("SELECT SUM(position_size) as d, COUNT(*) as n FROM arbi_trades WHERE status='CLOSED' AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN'))")
         ar = cursor.fetchone()
         base['arbi_deployed'] = float(ar.get('d') or 0)
         base['arbi_count_db'] = int(ar.get('n') or 0)

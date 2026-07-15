@@ -8675,18 +8675,19 @@ def stock_execution_worker():
                 # [v10.47] Score sizing multiplier — mais capital em scores altos
                 _score_mult = get_score_sizing_mult(score)
                 desired_pos = min(max(_pos_target * risk_mult * _regime_size_m * _score_mult, 50_000), MAX_POSITION_STOCKS)
-                # [RISK-SIZING 15-jul-2026, decisao Beto] Perda uniforme em $:
-                # posicao <= RISCO_USD / stop%. Ativo nervoso = posicao menor.
-                # Nao mexe em gatilhos (WR intocado); equaliza o dano em dolares.
-                if os.environ.get('RISK_SIZING_ENABLED', 'true').lower() != 'false':
-                    _atr_rs = float(sig.get('atr_pct') or 0) or 1.0
-                    _stop_frac_rs = min(max(0.6, _atr_rs), float(os.environ.get('MAX_STOP_PCT_STOCKS', 2.0))) / 100.0
-                    _risk_usd_rs = float(os.environ.get('RISK_PER_TRADE_USD_STOCKS', 900))
-                    _cap_rs = _risk_usd_rs / _stop_frac_rs
-                    if desired_pos > _cap_rs:
-                        log.info(f'[RISK-SIZING] {sym}: posicao {desired_pos:,.0f} -> {_cap_rs:,.0f} '
-                                 f'(stop~{_stop_frac_rs*100:.1f}%, risco ${_risk_usd_rs:,.0f})')
-                        desired_pos = _cap_rs
+                # ═══ [EQUAL-SLOT 15-jul-2026, decisao Beto] Capital TODO em uso: ═══
+                # cota = portfolio_total / (vagas B3 + vagas NYSE). Trades iguais.
+                # Perda maxima por trade limitada pelos tetos (MAX_STOP_PCT_STOCKS
+                # =2.0% + CATASTROPHIC 4%). Env: EQUAL_SLOT_SIZING=false volta.
+                if os.environ.get('EQUAL_SLOT_SIZING', 'true').lower() != 'false':
+                    _committed_eq = sum(t.get('position_value', 0) for t in stocks_open)
+                    _port_total_eq = stocks_capital + _committed_eq
+                    _slots_eq = max(MAX_POSITIONS_STOCKS + MAX_POSITIONS_NYSE, 1)
+                    _slot_s = min(_port_total_eq / _slots_eq, MAX_POSITION_STOCKS)
+                    if abs(desired_pos - _slot_s) > 1:
+                        log.info(f'[EQUAL-SLOT] {sym}: cota cheia {_slot_s:,.0f} '
+                                 f'(portfolio {_port_total_eq:,.0f} / {_slots_eq} vagas)')
+                    desired_pos = _slot_s
                 if _score_mult != 1.0:
                     log.info(f'[STK-SCORE-SIZE] {sym}: score={score} mult={_score_mult:.1f}x desired={desired_pos:,.0f}')
                 # [v10.16] Strategy daily drawdown check
@@ -9406,16 +9407,19 @@ def auto_trade_crypto():
                 # [v10.28] Mínimo por posição: 15% do slot (era 50K fixo)
                 _min_crypto_pos = max(80_000, _crypto_port_total / MAX_POSITIONS_CRYPTO * 0.12)
                 desired_pos = min(max(_crypto_pos_target * _risk_mult_crypto * _regime_csize_m * _wr_sizing_mult * _score_mult_c, _min_crypto_pos), _sym_max)
-                # [RISK-SIZING 15-jul-2026, decisao Beto] mesmo principio do stocks.
-                if os.environ.get('RISK_SIZING_ENABLED', 'true').lower() != 'false':
-                    _atr_rs_c = float((crypto_tickers.get(display + 'USDT', {}) or {}).get('atr_pct') or 0) or 1.5
-                    _stop_frac_rs_c = min(max(0.6, _atr_rs_c), float(os.environ.get('MAX_STOP_PCT_CRYPTO', 2.5))) / 100.0
-                    _risk_usd_rs_c = float(os.environ.get('RISK_PER_TRADE_USD_CRYPTO', 900))
-                    _cap_rs_c = _risk_usd_rs_c / _stop_frac_rs_c
-                    if desired_pos > _cap_rs_c:
-                        log.info(f'[RISK-SIZING] {display}: posicao {desired_pos:,.0f} -> {_cap_rs_c:,.0f} '
-                                 f'(stop~{_stop_frac_rs_c*100:.1f}%, risco ${_risk_usd_rs_c:,.0f})')
-                        desired_pos = _cap_rs_c
+                # ═══ [EQUAL-SLOT 15-jul-2026, decisao Beto] Capital TODO em uso: ═══
+                # cota = portfolio_total / vagas. Trades de valores iguais; dinheiro
+                # parado e prejuizo (a regua de % e o capital total). O risco por
+                # trade fica limitado pelos tetos de stop (MAX_STOP_PCT_CRYPTO=2.5%
+                # + CATASTROPHIC 4%): cota 150k -> perda maxima ~3.7k no stop.
+                # Substitui o RISK-SIZING da manha. Env: EQUAL_SLOT_SIZING=false volta.
+                if os.environ.get('EQUAL_SLOT_SIZING', 'true').lower() != 'false':
+                    _slot_c = _crypto_port_total / max(MAX_POSITIONS_CRYPTO, 1)
+                    _slot_c = min(_slot_c, MAX_POSITION_CRYPTO, _sym_max)
+                    if abs(desired_pos - _slot_c) > 1:
+                        log.info(f'[EQUAL-SLOT] {display}: cota cheia {_slot_c:,.0f} '
+                                 f'(portfolio {_crypto_port_total:,.0f} / {MAX_POSITIONS_CRYPTO} vagas)')
+                    desired_pos = _slot_c
                 if _wr_sizing_mult != 1.0 or _score_mult_c != 1.0:
                     log.info(f'[CRYPTO-SIZE] {display}: wr_mult={_wr_sizing_mult:.2f} score_mult={_score_mult_c:.1f}x score={score} desired={desired_pos:,.0f}')
                 risk_ok,risk_reason,approved_size=check_risk(display,'CRYPTO',desired_pos,'crypto')

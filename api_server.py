@@ -8761,26 +8761,51 @@ def stock_execution_worker():
                     # Cedro. Fail-open: sem resposta fresca, mantem o cache.
                     # Env: ENTRY_FRESH_QUOTE_ENABLED=false desliga.
                     if os.environ.get('ENTRY_FRESH_QUOTE_ENABLED', 'true').lower() != 'false':
+                        # [FILL-REAL v2 15-jul-2026] Caso USIM5 14:42: o cache do
+                        # socket Cedro estava CONGELADO em 8.09 (real: 8.33) e a
+                        # v1 confiou nele — short vencedor virou -3.11% nos livros.
+                        # v2: (a) cotacao so vale se tiver idade <= ENTRY_QUOTE_MAX_AGE_S;
+                        # (b) se fonte fresca e cache divergirem > ENTRY_PRICE_CONFLICT_PCT,
+                        # NAO OPERA o simbolo neste ciclo (dado conflitante = sem trade).
                         try:
                             _fq = None
+                            _fq_age_ok = False
+                            _max_age = float(os.environ.get('ENTRY_QUOTE_MAX_AGE_S', 45))
                             if mkt == 'NYSE':
                                 _fr = requests.get(
                                     f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{sym}',
                                     params={'apiKey': POLYGON_API_KEY}, timeout=4)
                                 if _fr.status_code == 200:
                                     _ftk = (_fr.json() or {}).get('ticker') or {}
-                                    _fq = float(((_ftk.get('lastTrade') or {}).get('p'))
-                                                or ((_ftk.get('min') or {}).get('c')) or 0)
+                                    _lt = _ftk.get('lastTrade') or {}
+                                    _fq = float(_lt.get('p') or ((_ftk.get('min') or {}).get('c')) or 0)
+                                    _lt_ts = float(_lt.get('t') or 0) / 1e9  # ns -> s
+                                    _fq_age_ok = _lt_ts > 0 and (time.time() - _lt_ts) <= _max_age
                             elif mkt == 'B3' and _cedro_socket and getattr(_cedro_socket, 'enabled', False):
                                 _cq = _cedro_socket.get_quote(sym, wait_ms=800)
                                 if _cq and _cq.get('price'):
                                     _fq = float(_cq['price'])
-                            if _fq and _fq > 0:
+                                    _upd = str(_cq.get('_updated_at') or '')
+                                    try:
+                                        _upd_dt = datetime.fromisoformat(_upd.replace('Z', ''))
+                                        _fq_age_ok = (datetime.utcnow() - _upd_dt).total_seconds() <= _max_age
+                                    except Exception:
+                                        _fq_age_ok = False
+                            if _fq and _fq > 0 and _fq_age_ok:
                                 _dev_fq = abs(_fq / price - 1) * 100 if price else 0
+                                _conf_pct = float(os.environ.get('ENTRY_PRICE_CONFLICT_PCT', 1.5))
+                                if _dev_fq > _conf_pct:
+                                    log.warning(f'[ENTRY-CONFLICT] {sym}({mkt}): fontes divergem '
+                                                f'{_dev_fq:.2f}% (cache={price} vs fresco={_fq}) — '
+                                                f'dado conflitante, SEM trade neste ciclo')
+                                    continue
                                 if _dev_fq >= 0.05:
                                     log.info(f'[FILL-REAL] {sym}({mkt}): cache {price} -> fill real {_fq} '
                                              f'({_dev_fq:.2f}% de defasagem corrigida)')
                                 price = _fq
+                            elif _fq and not _fq_age_ok:
+                                log.warning(f'[FILL-REAL] {sym}({mkt}): cotacao "fresca" com idade > '
+                                            f'{_max_age:.0f}s — ignorada (cache congelado?), mantendo sinal')
                         except Exception as _fq_e:
                             log.debug(f'[FILL-REAL] {sym}: {_fq_e} — usando cache')
 

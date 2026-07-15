@@ -1451,6 +1451,21 @@ def _earnings_today_map():
     _earnings_cal_cache.update({'ts': _t.time(), 'dates': _out})
     return _earnings_cal_cache['dates']
 
+def _mp_minutes_to_close(mkt):
+    """Minutos ate o fechamento do pregao; None se mercado fechado."""
+    try:
+        if mkt == 'B3':
+            if not is_b3_open():
+                return None
+            _nw = datetime.now(TZ_SAO_PAULO); _ch = 17.0
+        else:
+            if not is_nyse_open():
+                return None
+            _nw = datetime.now(TZ_NEW_YORK); _ch = 16.0
+        return max(0.0, (_ch - (_nw.hour + _nw.minute/60.0 + _nw.second/3600.0)) * 60.0)
+    except Exception:
+        return None
+
 def _mp_minutes_since_open(mkt):
     """Minutos desde a abertura do pregao de hoje; None se mercado fechado."""
     try:
@@ -8315,6 +8330,15 @@ def stock_execution_worker():
                           else float(os.environ.get('MIN_ENTRY_PRICE_NYSE', 2.0))
                 if price < _min_px:
                     log.info(f'[PENNY-BLOCK] {sym}: preco {price} < minimo {_min_px} — tick e % demais')
+                    continue
+                # ═══ [LATE-ENTRY-BLOCK 16-jul-2026] Espelho do warm-up: sem ═══
+                # trade NOVA nos ultimos N min do pregao. 15/jul: 4 shorts B3
+                # abertos as 16:56 BRT (4min antes do sino) — nascem sem tempo
+                # de gestao e fecham no MARKET_CLOSE as cegas.
+                # Env: LATE_ENTRY_BLOCK_MIN (default 15).
+                _mtc = _mp_minutes_to_close('B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE')
+                if _mtc is not None and _mtc < float(os.environ.get('LATE_ENTRY_BLOCK_MIN', 15)):
+                    log.info(f'[LATE-ENTRY-BLOCK] {sym}: faltam {_mtc:.0f}min para o fechamento — sem entrada nova')
                     continue
                 # [v10.12] Threshold variável por confiança do padrão
                 _eff_min = MIN_SCORE_AUTO

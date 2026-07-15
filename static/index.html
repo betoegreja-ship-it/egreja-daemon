@@ -1780,6 +1780,7 @@ async function doLogout() {
       <div id="sp-pnl" style="font-size:26px;font-family:'EB Garamond',serif">—</div>
       <div id="sp-ret-ini" style="font-size:11px;font-family:monospace;color:var(--text3);margin-top:4px">— % s/ cap.inicial</div>
       <div id="sp-pnl-gross" style="font-size:10px;font-family:monospace;color:var(--text3);margin-top:2px">bruto: — · taxa: —</div>
+      <div id="sp-mkt-split" style="font-size:11px;font-family:monospace;margin-top:6px;color:var(--text3)">B3: — · NYSE: —</div>
     </div>
     <div style="background:var(--navy2);padding:18px 22px">
       <div style="font-size:8px;letter-spacing:.18em;color:var(--gold);text-transform:uppercase;margin-bottom:8px">Win Rate Global</div>
@@ -2138,6 +2139,13 @@ async function loadStocksPerf() {
     var r=await apiFetch(API_BASE+'/performance/stocks'+(SP_MKT?('?market='+SP_MKT):'')), d=await r.json();
     if(d.error)return;
     _fillPerfPage('sp',d,'#4a9eff');
+    // [15-jul-2026] split B3 vs NYSE embaixo do P&L total
+    try{
+      var bm=d.by_market||{}, b3=bm.B3||{n:0,pnl:0,wins:0}, ny=bm.NYSE||{n:0,pnl:0,wins:0};
+      function _mkTxt(lbl,m){var wr=m.n>0?(m.wins/m.n*100).toFixed(0):'0';var c=m.pnl>=0?'#2ecc71':'#e74c3c';return lbl+': <span style="color:'+c+';font-weight:600">'+_fK(m.pnl)+'</span> <span style="color:#8fa3be">('+m.n+' tr · WR '+wr+'%)</span>';}
+      var el=document.getElementById('sp-mkt-split');
+      if(el)el.innerHTML=_mkTxt('B3',b3)+' &nbsp;·&nbsp; '+_mkTxt('NYSE',ny);
+    }catch(e){}
     setTimeout(function(){makeSortable('sp-sym-table');makeSortable('sp-daily-table');},200);
   } catch(e){console.error('loadStocksPerf:',e);}
 }

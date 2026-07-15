@@ -15884,9 +15884,30 @@ def performance_stocks():
         glb_d = {k:float(v or 0) if isinstance(v,(int,float,type(None))) else str(v) for k,v in glb.items()}
         glb_d['fee_estimated_total'] = _fees
         glb_d['pnl_net_total']       = _pnl_net
+        # [15-jul-2026, pedido Beto] split B3 vs NYSE para o resumo do topo
+        _conn_bm = get_db()
+        by_market = {}
+        if _conn_bm:
+            try:
+                _c_bm = _conn_bm.cursor(dictionary=True)
+                _c_bm.execute("""
+                    SELECT market, COUNT(*) as n, SUM(pnl) as pnl,
+                        SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins
+                    FROM trades WHERE status='CLOSED'
+                      AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN'))
+                      AND asset_type='stock' GROUP BY market""")
+                for _r_bm in _c_bm.fetchall():
+                    by_market[str(_r_bm['market'] or '?')] = {
+                        'n': int(_r_bm['n']), 'pnl': float(_r_bm['pnl'] or 0),
+                        'wins': int(_r_bm['wins'])}
+                _c_bm.close(); _conn_bm.close()
+            except Exception:
+                try: _conn_bm.close()
+                except Exception: pass
         return jsonify({
             'global': glb_d,
             'daily': daily, 'by_symbol': by_sym, 'by_reason': by_reason,
+            'by_market': by_market,
             'open_trades': len(open_t),
             'initial_capital': INITIAL_CAPITAL_STOCKS,
         })

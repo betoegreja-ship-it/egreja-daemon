@@ -2192,8 +2192,21 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
 
     if strategy == 'stocks':
         sc_count = sum(1 for t in s_open if t.get('asset_type')=='stock')
-        if sc_count >= MAX_POSITIONS_STOCKS:
-            return False, f'MAX_POSITIONS_STOCKS ({sc_count}/{MAX_POSITIONS_STOCKS})', 0
+        # ═══ [P1 15-jul-2026] Limite POR MERCADO: B3 e NYSE nao disputam ═══
+        # mais as mesmas vagas. 15/jul: B3 (abre 13:00 UTC) lotou as 14 vagas
+        # de MAX_POSITIONS_STOCKS antes da NYSE abrir (13:30) — NYSE ficou com
+        # ZERO slots o dia inteiro. MAX_POSITIONS_STOCKS passa a valer para o
+        # book B3; MAX_POSITIONS_NYSE (definido desde v10.47 mas nunca
+        # aplicado) passa a valer para NYSE. Teto total = soma dos dois.
+        _mkt_r = 'B3' if str(market_type).upper() == 'B3' else 'NYSE'
+        def _mkt_of_r(t):
+            return 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', str(t.get('symbol', ''))) else 'NYSE'
+        _mkt_count_r = sum(1 for t in s_open if t.get('asset_type') == 'stock' and _mkt_of_r(t) == _mkt_r)
+        _mkt_limit_r = MAX_POSITIONS_STOCKS if _mkt_r == 'B3' else MAX_POSITIONS_NYSE
+        if _mkt_count_r >= _mkt_limit_r:
+            return False, f'MAX_POSITIONS_{_mkt_r} ({_mkt_count_r}/{_mkt_limit_r})', 0
+        if sc_count >= MAX_POSITIONS_STOCKS + MAX_POSITIONS_NYSE:
+            return False, f'MAX_POSITIONS_STOCKS_TOTAL ({sc_count}/{MAX_POSITIONS_STOCKS + MAX_POSITIONS_NYSE})', 0
         committed = sum(t.get('position_value',0) for t in s_open)
         # [v10.14] Capital check: usar portfolio TOTAL (livre + comprometido) = inclui ganhos
         # stocks_capital = capital livre | committed = valor das posições abertas

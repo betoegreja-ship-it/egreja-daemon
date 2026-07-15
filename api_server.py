@@ -994,6 +994,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'brain_hourly_reminder': 3900,   # roda 1x/hora + beat a cada minuto
     'monthly_picks_worker':  7200,   # 2h — loop external com logica mensal/semanal
     'arbi_learning_loop':    600,    # 10min — sleep de 5min entre passes
+    'nightly_audit_loop':    600,    # [NIGHT-AUDIT] beat a cada 60s; audit demora minutos
     'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
     # [v11] Portfolio Accounting — shadow comparator (60s interval + margem)
     'portfolio_shadow_comparator': 180,
@@ -10910,6 +10911,23 @@ def start_background_threads():
     except Exception as _rh_err:
         log.warning(f'[v10.35] Rehydrate call failed: {_rh_err}')
 
+    # ═══ [NIGHT-AUDIT 15-jul-2026, aprovado Beto] Auditoria noturna: cada
+    # trade fechada e conferida contra o candle 1m REAL da bolsa (Binance
+    # vision/Polygon/brapi); fantasma (dev>=0.5%) e anulado e alertado.
+    def _nightly_audit_thread():
+        try:
+            from modules.nightly_price_audit import nightly_audit_loop as _naud
+        except Exception as _e:
+            log.error(f'[NIGHT-AUDIT] modulo indisponivel: {_e}')
+            while True:
+                beat('nightly_audit_loop'); time.sleep(60)
+        def _snap():
+            with state_lock:
+                return list(stocks_closed) + list(crypto_closed)
+        _naud({'log': log, 'beat': beat, 'get_closed_snapshot': _snap,
+               'api_key': API_SECRET_KEY, 'port': int(os.environ.get('PORT', 3001)),
+               'send_whatsapp': send_whatsapp})
+
     defs = {
         'stock_price_loop':       stock_price_loop,
         'crypto_price_loop':      crypto_price_loop,
@@ -10928,6 +10946,7 @@ def start_background_threads():
         'network_sync_loop':      network_sync_loop,       # [NETWORK] push periódico para Manus
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
         'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
+        'nightly_audit_loop':     _nightly_audit_thread,    # [NIGHT-AUDIT 15-jul] auditoria noturna de precos
         'brain_evolution_loop':   brain_evolution_loop,    # [v3.1] descongela brain_evolution (era 1x/startup)
         'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
         'deriv_monitor_loop':     deriv_monitor_loop,        # [v10.35] paper MTM + exits (stop/target/expiry)
@@ -16738,6 +16757,23 @@ def debug_cedro_quote():
             return jsonify({'error': 'cedro socket indisponivel'}), 503
         _q = _cedro_socket.get_quote(_s, wait_ms=2500)
         return jsonify({'symbol': _s, 'chg_pct': _mp_cedro_chg(_s), 'quote': _q})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/nightly-audit')
+def debug_nightly_audit():
+    """[NIGHT-AUDIT] Resultado da ultima auditoria noturna + execucao manual (?run=1)."""
+    try:
+        from modules.nightly_price_audit import get_last_run, run_nightly_audit
+        if request.args.get('run') == '1':
+            def _snap():
+                with state_lock:
+                    return list(stocks_closed) + list(crypto_closed)
+            return jsonify(run_nightly_audit({'log': log, 'beat': lambda *_: None,
+                'get_closed_snapshot': _snap, 'api_key': API_SECRET_KEY,
+                'port': int(os.environ.get('PORT', 3001)), 'send_whatsapp': send_whatsapp}))
+        return jsonify(get_last_run())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

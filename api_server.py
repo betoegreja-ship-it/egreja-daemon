@@ -995,6 +995,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'monthly_picks_worker':  7200,   # 2h — loop external com logica mensal/semanal
     'arbi_learning_loop':    600,    # 10min — sleep de 5min entre passes
     'nightly_audit_loop':    600,    # [NIGHT-AUDIT] beat a cada 60s; audit demora minutos
+    'exit_requote_loop':     120,    # [EXIT-REAL] ciclo ~20s + fetches
     'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
     # [v11] Portfolio Accounting — shadow comparator (60s interval + margem)
     'portfolio_shadow_comparator': 180,
@@ -11035,6 +11036,54 @@ def start_background_threads():
     # ═══ [NIGHT-AUDIT 15-jul-2026, aprovado Beto] Auditoria noturna: cada
     # trade fechada e conferida contra o candle 1m REAL da bolsa (Binance
     # vision/Polygon/brapi); fantasma (dev>=0.5%) e anulado e alertado.
+    # ═══ [EXIT-REAL 16-jul-2026, decisao Beto] Re-cotacao rapida dos ═══
+    # simbolos NYSE com posicao ABERTA a cada ~20s via snapshot Polygon.
+    # Motivo: 16/jul, 4 trades passaram do teto (AMAT -2.51% vs 2.0%) porque
+    # o cache REST tem 1-2min de idade e o mercado anda entre as leituras.
+    # Com o WS ativo vira redundancia barata; nas janelas de deploy/backoff
+    # do WS e a unica linha de defesa. B3 ja tem Cedro rt; crypto e rapida.
+    def exit_requote_loop():
+        import urllib.request as _ur
+        while True:
+            beat('exit_requote_loop')
+            time.sleep(int(os.environ.get('EXIT_REQUOTE_INTERVAL_S', 20)))
+            beat('exit_requote_loop')
+            if os.environ.get('EXIT_REQUOTE_ENABLED', 'true').lower() == 'false':
+                continue
+            try:
+                with state_lock:
+                    _syms = sorted(set(t['symbol'] for t in stocks_open
+                                       if not re.match(r'^[A-Z]{4}[0-9]+$', t.get('symbol', ''))))
+                if not _syms or not is_nyse_open():
+                    continue
+                for _s in _syms[:20]:
+                    try:
+                        _rq = requests.get(
+                            f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{_s}',
+                            params={'apiKey': POLYGON_API_KEY}, timeout=4)
+                        if _rq.status_code != 200:
+                            continue
+                        _tk = (_rq.json() or {}).get('ticker') or {}
+                        _px = float(((_tk.get('lastTrade') or {}).get('p'))
+                                    or ((_tk.get('min') or {}).get('c')) or 0)
+                        if _px <= 0:
+                            continue
+                        with state_lock:
+                            _pd = stock_prices.get(_s)
+                            if _pd and isinstance(_pd, dict):
+                                _old = _pd.get('price')
+                                _pd['price'] = _px
+                                _pd['updated_at'] = datetime.utcnow().isoformat()
+                                _pd['source'] = 'polygon-requote'
+                                if _old and abs(_px / _old - 1) > 0.005:
+                                    log.info(f'[EXIT-REAL] {_s}: {_old} -> {_px} '
+                                             f'({(_px/_old-1)*100:+.2f}% entre ciclos)')
+                    except Exception:
+                        pass
+                    time.sleep(0.15)
+            except Exception as _e:
+                log.debug(f'[EXIT-REAL] loop: {_e}')
+
     def _nightly_audit_thread():
         try:
             from modules.nightly_price_audit import nightly_audit_loop as _naud
@@ -11068,6 +11117,7 @@ def start_background_threads():
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
         'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
         'nightly_audit_loop':     _nightly_audit_thread,    # [NIGHT-AUDIT 15-jul] auditoria noturna de precos
+        'exit_requote_loop':      exit_requote_loop,        # [EXIT-REAL 16-jul] preco vivo p/ posicoes NYSE
         'brain_evolution_loop':   brain_evolution_loop,    # [v3.1] descongela brain_evolution (era 1x/startup)
         'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
         'deriv_monitor_loop':     deriv_monitor_loop,        # [v10.35] paper MTM + exits (stop/target/expiry)

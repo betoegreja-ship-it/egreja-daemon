@@ -1764,6 +1764,11 @@ arbi_capital   = ARBI_CAPITAL
 stocks_open  = []; stocks_closed  = []
 crypto_open  = []; crypto_closed  = []
 arbi_open    = []; arbi_closed    = []
+# [BOOT-GATE 16-jul-2026] Workers de abertura so operam apos o restore do DB.
+# Race real: 16/07 13:33, arbi_scan_loop abriu 4 pares DUPLICADOS no minuto do
+# boot porque arbi_open ainda estava vazio (restore em andamento) — 8 posicoes,
+# capital -4.29M. O gate fecha essa janela para arbi, stocks e crypto.
+_BOOT_RESTORE_DONE = False
 
 # [v10.7-Fix3] Cap em listas de trades fechados.
 # Sem cap, após 6 meses com 20-30 trades/dia = 3.000-5.000 entradas em memória.
@@ -5921,8 +5926,23 @@ def init_trades_tables():
                 crypto_closed.append(t)
                 crypto_capital += float(t.get('pnl') or 0)  # [FIX-27]
         cursor.execute("SELECT * FROM arbi_trades WHERE status='OPEN'")
+        _seen_pairs_boot = set()
         for r in cursor.fetchall():
-            t=_row_to_trade(r); arbi_open.append(t); arbi_capital-=t['position_size']
+            t=_row_to_trade(r)
+            # [DEDUP-BOOT 16-jul-2026] linhas OPEN duplicadas do mesmo par
+            # (herdadas de races antigas) viram MANUAL_ORPHAN no DB e ficam
+            # fora da memoria — 16/07 havia 2x CMIG4, 2x BBDC4, 2x ABEV3, 2x PETR4.
+            _pid_boot = t.get('pair_id')
+            if _pid_boot in _seen_pairs_boot:
+                try:
+                    cursor.execute("UPDATE arbi_trades SET status='CLOSED', close_reason='MANUAL_ORPHAN', closed_at=NOW() WHERE id=%s", (t['id'],))
+                    conn.commit()
+                    log.warning(f"[DEDUP-BOOT] arbi {t['id']} ({_pid_boot}) duplicada — marcada MANUAL_ORPHAN")
+                except Exception as _dd_e:
+                    log.error(f'[DEDUP-BOOT] {t["id"]}: {_dd_e}')
+                continue
+            _seen_pairs_boot.add(_pid_boot)
+            arbi_open.append(t); arbi_capital-=t['position_size']
         cursor.execute("SELECT * FROM arbi_trades WHERE status='CLOSED' ORDER BY closed_at DESC")  # [v10.9] sem limite
         for r in cursor.fetchall():
             at=_row_to_trade(r)
@@ -5953,6 +5973,9 @@ def init_trades_tables():
         for r in cursor.fetchall():
             symbol_blocked.add(r['symbol'])
             log.info(f'STARTUP: {r["symbol"]} carregado como BLOCKED (persistido)')
+        global _BOOT_RESTORE_DONE
+        _BOOT_RESTORE_DONE = True
+        log.info('[BOOT-GATE] restore do DB completo — workers de abertura liberados')
         cursor.execute("SELECT symbol, last_close_at FROM symbol_cooldowns")
         for r in cursor.fetchall():
             if r.get('last_close_at'):
@@ -7968,6 +7991,10 @@ def monitor_trades():
 # [V9-1] STOCK EXECUTION WORKER — create_order FORA do state_lock
 # ═══════════════════════════════════════════════════════════════
 def stock_execution_worker():
+    # [BOOT-GATE 16-jul-2026] espera o restore do DB antes de abrir qualquer coisa
+    while not _BOOT_RESTORE_DONE:
+        beat('stock_execution_worker')
+        time.sleep(2)
     global stocks_capital
     while True:
         beat('stock_execution_worker')
@@ -9082,6 +9109,10 @@ def stock_execution_worker():
 # [V9-1] CRYPTO AUTO-TRADE — create_order FORA do state_lock
 # ═══════════════════════════════════════════════════════════════
 def auto_trade_crypto():
+    # [BOOT-GATE 16-jul-2026] espera o restore do DB antes de abrir qualquer coisa
+    while not _BOOT_RESTORE_DONE:
+        beat('auto_trade_crypto')
+        time.sleep(2)
     global crypto_capital
     while True:
         beat('auto_trade_crypto')
@@ -9536,8 +9567,12 @@ def auto_trade_crypto():
                 # + CATASTROPHIC 4%): cota 150k -> perda maxima ~3.7k no stop.
                 # Substitui o RISK-SIZING da manha. Env: EQUAL_SLOT_SIZING=false volta.
                 if os.environ.get('EQUAL_SLOT_SIZING', 'true').lower() != 'false':
-                    _slot_c = _crypto_port_total / max(MAX_POSITIONS_CRYPTO, 1)
-                    _slot_c = min(_slot_c, MAX_POSITION_CRYPTO, _sym_max)
+                    # [16-jul-2026, revisao Beto] Cota crypto FIXA: todas de
+                    # US$150k (1.5MM/10). Os caps antigos POR SIMBOLO
+                    # (CRYPTO_MAX_POSITION_BY_SYM, ex.: BNB/UNI 90k) deixam de
+                    # limitar o tamanho — BNB e UNI abriam com 90k.
+                    _slot_c = float(os.environ.get('CRYPTO_SLOT_USD', 150000))
+                    _slot_c = min(_slot_c, MAX_POSITION_CRYPTO)
                     if abs(desired_pos - _slot_c) > 1:
                         log.info(f'[EQUAL-SLOT] {display}: cota cheia {_slot_c:,.0f} '
                                  f'(portfolio {_crypto_port_total:,.0f} / {MAX_POSITIONS_CRYPTO} vagas)')
@@ -10393,6 +10428,10 @@ def calc_spread(pair):
     except Exception as e: log.error(f'Spread {pair["id"]}: {e}'); return None
 
 def arbi_scan_loop():
+    # [BOOT-GATE 16-jul-2026] espera o restore do DB antes de abrir qualquer coisa
+    while not _BOOT_RESTORE_DONE:
+        beat('arbi_scan_loop')
+        time.sleep(2)
     global arbi_capital
     while True:
         beat('arbi_scan_loop')

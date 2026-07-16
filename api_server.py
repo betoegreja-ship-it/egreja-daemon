@@ -17356,7 +17356,14 @@ def _build_report(period_days, label):
         s_op = list(stocks_open);   c_op = list(crypto_open);   a_op = list(arbi_open)
         sc = stocks_capital; cc = crypto_capital; ac = arbi_capital
 
-    def period_trades(lst): return [t for t in lst if t.get('closed_at','') >= cutoff]
+    # [16-jul-2026, revisao Beto] Relatorio com WR correto:
+    # 1) fechamentos tecnicos/anulados FORA (VOIDED etc. ainda em memoria
+    #    ate o proximo boot inflavam o denominador — tela mostrava 117
+    #    trades com 60W/47L=107);
+    # 2) WR = wins/(wins+losses): empate tecnico (pnl 0) nao e derrota.
+    _TECH_R = ('VOIDED', 'CORRUPTED_DATA_FIXED', 'MANUAL_ORPHAN')
+    def period_trades(lst): return [t for t in lst if t.get('closed_at','') >= cutoff
+                                    and t.get('close_reason') not in _TECH_R]
     def _stats(lst):
         wins   = [t for t in lst if t.get('pnl',0) > 0]
         losses = [t for t in lst if t.get('pnl',0) < 0]
@@ -17370,7 +17377,7 @@ def _build_report(period_days, label):
         bot5 = sorted(by_sym.items(), key=lambda x: x[1]['pnl'])[:5]
         return {
             'count': len(lst), 'wins': len(wins), 'losses': len(losses),
-            'win_rate': round(len(wins)/len(lst)*100,1) if lst else 0,
+            'win_rate': round(len(wins)/max(len(wins)+len(losses),1)*100,1) if (wins or losses) else 0,
             'total_pnl': round(total_pnl, 2),
             'avg_pnl': round(total_pnl/len(lst),2) if lst else 0,
             'best_trade': round(max((t.get('pnl',0) for t in lst), default=0),2),

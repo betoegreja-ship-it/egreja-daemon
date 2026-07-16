@@ -16341,7 +16341,12 @@ def arbi_force_close():
     if conn:
         try:
             c = conn.cursor()
-            c.execute("UPDATE arbi_trades SET status='CLOSED', close_reason='MANUAL_CLOSE', closed_at=NOW() WHERE id=%s", (trade_id,))
+            # [16-jul-2026, revisao Beto] persistir o PnL REAL do fechamento —
+            # antes so status/motivo iam ao DB e o reboot zerava os valores no painel.
+            c.execute("UPDATE arbi_trades SET status='CLOSED', close_reason='MANUAL_CLOSE', closed_at=NOW(), "
+                      "pnl=%s, pnl_pct=%s, current_spread=%s WHERE id=%s",
+                      (pnl, round(pnl / max(pos, 1) * 100, 4),
+                       float(trade.get('current_spread') or trade.get('entry_spread') or 0), trade_id))
             conn.commit()
         except Exception as e:
             log.error(f'arbi_force_close db: {e}')

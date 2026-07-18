@@ -1379,6 +1379,38 @@ def _crypto_btc_trend():
 def _crypto_btc_detail():
     return _btc_trend_cache.get('detail', '')
 
+# ═══ [BTC-FACTOR 18-jul-2026, intuicao Beto validada nos dados] ═══
+# Corr mediana das nossas coins com BTC = +0.74 em 1h (ETH 0.90, LINK 0.87;
+# so TON/TRX < 0.5). Era limpa (474 trades): entrar CONTRA o BTC de 12h =
+# WR 51.9% vs 62.8% a favor, perda mediana 2x maior (-$124 vs -$39);
+# contra as 4 janelas (1h/4h/8h/12h) = WR 50%, mediana -$125.
+# O fator BTC multi-janela mata a entrada contrarian ao regime do BTC.
+_btc_frames_cache = {'ts': 0, 'rets': None, 'detail': ''}
+
+def _crypto_btc_frames():
+    """Retornos do BTC nas ultimas 1h/4h/8h/12h (klines 1h, cache 5min)."""
+    import time as _t
+    if _t.time() - _btc_frames_cache['ts'] < 300:
+        return _btc_frames_cache['rets']
+    try:
+        _d = requests.get('https://data-api.binance.vision/api/v3/klines'
+                          '?symbol=BTCUSDT&interval=1h&limit=13', timeout=6).json()
+        _cl = [float(c[4]) for c in _d]
+        if len(_cl) >= 13:
+            _rets = {1: (_cl[-1] / _cl[-2] - 1) * 100,
+                     4: (_cl[-1] / _cl[-5] - 1) * 100,
+                     8: (_cl[-1] / _cl[-9] - 1) * 100,
+                     12: (_cl[-1] / _cl[0] - 1) * 100}
+            _btc_frames_cache.update({
+                'ts': _t.time(), 'rets': _rets,
+                'detail': ' '.join(f'{h}h {_rets[h]:+.2f}%' for h in (1, 4, 8, 12))})
+    except Exception:
+        _btc_frames_cache['ts'] = _t.time()
+    return _btc_frames_cache['rets']
+
+def _crypto_btc_frames_detail():
+    return _btc_frames_cache.get('detail', '')
+
 def _crypto_cluster_break():
     """>=N perdas crypto fechadas em WIN min => pausa entradas por PAUSE min."""
     try:
@@ -9568,6 +9600,26 @@ def auto_trade_crypto():
                     if score >= float(os.environ.get('CRYPTO_EXHAUSTION_SCORE', 85)):
                         log.info(f'[CRYPTO-PULSE] {display}: score {score:.0f} — exaustao, sem entrada')
                         continue
+                    # (f) [BTC-FACTOR 18-jul-2026] fator BTC multi-janela (1h/4h/8h/12h).
+                    # Validado nos dados: contra as 4 janelas = WR 50%, mediana -$125;
+                    # contra o BTC de 12h = WR 51.9% vs 62.8% a favor. As coins seguem
+                    # o BTC (corr mediana 0.74) — nao se nada contra a mare.
+                    if (display != 'BTC'
+                            and os.environ.get('CRYPTO_BTC_FACTOR_ENABLED', 'true').lower() != 'false'):
+                        _fr_bf = _crypto_btc_frames()
+                        if _fr_bf:
+                            _dsg_bf = 1 if direction == 'LONG' else -1
+                            _against_bf = [h for h in (1, 4, 8, 12) if _dsg_bf * _fr_bf[h] < 0]
+                            if len(_against_bf) >= int(os.environ.get('CRYPTO_BTC_FACTOR_BLOCK_N', 4)):
+                                log.info(f'[BTC-FACTOR] {display}: {direction} contra o BTC nas 4 janelas '
+                                         f'({_crypto_btc_frames_detail()}) — entrada bloqueada')
+                                continue
+                            _pen_bf = int(os.environ.get('CRYPTO_BTC_FACTOR_PENALTY_12H', 10))
+                            if _dsg_bf * _fr_bf[12] < 0 and score < MIN_SCORE_AUTO_CRYPTO + _pen_bf:
+                                log.info(f'[BTC-FACTOR] {display}: {direction} contra o BTC de 12h '
+                                         f'({_crypto_btc_frames_detail()}) — exige score >= '
+                                         f'{MIN_SCORE_AUTO_CRYPTO + _pen_bf}')
+                                continue
 
                 # [CRYPTO-24/7 04/mai/2026] Hard-blocks REMOVIDOS — alinhamento com decisao do
                 # commit 84de0f0 ("DECISAO DO USUARIO: operar 24/7 mantido. Forca maxima em horas

@@ -995,6 +995,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'monthly_picks_worker':  7200,   # 2h — loop external com logica mensal/semanal
     'arbi_learning_loop':    600,    # 10min — sleep de 5min entre passes
     'nightly_audit_loop':    600,    # [NIGHT-AUDIT] beat a cada 60s; audit demora minutos
+    'weekly_learning_loop':  900,    # [SHADOW-WEEKLY] beat 60s; pipeline domingo demora minutos
     'uspairs_shadow_loop':  2000,    # [18-jul] cadencia 15min + scan diario demorado
     'exit_requote_loop':     120,    # [EXIT-REAL] ciclo ~20s + fetches
     'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
@@ -1674,6 +1675,40 @@ def dualmatch_shadow(symbol, market, direction, egreja_strength, trade_id):
                                    'manus_score': _ms, 'detail': _det})
     except Exception as _e:
         log.debug(f'[DUALMATCH-SHADOW] {symbol}: {_e}')
+
+# ═══ [SHADOW-WEEKLY 18-jul-2026, decisao Beto] ═══════════════════════
+# Aprendizados da semana ficam 1 semana em SOMBRA antes de qualquer rollout.
+# Cada entrada e rotulada (audit_events, NADA bloqueia) pelas regras candidatas:
+#   TRENDLONG_STOCKS : LONG stocks em regime TRENDING (semana 12-18/07: WR 33.8%, -$24.5k)
+#   CONF80_STOCKS    : stocks com learning_confidence >= 80 (confianca invertida)
+#   DEADZONE_CRYPTO  : crypto com learning_confidence na banda 60-70 (deficitaria)
+# Avaliacao: /debug/shadow-rules (WR/PnL real das trades rotuladas).
+def weekly_shadow_tag(trade_id, symbol, book, direction, learning_conf, regime):
+    try:
+        if os.environ.get('SHADOW_WEEKLY_ENABLED', 'true').lower() == 'false':
+            return
+        _rules = []
+        _lc = None
+        try:
+            _lc = float(learning_conf) if learning_conf is not None else None
+        except Exception:
+            pass
+        if book == 'stocks':
+            if str(direction).upper() == 'LONG' and regime == 'TRENDING':
+                _rules.append('TRENDLONG_STOCKS')
+            if _lc is not None and _lc >= float(os.environ.get('SHADOW_CONF80_MIN', 80)):
+                _rules.append('CONF80_STOCKS')
+        else:
+            if _lc is not None and 60 <= _lc < 70:
+                _rules.append('DEADZONE_CRYPTO')
+        if _rules:
+            log.info(f'[SHADOW-WEEKLY] {symbol}: {"+".join(_rules)} '
+                     f'(conf={_lc} regime={regime})')
+            audit('SHADOW_RULE', {'trade_id': trade_id, 'symbol': symbol, 'book': book,
+                                  'direction': str(direction).upper(), 'rules': _rules,
+                                  'learning_confidence': _lc, 'regime': regime})
+    except Exception as _e:
+        log.debug(f'[SHADOW-WEEKLY] {symbol}: {_e}')
 
 def _mp_minutes_to_close(mkt):
     """Minutos ate o fechamento do pregao; None se mercado fechado."""
@@ -9269,6 +9304,13 @@ def stock_execution_worker():
                                              _egr_str, pre_trade_id)
                         except Exception:
                             pass
+                        # [SHADOW-WEEKLY 18-jul-2026] regras da semana em sombra
+                        try:
+                            weekly_shadow_tag(pre_trade_id, sym, 'stocks', direction,
+                                              conf.get('final_confidence'),
+                                              market_regime.get('mode', 'UNKNOWN'))
+                        except Exception:
+                            pass
                     else:
                         log.info(f'Risk-2 {sym}: {reason2 if not ok2 else "insufficient_capital"}')
                         # [L-8] Shadow: registrar sinal bloqueado no segundo nível
@@ -9993,6 +10035,14 @@ def auto_trade_crypto():
                             dualmatch_shadow(trade['symbol'], 'crypto',
                                              'BUY' if _dir_c == 'LONG' else 'SELL',
                                              _egr_str_c, trade['id'])
+                        except Exception:
+                            pass
+                        # [SHADOW-WEEKLY 18-jul-2026] regras da semana em sombra
+                        try:
+                            weekly_shadow_tag(trade['id'], trade['symbol'], 'crypto',
+                                              str(trade.get('direction', 'LONG')).upper(),
+                                              conf_c.get('final_confidence'),
+                                              market_regime.get('mode', 'UNKNOWN'))
                         except Exception:
                             pass
                     else:
@@ -11437,6 +11487,58 @@ def start_background_threads():
                'api_key': API_SECRET_KEY, 'port': int(os.environ.get('PORT', 3001)),
                'send_whatsapp': send_whatsapp})
 
+    def _weekly_learning_thread():
+        # [SHADOW-WEEKLY 18-jul-2026, decisao Beto] runner semanal do adaptive_learning:
+        # todo domingo 06:00 UTC roda o pipeline sobre a semana (lookback 7d), grava
+        # propostas em learning_policy_proposals (status='proposed' — NADA aplica
+        # sozinho) e manda resumo via WhatsApp junto com o scoreboard das regras-sombra.
+        while True:
+            beat('weekly_learning_loop')
+            if os.environ.get('WEEKLY_LEARNING_ENABLED', 'true').lower() == 'false':
+                time.sleep(60); continue
+            _now = datetime.utcnow()
+            _days = (6 - _now.weekday()) % 7  # 6 = domingo
+            _tgt = (_now + timedelta(days=_days)).replace(hour=6, minute=0, second=0, microsecond=0)
+            if _tgt <= _now:
+                _tgt += timedelta(days=7)
+            _wait = (_tgt - _now).total_seconds()
+            log.info(f'[WEEKLY-LEARN] proxima execucao {_tgt.isoformat()}Z ({_wait/3600:.0f}h)')
+            while _wait > 0:
+                time.sleep(min(60, _wait)); _wait -= 60
+                beat('weekly_learning_loop')
+            try:
+                from modules.adaptive_learning.orchestrator import run_full_analysis as _rfa
+                _lines = []
+                for _at in ('stock', 'crypto'):
+                    try:
+                        _rep = _rfa(get_db, log, _at, lookback_days=7,
+                                    register_proposals=True, simulate=True)
+                        _h = (_rep.get('health') or {}).get('trades') or {}
+                        _np = len(_rep.get('proposals') or [])
+                        _lines.append(f'{_at}: {_h.get("n", "?")} trades WR '
+                                      f'{round(float(_h.get("win_rate") or 0) * 100, 1)}% | '
+                                      f'{_np} propostas novas')
+                        log.info(f'[WEEKLY-LEARN] {_at}: {_np} propostas registradas')
+                    except Exception as _e:
+                        log.error(f'[WEEKLY-LEARN] {_at}: {_e}')
+                # scoreboard das regras-sombra (semana em avaliacao)
+                try:
+                    _rs = requests.get(f'http://127.0.0.1:{int(os.environ.get("PORT", 3001))}'
+                                       f'/debug/shadow-rules', timeout=30).json()
+                    for _rn, _ra in (_rs.get('rules') or {}).items():
+                        _lines.append(f'{_rn}: n={_ra["closed"]} WR {_ra["win_rate"]}% '
+                                      f'PnL ${_ra["pnl"]:,.0f} -> {_ra["veredito"]}')
+                except Exception:
+                    pass
+                if _lines and send_whatsapp:
+                    try:
+                        send_whatsapp('APRENDIZADO SEMANAL:\n' + '\n'.join(_lines)
+                                      + '\nRevisar: /learning/pending_proposals')
+                    except Exception:
+                        pass
+            except Exception as _e:
+                log.error(f'[WEEKLY-LEARN] falha: {_e}')
+
     defs = {
         'stock_price_loop':       stock_price_loop,
         'crypto_price_loop':      crypto_price_loop,
@@ -11456,6 +11558,7 @@ def start_background_threads():
         'report_scheduler':       _report_scheduler,        # relatórios automáticos
         'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
         'nightly_audit_loop':     _nightly_audit_thread,    # [NIGHT-AUDIT 15-jul] auditoria noturna de precos
+        'weekly_learning_loop':   _weekly_learning_thread,  # [SHADOW-WEEKLY 18-jul] runner semanal do adaptive_learning
         'exit_requote_loop':      exit_requote_loop,        # [EXIT-REAL 16-jul] preco vivo p/ posicoes NYSE
         'brain_evolution_loop':   brain_evolution_loop,    # [v3.1] descongela brain_evolution (era 1x/startup)
         'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
@@ -17306,6 +17409,46 @@ def debug_dualmatch_stats():
             a['pnl'] = round(a['pnl'], 2)
             a['win_rate'] = round(a['wins'] / max(a['wins'] + a['losses'], 1) * 100, 1)
         return jsonify(agg)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/shadow-rules')
+def debug_shadow_rules():
+    """[SHADOW-WEEKLY 18-jul] WR/PnL real das trades rotuladas por cada regra-sombra.
+    Interpretacao: se o bucket da regra e deficitario, bloquear teria valido a pena."""
+    try:
+        conn = get_db()
+        if not conn: return jsonify({'error': 'db'}), 500
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT a.payload_json, a.created_at, t.pnl, t.close_reason, t.status
+            FROM audit_events a
+            LEFT JOIN trades t ON t.id = JSON_UNQUOTE(JSON_EXTRACT(a.payload_json, '$.trade_id'))
+            WHERE a.event_type = 'SHADOW_RULE'""")
+        agg = {}
+        for r in cur.fetchall():
+            try: p = json.loads(r['payload_json'])
+            except Exception: continue
+            for rule in (p.get('rules') or []):
+                a = agg.setdefault(rule, {'n': 0, 'closed': 0, 'wins': 0, 'losses': 0, 'pnl': 0.0})
+                a['n'] += 1
+                if r.get('status') == 'CLOSED' and r.get('close_reason') not in ('VOIDED', 'CORRUPTED_DATA_FIXED', 'MANUAL_ORPHAN'):
+                    a['closed'] += 1
+                    _p = float(r.get('pnl') or 0)
+                    a['pnl'] += _p
+                    if _p > 0: a['wins'] += 1
+                    elif _p < 0: a['losses'] += 1
+        cur.close(); conn.close()
+        for v, a in agg.items():
+            a['pnl'] = round(a['pnl'], 2)
+            a['win_rate'] = round(a['wins'] / max(a['wins'] + a['losses'], 1) * 100, 1)
+            a['veredito'] = ('BLOQUEAR (bucket deficitario)' if a['pnl'] < 0 and a['closed'] >= 20
+                             else 'MANTER (bucket lucrativo)' if a['pnl'] > 0 and a['closed'] >= 20
+                             else 'AGUARDAR (amostra pequena)')
+        return jsonify({'rules': agg,
+                        'note': 'Trades rotuladas na entrada, NADA foi bloqueado. '
+                                'Bucket deficitario = a regra teria economizado esse PnL.'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

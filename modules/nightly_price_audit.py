@@ -142,11 +142,76 @@ def run_nightly_audit(ctx):
             except Exception as e:
                 log.error(f'[NIGHT-AUDIT] void {tid}: {e}')
 
+    # [ARBI-AUDIT 18-jul-2026, aprovado Beto] as DUAS pernas de cada arbi
+    # fechada nas ultimas 26h tambem sao conferidas contra candles 1m reais.
+    # Fantasma = qualquer perna >= dev_lim fora do range; anula via
+    # /admin/fix_corrupted_arbi_trade (correct_pnl=0, trilha CORRUPTED_DATA_FIXED).
+    a_checked = a_no_data = a_voided = 0
+    a_ghosts = []
+    get_arbi = ctx.get('get_arbi_snapshot')
+    if get_arbi:
+        atrades = [t for t in get_arbi()
+                   if t.get('close_reason') not in ('VOIDED', 'CORRUPTED_DATA_FIXED', 'MANUAL_ORPHAN')
+                   and t.get('price_a_entry') and t.get('price_b_entry')
+                   and str(t.get('closed_at', '')) >= cutoff.strftime('%Y-%m-%dT%H:%M:%S')]
+        log.info(f'[NIGHT-AUDIT] arbi: {len(atrades)} trades das ultimas 26h')
+        for t in atrades:
+            try:
+                ts_e = datetime.fromisoformat(str(t['opened_at'])[:19]).replace(tzinfo=timezone.utc)
+                ts_x = datetime.fromisoformat(str(t['closed_at'])[:19]).replace(tzinfo=timezone.utc)
+            except Exception:
+                a_no_data += 1
+                continue
+            devs = []
+            any_data = False
+            for sym, mkt, pe, px in (
+                    (str(t.get('leg_a', '')).replace('.SA', ''), t.get('mkt_a'),
+                     t.get('price_a_entry'), t.get('price_a_exit')),
+                    (str(t.get('leg_b', '')).replace('.SA', ''), t.get('mkt_b'),
+                     t.get('price_b_entry'), t.get('price_b_exit'))):
+                if mkt not in ('B3', 'NYSE'):
+                    continue  # LSE/XETRA/EURONEXT sem fonte 1m confiavel
+                de = _dev_leg(sym, 'stock', float(pe), ts_e, cache, log) if pe else None
+                dx = _dev_leg(sym, 'stock', float(px), ts_x, cache, log) if px else None
+                if de is not None or dx is not None:
+                    any_data = True
+                devs.append(max(abs(de or 0), abs(dx or 0)))
+            if not any_data:
+                a_no_data += 1
+                continue
+            a_checked += 1
+            mx = round(max(devs), 2) if devs else 0.0
+            if mx >= dev_lim:
+                a_ghosts.append((t.get('id'), t.get('pair_id'), float(t.get('pnl') or 0), mx))
+        for tid, pid, pnl, mx in a_ghosts:
+            log.warning(f'[NIGHT-AUDIT] FANTASMA ARBI: {pid} {tid} pnl=${pnl:,.0f} dev={mx}%')
+            if autovoid:
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{port}/admin/fix_corrupted_arbi_trade', method='POST',
+                        headers={'X-API-Key': api_key, 'Content-Type': 'application/json'},
+                        data=json.dumps({'trade_id': tid, 'correct_pnl': 0}).encode())
+                    json.loads(urllib.request.urlopen(req, timeout=25).read())
+                    a_voided += 1
+                    time.sleep(0.3)
+                except Exception as e:
+                    log.error(f'[NIGHT-AUDIT] void arbi {tid}: {e}')
+
     _last_run.update({'ts': datetime.utcnow().isoformat(), 'checked': checked,
                       'ghosts': len(ghosts), 'voided': voided, 'no_data': no_data,
+                      'arbi_checked': a_checked, 'arbi_ghosts': len(a_ghosts),
+                      'arbi_voided': a_voided, 'arbi_no_data': a_no_data,
+                      'arbi_detail': [{'id': g[0], 'pair': g[1], 'pnl': g[2], 'dev': g[3]} for g in a_ghosts[:20]],
                       'detail': [{'id': g[0], 'symbol': g[1], 'pnl': g[2], 'dev': g[3]} for g in ghosts[:50]]})
     msg = (f'AUDITORIA NOTURNA: {checked} trades verificadas | '
-           f'{len(ghosts)} fantasmas | {voided} anuladas | {no_data} sem dados')
+           f'{len(ghosts)} fantasmas | {voided} anuladas | {no_data} sem dados | '
+           f'ARBI: {a_checked} verificadas, {len(a_ghosts)} fantasmas, {a_voided} anuladas')
+    if a_ghosts and send_whatsapp:
+        try:
+            send_whatsapp('FANTASMA NA ARBI: ' + ', '.join(
+                f'{g[1]} ${g[2]:,.0f} ({g[3]}%)' for g in a_ghosts[:5]))
+        except Exception:
+            pass
     log.info(f'[NIGHT-AUDIT] {msg}')
     if ghosts and send_whatsapp:
         try:

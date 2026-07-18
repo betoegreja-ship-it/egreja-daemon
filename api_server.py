@@ -1435,6 +1435,34 @@ def _b3_cluster_break():
     except Exception:
         return None
 
+def _nyse_cluster_break():
+    """[NYSE-PULSE 18-jul] >=N perdas NYSE em WIN min => pausa PAUSE min (74% das perdas em clusters)."""
+    try:
+        _n = int(os.environ.get('NYSE_CLUSTER_BREAK_N', 3))
+        _win = float(os.environ.get('NYSE_CLUSTER_BREAK_WIN_MIN', 30))
+        _pause = float(os.environ.get('NYSE_CLUSTER_BREAK_PAUSE_MIN', 45))
+        _now = datetime.utcnow()
+        with state_lock:
+            _rec = [str(t.get('closed_at'))[:19] for t in stocks_closed
+                    if float(t.get('pnl') or 0) < 0 and t.get('closed_at')
+                    and not re.match(r'^[A-Z]{4}[0-9]+$', t.get('symbol', ''))]
+        _ds = []
+        for _s in _rec:
+            try:
+                _d = datetime.fromisoformat(_s)
+                if (_now - _d).total_seconds() <= (_win + _pause) * 60:
+                    _ds.append(_d)
+            except Exception:
+                pass
+        _ds.sort()
+        for _i in range(len(_ds) - _n + 1):
+            if ((_ds[_i + _n - 1] - _ds[_i]).total_seconds() <= _win * 60
+                    and (_now - _ds[_i + _n - 1]).total_seconds() <= _pause * 60):
+                return f'{_n}+ perdas NYSE em {_win:.0f}min'
+        return None
+    except Exception:
+        return None
+
 _b3_entry_times = []
 
 _win_front_cache = {'ts': 0, 'sym': None}
@@ -8659,6 +8687,30 @@ def stock_execution_worker():
                             log.info(f'[B3-PULSE] {sym}: 1a hora exige forca >= {_thr_open:.0f} (forca={_strength_b3:.0f})')
                             continue
                         _b3_entry_times.append(_now_b3p)
+
+                # ═══ [NYSE-PULSE 18-jul-2026, recalibracao Beto+Claude] ═══
+                # Dissecacao (164 trades): 74% das perdas em clusters (squeeze
+                # de 18 shorts -$12.7k; whipsaw de 22 -$14.8k); 1a meia-hora
+                # -$6.6k e hora 15 UTC (reversao das 11h NY) -$8.2k; score 80+
+                # WR 44% vs 70-80 WR 51%. Shorts/trailing/stops intocados.
+                if mkt_type == 'NYSE' and os.environ.get('NYSE_PULSE_ENABLED', 'true').lower() != 'false':
+                    _cbn = _nyse_cluster_break()
+                    if _cbn:
+                        log.warning(f'[CLUSTER-BREAK-NYSE] {sym}: {_cbn} — entrada pausada')
+                        continue
+                    _strength_ny = score if is_long else 100 - score
+                    # exaustao: forca >= 85 nao entra (movimento esticado)
+                    if _strength_ny >= float(os.environ.get('NYSE_EXHAUSTION_SCORE', 85)):
+                        log.info(f'[NYSE-PULSE] {sym}: forca {_strength_ny:.0f} — exaustao, sem entrada')
+                        continue
+                    # janelas toxicas graduadas: 1a meia-hora e hora 15 UTC (11h NY)
+                    _mso_ny = _mp_minutes_since_open('NYSE')
+                    _hr_ny = datetime.utcnow().hour
+                    _tox_ny = ((_mso_ny is not None and _mso_ny < float(os.environ.get('NYSE_OPEN_WINDOW_MIN', 30)))
+                               or _hr_ny in [int(x) for x in os.environ.get('NYSE_TOXIC_HOURS', '15').split(',') if x.strip().isdigit()])
+                    if _tox_ny and _strength_ny < _eff_min + float(os.environ.get('NYSE_TOX_SCORE_BONUS', 10)):
+                        log.info(f'[NYSE-PULSE] {sym}: janela toxica — exige forca >= {_eff_min + 10:.0f} (forca={_strength_ny:.0f})')
+                        continue
 
                 # ═══ [EARNINGS-FILTER 13-jul-2026] Sem entrada em dia de ═══
                 # earnings (hoje/amanha) — gap de resultado e risco binario

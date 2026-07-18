@@ -1348,6 +1348,64 @@ def _mp_cedro_chg(_sym, _wait_ms=1200):
     except Exception:
         return None
 
+# ═══ [CRYPTO-PULSE 18-jul-2026] A mare do BTC para o book crypto ═══
+# Dissecacao da era limpa (491 trades verificadas): 65% das perdas vieram
+# de 20 CLUSTERS correlacionados (pior: 18 trades mortas juntas, -$14.7k);
+# LONGs -$26k em dumps do BTC; horas 00/06/07 UTC somam -$17k; score >=80
+# tem WR 43% (sinal esticado). O crypto operava cego para o agregado.
+_btc_trend_cache = {'ts': 0, 'state': 'NEUTRAL', 'detail': ''}
+
+def _crypto_btc_trend():
+    import time as _t
+    if _t.time() - _btc_trend_cache['ts'] < 120:
+        return _btc_trend_cache['state']
+    try:
+        _d = requests.get('https://data-api.binance.vision/api/v3/klines'
+                          '?symbol=BTCUSDT&interval=15m&limit=17', timeout=6).json()
+        _cl = [float(c[4]) for c in _d]
+        _c1 = (_cl[-1] / _cl[-5] - 1) * 100
+        _c4 = (_cl[-1] / _cl[0] - 1) * 100
+        _t1 = float(os.environ.get('CRYPTO_PULSE_1H_PCT', 0.6))
+        _t4 = float(os.environ.get('CRYPTO_PULSE_4H_PCT', 1.5))
+        _st = ('DOWN' if (_c1 <= -_t1 or _c4 <= -_t4)
+               else ('UP' if (_c1 >= _t1 or _c4 >= _t4) else 'NEUTRAL'))
+        _btc_trend_cache.update({'ts': _t.time(), 'state': _st,
+                                 'detail': f'BTC 1h {_c1:+.2f}% / 4h {_c4:+.2f}%'})
+    except Exception:
+        _btc_trend_cache['ts'] = _t.time()
+    return _btc_trend_cache['state']
+
+def _crypto_btc_detail():
+    return _btc_trend_cache.get('detail', '')
+
+def _crypto_cluster_break():
+    """>=N perdas crypto fechadas em WIN min => pausa entradas por PAUSE min."""
+    try:
+        _n = int(os.environ.get('CRYPTO_CLUSTER_BREAK_N', 3))
+        _win = float(os.environ.get('CRYPTO_CLUSTER_BREAK_WIN_MIN', 30))
+        _pause = float(os.environ.get('CRYPTO_CLUSTER_BREAK_PAUSE_MIN', 45))
+        _now = datetime.utcnow()
+        with state_lock:
+            _rec = [str(t.get('closed_at'))[:19] for t in crypto_closed
+                    if float(t.get('pnl') or 0) < 0 and t.get('closed_at')]
+        _ds = []
+        for _s in _rec:
+            try:
+                _dtc = datetime.fromisoformat(_s)
+                if (_now - _dtc).total_seconds() <= (_win + _pause) * 60:
+                    _ds.append(_dtc)
+            except Exception:
+                pass
+        _ds.sort()
+        for _i in range(len(_ds) - _n + 1):
+            if ((_ds[_i + _n - 1] - _ds[_i]).total_seconds() <= _win * 60
+                    and (_now - _ds[_i + _n - 1]).total_seconds() <= _pause * 60):
+                return (f'{_n}+ perdas em {_win:.0f}min '
+                        f'(ultima ha {int((_now - _ds[_i + _n - 1]).total_seconds() / 60)}min)')
+        return None
+    except Exception:
+        return None
+
 _win_front_cache = {'ts': 0, 'sym': None}
 
 def _mp_b3_fut_symbol():
@@ -9359,6 +9417,43 @@ def auto_trade_crypto():
                        (_sig_v3_c == 'COMPRA' and direction == 'SHORT'):
                         log.info(f'[CRYPTO-V3-INCOHERENT] {display}: dir={direction} (momentum 24h) '
                                  f'contradiz v3 signal={_sig_v3_c} — entrada bloqueada')
+                        continue
+
+                # ═══ [CRYPTO-PULSE 18-jul-2026, recalibracao Beto+Claude] ═══
+                # Alvo: matar os clusters correlacionados (65% das perdas) e as
+                # entradas em condicao toxica — SEM apertar nenhum stop (WR sobe
+                # ou mantem; so muda O QUE entra). Env: CRYPTO_PULSE_ENABLED.
+                if os.environ.get('CRYPTO_PULSE_ENABLED', 'true').lower() != 'false':
+                    # (a) mare do BTC: alt-LONG nao nasce em dump; alt-SHORT nao nasce em pump
+                    _bt_p = _crypto_btc_trend()
+                    if display not in ('BTC', 'ETH'):
+                        if direction == 'LONG' and _bt_p == 'DOWN':
+                            log.info(f'[CRYPTO-PULSE] {display}: LONG bloqueado — {_crypto_btc_detail()}')
+                            continue
+                        if direction == 'SHORT' and _bt_p == 'UP':
+                            log.info(f'[CRYPTO-PULSE] {display}: SHORT bloqueado — {_crypto_btc_detail()}')
+                            continue
+                    # (b) circuit breaker: 3+ perdas em 30min => pausa 45min no book
+                    _cb_p = _crypto_cluster_break()
+                    if _cb_p:
+                        log.warning(f'[CLUSTER-BREAK] {display}: {_cb_p} — entrada pausada')
+                        continue
+                    # (c) teto de correlacao: max 6 posicoes na MESMA direcao
+                    with state_lock:
+                        _same_dir_p = sum(1 for t in crypto_open
+                                          if str(t.get('direction', '')).upper() == direction)
+                    if _same_dir_p >= int(os.environ.get('CRYPTO_MAX_SAME_DIR', 6)):
+                        log.info(f'[CRYPTO-PULSE] {display}: ja ha {_same_dir_p} {direction} abertas — teto de correlacao')
+                        continue
+                    # (d) horas toxicas (00/06/07 UTC = -$17k): score +10 graduado
+                    _hr_p = datetime.utcnow().hour
+                    _tox_p = [int(x) for x in os.environ.get('CRYPTO_TOXIC_HOURS', '0,6,7').split(',') if x.strip().isdigit()]
+                    if _hr_p in _tox_p and score < MIN_SCORE_AUTO_CRYPTO + 10:
+                        log.info(f'[CRYPTO-PULSE] {display}: hora toxica {_hr_p}h UTC — exige score >= {MIN_SCORE_AUTO_CRYPTO + 10}')
+                        continue
+                    # (e) exaustao: score >= 85 = movimento esticado (WR 43% medido)
+                    if score >= float(os.environ.get('CRYPTO_EXHAUSTION_SCORE', 85)):
+                        log.info(f'[CRYPTO-PULSE] {display}: score {score:.0f} — exaustao, sem entrada')
                         continue
 
                 # [CRYPTO-24/7 04/mai/2026] Hard-blocks REMOVIDOS — alinhamento com decisao do

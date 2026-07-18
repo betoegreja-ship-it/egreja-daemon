@@ -338,7 +338,7 @@ def uspairs_shadow_loop(beat_fn=None):
     while True:
         try:
             if beat_fn:
-                beat_fn('uspairs_shadow')
+                beat_fn('uspairs_shadow_loop')
             now = datetime.utcnow()
             # janela de scan: dias uteis 21:05-23:55 UTC (pos-fechamento NYSE)
             # + sabado de manha como catch-up de sexta

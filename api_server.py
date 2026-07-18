@@ -995,6 +995,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'monthly_picks_worker':  7200,   # 2h — loop external com logica mensal/semanal
     'arbi_learning_loop':    600,    # 10min — sleep de 5min entre passes
     'nightly_audit_loop':    600,    # [NIGHT-AUDIT] beat a cada 60s; audit demora minutos
+    'uspairs_shadow_loop':  2000,    # [18-jul] cadencia 15min + scan diario demorado
     'exit_requote_loop':     120,    # [EXIT-REAL] ciclo ~20s + fetches
     'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
     # [v11] Portfolio Accounting — shadow comparator (60s interval + margem)
@@ -17280,6 +17281,27 @@ def debug_persist_check():
                 except Exception: pass
         return jsonify({'memoria': len(mem), 'faltando_no_db': len(missing),
                         'reenfileiradas': fixed, 'detalhe': out[:30]})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/uspairs')
+def debug_uspairs():
+    """[18-jul] Status do US Pairs shadow; ?run=1 forca um scan agora."""
+    try:
+        from modules.uspairs_shadow import scan_once
+        out = {}
+        if request.args.get('run') == '1':
+            out['scan'] = scan_once() or 'sem pregao novo'
+        conn = get_db()
+        if conn:
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT status, COUNT(*) n, ROUND(SUM(pnl_net),2) pnl FROM uspairs_shadow_trades GROUP BY status")
+            out['trades'] = list(c.fetchall())
+            c.execute("SELECT k, v FROM uspairs_shadow_meta")
+            out['meta'] = {r['k']: r['v'] for r in c.fetchall()}
+            c.close(); conn.close()
+        return jsonify(out)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

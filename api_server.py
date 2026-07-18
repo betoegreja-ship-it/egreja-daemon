@@ -1406,6 +1406,37 @@ def _crypto_cluster_break():
     except Exception:
         return None
 
+def _b3_cluster_break():
+    """[B3-PULSE 18-jul] >=N perdas B3 em WIN min => pausa PAUSE min.
+    Dissecacao: 92% das perdas B3 em clusters (22 trades juntas, -$20k)."""
+    try:
+        _n = int(os.environ.get('B3_CLUSTER_BREAK_N', 3))
+        _win = float(os.environ.get('B3_CLUSTER_BREAK_WIN_MIN', 30))
+        _pause = float(os.environ.get('B3_CLUSTER_BREAK_PAUSE_MIN', 45))
+        _now = datetime.utcnow()
+        with state_lock:
+            _rec = [str(t.get('closed_at'))[:19] for t in stocks_closed
+                    if float(t.get('pnl') or 0) < 0 and t.get('closed_at')
+                    and re.match(r'^[A-Z]{4}[0-9]+$', t.get('symbol', ''))]
+        _ds = []
+        for _s in _rec:
+            try:
+                _d = datetime.fromisoformat(_s)
+                if (_now - _d).total_seconds() <= (_win + _pause) * 60:
+                    _ds.append(_d)
+            except Exception:
+                pass
+        _ds.sort()
+        for _i in range(len(_ds) - _n + 1):
+            if ((_ds[_i + _n - 1] - _ds[_i]).total_seconds() <= _win * 60
+                    and (_now - _ds[_i + _n - 1]).total_seconds() <= _pause * 60):
+                return f'{_n}+ perdas B3 em {_win:.0f}min'
+        return None
+    except Exception:
+        return None
+
+_b3_entry_times = []
+
 _win_front_cache = {'ts': 0, 'sym': None}
 
 def _mp_b3_fut_symbol():
@@ -8599,6 +8630,35 @@ def stock_execution_worker():
                             continue
                     except Exception as _mp_e:
                         log.warning(f'[MARKET-PULSE] erro no gate ({sym}): {_mp_e} — fail-open')
+
+                # ═══ [B3-PULSE 18-jul-2026, recalibracao Beto+Claude] ═══
+                # Dissecacao da era limpa (165 trades): 92% das perdas em
+                # clusters de whipsaw (22 juntas, -$20k, nas 2 direcoes); 42%
+                # das entradas na hora 13 UTC (pior hora, -$6.6k); 60% do book
+                # em churn flat (-0.05%..-0.19% + taxas). WR 36% vem dai —
+                # payoff 1.32 esta saudavel. Gates so de ENTRADA.
+                if mkt_type == 'B3' and os.environ.get('B3_PULSE_ENABLED', 'true').lower() != 'false':
+                    # (a) cluster-break: 3+ perdas B3 em 30min => pausa 45min
+                    _cbb = _b3_cluster_break()
+                    if _cbb:
+                        log.warning(f'[CLUSTER-BREAK-B3] {sym}: {_cbb} — entrada pausada')
+                        continue
+                    _now_b3p = datetime.utcnow()
+                    _mso_b3 = _mp_minutes_since_open('B3')
+                    if _mso_b3 is not None and _mso_b3 < float(os.environ.get('B3_OPEN_WINDOW_MIN', 60)):
+                        # (b) anti-inundacao: max 3 entradas B3 por 15min na 1a hora
+                        global _b3_entry_times
+                        _b3_entry_times = [x for x in _b3_entry_times if (_now_b3p - x).total_seconds() <= 900]
+                        if len(_b3_entry_times) >= int(os.environ.get('B3_OPEN_FLOOD_MAX', 3)):
+                            log.info(f'[B3-FLOOD] {sym}: {len(_b3_entry_times)} entradas nos ultimos 15min da abertura — conta-gotas')
+                            continue
+                        # (c) 1a hora graduada: score +10 (42% dos trades e pior PnL)
+                        _thr_open = _eff_min + float(os.environ.get('B3_OPEN_SCORE_BONUS', 10))
+                        _strength_b3 = score if is_long else 100 - score
+                        if _strength_b3 < _thr_open:
+                            log.info(f'[B3-PULSE] {sym}: 1a hora exige forca >= {_thr_open:.0f} (forca={_strength_b3:.0f})')
+                            continue
+                        _b3_entry_times.append(_now_b3p)
 
                 # ═══ [EARNINGS-FILTER 13-jul-2026] Sem entrada em dia de ═══
                 # earnings (hoje/amanha) — gap de resultado e risco binario

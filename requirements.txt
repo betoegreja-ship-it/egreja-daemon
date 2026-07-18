@@ -20,3 +20,4 @@ websockets>=10.0
 websocket-client>=1.6.0
 pydub>=0.25.0
 tzdata
+pymysql==1.1.0

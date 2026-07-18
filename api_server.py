@@ -11090,9 +11090,44 @@ def start_background_threads():
             if os.environ.get('EXIT_REQUOTE_ENABLED', 'true').lower() == 'false':
                 continue
             try:
+                # [18-jul] EXIT-REAL cobre os 3 books: NYSE (Polygon), B3
+                # (socket Cedro get_quote fresco) e crypto (Binance vision) —
+                # auditoria noturna de 18/07 pegou 13 fantasmas residuais em
+                # saidas com cache velho (ADA dev 4.6%, HAPV3 1.1%).
                 with state_lock:
                     _syms = sorted(set(t['symbol'] for t in stocks_open
                                        if not re.match(r'^[A-Z]{4}[0-9]+$', t.get('symbol', ''))))
+                    _syms_b3 = sorted(set(t['symbol'] for t in stocks_open
+                                          if re.match(r'^[A-Z]{4}[0-9]+$', t.get('symbol', ''))))
+                    _syms_cry = sorted(set(t['symbol'] for t in crypto_open))
+                # crypto 24/7 via espelho publico da Binance
+                for _sc_ in _syms_cry[:12]:
+                    try:
+                        _rc = requests.get(
+                            f'https://data-api.binance.vision/api/v3/ticker/price?symbol={_sc_}USDT',
+                            timeout=4)
+                        if _rc.status_code == 200:
+                            _pxc = float((_rc.json() or {}).get('price') or 0)
+                            if _pxc > 0:
+                                with state_lock:
+                                    crypto_prices[_sc_ + 'USDT'] = _pxc
+                    except Exception:
+                        pass
+                    time.sleep(0.1)
+                # B3 via socket Cedro (re-subscribe/espera fresca)
+                if is_b3_open() and _cedro_socket and getattr(_cedro_socket, 'enabled', False):
+                    for _sb_ in _syms_b3[:15]:
+                        try:
+                            _qb = _cedro_socket.get_quote(_sb_, wait_ms=600)
+                            if _qb and _qb.get('price'):
+                                with state_lock:
+                                    _pdb = stock_prices.get(_sb_)
+                                    if _pdb and isinstance(_pdb, dict):
+                                        _pdb['price'] = float(_qb['price'])
+                                        _pdb['updated_at'] = datetime.utcnow().isoformat()
+                        except Exception:
+                            pass
+                        time.sleep(0.1)
                 if not _syms or not is_nyse_open():
                     continue
                 for _s in _syms[:20]:
@@ -16976,6 +17011,72 @@ def debug_cedro_quote():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/debug/dualmatch-stats')
+def debug_dualmatch_stats():
+    """[REVISAO 18-jul] MATCH vs NO_MATCH com resultado real das trades."""
+    try:
+        conn = get_db()
+        if not conn: return jsonify({'error': 'db'}), 500
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT a.payload_json, t.pnl, t.pnl_pct, t.close_reason, t.status
+            FROM audit_events a
+            LEFT JOIN trades t ON t.id = JSON_UNQUOTE(JSON_EXTRACT(a.payload_json, '$.trade_id'))
+            WHERE a.event_type = 'DUALMATCH_SHADOW'""")
+        agg = {}
+        for r in cur.fetchall():
+            try: p = json.loads(r['payload_json'])
+            except Exception: continue
+            v = p.get('verdict', '?')
+            a = agg.setdefault(v, {'n': 0, 'closed': 0, 'wins': 0, 'losses': 0, 'pnl': 0.0})
+            a['n'] += 1
+            if r.get('status') == 'CLOSED' and r.get('close_reason') not in ('VOIDED', 'CORRUPTED_DATA_FIXED', 'MANUAL_ORPHAN'):
+                a['closed'] += 1
+                _p = float(r.get('pnl') or 0)
+                a['pnl'] += _p
+                if _p > 0: a['wins'] += 1
+                elif _p < 0: a['losses'] += 1
+        cur.close(); conn.close()
+        for v, a in agg.items():
+            a['pnl'] = round(a['pnl'], 2)
+            a['win_rate'] = round(a['wins'] / max(a['wins'] + a['losses'], 1) * 100, 1)
+        return jsonify(agg)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/persist-check')
+def debug_persist_check():
+    """[REVISAO 18-jul] Trades fechadas em memoria ausentes do DB; ?fix=1 re-persiste."""
+    try:
+        with state_lock:
+            mem = list(stocks_closed) + list(crypto_closed)
+        ids = [t['id'] for t in mem if t.get('id')]
+        conn = get_db()
+        if not conn: return jsonify({'error': 'db'}), 500
+        cur = conn.cursor()
+        db_ids = set()
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i+500]
+            fmt = ','.join(['%s'] * len(chunk))
+            cur.execute(f"SELECT id FROM trades WHERE id IN ({fmt})", chunk)
+            db_ids.update(r[0] for r in cur.fetchall())
+        cur.close(); conn.close()
+        missing = [t for t in mem if t.get('id') and t['id'] not in db_ids]
+        out = [{'id': t['id'], 'symbol': t.get('symbol'), 'pnl': t.get('pnl'),
+                'closed_at': t.get('closed_at')} for t in missing]
+        fixed = 0
+        if request.args.get('fix') == '1':
+            for t in missing:
+                try:
+                    enqueue_persist('trade', t); fixed += 1
+                except Exception: pass
+        return jsonify({'memoria': len(mem), 'faltando_no_db': len(missing),
+                        'reenfileiradas': fixed, 'detalhe': out[:30]})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/debug/nightly-audit')
 def debug_nightly_audit():
     """[NIGHT-AUDIT] Resultado da ultima auditoria noturna + execucao manual (?run=1)."""
@@ -17417,8 +17518,10 @@ def _build_report(period_days, label):
         'combined': {
             'count': len(s_trades)+len(c_trades)+len(a_trades),
             'total_pnl': round(total_pnl_sc + total_pnl_arbi, 2),
-            'win_rate': round(sum(1 for t in all_trades+a_trades if t.get('pnl',0)>0) /
-                              max(len(all_trades+a_trades),1) * 100, 1),
+            # [18-jul] WR = W/(W+L) — empates tecnicos nao diluem
+            'win_rate': (lambda _w, _l: round(_w / max(_w + _l, 1) * 100, 1))(
+                sum(1 for t in all_trades + a_trades if t.get('pnl', 0) > 0),
+                sum(1 for t in all_trades + a_trades if t.get('pnl', 0) < 0)),
         },
         'open_positions': {
             'stocks': len(s_op), 'crypto': len(c_op), 'arbi': len(a_op),

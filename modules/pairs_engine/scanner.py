@@ -223,6 +223,25 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
 
         # [25-jun-2026] WATCH tier: nao opera, so observa
         cfg = next((p for p in PAIRS_CONFIG if p['id'] == signal['pair_id']), {})
+
+        # ═══ [PAIRS-v2 18-jul-2026] Curadoria ECONOMICA (analise: os ═══
+        # TIMEOUTs de -R$9.1k vieram de pares cross-setor cuja correlacao
+        # estatistica quebrou; quem paga sao CLASSES/HOLDING/SECTORIAL).
+        # CROSS_SECTOR vira observacao (sem capital). Env: PAIRS_ECON_CURATION.
+        if (os.environ.get('PAIRS_ECON_CURATION', 'true').lower() != 'false'
+                and cfg.get('pair_type') == 'CROSS_SECTOR'):
+            log.info(f"[PAIRS-v2] {signal['pair_id']}: CROSS_SECTOR em observacao — sem capital")
+            return None
+
+        # ═══ [PAIRS-v2] Teto de perna: max 2 pares abertos compartilhando ═══
+        # o mesmo ativo (Equatorial/Multiplan/Bradesco viravam aposta unica).
+        _legs_new = {cfg.get('leg_a'), cfg.get('leg_b')} - {None}
+        _shared = sum(1 for t in pairs_open
+                      for _p in [next((p for p in PAIRS_CONFIG if p['id'] == t['pair_id']), {})]
+                      if _legs_new & {_p.get('leg_a'), _p.get('leg_b')})
+        if _shared >= int(os.environ.get('PAIRS_MAX_SHARED_LEG', 2)):
+            log.info(f"[PAIRS-v2] {signal['pair_id']}: {_shared} pares abertos compartilham perna — teto")
+            return None
         tier = cfg.get('tier', 'A')
         if tier == 'WATCH':
             log.info(f'[PAIRS] {signal["pair_id"]} tier=WATCH — skip entry (apenas observacao)')
@@ -360,13 +379,29 @@ def evaluate_pair_trade_exit(trade: Dict, signal: Dict, audit_fn=None) -> Option
     except Exception as e:
         log.debug(f'[pairs] timeout check failed: {e}')
 
+    # ═══ [PAIRS-v2 18-jul-2026] Cointegracao quebrada: correlacao viva ═══
+    # abaixo do piso => sair AGORA em vez de marinar 15 dias ate TIMEOUT
+    # (5 zumbis = -R$9.1k). O sinal traz correlation_60d recalculada.
+    _corr_live = signal.get('correlation_60d')
+    if (_corr_live is not None
+            and float(_corr_live) < float(os.environ.get('PAIRS_MIN_CORR_LIVE', 0.45))):
+        return 'COINT_BROKEN'
+
     # Converged: z cruzou pra perto de zero
     if abs(z_now) <= z_exit:
         return 'CONVERGED'
 
-    # Stop: z foi MAIS LONGE da media (regime shift)
+    # ═══ [PAIRS-v2] Stop com CONFIRMACAO: 19 stops com WR 5% em ~20h — ═══
+    # panico no 1o dia de estrategia de dias. Agora exige 2 leituras
+    # consecutivas alem do z_stop (scans ~15min => ~30min de confirmacao).
     if abs(z_now) > z_stop:
-        return 'STOP_LOSS'
+        trade['_stop_hits'] = int(trade.get('_stop_hits', 0)) + 1
+        if trade['_stop_hits'] >= int(os.environ.get('PAIRS_STOP_CONFIRM_N', 2)):
+            return 'STOP_LOSS'
+        log.info(f"[PAIRS-v2] {trade['pair_id']}: z={z_now:+.2f} alem do stop "
+                 f"({trade['_stop_hits']}/2) — aguardando confirmacao")
+    else:
+        trade['_stop_hits'] = 0
 
     # Se z mudou de sinal (passou pelo zero), tambem converged
     if (entry_z > 0 and z_now < 0) or (entry_z < 0 and z_now > 0):

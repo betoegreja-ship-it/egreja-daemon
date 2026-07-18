@@ -280,6 +280,17 @@ def recalibrate_pair(pair_id: str, window_days: int = 60) -> dict:
     if conn:
         try:
             cur = conn.cursor()
+            # [PAIRS-v2 18-jul-2026] Prune diario: a tabela chegou a 2.79M
+            # linhas (fonte dos avisos de pool exhausted). Mantem 7 dias.
+            global _LAST_PRUNE_TS
+            try:
+                import time as _tt
+                if _tt.time() - globals().get('_LAST_PRUNE_TS', 0) > 86400:
+                    globals()['_LAST_PRUNE_TS'] = _tt.time()
+                    cur.execute("DELETE FROM pairs_recalibration_history "
+                                "WHERE ts < NOW() - INTERVAL 7 DAY LIMIT 200000")
+            except Exception:
+                pass
             cur.execute("""INSERT INTO pairs_recalibration_history
                 (ts, pair_id, window_days, adf_tstat, half_life_days,
                  hedge_beta, hedge_alpha, return_corr, price_corr,

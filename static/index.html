@@ -663,8 +663,9 @@ async function doLogout() {
             <th class="ot-sort" data-sort="pnl" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('pnl')">P&amp;L <span class="ot-sort-ind" id="otind-pnl">▼</span></th>
             <th class="ot-sort" data-sort="pnl_pct" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('pnl_pct')">P&amp;L % <span class="ot-sort-ind" id="otind-pnl_pct"></span></th>
             <th class="ot-sort" data-sort="opened_at" style="text-align:right;padding:10px 14px;cursor:pointer;user-select:none" onclick="sortOpenTrades('opened_at')">Abertura <span class="ot-sort-ind" id="otind-opened_at"></span></th>
+            <th style="text-align:right;padding:10px 14px">Ação</th>
           </tr></thead>
-          <tbody id="open-trades-body"><tr><td colspan="10"><div class="state-box"><div class="loader"></div><div class="state-text">Loading positions</div></div></td></tr></tbody>
+          <tbody id="open-trades-body"><tr><td colspan="11"><div class="state-box"><div class="loader"></div><div class="state-text">Loading positions</div></div></td></tr></tbody>
         </table></div>
       </div>
       <div id="tab-history" class="tab-panel">
@@ -1251,9 +1252,10 @@ async function doLogout() {
         <th style="padding:10px 14px;text-align:right;font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);font-weight:400">P&L</th>
         <th style="padding:10px 14px;text-align:right;font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);font-weight:400">Capital</th>
         <th style="padding:10px 14px;text-align:right;font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);font-weight:400">Abertura</th>
+        <th style="padding:10px 14px;text-align:right;font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);font-weight:400">Ação</th>
       </tr></thead>
       <tbody id="arbi-open-body">
-        <tr><td colspan="6" style="padding:30px;text-align:center;color:var(--text3);font-size:11px">Nenhuma posição aberta</td></tr>
+        <tr><td colspan="8" style="padding:30px;text-align:center;color:var(--text3);font-size:11px">Nenhuma posição aberta</td></tr>
       </tbody>
     </table>
   </div>

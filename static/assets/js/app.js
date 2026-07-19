@@ -804,7 +804,7 @@ function _renderOpenTradesTable(trades){ // [ot-sort-applied]
   });
   var cntEl=document.getElementById('ot-count-visible');
   if(cntEl) cntEl.textContent=list.length+' of '+trades.length;
-  if(!list.length){tb.innerHTML='<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--text3)">Nenhuma posição nesta categoria</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="11" style="padding:30px;text-align:center;color:var(--text3)">Nenhuma posição nesta categoria</td></tr>';return;}
   tb.innerHTML=list.map(function(t){
     var dir=t.direction==='LONG'?'<span style="color:#2ecc71">LONG</span>':'<span style="color:#e74c3c">SHORT</span>';
     var pnl=t.pnl||0,pct=t.pnl_pct||0;
@@ -833,8 +833,51 @@ function _renderOpenTradesTable(trades){ // [ot-sort-applied]
       +'<td style="padding:10px 14px;text-align:right;color:'+pc(pnl)+';font-family:monospace;font-weight:600" id="lpnl-'+t.id+'">'+(pnl>=0?'+':'')+pnl.toFixed(2)+'</td>'
       +'<td style="padding:10px 14px;text-align:right;color:'+pc(pct)+';font-family:monospace" id="lppct-'+t.id+'">'+(pct>=0?'+':'')+pct.toFixed(2)+'%</td>'
       +'<td style="padding:10px 14px;text-align:right;color:var(--text3);font-size:11px">'+fmtT(t.opened_at)+'</td>'
+      +'<td style="padding:10px 14px;text-align:right">'
+      +(t._manual_close_req
+        ?'<span style="font-size:10px;color:var(--gold)">fechando…</span>'
+        :'<button onclick="manualCloseTrade(\''+t.id+'\',\''+t.symbol+'\','+pnl.toFixed(2)+')" '
+          +'style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;border-radius:6px;'
+          +'padding:4px 10px;font-size:10px;cursor:pointer;font-family:inherit" '
+          +'onmouseover="this.style.background=\'#e74c3c\';this.style.color=\'#fff\'" '
+          +'onmouseout="this.style.background=\'transparent\';this.style.color=\'#e74c3c\'">Fechar</button>')
+      +'</td>'
       +'</tr>';
   }).join('');
+}
+
+// [MANUAL-CLOSE 18-jul-2026] Botao "Fechar" com confirmacao dupla.
+// O backend marca a flag e o motor fecha em segundos pela mesma via
+// das saidas automaticas (close_reason=MANUAL_CLOSE, tudo auditavel).
+function manualCloseTrade(id, sym, pnl){
+  var msg='Fechar manualmente '+sym+' agora?\n\nP&L atual: '+(pnl>=0?'+':'')+'$'+pnl
+    +'\n\nA posicao sera encerrada ao preco de mercado em segundos, '
+    +'com registro MANUAL_CLOSE no historico.';
+  if(!confirm(msg)) return;
+  fetch('/ops/request-close/'+id,{method:'POST',credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){
+        alert(sym+': fechamento solicitado — a posicao fecha em segundos.');
+        if(typeof loadOpenTrades==='function') loadOpenTrades();
+      } else {
+        alert('Erro: '+(d.error||'falha ao solicitar fechamento'));
+      }
+    })
+    .catch(function(e){alert('Erro de rede: '+e);});
+}
+
+// [MANUAL-CLOSE 18-jul-2026] Fechamento manual de par da Arbi (2 pernas).
+function manualCloseArbi(id, pair){
+  if(!confirm('Fechar manualmente o par '+pair+' agora?\n\nAs duas pernas serao encerradas ao preco de mercado (MANUAL_CLOSE).')) return;
+  fetch('/arbitrage/force-close',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({trade_id:id})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok||d.closed||d.status==='ok'){alert(pair+': par fechado.');location.reload();}
+      else{alert('Erro: '+(d.error||JSON.stringify(d)));}
+    })
+    .catch(function(e){alert('Erro de rede: '+e);});
 }
 
 var _allHistTrades=[];var _histTab='all';
@@ -1029,7 +1072,7 @@ async function loadArbitrage(){
     var ob=document.getElementById('arbi-open-body');
     var ot=d.open_trades||[];
     if(ob){
-      if(!ot.length){ob.innerHTML='<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--text3)">Nenhuma posição aberta</td></tr>';}
+      if(!ot.length){ob.innerHTML='<tr><td colspan="8" style="padding:30px;text-align:center;color:var(--text3)">Nenhuma posição aberta</td></tr>';}
       else{
         ob.innerHTML=ot.map(function(t){
           var pnl=t.pnl||0;
@@ -1048,6 +1091,10 @@ async function loadArbitrage(){
             +'<td style="padding:10px 14px;text-align:right;color:'+pc(pnl)+';font-weight:600;font-family:monospace">'+(pnl>=0?'+':'')+fmtBig(pnl)+'</td>'
             +'<td style="padding:10px 14px;text-align:right;font-family:monospace">$'+fmtNum(t.position_size||0)+'</td>'
             +'<td style="padding:10px 14px;text-align:right;color:var(--text3);font-size:11px">'+fmtDT(t.opened_at)+'</td>'
+            +'<td style="padding:10px 14px;text-align:right">'
+            +'<button onclick="manualCloseArbi(\''+t.id+'\',\''+(t.name||t.pair_id||'par')+'\')" '
+            +'style="background:transparent;border:1px solid #e74c3c;color:#e74c3c;border-radius:6px;'
+            +'padding:4px 10px;font-size:10px;cursor:pointer;font-family:inherit">Fechar</button></td>'
             +'</tr>';
         }).join('');
       }

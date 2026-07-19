@@ -7796,8 +7796,14 @@ def monitor_trades():
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else:                                      reason='TIMEOUT'
                     elif not market_open_for(mkt) and age_h>0.5:   reason='MARKET_CLOSE'
+                    # [MANUAL-CLOSE 18-jul-2026, pedido Beto] Botao "Fechar" do
+                    # dashboard marca a flag via /ops/request-close; o fechamento
+                    # acontece AQUI, pela mesma via das saidas automaticas (fee,
+                    # ledger, cooldown, persistencia). Sobrepoe qualquer outro motivo.
+                    if trade.get('_manual_close_req'):
+                        reason = 'MANUAL_CLOSE'
                     # [EXIT-FRESH 15-jul-2026] cotacao velha: so TIMEOUT/MARKET_CLOSE passam
-                    if reason and _px_stale_s and reason not in ('TIMEOUT', 'MARKET_CLOSE'):
+                    if reason and _px_stale_s and reason not in ('TIMEOUT', 'MARKET_CLOSE', 'MANUAL_CLOSE'):
                         log.warning(f'[EXIT-FRESH] {sym}: {reason} suprimido (cotacao stale) — aguardando preco fresco')
                         reason = None
                     # ═══ [HOLD-TEST 06-jul-2026] Experimento controlado pelo Beto ═══
@@ -8080,6 +8086,9 @@ def monitor_trades():
                         ext=trade.get('extensions',0)
                         if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else:                                      reason='TIMEOUT'
+                    # [MANUAL-CLOSE 18-jul-2026, pedido Beto] botao "Fechar" do dashboard
+                    if trade.get('_manual_close_req'):
+                        reason = 'MANUAL_CLOSE'
                     if reason:
                         # [v10.18] Ledger: RELEASE margin first, then PNL_CREDIT
                         crypto_capital += trade['position_value']
@@ -14083,6 +14092,37 @@ v11_on_trade_close = _v11_on_trade_close
 # ═══════════════════════════════════════════════════════════════════
 # [v11-ops] Void trade + blacklist persistente
 # ═══════════════════════════════════════════════════════════════════
+
+@app.route('/ops/request-close/<trade_id>', methods=['POST'])
+@require_auth
+def ops_request_close(trade_id: str):
+    """[MANUAL-CLOSE 18-jul-2026, pedido Beto] Botao 'Fechar' do dashboard.
+
+    Marca a trade aberta para fechamento manual; o monitor_trades fecha no
+    proximo ciclo (segundos) pela MESMA via das saidas automaticas — fee,
+    ledger, cooldown, persistencia e devolucao de capital. close_reason =
+    MANUAL_CLOSE, entao toda intervencao humana fica mensuravel no historico.
+    Arbi usa a rota propria /arbitrage/force-close (duas pernas)."""
+    try:
+        with state_lock:
+            trade = next((t for t in stocks_open + crypto_open if t.get('id') == trade_id), None)
+            if not trade:
+                return jsonify({'ok': False, 'error': 'trade aberta nao encontrada'}), 404
+            if trade.get('_manual_close_req'):
+                return jsonify({'ok': True, 'status': 'ja solicitado',
+                                'symbol': trade.get('symbol')})
+            trade['_manual_close_req'] = True
+            _mc_info = {'symbol': trade.get('symbol'), 'pnl': trade.get('pnl'),
+                        'pnl_pct': trade.get('pnl_pct'),
+                        'book': trade.get('asset_type', 'stock')}
+        log.warning(f"[MANUAL-CLOSE] {_mc_info['symbol']} {trade_id}: fechamento manual "
+                    f"solicitado via dashboard (pnl {float(_mc_info.get('pnl_pct') or 0):+.2f}%)")
+        audit('MANUAL_CLOSE_REQUEST', {'trade_id': trade_id, **_mc_info})
+        return jsonify({'ok': True, 'status': 'fechamento solicitado — executa em segundos',
+                        **_mc_info})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
 
 @app.route('/ops/void-trade/<trade_id>', methods=['POST'])
 @require_auth

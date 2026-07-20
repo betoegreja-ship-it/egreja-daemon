@@ -996,6 +996,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'arbi_learning_loop':    600,    # 10min — sleep de 5min entre passes
     'nightly_audit_loop':    600,    # [NIGHT-AUDIT] beat a cada 60s; audit demora minutos
     'weekly_learning_loop':  900,    # [SHADOW-WEEKLY] beat 60s; pipeline domingo demora minutos
+    'inverse_shadow_loop':   300,    # [INVERSE-SHADOW] ciclo de 30s + DB
     'uspairs_shadow_loop':  2000,    # [18-jul] cadencia 15min + scan diario demorado
     'exit_requote_loop':     120,    # [EXIT-REAL] ciclo ~20s + fetches
     'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
@@ -1501,6 +1502,14 @@ _b3_entry_times = []
 # [SHORT-NEUTRAL 20-jul-2026] contador diario de shorts em dia NEUTRAL por mercado
 _short_neutral_count = {}
 
+# [INVERSE-SHADOW 20-jul-2026, pedido Beto] espelho invertido: para cada trade
+# real aberta (B3/NYSE/crypto), um gemeo com a direcao INVERTIDA e mesmo ritmo
+# (mesma entrada, mesma saida, mesmo tamanho, mesmas taxas). Experimento de 10
+# dias (ate 30/07) para testar se o sinal de entrada esta sistematicamente
+# certo, errado ou aleatorio. NADA de capital real: lista propria + tabela
+# inverse_shadow_trades. Env: INVERSE_SHADOW_ENABLED.
+inverse_shadow_open = []
+
 _win_front_cache = {'ts': 0, 'sym': None}
 
 def _mp_b3_fut_symbol():
@@ -1711,6 +1720,46 @@ def weekly_shadow_tag(trade_id, symbol, book, direction, learning_conf, regime):
                                   'learning_confidence': _lc, 'regime': regime})
     except Exception as _e:
         log.debug(f'[SHADOW-WEEKLY] {symbol}: {_e}')
+
+def inverse_shadow_on_open(trade):
+    """[INVERSE-SHADOW 20-jul-2026, pedido Beto] Cria o gemeo invertido de uma
+    trade real recem-aberta: mesmo simbolo/preco/qty/valor, direcao oposta.
+    Persistido como OPEN; o inverse_shadow_loop fecha quando a real fechar,
+    com o mesmo preco/hora de saida (mesmo ritmo, so a entrada invertida)."""
+    try:
+        if os.environ.get('INVERSE_SHADOW_ENABLED', 'true').lower() == 'false':
+            return
+        _dir_real = str(trade.get('direction', 'LONG')).upper()
+        inv = {'id': 'INV-' + str(trade.get('id')),
+               'real_trade_id': str(trade.get('id')),
+               'symbol': trade.get('symbol'),
+               'asset_type': trade.get('asset_type', 'stock'),
+               'market': trade.get('market', ''),
+               'direction': 'SHORT' if _dir_real == 'LONG' else 'LONG',
+               'entry_price': float(trade.get('entry_price') or 0),
+               'quantity': float(trade.get('quantity') or 0),
+               'position_value': float(trade.get('position_value') or 0),
+               'opened_at': str(trade.get('opened_at')), 'status': 'OPEN'}
+        with state_lock:
+            inverse_shadow_open.append(inv)
+        try:
+            conn = get_db()
+            if conn:
+                c = conn.cursor()
+                c.execute("""INSERT IGNORE INTO inverse_shadow_trades
+                    (id, real_trade_id, symbol, asset_type, market, direction,
+                     entry_price, quantity, position_value, opened_at, status)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN')""",
+                    (inv['id'], inv['real_trade_id'], inv['symbol'], inv['asset_type'],
+                     inv['market'], inv['direction'], inv['entry_price'], inv['quantity'],
+                     inv['position_value'], inv['opened_at']))
+                conn.commit(); c.close(); conn.close()
+        except Exception as _pe:
+            log.debug(f'[INVERSE-SHADOW] persist open: {_pe}')
+        log.info(f"[INVERSE-SHADOW] {inv['symbol']}: espelho {inv['direction']} aberto "
+                 f"(real {_dir_real}, {inv['id']})")
+    except Exception as _e:
+        log.debug(f'[INVERSE-SHADOW] open hook: {_e}')
 
 def _mp_minutes_to_close(mkt):
     """Minutos ate o fechamento do pregao; None se mercado fechado."""
@@ -9366,6 +9415,11 @@ def stock_execution_worker():
                                               market_regime.get('mode', 'UNKNOWN'))
                         except Exception:
                             pass
+                        # [INVERSE-SHADOW 20-jul-2026] gemeo invertido (10 dias)
+                        try:
+                            inverse_shadow_on_open(trade)
+                        except Exception:
+                            pass
                     else:
                         log.info(f'Risk-2 {sym}: {reason2 if not ok2 else "insufficient_capital"}')
                         # [L-8] Shadow: registrar sinal bloqueado no segundo nível
@@ -10098,6 +10152,11 @@ def auto_trade_crypto():
                                               str(trade.get('direction', 'LONG')).upper(),
                                               conf_c.get('final_confidence'),
                                               market_regime.get('mode', 'UNKNOWN'))
+                        except Exception:
+                            pass
+                        # [INVERSE-SHADOW 20-jul-2026] gemeo invertido (10 dias)
+                        try:
+                            inverse_shadow_on_open(trade)
                         except Exception:
                             pass
                     else:
@@ -11594,6 +11653,100 @@ def start_background_threads():
             except Exception as _e:
                 log.error(f'[WEEKLY-LEARN] falha: {_e}')
 
+    def _inverse_shadow_thread():
+        # [INVERSE-SHADOW 20-jul-2026, pedido Beto] fecha o gemeo invertido
+        # quando a trade real fecha: mesmo preco/hora de saida, PnL invertido,
+        # mesmas taxas (mesmo notional). Boot-resiliente: recarrega OPENs do DB
+        # e cria espelho de trades reais abertas que ainda nao tenham gemeo.
+        _tbl_ok = False
+        _loaded = False
+        while True:
+            beat('inverse_shadow_loop')
+            if os.environ.get('INVERSE_SHADOW_ENABLED', 'true').lower() == 'false':
+                time.sleep(60); continue
+            try:
+                conn = get_db()
+                if not conn:
+                    time.sleep(30); continue
+                c = conn.cursor()
+                if not _tbl_ok:
+                    c.execute("""CREATE TABLE IF NOT EXISTS inverse_shadow_trades (
+                        id VARCHAR(48) PRIMARY KEY, real_trade_id VARCHAR(48),
+                        symbol VARCHAR(20), asset_type VARCHAR(10), market VARCHAR(10),
+                        direction VARCHAR(6), entry_price DOUBLE, quantity DOUBLE,
+                        position_value DOUBLE, opened_at VARCHAR(32),
+                        exit_price DOUBLE NULL, closed_at VARCHAR(32) NULL,
+                        close_reason VARCHAR(48) NULL, pnl DOUBLE NULL,
+                        pnl_pct DOUBLE NULL, fees DOUBLE NULL,
+                        status VARCHAR(10) DEFAULT 'OPEN',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_status (status), INDEX idx_real (real_trade_id))""")
+                    conn.commit(); _tbl_ok = True
+                if not _loaded:
+                    c2 = conn.cursor(dictionary=True)
+                    c2.execute("SELECT * FROM inverse_shadow_trades WHERE status='OPEN'")
+                    _rows = c2.fetchall() or []
+                    c2.close()
+                    with state_lock:
+                        _mem_ids = {i['id'] for i in inverse_shadow_open}
+                        for _r in _rows:
+                            if _r['id'] not in _mem_ids:
+                                inverse_shadow_open.append({k: _r[k] for k in
+                                    ('id', 'real_trade_id', 'symbol', 'asset_type', 'market',
+                                     'direction', 'entry_price', 'quantity', 'position_value',
+                                     'opened_at')} | {'status': 'OPEN'})
+                    _loaded = True
+                    log.info(f'[INVERSE-SHADOW] worker iniciado — {len(inverse_shadow_open)} espelhos abertos')
+                # auto-cura: trade real aberta sem gemeo (ex: abriu antes do deploy)
+                with state_lock:
+                    _mem_real = {i['real_trade_id'] for i in inverse_shadow_open}
+                    _reais_abertas = [t for t in stocks_open + crypto_open
+                                      if str(t.get('id')) not in _mem_real]
+                for _t in _reais_abertas:
+                    inverse_shadow_on_open(_t)
+                # fechamento: real fechou => espelha a saida
+                with state_lock:
+                    _closed_by_id = {str(t.get('id')): t for t in
+                                     list(stocks_closed) + list(crypto_closed)}
+                    _pend = [dict(i) for i in inverse_shadow_open]
+                _done = []
+                for inv in _pend:
+                    _real = _closed_by_id.get(str(inv['real_trade_id']))
+                    if not _real:
+                        continue
+                    _xp = float(_real.get('exit_price') or 0)
+                    _ep = float(inv.get('entry_price') or 0)
+                    _q = float(inv.get('quantity') or 0)
+                    if _xp <= 0 or _ep <= 0:
+                        continue
+                    _gross = (_xp - _ep) * _q if inv['direction'] == 'LONG' else (_ep - _xp) * _q
+                    _fees = float(_real.get('fees') or 0)
+                    _pnl = _gross - _fees
+                    _pv = float(inv.get('position_value') or 0)
+                    _pct = round(_pnl / _pv * 100, 4) if _pv else 0
+                    _reason = 'MIRROR_' + str(_real.get('close_reason') or '?')
+                    c.execute("""UPDATE inverse_shadow_trades SET exit_price=%s,
+                        closed_at=%s, close_reason=%s, pnl=%s, pnl_pct=%s, fees=%s,
+                        status='CLOSED' WHERE id=%s""",
+                        (_xp, str(_real.get('closed_at')), _reason, round(_pnl, 2),
+                         _pct, _fees, inv['id']))
+                    _done.append(inv['id'])
+                    log.info(f"[INVERSE-SHADOW] {inv['symbol']}: espelho {inv['direction']} "
+                             f"fechado {_reason} pnl=${_pnl:,.0f} (real: ${float(_real.get('pnl') or 0):,.0f})")
+                if _done:
+                    conn.commit()
+                    with state_lock:
+                        inverse_shadow_open[:] = [i for i in inverse_shadow_open
+                                                  if i['id'] not in _done]
+                c.close(); conn.close()
+            except Exception as _e:
+                log.debug(f'[INVERSE-SHADOW] loop: {_e}')
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            time.sleep(30)
+
     defs = {
         'stock_price_loop':       stock_price_loop,
         'crypto_price_loop':      crypto_price_loop,
@@ -11614,6 +11767,7 @@ def start_background_threads():
         'brain_hourly_reminder':  _brain_hourly_reminder,   # [v2.2] lembrete horário do Unified Brain
         'nightly_audit_loop':     _nightly_audit_thread,    # [NIGHT-AUDIT 15-jul] auditoria noturna de precos
         'weekly_learning_loop':   _weekly_learning_thread,  # [SHADOW-WEEKLY 18-jul] runner semanal do adaptive_learning
+        'inverse_shadow_loop':    _inverse_shadow_thread,   # [INVERSE-SHADOW 20-jul] gemeo invertido (10 dias)
         'exit_requote_loop':      exit_requote_loop,        # [EXIT-REAL 16-jul] preco vivo p/ posicoes NYSE
         'brain_evolution_loop':   brain_evolution_loop,    # [v3.1] descongela brain_evolution (era 1x/startup)
         'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
@@ -17535,6 +17689,58 @@ def debug_shadow_rules():
         return jsonify({'rules': agg,
                         'note': 'Trades rotuladas na entrada, NADA foi bloqueado. '
                                 'Bucket deficitario = a regra teria economizado esse PnL.'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/inverse-shadow')
+def debug_inverse_shadow():
+    """[INVERSE-SHADOW 20-jul] Placar diario do experimento espelho invertido:
+    sistema real vs gemeo de entrada invertida, por book e por dia (10 dias)."""
+    try:
+        conn = get_db()
+        if not conn: return jsonify({'error': 'db'}), 500
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT i.asset_type, i.market, i.pnl AS inv_pnl,
+                   LEFT(i.closed_at, 10) AS dia, t.pnl AS real_pnl
+            FROM inverse_shadow_trades i
+            LEFT JOIN trades t ON t.id = i.real_trade_id
+            WHERE i.status = 'CLOSED'""")
+        rows = cur.fetchall() or []
+        def _bk(r):
+            if r.get('asset_type') == 'crypto': return 'CRIPTO'
+            return r.get('market') or 'STOCKS'
+        agg = {}
+        by_day = {}
+        for r in rows:
+            b = _bk(r)
+            a = agg.setdefault(b, {'n': 0, 'inv_wins': 0, 'inv_losses': 0,
+                                   'inv_pnl': 0.0, 'real_pnl': 0.0})
+            _ip = float(r.get('inv_pnl') or 0); _rp = float(r.get('real_pnl') or 0)
+            a['n'] += 1; a['inv_pnl'] += _ip; a['real_pnl'] += _rp
+            if _ip > 0: a['inv_wins'] += 1
+            elif _ip < 0: a['inv_losses'] += 1
+            d = by_day.setdefault(str(r.get('dia')), {}).setdefault(b, {'n': 0, 'inv_pnl': 0.0, 'real_pnl': 0.0, 'inv_wins': 0})
+            d['n'] += 1; d['inv_pnl'] += _ip; d['real_pnl'] += _rp
+            if _ip > 0: d['inv_wins'] += 1
+        cur.execute("SELECT COUNT(*) AS n FROM inverse_shadow_trades WHERE status='OPEN'")
+        n_open = (cur.fetchone() or {}).get('n', 0)
+        cur.close(); conn.close()
+        for b, a in agg.items():
+            a['inv_pnl'] = round(a['inv_pnl'], 2); a['real_pnl'] = round(a['real_pnl'], 2)
+            a['inv_wr'] = round(a['inv_wins'] / max(a['inv_wins'] + a['inv_losses'], 1) * 100, 1)
+            a['veredito'] = ('INVERTIDO MELHOR' if a['inv_pnl'] > a['real_pnl']
+                             else 'REAL MELHOR' if a['real_pnl'] > a['inv_pnl'] else 'EMPATE')
+        for d in by_day.values():
+            for b, v in d.items():
+                v['inv_pnl'] = round(v['inv_pnl'], 2); v['real_pnl'] = round(v['real_pnl'], 2)
+        return jsonify({'espelhos_abertos': int(n_open), 'totais_por_book': agg,
+                        'por_dia': dict(sorted(by_day.items())),
+                        'experimento': 'entrada invertida, mesmo ritmo de saida — 20/07 a 30/07',
+                        'nota': 'inv_pnl ja desconta as mesmas taxas do real. Se o invertido '
+                                'ganha consistentemente, o sinal de entrada esta ao contrario; '
+                                'se ambos perdem, o problema e timing/custo, nao direcao.'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

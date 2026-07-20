@@ -11891,6 +11891,24 @@ def start_background_threads():
         log.info('[LIMPEZA] DISABLE_LONG_HORIZON=true — pulando monthly_picks_worker (long_horizon morto)')
         defs.pop('monthly_picks_worker', None)
 
+    # ═══ [ARBI-SPLIT 20-jul-2026, teste aprovado Beto] Servico dedicado ═══
+    # SERVICE_ROLE=arbi  -> roda SO a Arbi (scan/monitor/learning + suporte):
+    #                       deploys do core nao a reiniciam nunca mais.
+    # SERVICE_ROLE=core  -> roda tudo MENOS a Arbi (que vive no servico dela);
+    #                       endpoints /arbitrage/* viram proxy (ARBI_SERVICE_URL).
+    # default 'all'      -> comportamento historico (monolito completo).
+    # Protecao anti-double-trade: os papeis sao mutuamente exclusivos por env.
+    _role = os.environ.get('SERVICE_ROLE', 'all').lower().strip()
+    _ARBI_ONLY_KEEP = {'arbi_scan_loop', 'arbi_monitor_loop', 'arbi_learning_loop',
+                       'watchdog', 'persistence_worker', 'alert_worker', 'snapshot_loop'}
+    _ARBI_THREADS = {'arbi_scan_loop', 'arbi_monitor_loop', 'arbi_learning_loop'}
+    if _role == 'arbi':
+        defs = {k: v for k, v in defs.items() if k in _ARBI_ONLY_KEEP}
+        log.info(f'[ARBI-SPLIT] SERVICE_ROLE=arbi — rodando apenas: {sorted(defs.keys())}')
+    elif _role == 'core':
+        defs = {k: v for k, v in defs.items() if k not in _ARBI_THREADS}
+        log.info('[ARBI-SPLIT] SERVICE_ROLE=core — threads da Arbi desligadas (vivem no servico dedicado)')
+
     # [v11-PAIRS 24-jun-2026] Adiciona pairs_scan_loop se pairs_engine carregou.
     # Default: ENABLED. Para desligar, setar DISABLE_PAIRS=true no Railway.
     _disable_pairs = os.environ.get('DISABLE_PAIRS', 'false').lower() == 'true'
@@ -12041,6 +12059,11 @@ def start_background_threads():
                 return wrapper
             _wrapped = _make_deriv_wrapper(dfn, dname, _deriv_loop_args)
             defs[dname] = _wrapped
+    # [ARBI-SPLIT 20-jul] re-aplica o filtro de papel DEPOIS de todas as adicoes
+    # tardias (pairs/calibrator/specialist/deriv) — no papel 'arbi' nada alem
+    # do conjunto minimo pode subir.
+    if _role == 'arbi':
+        defs = {k: v for k, v in defs.items() if k in _ARBI_ONLY_KEEP}
     now=time.time()
     for name,fn in defs.items():
         thread_fns[name]=fn; thread_restart_count[name]=0
@@ -17061,6 +17084,9 @@ def arbi_kill_switch_reset():
 
 @app.route('/arbitrage/spreads')
 def arbi_spreads_route():
+    _px = _arbi_proxy_or_none()
+    if _px is not None:
+        return _px
     with state_lock: spreads=list(arbi_spreads.values())
     spreads.sort(key=lambda x:x['abs_spread'],reverse=True)
     return jsonify({'spreads':spreads,'opportunities':[s for s in spreads if s['opportunity']],
@@ -17069,6 +17095,9 @@ def arbi_spreads_route():
 
 @app.route('/arbitrage/force-close', methods=['POST'])
 def arbi_force_close():
+    _px = _arbi_proxy_or_none()
+    if _px is not None:
+        return _px
     """[v10.14] Fechar trade arbi manualmente — remove da memória e fecha no banco."""
     global arbi_capital
     data = request.json or {}
@@ -17197,8 +17226,32 @@ def arbi_fix_trade():
         try: cur.close(); conn.close()
         except: pass
 
+# ═══ [ARBI-SPLIT 20-jul-2026] Proxy: no papel 'core', os dados vivos da Arbi
+# moram no servico dedicado — /arbitrage/* repassa para ARBI_SERVICE_URL, com
+# isso o dashboard continua identico para o Beto.
+def _arbi_proxy_or_none():
+    if os.environ.get('SERVICE_ROLE', 'all').lower().strip() != 'core':
+        return None
+    _url = os.environ.get('ARBI_SERVICE_URL', '').strip().rstrip('/')
+    if not _url:
+        return None
+    try:
+        if request.method == 'POST':
+            _rq = requests.post(_url + request.path, json=(request.json or {}),
+                                headers={'X-API-Key': API_SECRET_KEY}, timeout=15)
+        else:
+            _rq = requests.get(_url + request.path, params=request.args,
+                               headers={'X-API-Key': API_SECRET_KEY}, timeout=15)
+        return (_rq.text, _rq.status_code, {'Content-Type': 'application/json'})
+    except Exception as _e:
+        return (json.dumps({'error': f'arbi service indisponivel: {_e}'}), 502,
+                {'Content-Type': 'application/json'})
+
 @app.route('/arbitrage/trades')
 def arbi_trades_route():
+    _px = _arbi_proxy_or_none()
+    if _px is not None:
+        return _px
     with state_lock:
         open_t=list(arbi_open); closed_t=list(arbi_closed); cap=arbi_capital
         c_pnl=sum(t.get('pnl',0) for t in arbi_closed); o_pnl=sum(t.get('pnl',0) for t in arbi_open)

@@ -8736,7 +8736,20 @@ def stock_execution_worker():
                             # experimento comeca SO na NYSE (SHORT_NEUTRAL_MARKETS).
                             _sn_mkts = [x.strip().upper() for x in
                                         os.environ.get('SHORT_NEUTRAL_MARKETS', 'NYSE').split(',') if x.strip()]
-                            if _mp.get('state') == 'NEUTRAL' and mkt_type in _sn_mkts and \
+                            # [SELL-THE-RIP 20-jul-2026, decisao Beto] Repique intraday
+                            # (RISK_ON) DENTRO de tendencia de 20d DOWN do indice =
+                            # short classico de venda no rally. Sem isso, dia de
+                            # repique em bear market fecha as duas portas (long
+                            # vetado pelo regime 20d, short vetado pelo RISK_ON).
+                            # Mesmo pedagio e teto do experimento NEUTRAL.
+                            _sn_rip = False
+                            if mkt_type == 'NYSE' and _mp.get('state') == 'RISK_ON' and \
+                               os.environ.get('SELL_THE_RIP_ENABLED', 'true').lower() != 'false':
+                                try:
+                                    _sn_rip = (_nyse_index_regime() == 'DOWN')
+                                except Exception:
+                                    _sn_rip = False
+                            if ((_mp.get('state') == 'NEUTRAL' and mkt_type in _sn_mkts) or _sn_rip) and \
                                os.environ.get('SHORT_NEUTRAL_ENABLED', 'true').lower() != 'false':
                                 _sn_strength = 100 - score
                                 _sn_thr = _eff_min + float(os.environ.get('SHORT_NEUTRAL_SCORE_BONUS', 10))

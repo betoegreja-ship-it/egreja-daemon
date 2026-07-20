@@ -5532,7 +5532,7 @@ def pattern_discovery_loop():
         # Dormir em pequenos incrementos batendo coração — evita FROZEN
         for _ in range(int(6*3600/30)):  # 6h em pedaços de 30s
             beat('pattern_discovery')
-            time.sleep(20)
+            time.sleep(30)
         beat('pattern_discovery')
         if _learning_frozen():
             continue  # [P0-FIX 02-jul-2026] LEARNING_FREEZE pausa mineração
@@ -7289,7 +7289,7 @@ def stock_price_loop():
         beat('stock_price_loop')
         # [v10.6-P3] Cadência adaptativa: 30s durante pregão, 5min fora
         if is_b3_open() or is_nyse_open():
-            time.sleep(20)
+            time.sleep(30)
         else:
             # [v10.6-P0-2] Sleep fragmentado: 5×60s com beat intermediário
             # Watchdog timeout = 420s; fragmentos de 60s garantem < 420s entre beats
@@ -10449,7 +10449,7 @@ def arbi_learning_loop():
         # Sleep 5min em chunks de 30s com beat — watchdog vigilante
         for _ in range(10):  # 10 x 30s = 300s = 5min
             beat('arbi_learning_loop')
-            time.sleep(20)
+            time.sleep(30)
         beat('arbi_learning_loop')
         try:
             run_arbi_pattern_learning()

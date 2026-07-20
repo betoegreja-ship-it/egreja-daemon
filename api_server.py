@@ -1498,6 +1498,8 @@ def _nyse_cluster_break():
         return None
 
 _b3_entry_times = []
+# [SHORT-NEUTRAL 20-jul-2026] contador diario de shorts em dia NEUTRAL por mercado
+_short_neutral_count = {}
 
 _win_front_cache = {'ts': 0, 'sym': None}
 
@@ -8720,11 +8722,36 @@ def stock_execution_worker():
                         # mare, nunca contra. Historico: shorts as cegas em abril
                         # = -$74.6k; em marco (calibracao sa) = +$8.8k. Env:
                         # STOCKS_SHORT_REQUIRE_RISKOFF=false libera geral.
+                        # [SHORT-NEUTRAL 20-jul-2026, decisao Beto] Dia NEUTRAL
+                        # liberado com pedagio: forca vendedora >= _eff_min+10 e
+                        # teto de SHORT_NEUTRAL_MAX_DAY (3) por mercado/dia.
+                        # RISK_ON continua proibido (nunca vender mercado subindo).
+                        # Monitoravel: trades ficam com _short_neutral=True.
                         if is_short and _mp.get('state') != 'RISK_OFF' and \
                            os.environ.get('STOCKS_SHORT_REQUIRE_RISKOFF', 'true').lower() != 'false':
-                            log.info(f"[SHORT-RISKOFF-GATE] {sym}({mkt_type}): dia {_mp.get('state')} "
-                                     f"— short stocks so em RISK_OFF — {_mp.get('detail', '')}")
-                            continue
+                            _sn_ok = False
+                            if _mp.get('state') == 'NEUTRAL' and \
+                               os.environ.get('SHORT_NEUTRAL_ENABLED', 'true').lower() != 'false':
+                                _sn_strength = 100 - score
+                                _sn_thr = _eff_min + float(os.environ.get('SHORT_NEUTRAL_SCORE_BONUS', 10))
+                                _sn_day = datetime.utcnow().strftime('%Y-%m-%d')
+                                _sn_key = f'{mkt_type}:{_sn_day}'
+                                _sn_count = _short_neutral_count.get(_sn_key, 0)
+                                _sn_max = int(os.environ.get('SHORT_NEUTRAL_MAX_DAY', 3))
+                                if _sn_strength >= _sn_thr and _sn_count < _sn_max:
+                                    _sn_ok = True
+                                    _short_neutral_count[_sn_key] = _sn_count + 1
+                                    sig['_short_neutral'] = True
+                                    log.info(f"[SHORT-NEUTRAL] {sym}({mkt_type}): liberado com pedagio "
+                                             f"(forca={_sn_strength:.0f}>={_sn_thr:.0f}, "
+                                             f"{_sn_count + 1}/{_sn_max} do dia)")
+                                elif _sn_strength >= _sn_thr:
+                                    log.info(f"[SHORT-NEUTRAL] {sym}({mkt_type}): teto diario atingido "
+                                             f"({_sn_max}) — sem mais shorts NEUTRAL hoje")
+                            if not _sn_ok:
+                                log.info(f"[SHORT-RISKOFF-GATE] {sym}({mkt_type}): dia {_mp.get('state')} "
+                                         f"— short exige RISK_OFF (ou NEUTRAL c/ pedagio) — {_mp.get('detail', '')}")
+                                continue
                         if _mp.get('state') == 'RISK_OFF' and is_long and score < _eff_min + _mp_pen:
                             log.info(f"[MP-RISKOFF-BLOCK] {sym}({mkt_type}): LONG em dia RISK_OFF exige "
                                      f"score>={_eff_min + _mp_pen:.0f} (score={score}) — {_mp.get('detail', '')}")

@@ -1722,42 +1722,54 @@ def weekly_shadow_tag(trade_id, symbol, book, direction, learning_conf, regime):
         log.debug(f'[SHADOW-WEEKLY] {symbol}: {_e}')
 
 def inverse_shadow_on_open(trade):
-    """[INVERSE-SHADOW 20-jul-2026, pedido Beto] Cria o gemeo invertido de uma
-    trade real recem-aberta: mesmo simbolo/preco/qty/valor, direcao oposta.
-    Persistido como OPEN; o inverse_shadow_loop fecha quando a real fechar,
-    com o mesmo preco/hora de saida (mesmo ritmo, so a entrada invertida)."""
+    """[INVERSE-SHADOW 20-jul-2026, pedido Beto] Cria DOIS gemeos invertidos da
+    trade real recem-aberta (mesmo simbolo/preco/qty/valor, direcao oposta):
+      ESPELHO (INV-):  fecha quando a real fechar, mesmo preco/hora — mede a
+                       direcao pura da entrada (segue o ritmo da principal).
+      GERIDO  (INVG-): vigiado pelas MESMAS protecoes do sistema (early stop
+                       ATR, stop, breakeven, trailing, timeout) sobre a posicao
+                       invertida — mede a entrada invertida como estrategia."""
     try:
         if os.environ.get('INVERSE_SHADOW_ENABLED', 'true').lower() == 'false':
             return
         _dir_real = str(trade.get('direction', 'LONG')).upper()
-        inv = {'id': 'INV-' + str(trade.get('id')),
-               'real_trade_id': str(trade.get('id')),
-               'symbol': trade.get('symbol'),
-               'asset_type': trade.get('asset_type', 'stock'),
-               'market': trade.get('market', ''),
-               'direction': 'SHORT' if _dir_real == 'LONG' else 'LONG',
-               'entry_price': float(trade.get('entry_price') or 0),
-               'quantity': float(trade.get('quantity') or 0),
-               'position_value': float(trade.get('position_value') or 0),
-               'opened_at': str(trade.get('opened_at')), 'status': 'OPEN'}
+        _base = {'real_trade_id': str(trade.get('id')),
+                 'symbol': trade.get('symbol'),
+                 'asset_type': trade.get('asset_type', 'stock'),
+                 'market': trade.get('market', ''),
+                 'direction': 'SHORT' if _dir_real == 'LONG' else 'LONG',
+                 'entry_price': float(trade.get('entry_price') or 0),
+                 'quantity': float(trade.get('quantity') or 0),
+                 'position_value': float(trade.get('position_value') or 0),
+                 'opened_at': str(trade.get('opened_at')), 'status': 'OPEN',
+                 'atr_pct': float(trade.get('_atr_pct') or 0),
+                 'peak_pnl_pct': 0.0}
+        _twins = []
+        for _mode, _pfx in (('MIRROR', 'INV-'), ('MANAGED', 'INVG-')):
+            inv = dict(_base)
+            inv['id'] = _pfx + str(trade.get('id'))
+            inv['mode'] = _mode
+            _twins.append(inv)
         with state_lock:
-            inverse_shadow_open.append(inv)
+            inverse_shadow_open.extend(_twins)
         try:
             conn = get_db()
             if conn:
                 c = conn.cursor()
-                c.execute("""INSERT IGNORE INTO inverse_shadow_trades
-                    (id, real_trade_id, symbol, asset_type, market, direction,
-                     entry_price, quantity, position_value, opened_at, status)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN')""",
-                    (inv['id'], inv['real_trade_id'], inv['symbol'], inv['asset_type'],
-                     inv['market'], inv['direction'], inv['entry_price'], inv['quantity'],
-                     inv['position_value'], inv['opened_at']))
+                for inv in _twins:
+                    c.execute("""INSERT IGNORE INTO inverse_shadow_trades
+                        (id, real_trade_id, symbol, asset_type, market, direction,
+                         entry_price, quantity, position_value, opened_at, status,
+                         mode, atr_pct)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s,%s)""",
+                        (inv['id'], inv['real_trade_id'], inv['symbol'], inv['asset_type'],
+                         inv['market'], inv['direction'], inv['entry_price'], inv['quantity'],
+                         inv['position_value'], inv['opened_at'], inv['mode'], inv['atr_pct']))
                 conn.commit(); c.close(); conn.close()
         except Exception as _pe:
             log.debug(f'[INVERSE-SHADOW] persist open: {_pe}')
-        log.info(f"[INVERSE-SHADOW] {inv['symbol']}: espelho {inv['direction']} aberto "
-                 f"(real {_dir_real}, {inv['id']})")
+        log.info(f"[INVERSE-SHADOW] {_base['symbol']}: gemeos {_base['direction']} abertos "
+                 f"(espelho + gerido, real {_dir_real})")
     except Exception as _e:
         log.debug(f'[INVERSE-SHADOW] open hook: {_e}')
 
@@ -5520,7 +5532,7 @@ def pattern_discovery_loop():
         # Dormir em pequenos incrementos batendo coração — evita FROZEN
         for _ in range(int(6*3600/30)):  # 6h em pedaços de 30s
             beat('pattern_discovery')
-            time.sleep(30)
+            time.sleep(20)
         beat('pattern_discovery')
         if _learning_frozen():
             continue  # [P0-FIX 02-jul-2026] LEARNING_FREEZE pausa mineração
@@ -7277,7 +7289,7 @@ def stock_price_loop():
         beat('stock_price_loop')
         # [v10.6-P3] Cadência adaptativa: 30s durante pregão, 5min fora
         if is_b3_open() or is_nyse_open():
-            time.sleep(30)
+            time.sleep(20)
         else:
             # [v10.6-P0-2] Sleep fragmentado: 5×60s com beat intermediário
             # Watchdog timeout = 420s; fragmentos de 60s garantem < 420s entre beats
@@ -10437,7 +10449,7 @@ def arbi_learning_loop():
         # Sleep 5min em chunks de 30s com beat — watchdog vigilante
         for _ in range(10):  # 10 x 30s = 300s = 5min
             beat('arbi_learning_loop')
-            time.sleep(30)
+            time.sleep(20)
         beat('arbi_learning_loop')
         try:
             run_arbi_pattern_learning()
@@ -11682,6 +11694,14 @@ def start_background_threads():
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         INDEX idx_status (status), INDEX idx_real (real_trade_id))""")
                     conn.commit(); _tbl_ok = True
+                    # [INVERSE-SHADOW v2] colunas do braco GERIDO (idempotente)
+                    for _ddl in ("ALTER TABLE inverse_shadow_trades ADD COLUMN mode VARCHAR(8) DEFAULT 'MIRROR'",
+                                 "ALTER TABLE inverse_shadow_trades ADD COLUMN atr_pct DOUBLE DEFAULT 0",
+                                 "ALTER TABLE inverse_shadow_trades ADD COLUMN peak_pnl_pct DOUBLE DEFAULT 0"):
+                        try:
+                            c.execute(_ddl); conn.commit()
+                        except Exception:
+                            pass
                 if not _loaded:
                     c2 = conn.cursor(dictionary=True)
                     c2.execute("SELECT * FROM inverse_shadow_trades WHERE status='OPEN'")
@@ -11691,12 +11711,17 @@ def start_background_threads():
                         _mem_ids = {i['id'] for i in inverse_shadow_open}
                         for _r in _rows:
                             if _r['id'] not in _mem_ids:
-                                inverse_shadow_open.append({k: _r[k] for k in
-                                    ('id', 'real_trade_id', 'symbol', 'asset_type', 'market',
-                                     'direction', 'entry_price', 'quantity', 'position_value',
-                                     'opened_at')} | {'status': 'OPEN'})
+                                _rec = {k: _r.get(k) for k in
+                                        ('id', 'real_trade_id', 'symbol', 'asset_type', 'market',
+                                         'direction', 'entry_price', 'quantity', 'position_value',
+                                         'opened_at')}
+                                _rec['status'] = 'OPEN'
+                                _rec['mode'] = _r.get('mode') or ('MANAGED' if str(_r['id']).startswith('INVG-') else 'MIRROR')
+                                _rec['atr_pct'] = float(_r.get('atr_pct') or 0)
+                                _rec['peak_pnl_pct'] = float(_r.get('peak_pnl_pct') or 0)
+                                inverse_shadow_open.append(_rec)
                     _loaded = True
-                    log.info(f'[INVERSE-SHADOW] worker iniciado — {len(inverse_shadow_open)} espelhos abertos')
+                    log.info(f'[INVERSE-SHADOW] worker iniciado — {len(inverse_shadow_open)} gemeos abertos')
                 # auto-cura: trade real aberta sem gemeo (ex: abriu antes do deploy)
                 with state_lock:
                     _mem_real = {i['real_trade_id'] for i in inverse_shadow_open}
@@ -11704,35 +11729,111 @@ def start_background_threads():
                                       if str(t.get('id')) not in _mem_real]
                 for _t in _reais_abertas:
                     inverse_shadow_on_open(_t)
-                # fechamento: real fechou => espelha a saida
+                # fechamentos
                 with state_lock:
                     _closed_by_id = {str(t.get('id')): t for t in
                                      list(stocks_closed) + list(crypto_closed)}
                     _pend = [dict(i) for i in inverse_shadow_open]
                 _done = []
-                for inv in _pend:
-                    _real = _closed_by_id.get(str(inv['real_trade_id']))
-                    if not _real:
-                        continue
-                    _xp = float(_real.get('exit_price') or 0)
+                _now_inv = datetime.utcnow()
+
+                def _close_inv(inv, xp, closed_at, reason, fees):
                     _ep = float(inv.get('entry_price') or 0)
                     _q = float(inv.get('quantity') or 0)
-                    if _xp <= 0 or _ep <= 0:
-                        continue
-                    _gross = (_xp - _ep) * _q if inv['direction'] == 'LONG' else (_ep - _xp) * _q
-                    _fees = float(_real.get('fees') or 0)
-                    _pnl = _gross - _fees
+                    if xp <= 0 or _ep <= 0:
+                        return None
+                    _gross = (xp - _ep) * _q if inv['direction'] == 'LONG' else (_ep - xp) * _q
+                    _pnl = _gross - fees
                     _pv = float(inv.get('position_value') or 0)
                     _pct = round(_pnl / _pv * 100, 4) if _pv else 0
-                    _reason = 'MIRROR_' + str(_real.get('close_reason') or '?')
                     c.execute("""UPDATE inverse_shadow_trades SET exit_price=%s,
                         closed_at=%s, close_reason=%s, pnl=%s, pnl_pct=%s, fees=%s,
-                        status='CLOSED' WHERE id=%s""",
-                        (_xp, str(_real.get('closed_at')), _reason, round(_pnl, 2),
-                         _pct, _fees, inv['id']))
+                        peak_pnl_pct=%s, status='CLOSED' WHERE id=%s""",
+                        (xp, closed_at, reason, round(_pnl, 2), _pct, fees,
+                         float(inv.get('peak_pnl_pct') or 0), inv['id']))
                     _done.append(inv['id'])
-                    log.info(f"[INVERSE-SHADOW] {inv['symbol']}: espelho {inv['direction']} "
-                             f"fechado {_reason} pnl=${_pnl:,.0f} (real: ${float(_real.get('pnl') or 0):,.0f})")
+                    return _pnl
+
+                for inv in _pend:
+                    _real = _closed_by_id.get(str(inv['real_trade_id']))
+                    if inv.get('mode', 'MIRROR') == 'MIRROR':
+                        # ESPELHO: fecha junto com a real, mesmo preco/hora
+                        if not _real:
+                            continue
+                        _xp = float(_real.get('exit_price') or 0)
+                        _fees = float(_real.get('fees') or 0)
+                        _pnl = _close_inv(inv, _xp, str(_real.get('closed_at')),
+                                          'MIRROR_' + str(_real.get('close_reason') or '?'), _fees)
+                        if _pnl is not None:
+                            log.info(f"[INVERSE-SHADOW] {inv['symbol']}: espelho fechado "
+                                     f"pnl=${_pnl:,.0f} (real: ${float(_real.get('pnl') or 0):,.0f})")
+                        continue
+                    # GERIDO: monitorado pelas regras do sistema sobre a posicao invertida
+                    _is_c = inv.get('asset_type') == 'crypto'
+                    _sym_p = inv['symbol'] + 'USDT' if _is_c else inv['symbol']
+                    if _is_c:
+                        _px = float(crypto_prices.get(_sym_p) or 0)
+                    else:
+                        _pd = stock_prices.get(inv['symbol'])
+                        _px = float((_pd or {}).get('price') or 0)
+                    _ep = float(inv.get('entry_price') or 0)
+                    if _px <= 0 or _ep <= 0 or (_ep > 0 and _px < _ep * 0.05):
+                        continue
+                    _pct_now = ((_px / _ep - 1) * 100 if inv['direction'] == 'LONG'
+                                else (1 - _px / _ep) * 100)
+                    inv_ref = None
+                    with state_lock:
+                        for _i in inverse_shadow_open:
+                            if _i['id'] == inv['id']:
+                                _i['peak_pnl_pct'] = max(float(_i.get('peak_pnl_pct') or 0), _pct_now)
+                                inv_ref = dict(_i)
+                                break
+                    if not inv_ref:
+                        continue
+                    _peak = float(inv_ref.get('peak_pnl_pct') or 0)
+                    try:
+                        _age_min = (_now_inv - datetime.fromisoformat(
+                            str(inv['opened_at'])[:19])).total_seconds() / 60
+                    except Exception:
+                        _age_min = 0
+                    _atr = float(inv.get('atr_pct') or 0) or 1.0
+                    _cap = float(os.environ.get('MAX_STOP_PCT_CRYPTO' if _is_c else 'MAX_STOP_PCT_STOCKS',
+                                                2.5 if _is_c else 2.0))
+                    _eff_sl = min(max(_atr, 0.6), _cap)
+                    _tp = float(os.environ.get('TRAILING_PEAK_CRYPTO' if _is_c else 'TRAILING_PEAK_STOCKS',
+                                               0.7 if _is_c else 0.8))
+                    _td = float(os.environ.get('TRAILING_DROP_CRYPTO' if _is_c else 'TRAILING_DROP_STOCKS',
+                                               0.25 if _is_c else 0.1))
+                    _tmo_h = 4.0 if _is_c else 2.0
+                    _rsn = None
+                    if _pct_now <= -float(os.environ.get('CATASTROPHIC_STOP_PCT', 4.0)):
+                        _rsn = 'CATASTROPHIC_STOP'
+                    elif _pct_now <= -_eff_sl:
+                        _rsn = 'STOP_LOSS'
+                    elif _age_min >= 15 and _peak < 0.3 and _pct_now <= -max(0.6, _atr * 0.8):
+                        _rsn = 'EARLY_STOP'
+                    elif _peak >= 0.5 and _pct_now <= 0.05:
+                        _rsn = 'BREAKEVEN_PROTECT'
+                    elif _peak >= _tp and _pct_now <= _peak - _td:
+                        _rsn = 'TRAILING_STOP'
+                    elif _age_min >= _tmo_h * 60:
+                        _rsn = 'TIMEOUT'
+                    elif not _is_c and not market_open_for(inv.get('market', '')) and _age_min > 30:
+                        _rsn = 'MARKET_CLOSE'
+                    if _rsn:
+                        _fees_g = float((_real or {}).get('fees') or 0)
+                        if not _fees_g:
+                            try:
+                                _fc = {'position_value': inv.get('position_value'),
+                                       'asset_type': inv.get('asset_type'), 'pnl': 0}
+                                apply_fee_to_trade(_fc)
+                                _fees_g = float(_fc.get('fees') or 0)
+                            except Exception:
+                                _fees_g = 0
+                        _pnl = _close_inv(inv_ref, _px, _now_inv.isoformat(), _rsn, _fees_g)
+                        if _pnl is not None:
+                            log.info(f"[INVERSE-SHADOW] {inv['symbol']}: GERIDO {inv['direction']} "
+                                     f"fechado {_rsn} pnl=${_pnl:,.0f} (peak={_peak:+.2f}%)")
                 if _done:
                     conn.commit()
                     with state_lock:
@@ -11745,7 +11846,7 @@ def start_background_threads():
                     conn.close()
                 except Exception:
                     pass
-            time.sleep(30)
+            time.sleep(20)
 
     defs = {
         'stock_price_loop':       stock_price_loop,
@@ -17702,15 +17803,16 @@ def debug_inverse_shadow():
         if not conn: return jsonify({'error': 'db'}), 500
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT i.asset_type, i.market, i.pnl AS inv_pnl,
+            SELECT i.id, i.asset_type, i.market, i.pnl AS inv_pnl,
                    LEFT(i.closed_at, 10) AS dia, t.pnl AS real_pnl
             FROM inverse_shadow_trades i
             LEFT JOIN trades t ON t.id = i.real_trade_id
             WHERE i.status = 'CLOSED'""")
         rows = cur.fetchall() or []
         def _bk(r):
-            if r.get('asset_type') == 'crypto': return 'CRIPTO'
-            return r.get('market') or 'STOCKS'
+            _m = 'GERIDO' if str(r.get('id', '')).startswith('INVG-') else 'ESPELHO'
+            if r.get('asset_type') == 'crypto': return f'CRIPTO-{_m}'
+            return f"{r.get('market') or 'STOCKS'}-{_m}"
         agg = {}
         by_day = {}
         for r in rows:

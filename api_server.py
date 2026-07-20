@@ -8730,7 +8730,13 @@ def stock_execution_worker():
                         if is_short and _mp.get('state') != 'RISK_OFF' and \
                            os.environ.get('STOCKS_SHORT_REQUIRE_RISKOFF', 'true').lower() != 'false':
                             _sn_ok = False
-                            if _mp.get('state') == 'NEUTRAL' and \
+                            # [SHORT-NEUTRAL v2 20-jul] contrafactual do dia 20/07:
+                            # vendas NEUTRAL certas na NYSE (5/6, +0.25% med) e
+                            # erradas na B3 (5/6 perdedoras, -0.31%). Decisao Beto:
+                            # experimento comeca SO na NYSE (SHORT_NEUTRAL_MARKETS).
+                            _sn_mkts = [x.strip().upper() for x in
+                                        os.environ.get('SHORT_NEUTRAL_MARKETS', 'NYSE').split(',') if x.strip()]
+                            if _mp.get('state') == 'NEUTRAL' and mkt_type in _sn_mkts and \
                                os.environ.get('SHORT_NEUTRAL_ENABLED', 'true').lower() != 'false':
                                 _sn_strength = 100 - score
                                 _sn_thr = _eff_min + float(os.environ.get('SHORT_NEUTRAL_SCORE_BONUS', 10))

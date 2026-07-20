@@ -1744,30 +1744,17 @@ def inverse_shadow_on_open(trade):
                  'opened_at': str(trade.get('opened_at')), 'status': 'OPEN',
                  'atr_pct': float(trade.get('_atr_pct') or 0),
                  'peak_pnl_pct': 0.0}
+        # [DEADLOCK-FIX 20-jul] Este hook e chamado DENTRO de blocos que ja
+        # seguram state_lock (crypto loop) — entao NAO pode pegar a trava nem
+        # fazer I/O. So append atomico em memoria; o worker persiste no DB.
         _twins = []
         for _mode, _pfx in (('MIRROR', 'INV-'), ('MANAGED', 'INVG-')):
             inv = dict(_base)
             inv['id'] = _pfx + str(trade.get('id'))
             inv['mode'] = _mode
+            inv['_persisted'] = False
             _twins.append(inv)
-        with state_lock:
-            inverse_shadow_open.extend(_twins)
-        try:
-            conn = get_db()
-            if conn:
-                c = conn.cursor()
-                for inv in _twins:
-                    c.execute("""INSERT IGNORE INTO inverse_shadow_trades
-                        (id, real_trade_id, symbol, asset_type, market, direction,
-                         entry_price, quantity, position_value, opened_at, status,
-                         mode, atr_pct)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s,%s)""",
-                        (inv['id'], inv['real_trade_id'], inv['symbol'], inv['asset_type'],
-                         inv['market'], inv['direction'], inv['entry_price'], inv['quantity'],
-                         inv['position_value'], inv['opened_at'], inv['mode'], inv['atr_pct']))
-                conn.commit(); c.close(); conn.close()
-        except Exception as _pe:
-            log.debug(f'[INVERSE-SHADOW] persist open: {_pe}')
+        inverse_shadow_open.extend(_twins)
         log.info(f"[INVERSE-SHADOW] {_base['symbol']}: gemeos {_base['direction']} abertos "
                  f"(espelho + gerido, real {_dir_real})")
     except Exception as _e:
@@ -11722,18 +11709,39 @@ def start_background_threads():
                                 inverse_shadow_open.append(_rec)
                     _loaded = True
                     log.info(f'[INVERSE-SHADOW] worker iniciado — {len(inverse_shadow_open)} gemeos abertos')
+                # [DEADLOCK-FIX 20-jul] persistir gemeos criados pelo hook
+                # (o hook nao toca DB nem lock — quem grava e o worker)
+                _to_persist = [i for i in list(inverse_shadow_open) if not i.get('_persisted')]
+                for inv in _to_persist:
+                    try:
+                        c.execute("""INSERT IGNORE INTO inverse_shadow_trades
+                            (id, real_trade_id, symbol, asset_type, market, direction,
+                             entry_price, quantity, position_value, opened_at, status,
+                             mode, atr_pct)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s,%s)""",
+                            (inv['id'], inv['real_trade_id'], inv['symbol'], inv['asset_type'],
+                             inv['market'], inv['direction'], inv['entry_price'], inv['quantity'],
+                             inv['position_value'], inv['opened_at'], inv.get('mode', 'MIRROR'),
+                             float(inv.get('atr_pct') or 0)))
+                        inv['_persisted'] = True
+                    except Exception as _pe:
+                        log.debug(f'[INVERSE-SHADOW] persist: {_pe}')
+                if _to_persist:
+                    conn.commit()
                 # auto-cura: trade real aberta sem gemeo (ex: abriu antes do deploy)
+                _mem_real = {i['real_trade_id'] for i in list(inverse_shadow_open)}
                 with state_lock:
-                    _mem_real = {i['real_trade_id'] for i in inverse_shadow_open}
-                    _reais_abertas = [t for t in stocks_open + crypto_open
+                    _reais_abertas = [dict(t) for t in stocks_open + crypto_open
                                       if str(t.get('id')) not in _mem_real]
                 for _t in _reais_abertas:
                     inverse_shadow_on_open(_t)
-                # fechamentos
+                # fechamentos — lookup restrito aos ids pendentes (lock curto)
+                _pend = [dict(i) for i in list(inverse_shadow_open)]
+                _pend_ids = {str(i['real_trade_id']) for i in _pend}
                 with state_lock:
-                    _closed_by_id = {str(t.get('id')): t for t in
-                                     list(stocks_closed) + list(crypto_closed)}
-                    _pend = [dict(i) for i in inverse_shadow_open]
+                    _closed_by_id = {str(t.get('id')): t
+                                     for t in list(stocks_closed) + list(crypto_closed)
+                                     if str(t.get('id')) in _pend_ids}
                 _done = []
                 _now_inv = datetime.utcnow()
 

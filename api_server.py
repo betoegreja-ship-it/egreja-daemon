@@ -16487,10 +16487,43 @@ def _get_db_trade_stats():
         log.error(f'_get_db_trade_stats: {e}')
         return {}
 
+# ═══ [ARBI-SPLIT-STATS 21-jul-2026] No papel 'core', a Arbi vive no servico
+# dedicado — a memoria local congela na separacao. Este helper busca a lista
+# viva do servico (cache 15s) para o /stats nao subestimar o total. Fallback:
+# memoria local se o servico estiver fora.
+_arbi_live_cache = {'ts': 0, 'closed': None, 'open': None, 'cap': None}
+
+def _live_arbi_lists():
+    import time as _t
+    if os.environ.get('SERVICE_ROLE', 'all').lower().strip() != 'core':
+        with state_lock:
+            return list(arbi_closed), list(arbi_open), arbi_capital
+    _url = os.environ.get('ARBI_SERVICE_URL', '').strip().rstrip('/')
+    if not _url:
+        with state_lock:
+            return list(arbi_closed), list(arbi_open), arbi_capital
+    if _t.time() - _arbi_live_cache['ts'] < 15 and _arbi_live_cache['closed'] is not None:
+        return _arbi_live_cache['closed'], _arbi_live_cache['open'], _arbi_live_cache['cap']
+    try:
+        _rq = requests.get(_url + '/arbitrage/trades', params={'limit': 5000},
+                           headers={'X-API-Key': API_SECRET_KEY}, timeout=8)
+        _d = _rq.json()
+        _cl = _d.get('closed_trades') or []
+        _op = _d.get('open_trades') or []
+        _cap = _d.get('capital') or ARBI_CAPITAL
+        _arbi_live_cache.update({'ts': _t.time(), 'closed': _cl, 'open': _op, 'cap': _cap})
+        return _cl, _op, _cap
+    except Exception as _e:
+        log.debug(f'[ARBI-SPLIT-STATS] fallback memoria local: {_e}')
+        with state_lock:
+            return list(arbi_closed), list(arbi_open), arbi_capital
+
 @app.route('/stats')
 def stats():
     # [v10.11] Stats de closed trades vêm do banco — nunca limitadas por memória
     db_st = _get_db_trade_stats()
+    # [ARBI-SPLIT-STATS 21-jul] fonte viva da Arbi (servico dedicado ou memoria)
+    _arbi_cl, _arbi_op, _arbi_cap_live = _live_arbi_lists()
     # [hotfix] state_lock com timeout 2s
     s_op = s_val = c_op = c_val = a_op = a_cl = 0
     a_win = 0
@@ -16502,11 +16535,12 @@ def stats():
             s_val=sum(float(t.get('position_value',0))+float(t.get('pnl',0)) for t in stocks_open)
             c_op=sum(t.get('pnl',0) for t in crypto_open)
             c_val=sum(float(t.get('position_value',0))+float(t.get('pnl',0)) for t in crypto_open)
-            a_op=sum(t.get('pnl',0) for t in arbi_open); a_cl=sum(t.get('pnl',0) for t in arbi_closed)
-            a_win=sum(1 for t in arbi_closed if t.get('pnl',0)>0)
-            a_d=calc_period_pnl(list(arbi_closed),1); a_w=calc_period_pnl(list(arbi_closed),7)
-            a_m=calc_period_pnl(list(arbi_closed),30); a_y=calc_period_pnl(list(arbi_closed),365)
-            sc=stocks_capital; cc=crypto_capital; ac=arbi_capital
+            # [ARBI-SPLIT-STATS 21-jul] usa fonte viva (servico dedicado) p/ Arbi
+            a_op=sum(t.get('pnl',0) for t in _arbi_op); a_cl=sum(t.get('pnl',0) for t in _arbi_cl)
+            a_win=sum(1 for t in _arbi_cl if t.get('pnl',0)>0)
+            a_d=calc_period_pnl(_arbi_cl,1); a_w=calc_period_pnl(_arbi_cl,7)
+            a_m=calc_period_pnl(_arbi_cl,30); a_y=calc_period_pnl(_arbi_cl,365)
+            sc=stocks_capital; cc=crypto_capital; ac=_arbi_cap_live
         finally: state_lock.release()
     else:
         log.warning('[/stats] state_lock timeout — servindo dados parciais')
@@ -16525,8 +16559,8 @@ def stats():
     # [v10.14] closed_pnl = DB + arbi_closed — NÃO derivar de open para evitar efeito contrário
     _true_closed_pnl = round(s_cl + c_cl + a_cl, 2)
     # [v10.14-FIX] Win rate e trades incluem arbi
-    _arbi_wins = sum(1 for t in arbi_closed if t.get('pnl',0) > 0)
-    total_cl_n = int(db_st.get('total', len(stocks_closed)+len(crypto_closed))) + len(arbi_closed)
+    _arbi_wins = sum(1 for t in _arbi_cl if t.get('pnl',0) > 0)
+    total_cl_n = int(db_st.get('total', len(stocks_closed)+len(crypto_closed))) + len(_arbi_cl)
     total_win  = int(db_st.get('wins', s_win+c_win)) + _arbi_wins
     return jsonify({
         # ─── GLOBAL (stocks + crypto) — arbi NÃO entra aqui ────
@@ -16538,19 +16572,19 @@ def stats():
         'open_pnl':_true_open_pnl,         # stocks+crypto+arbi open
         'closed_pnl':_true_closed_pnl,     # total - open (consistente com portfolio)
         'gain_percent':round(_true_total_pnl/initial_global*100,2),
-        'open_trades':len(stocks_open)+len(crypto_open)+len(arbi_open),
+        'open_trades':len(stocks_open)+len(crypto_open)+len(_arbi_op),
         'closed_trades':total_cl_n,'winning_trades':total_win,
         'win_rate':round(total_win/total_cl_n*100,1) if total_cl_n>0 else 0,
         # [v10.14] Períodos incluem arbi
-        'daily_pnl':  round(d_pnl + calc_period_pnl(list(arbi_closed),1),2),
-        'daily_pnl_closed': round(d_pnl + calc_period_pnl(list(arbi_closed),1),2),  # só fechadas
-        'daily_pnl_total':  round(d_pnl + calc_period_pnl(list(arbi_closed),1) + s_op + c_op + a_op,2),  # fechadas+abertas
-        'weekly_pnl': round(w_pnl + calc_period_pnl(list(arbi_closed),7),2),
-        'monthly_pnl':round(m_pnl + calc_period_pnl(list(arbi_closed),30),2),
-        'annual_pnl': round(y_pnl + calc_period_pnl(list(arbi_closed),365),2),
-        'daily_gain_pct':  round((d_pnl + calc_period_pnl(list(arbi_closed),1))/initial_global*100,3),
-        'monthly_gain_pct':round((m_pnl + calc_period_pnl(list(arbi_closed),30))/initial_global*100,2),
-        'annual_gain_pct': round((y_pnl + calc_period_pnl(list(arbi_closed),365))/initial_global*100,2),
+        'daily_pnl':  round(d_pnl + calc_period_pnl(_arbi_cl,1),2),
+        'daily_pnl_closed': round(d_pnl + calc_period_pnl(_arbi_cl,1),2),  # só fechadas
+        'daily_pnl_total':  round(d_pnl + calc_period_pnl(_arbi_cl,1) + s_op + c_op + a_op,2),  # fechadas+abertas
+        'weekly_pnl': round(w_pnl + calc_period_pnl(_arbi_cl,7),2),
+        'monthly_pnl':round(m_pnl + calc_period_pnl(_arbi_cl,30),2),
+        'annual_pnl': round(y_pnl + calc_period_pnl(_arbi_cl,365),2),
+        'daily_gain_pct':  round((d_pnl + calc_period_pnl(_arbi_cl,1))/initial_global*100,3),
+        'monthly_gain_pct':round((m_pnl + calc_period_pnl(_arbi_cl,30))/initial_global*100,2),
+        'annual_gain_pct': round((y_pnl + calc_period_pnl(_arbi_cl,365))/initial_global*100,2),
         'best_trade':round(db_st.get('best_trade',0),2),'worst_trade':round(db_st.get('worst_trade',0),2),
         # ─── STOCKS ─────────────────────────────────────────────
         'stocks_capital':round(sc,2),'stocks_portfolio_value':round(st,2),
@@ -16593,12 +16627,12 @@ def stats():
             'open_pnl': round(a_op,2), 'closed_pnl': round(a_cl,2),
             'total_pnl': round(a_op+a_cl,2),
             'gain_percent': round((arbi_total-ARBI_CAPITAL)/ARBI_CAPITAL*100,2),
-            'open_trades': len(arbi_open), 'closed_trades': len(arbi_closed),
-            'closed_trades_db': int(db_st.get('arbi_count_db', len(arbi_closed))),
+            'open_trades': len(_arbi_op), 'closed_trades': len(_arbi_cl),
+            'closed_trades_db': int(db_st.get('arbi_count_db', len(_arbi_cl))),
             'deployed_capital': round(db_st.get('arbi_deployed',0),2),
             'return_on_deployed': round((a_cl+a_op)/db_st.get('arbi_deployed',1)*100,2) if db_st.get('arbi_deployed',0)>0 else 0,
             'winning_trades': a_win,
-            'win_rate': round(a_win/len(arbi_closed)*100,1) if arbi_closed else 0,
+            'win_rate': round(a_win/len(_arbi_cl)*100,1) if _arbi_cl else 0,
             'kill_switch': ARBI_KILL_SWITCH,
             'daily_pnl': round(a_d,2), 'weekly_pnl': round(a_w,2),
             'monthly_pnl': round(a_m,2), 'annual_pnl': round(a_y,2),

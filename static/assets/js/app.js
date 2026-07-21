@@ -854,17 +854,31 @@ function manualCloseTrade(id, sym, pnl){
     +'\n\nA posicao sera encerrada ao preco de mercado em segundos, '
     +'com registro MANUAL_CLOSE no historico.';
   if(!confirm(msg)) return;
-  fetch('/ops/request-close/'+id,{method:'POST',credentials:'same-origin'})
+  // feedback OTIMISTA imediato: troca o botao da linha por "fechando…" na hora,
+  // sem depender de round-trip — resolve o "parece que nao fez nada".
+  try{
+    var btns=document.querySelectorAll('button[onclick*="\''+id+'\'"]');
+    btns.forEach(function(b){ b.outerHTML='<span style="font-size:10px;color:var(--gold)">fechando…</span>'; });
+  }catch(e){}
+  fetch('/ops/request-close/'+id,{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'}})
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.ok){
-        alert(sym+': fechamento solicitado — a posicao fecha em segundos.');
-        if(typeof loadOpenTrades==='function') loadOpenTrades();
+        // repete o refresh algumas vezes: o motor fecha em 1 ciclo (~segundos)
+        var tries=0;
+        var iv=setInterval(function(){
+          tries++;
+          if(typeof loadAll==='function') loadAll();
+          if(tries>=6) clearInterval(iv);
+        }, 4000);
+        if(typeof loadAll==='function') loadAll();
       } else {
-        alert('Erro: '+(d.error||'falha ao solicitar fechamento'));
+        alert('Nao foi possivel fechar '+sym+': '+(d.error||'falha')+'. Recarregando…');
+        if(typeof loadAll==='function') loadAll();
       }
     })
-    .catch(function(e){alert('Erro de rede: '+e);});
+    .catch(function(e){ alert('Erro de rede ao fechar '+sym+': '+e); if(typeof loadAll==='function') loadAll(); });
 }
 
 // [MANUAL-CLOSE 18-jul-2026] Fechamento manual de par da Arbi (2 pernas).

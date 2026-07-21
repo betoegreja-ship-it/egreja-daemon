@@ -300,9 +300,38 @@ def _web_pwd_hash(password: str) -> str:
 def _is_web_login_enabled() -> bool:
     return bool(WEB_PASSWORD_HASH)
 
+# ═══ [INVESTOR-ACCESS 21-jul-2026, pedido Beto] Acesso read-only p/ investidor ═══
+# Login separado (INVESTOR_USER / INVESTOR_PASSWORD_HASH) que cria sessao marcada
+# read-only e com expiracao (INVESTOR_ACCESS_UNTIL, ISO). Sessao investidor:
+#   - so GET/HEAD (before_request bloqueia POST — nao fecha trade, nao mexe em
+#     settings, nao toca kill-switch/void/purge);
+#   - expira automaticamente na data definida;
+#   - revogavel a qualquer momento trocando/limpando a env, sem afetar o admin.
+INVESTOR_USER          = os.environ.get('INVESTOR_USER', 'investidor')
+INVESTOR_PASSWORD_HASH = os.environ.get('INVESTOR_PASSWORD_HASH', '').strip().lower()
+INVESTOR_ACCESS_UNTIL  = os.environ.get('INVESTOR_ACCESS_UNTIL', '').strip()  # ex: 2026-07-31
+
+def _investor_login_enabled() -> bool:
+    return bool(INVESTOR_PASSWORD_HASH)
+
+def _investor_access_valid() -> bool:
+    """Sessao investidor dentro da janela? (data de expiracao inclusiva)."""
+    if not INVESTOR_ACCESS_UNTIL:
+        return True
+    try:
+        return datetime.utcnow().strftime('%Y-%m-%d') <= INVESTOR_ACCESS_UNTIL[:10]
+    except Exception:
+        return True
+
+def _is_readonly_session() -> bool:
+    return session.get('web_role') == 'investor'
+
 def _is_session_authed() -> bool:
     if not _is_web_login_enabled():
         return True  # se login não configurado, libera (modo legado)
+    if session.get('web_role') == 'investor':
+        # sessao investidor so vale enquanto dentro da janela de acesso
+        return _investor_access_valid()
     return bool(session.get('web_user'))
 
 # ═══ [v13-POLYGON-WS 25-jun-2026] Polygon real-time stocks NYSE/NASDAQ ═══
@@ -2318,6 +2347,11 @@ def auth_check():
 
     # 3. Todo o restante exige sessao web ou chave de API server-side.
     if _is_session_authed():
+        # [INVESTOR-ACCESS 21-jul] read-only: bloqueia QUALQUER acao de escrita.
+        # Investidor ve tudo (GET), mas nao fecha trade, nao muda settings, nao
+        # toca kill-switch/void/purge. before_request e o unico ponto de entrada.
+        if _is_readonly_session() and request.method not in ('GET', 'HEAD', 'OPTIONS'):
+            return jsonify({'error': 'Acesso somente leitura (modo investidor).'}), 403
         return None
     key = request.headers.get('X-API-Key', '').strip()
     # [P3-NETWORK 07-jul-2026] Chave DEDICADA de sincronizacao (escopo minimo):
@@ -15748,7 +15782,22 @@ def login_submit():
         p = data.get('password') or ''
         if not u or not p:
             return jsonify({'ok': False, 'error': 'Usuario e senha sao obrigatorios.'}), 400
-        # Verificacao constante-time
+        # [INVESTOR-ACCESS 21-jul] tenta primeiro o login investidor (read-only)
+        if _investor_login_enabled():
+            _iu_ok = _secrets.compare_digest(u, INVESTOR_USER)
+            _ip_ok = _secrets.compare_digest(_web_pwd_hash(p), INVESTOR_PASSWORD_HASH)
+            if _iu_ok and _ip_ok:
+                if not _investor_access_valid():
+                    return jsonify({'ok': False, 'error': 'Acesso de demonstracao expirado.'}), 403
+                session.permanent = True
+                session['web_user'] = u
+                session['web_role'] = 'investor'
+                session['login_ts'] = datetime.utcnow().isoformat()
+                log.info(f'[WEB-LOGIN] OK investidor(read-only) ip={request.remote_addr}')
+                try: audit('WEB_LOGIN_INVESTOR', {'ip': request.remote_addr})
+                except Exception: pass
+                return jsonify({'ok': True, 'next': '/', 'role': 'investor'}), 200
+        # Verificacao constante-time (admin)
         u_ok = _secrets.compare_digest(u, WEB_USERNAME)
         p_hash = _web_pwd_hash(p)
         p_ok = _secrets.compare_digest(p_hash, WEB_PASSWORD_HASH)
@@ -15809,6 +15858,8 @@ def api_info():
         'market_status':{'b3':is_b3_open(),'nyse':is_nyse_open(),'lse':is_lse_open(),'hkex':is_hkex_open(),'crypto':True},
         'deploy_mode':'single-process',
         'degraded': _read_degraded()['active'],   # [V91-5] flag rápida
+        'role': ('investor' if _is_readonly_session() else 'admin'),  # [INVESTOR-ACCESS 21-jul]
+        'readonly': _is_readonly_session(),
     })
 
 @app.route('/api/providers/health')

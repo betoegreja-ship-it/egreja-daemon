@@ -1315,6 +1315,28 @@ async function updateFxChips(){
   } catch(e) {}
 }
 
+// [INVESTOR-ACCESS 21-jul] modo read-only: descobre o papel e, se investidor,
+// esconde botoes de acao (Fechar, Settings, kill-switch) e mostra selo.
+var _isReadOnly=false;
+function _applyReadOnlyMode(){
+  fetch('/api/info',{credentials:'same-origin'}).then(function(r){return r.json();}).then(function(d){
+    if(!d || !d.readonly) return;
+    _isReadOnly=true;
+    var st=document.createElement('style');
+    st.textContent='.ro-hide,button[onclick*="manualClose"],button[onclick*="Settings"],'
+      +'#tab-settings,[onclick*="killSwitch"],[onclick*="kill_switch"]{display:none!important}';
+    document.head.appendChild(st);
+    var badge=document.createElement('div');
+    badge.textContent='MODO INVESTIDOR · somente leitura';
+    badge.style.cssText='position:fixed;top:8px;right:12px;z-index:9999;background:#A9821C;'
+      +'color:#fff;font:600 11px system-ui;padding:5px 12px;border-radius:14px;letter-spacing:.05em';
+    document.body.appendChild(badge);
+    // remove a aba de settings da navegacao, se existir
+    document.querySelectorAll('[onclick*="settings"]').forEach(function(e){ e.style.display='none'; });
+  }).catch(function(){});
+}
+_applyReadOnlyMode();
+
 loadAll();
 updateFxChips();                           // [v2] FX inicial
 setInterval(loadAll,10*1000);

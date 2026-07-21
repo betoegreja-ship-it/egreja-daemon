@@ -1324,7 +1324,7 @@ function _applyReadOnlyMode(){
     _isReadOnly=true;
     var st=document.createElement('style');
     st.textContent='.ro-hide,button[onclick*="manualClose"],button[onclick*="Settings"],'
-      +'#tab-settings,[onclick*="killSwitch"],[onclick*="kill_switch"]{display:none!important}';
+      +'#tab-settings,#btn-panic,[onclick*="panicClose"],[onclick*="killSwitch"],[onclick*="kill_switch"]{display:none!important}';
     document.head.appendChild(st);
     var badge=document.createElement('div');
     badge.textContent='MODO INVESTIDOR · somente leitura';
@@ -1336,6 +1336,29 @@ function _applyReadOnlyMode(){
   }).catch(function(){});
 }
 _applyReadOnlyMode();
+
+// [PANIC 21-jul-2026, pedido Beto] Botao de panico: fecha TODAS as posicoes.
+// Dupla confirmacao — a segunda exige digitar FECHAR para evitar clique acidental.
+function panicCloseAll(){
+  if(!confirm('⛔ BOTÃO DE PÂNICO\n\nIsto vai FECHAR TODAS as posições abertas (stocks, crypto e Arbi) AGORA, ao preço de mercado, e ARMAR o kill-switch (o sistema para de abrir novas).\n\nTem certeza?')) return;
+  var t=prompt('Confirmação final: digite FECHAR (em maiúsculas) para executar o fechamento total.');
+  if(t!=='FECHAR'){ alert('Cancelado — nada foi fechado.'); return; }
+  var b=document.getElementById('btn-panic');
+  if(b){ b.textContent='⛔ fechando tudo…'; b.disabled=true; }
+  fetch('/ops/panic-close-all',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({arm_kill_switch:true})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){
+        alert('PÂNICO EXECUTADO\n\nStocks/Crypto: '+d.stocks_crypto_flagged+' posições fechando\nArbi: '+JSON.stringify(d.arbi)+'\nKill-switch: '+(d.kill_switch_armed?'ARMADO':'off')+'\n\nAs posições fecham em segundos. Para religar as entradas, reative o sistema nas configurações.');
+        var tries=0; var iv=setInterval(function(){ tries++; if(typeof loadAll==='function') loadAll(); if(tries>=8) clearInterval(iv); },3000);
+      } else {
+        alert('Falha no pânico: '+(d.error||'erro')); 
+      }
+      if(b){ b.textContent='⛔ PÂNICO'; b.disabled=false; }
+    })
+    .catch(function(e){ alert('Erro de rede no pânico: '+e); if(b){ b.textContent='⛔ PÂNICO'; b.disabled=false; } });
+}
 
 loadAll();
 updateFxChips();                           // [v2] FX inicial

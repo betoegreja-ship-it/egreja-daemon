@@ -14459,6 +14459,72 @@ v11_on_trade_close = _v11_on_trade_close
 # [v11-ops] Void trade + blacklist persistente
 # ═══════════════════════════════════════════════════════════════════
 
+@app.route('/ops/panic-close-all', methods=['POST'])
+@require_auth
+def ops_panic_close_all():
+    """[PANIC 21-jul-2026, pedido Beto] Botao de panico — fecha TODAS as posicoes
+    abertas de stocks e crypto de uma vez (mesma via MANUAL_CLOSE, auditavel) e,
+    por padrao, arma o kill-switch para nao reabrir em seguida. A Arbi vive no
+    servico dedicado: se ARBI_SERVICE_URL estiver setada, repassa o panico p/ la;
+    senao fecha as arbi locais. Bloqueado para sessao investidor (read-only).
+    Param opcional: {"arm_kill_switch": false} para fechar sem travar novas."""
+    global RISK_KILL_SWITCH, ARBI_KILL_SWITCH
+    try:
+        data = request.get_json(silent=True) or {}
+        arm = data.get('arm_kill_switch', True)
+        flagged = 0
+        with state_lock:
+            for t in stocks_open + crypto_open:
+                if not t.get('_manual_close_req'):
+                    t['_manual_close_req'] = True
+                    flagged += 1
+        if arm:
+            RISK_KILL_SWITCH = True
+        # Arbi: repassa para o servico dedicado, ou fecha local
+        arbi_result = None
+        _arbi_url = os.environ.get('ARBI_SERVICE_URL', '').strip().rstrip('/')
+        try:
+            if _arbi_url:
+                _rq = requests.post(_arbi_url + '/ops/panic-close-all',
+                                    json={'arm_kill_switch': arm},
+                                    headers={'X-API-Key': API_SECRET_KEY}, timeout=15)
+                arbi_result = _rq.json()
+            else:
+                with state_lock:
+                    _arbi_ids = [t.get('id') for t in arbi_open]
+                    if arm:
+                        ARBI_KILL_SWITCH = True
+                _ac = 0
+                for _aid in _arbi_ids:
+                    try:
+                        requests.post(f'http://127.0.0.1:{int(os.environ.get("PORT", 3001))}'
+                                      f'/arbitrage/force-close',
+                                      json={'trade_id': _aid},
+                                      headers={'X-API-Key': API_SECRET_KEY}, timeout=15)
+                        _ac += 1
+                    except Exception:
+                        pass
+                arbi_result = {'closed': _ac, 'of': len(_arbi_ids)}
+        except Exception as _ae:
+            arbi_result = {'error': str(_ae)}
+        log.warning(f'[PANIC] botao de panico acionado: {flagged} posicoes stocks/crypto '
+                    f'marcadas p/ fechamento, kill_switch={"ARMADO" if arm else "off"}, arbi={arbi_result}')
+        try:
+            audit('PANIC_CLOSE_ALL', {'flagged': flagged, 'kill_switch': arm, 'arbi': arbi_result,
+                                      'ip': request.remote_addr})
+            if 'send_whatsapp' in globals():
+                send_whatsapp(f'BOTAO DE PANICO acionado — {flagged} posicoes fechando, '
+                              f'kill-switch {"ARMADO" if arm else "off"}')
+        except Exception:
+            pass
+        return jsonify({'ok': True, 'stocks_crypto_flagged': flagged,
+                        'kill_switch_armed': arm, 'arbi': arbi_result,
+                        'status': 'todas as posicoes fecham em segundos'})
+    except Exception as e:
+        log.error(f'[PANIC] falha: {e}')
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/ops/request-close/<trade_id>', methods=['POST'])
 @require_auth
 def ops_request_close(trade_id: str):

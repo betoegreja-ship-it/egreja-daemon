@@ -42,6 +42,55 @@ PAIRS_MIN_CORRELATION = float(os.environ.get('PAIRS_MIN_CORRELATION', 0.5))
 PAIRS_SWAP_ENABLED = os.environ.get('PAIRS_SWAP_ENABLED', 'true').lower() == 'true'
 PAIRS_SWAP_Z_MARGIN = float(os.environ.get('PAIRS_SWAP_Z_MARGIN', 0.5))  # |z_new| >= |z_worst| + margin
 
+# ═══ [PAIRS-DYNAMIC 21-jul-2026, decisao Beto] Engine dinamico como a Arbi ═══
+# 1) AUTO-RETIRE: par com desempenho comprovadamente ruim (WR < RETIRE_WR em
+#    >= RETIRE_MIN_TRADES fechadas) vai pro banco automaticamente — nao opera
+#    mais ate a saude estatistica voltar. Cache 30min (nao consulta DB a cada scan).
+# 2) SIZING PONDERADO: par vencedor comprovado (WR >= BOOST_WR, >= BOOST_MIN) recebe
+#    posicao cheia; par novo/fraco entra reduzido ate provar.
+PAIRS_AUTO_RETIRE = os.environ.get('PAIRS_AUTO_RETIRE', 'true').lower() != 'false'
+PAIRS_RETIRE_WR = float(os.environ.get('PAIRS_RETIRE_WR', 0.20))
+PAIRS_RETIRE_MIN_TRADES = int(os.environ.get('PAIRS_RETIRE_MIN_TRADES', 8))
+PAIRS_BOOST_WR = float(os.environ.get('PAIRS_BOOST_WR', 0.60))
+PAIRS_BOOST_MIN_TRADES = int(os.environ.get('PAIRS_BOOST_MIN_TRADES', 5))
+_pair_perf_cache = {'ts': 0, 'stats': {}}
+
+def _pair_perf_stats():
+    """{pair_id: (n_closed, wins, pnl)} do banco, cache 30min."""
+    if time.time() - _pair_perf_cache['ts'] < 1800 and _pair_perf_cache['stats']:
+        return _pair_perf_cache['stats']
+    stats = {}
+    try:
+        from .persistence import _get_conn
+        c = _get_conn()
+        cur = c.cursor()
+        cur.execute("SELECT pair_id, COUNT(*), SUM(pnl>0), SUM(pnl) FROM pairs_trades "
+                    "WHERE status='CLOSED' GROUP BY pair_id")
+        for pid, n, w, pnl in cur.fetchall():
+            stats[pid] = (int(n or 0), int(w or 0), float(pnl or 0))
+        cur.close(); c.close()
+        _pair_perf_cache.update({'ts': time.time(), 'stats': stats})
+    except Exception as e:
+        log.debug(f'[PAIRS-DYNAMIC] perf stats: {e}')
+    return _pair_perf_cache['stats'] or stats
+
+def _pair_is_retired(pair_id):
+    if not PAIRS_AUTO_RETIRE:
+        return False
+    n, w, _ = _pair_perf_stats().get(pair_id, (0, 0, 0))
+    if n >= PAIRS_RETIRE_MIN_TRADES and (w / max(n, 1)) < PAIRS_RETIRE_WR:
+        return True
+    return False
+
+def _pair_size_factor(pair_id):
+    """1.0 base; vencedor comprovado 1.0, novo/sem historico 0.6."""
+    n, w, _ = _pair_perf_stats().get(pair_id, (0, 0, 0))
+    if n >= PAIRS_BOOST_MIN_TRADES and (w / max(n, 1)) >= PAIRS_BOOST_WR:
+        return 1.0
+    if n < 3:
+        return 0.6  # novo — meia-posicao ate provar
+    return 0.85
+
 
 def _deployed_capital() -> float:
     """Soma o position_size das trades abertas (usar dentro do lock)."""
@@ -224,13 +273,23 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
         # [25-jun-2026] WATCH tier: nao opera, so observa
         cfg = next((p for p in PAIRS_CONFIG if p['id'] == signal['pair_id']), {})
 
-        # ═══ [PAIRS-v2 18-jul-2026] Curadoria ECONOMICA (analise: os ═══
-        # TIMEOUTs de -R$9.1k vieram de pares cross-setor cuja correlacao
-        # estatistica quebrou; quem paga sao CLASSES/HOLDING/SECTORIAL).
-        # CROSS_SECTOR vira observacao (sem capital). Env: PAIRS_ECON_CURATION.
-        if (os.environ.get('PAIRS_ECON_CURATION', 'true').lower() != 'false'
+        # ═══ [PAIRS-DYNAMIC 21-jul-2026, revertido] A curadoria economica foi
+        # um ERRO: bloqueava CROSS_SECTOR, mas o MELHOR par da casa e cross-sector
+        # (ALOS3-EQTL3, 71% WR). Stat-arb e agnostico a logica setorial por desenho.
+        # Agora DESLIGADA por padrao (PAIRS_ECON_CURATION=true reativa). No lugar,
+        # a selecao e por DESEMPENHO REAL (auto-retire abaixo), nao por rotulo.
+        if (os.environ.get('PAIRS_ECON_CURATION', 'false').lower() == 'true'
                 and cfg.get('pair_type') == 'CROSS_SECTOR'):
             log.info(f"[PAIRS-v2] {signal['pair_id']}: CROSS_SECTOR em observacao — sem capital")
+            return None
+
+        # ═══ [PAIRS-DYNAMIC 21-jul] AUTO-RETIRE — par comprovadamente ruim ═══
+        # (WR < 20% em 8+ trades fechadas) vai pro banco automaticamente, como
+        # a Arbi faz. Sai sozinho; volta sozinho se a saude estatistica melhorar.
+        if _pair_is_retired(signal['pair_id']):
+            _n, _w, _pnl = _pair_perf_stats().get(signal['pair_id'], (0, 0, 0))
+            log.info(f"[PAIRS-RETIRE] {signal['pair_id']}: aposentado (WR "
+                     f"{_w/max(_n,1)*100:.0f}% em {_n} trades, pnl R${_pnl:,.0f}) — sem entrada")
             return None
 
         # ═══ [PAIRS-v2] Teto de perna: max 2 pares abertos compartilhando ═══
@@ -251,9 +310,12 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
         # Se disponivel < min, tenta SWAP (fecha trade aberta mais fraca).
         available = _available_capital()
         pos_size = max(min(available, PAIRS_MIN_INVESTMENT), PAIRS_MIN_INVESTMENT)
-        # tier B: sizing reduzido a 60% do min (respeitando piso de investimento)
-        if tier == 'B':
-            pos_size = max(pos_size * 0.6, PAIRS_MIN_INVESTMENT * 0.6)
+        # [PAIRS-DYNAMIC 21-jul] sizing ponderado por DESEMPENHO REAL do par:
+        # vencedor comprovado = posicao cheia; novo/fraco = reduzido ate provar.
+        # Substitui o corte cego por tier B (o tier nao prediz resultado).
+        _sf = _pair_size_factor(signal['pair_id'])
+        if _sf < 1.0:
+            pos_size = max(pos_size * _sf, PAIRS_MIN_INVESTMENT * 0.6)
 
         # Ceiling de posicoes (safety) + capital deployed check
         cap_full = (len(pairs_open) >= PAIRS_MAX_POSITIONS) or (available < PAIRS_MIN_INVESTMENT)

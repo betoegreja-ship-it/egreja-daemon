@@ -8757,13 +8757,28 @@ def stock_execution_worker():
                 # Regime DOWN no QQQ (abaixo da EMA50 e ret20d<0) bloqueia NOVOS
                 # LONGs NYSE. Estudo: NYSE long-only perde -R$30-40k/semana fora
                 # de rally. Env: NYSE_REGIME_FILTER_ENABLED=false para desligar.
+                # [SOFTEN 21-jul-2026, decisao Beto] O filtro de 20 dias virou
+                # redundante com o Market Pulse (que le o DIA). Nao bloqueia mais
+                # em dia forte: se o indice esta DOWN em 20d, so barra o LONG se o
+                # DIA tambem estiver fraco (RISK_OFF); em dia RISK_ON/NEUTRAL o LONG
+                # entra pagando so um premio pequeno de score. O Pulse manda.
                 if is_long and mkt_type == 'NYSE' and \
                    os.environ.get('NYSE_REGIME_FILTER_ENABLED', 'true').lower() != 'false':
                     _reg_idx = _nyse_index_regime()
                     if _reg_idx == 'DOWN':
-                        log.info(f'[NYSE-REGIME-BLOCK] {sym}: LONG bloqueado — regime do índice DOWN '
-                                 f'({_nyse_regime_cache.get("detail","")})')
-                        continue
+                        _mp_reg = market_pulse('NYSE')
+                        _mp_reg_state = _mp_reg.get('state')
+                        _reg_bonus = float(os.environ.get('NYSE_REGIME_SOFT_BONUS', 5))
+                        if _mp_reg_state == 'RISK_OFF':
+                            log.info(f'[NYSE-REGIME-BLOCK] {sym}: LONG bloqueado — regime 20d DOWN '
+                                     f'E dia RISK_OFF ({_nyse_regime_cache.get("detail","")})')
+                            continue
+                        if score < _eff_min + _reg_bonus:
+                            log.info(f'[NYSE-REGIME-SOFT] {sym}: regime 20d DOWN mas dia {_mp_reg_state} '
+                                     f'— LONG exige score >= {_eff_min + _reg_bonus:.0f} (score={score})')
+                            continue
+                        log.info(f'[NYSE-REGIME-SOFT] {sym}: LONG liberado — regime 20d DOWN mas dia '
+                                 f'{_mp_reg_state} e score {score} forte')
 
                 # ═══ [MARKET-PULSE 13-jul-2026] Tendencia DO DIA na entrada ═══
                 # Aprovado pelo Beto 13/jul. Motivo: 10 e 13/jul, 100% LONG em

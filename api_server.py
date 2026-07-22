@@ -835,7 +835,7 @@ if not BRAPI_TOKEN:
 # [v10.5-1] Mapa explícito B3 ticker → ADR no NYSE/NASDAQ para Polygon como fallback.
 # Apenas os ADRs mais líquidos e com cobertura confiável no Polygon.
 B3_TO_ADR = {
-    'PETR4': 'PBR',   'PETR3': 'PBR-A',
+    'PETR4': 'PBR.A', 'PETR3': 'PBR',   # [FIX 22-jul] estava invertido: PETR4(PN)->PBR.A, PETR3(ON)->PBR
     'VALE3': 'VALE',
     'ITUB4': 'ITUB',  'ITUB3': 'ITUB',
     'BBDC4': 'BBD',   'BBDC3': 'BBD',
@@ -10534,11 +10534,13 @@ def _arbi_pair_learning(pair_id, recent_trades):
     return ARBI_PAIR_CONFIG.get(pair_id, cfg)
 
 ARBI_PAIRS = [
-    # PETR4-PBR REATIVADO — alta liquidez, importante para mercado real
-    # Proteções: min_spread 10% (zona HIGH WR67%), max_pos $30K fixo, sanity spread >20%
-    # Bug anterior (-$896K) foi por posição $1M + preço PBR=0 → corrigido
-    {'id':'PETR4-PBR', 'leg_a':'PETR4.SA','leg_b':'PBR', 'mkt_a':'B3','mkt_b':'NYSE',
-     'fx':'USDBRL','name':'Petrobras','ratio_a':2,'ratio_b':1},
+    # [PBR.A 22-jul-2026, decisao Beto] PETR4-PBR REMOVIDO — era o unico par
+    # negativo da Arbi (-$17.6k, 72 trades): comparava PETR4(PN) com PBR(ADR da ON),
+    # spread estrutural de ~11% que nunca converge. Substituido pelo par CORRETO
+    # PETR4-PBR.A (ADR que referencia a PN), em SHADOW (observa/loga, sem capital)
+    # ate validar a convergencia. 'shadow':True = nao aloca capital real.
+    {'id':'PETR4-PBR.A', 'leg_a':'PETR4.SA','leg_b':'PBR.A', 'mkt_a':'B3','mkt_b':'NYSE',
+     'fx':'USDBRL','name':'Petrobras (PN/ADR-PN)','ratio_a':2,'ratio_b':1, 'shadow':True},
     {'id':'ITUB4-ITUB',  'leg_a':'ITUB4.SA', 'leg_b':'ITUB',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Itaú',        'ratio_a':1,'ratio_b':1},
     {'id':'BBDC4-BBD',   'leg_a':'BBDC4.SA', 'leg_b':'BBD',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Bradesco',    'ratio_a':1,'ratio_b':1},
     {'id':'ABEV3-ABEV',  'leg_a':'ABEV3.SA', 'leg_b':'ABEV',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Ambev',       'ratio_a':1,'ratio_b':1},
@@ -10926,6 +10928,22 @@ def arbi_scan_loop():
                 if abs(spread.get('spread_pct',0)) > _max_sp:
                     log.warning(f'[ARBI-SANITY] {pair["id"]} spread {spread["spread_pct"]:+.2f}% acima do teto {ARBI_MAX_SPREAD}% — possível preço inválido, ignorando')
                 if not spread['opportunity'] or not spread['markets_open']:
+                    time.sleep(1.5); continue
+
+                # [PBR.A 22-jul-2026, decisao Beto] Par em SHADOW: observa e loga
+                # o sinal (spread ja gravado em arbi_spreads p/ o dashboard), mas
+                # NUNCA aloca capital real. Serve para validar a convergencia do
+                # PETR4-PBR.A antes de promover a live. audit p/ medir depois.
+                if pair.get('shadow'):
+                    log.info(f"[ARBI-SHADOW] {pair['id']}: sinal de oportunidade "
+                             f"(spread {spread.get('spread_pct',0):+.2f}%) — observando, sem capital")
+                    try:
+                        audit('ARBI_SHADOW_SIGNAL', {'pair': pair['id'],
+                              'spread_pct': round(spread.get('spread_pct',0),3),
+                              'price_a': spread.get('price_a'), 'price_b': spread.get('price_b'),
+                              'fx': spread.get('fx_rate')})
+                    except Exception:
+                        pass
                     time.sleep(1.5); continue
 
                 # [v10.11] Position size dinâmico = portfolio_arbi / 3 (cresce com lucros)

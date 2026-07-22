@@ -8729,6 +8729,28 @@ def stock_execution_worker():
                         _pat_wr = _best_pat.get('wins',0)/_best_pat['total_samples']
                         if _pat_wr >= 0.80: _eff_min = max(65, MIN_SCORE_AUTO-5)   # padrão muito confiável
                         elif _pat_wr >= 0.70: _eff_min = MIN_SCORE_AUTO            # padrão ok
+                # ═══ [B3-INVERT 22-jul-2026, decisao Beto] Inversao do sinal B3 ═══
+                # O experimento invertido (gemeos GERIDO, ~52 trades, 83% WR
+                # invertido) provou que o sinal da B3 esta sistematicamente ao
+                # contrario. Invertemos a B3 no PRINCIPAL: sinal COMPRA<->VENDA e
+                # score espelhado (100-score), mantendo forca e TODAS as regras.
+                # O sinal ORIGINAL passa a viver no gemeo INVERSE-SHADOW (que ja
+                # espelha o oposto do real) — rede de seguranca automatica.
+                # Reversivel na hora via env B3_INVERT_SIGNAL=false.
+                if (mkt_type == 'B3'
+                        and os.environ.get('B3_INVERT_SIGNAL', 'false').lower() == 'true'
+                        and signal_val in ('COMPRA', 'VENDA')):
+                    _orig_sig = signal_val
+                    signal_val = 'VENDA' if signal_val == 'COMPRA' else 'COMPRA'
+                    score = 100 - score
+                    # espelha tambem signal_v2 p/ o gate de coerencia V3 nao vetar
+                    _sv2 = sig.get('signal_v2')
+                    if _sv2 == 'COMPRA': sig['signal_v2'] = 'VENDA'
+                    elif _sv2 == 'VENDA': sig['signal_v2'] = 'COMPRA'
+                    sig['_b3_inverted'] = True
+                    sig['_b3_orig_signal'] = _orig_sig
+                    log.info(f"[B3-INVERT] {sym}: sinal {_orig_sig}->{signal_val}, "
+                             f"score espelhado para {score} (inversao ativa)")
                 is_long=score>=_eff_min and signal_val=='COMPRA'
                 is_short=score<=(100-_eff_min) and signal_val=='VENDA'
                 # [adaptive-v1] Guard: bloquear SHORT stocks se env var dizer

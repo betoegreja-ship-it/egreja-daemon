@@ -8805,6 +8805,31 @@ def stock_execution_worker():
                                 _tw_state = _mp_tw['state']
                                 _tw_det = _mp_tw.get('detail', '')
                         _tw_bar = max(40.0, _eff_min - _tw)
+                        # ═══ [MP-STRONG-TIDE 22-jul v2, decisao Beto] Mare FORTE ═══
+                        # (breadth>=65% num lado E indice >=1%): barra cai p/ 45.
+                        # Medicao 22/07 (Ibov +2.3%): correlacao score x retorno
+                        # do dia = -0.07 (ZERO); vencedoras do dia scoravam 40-57
+                        # e barra 60 deixava quase todas de fora. Em mare forte o
+                        # score so RANQUEIA — o lado e do mercado.
+                        try:
+                            _mp_c = market_pulse(mkt_type)
+                            _bup = float(_mp_c.get('breadth_up_pct') or 0)
+                            _bdn = float(_mp_c.get('breadth_dn_pct') or 0)
+                            _bidx = _mp_c.get('index_chg_pct')
+                            if _bidx is None:
+                                _bidx = _mp_c.get('avg_change_pct')  # fallback: media do universo
+                            _bidx = float(_bidx) if _bidx is not None else 0.0
+                            _st_b = float(os.environ.get('MP_STRONG_BREADTH', 65))
+                            _st_i = float(os.environ.get('MP_STRONG_IDX', 1.0))
+                            _st_bar = float(os.environ.get('MP_STRONG_BAR', 45))
+                            if _tw_state == 'RISK_ON' and _bup >= _st_b and _bidx >= _st_i:
+                                _tw_bar = min(_tw_bar, _st_bar)
+                                _tw_det += f' MARE-FORTE(up {_bup:.0f}%, idx {_bidx:+.1f}%)'
+                            elif _tw_state == 'RISK_OFF' and _bdn >= _st_b and _bidx <= -_st_i:
+                                _tw_bar = min(_tw_bar, _st_bar)
+                                _tw_det += f' MARE-FORTE(dn {_bdn:.0f}%, idx {_bidx:+.1f}%)'
+                        except Exception:
+                            pass
                         if _tw_state == 'RISK_ON' and score >= _tw_bar:
                             is_long = True
                             log.info(f'[MP-TAILWIND-SIDE] {sym}: MANTER (score={score}) vira LONG — '

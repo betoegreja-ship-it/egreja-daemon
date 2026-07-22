@@ -8965,7 +8965,12 @@ def stock_execution_worker():
                 # [B3-INVERT 22-jul] Decisao Beto: filtros de protecao ficam INTACTOS
                 # sob inversao — os gemeos shadow medem os dois lados; nada e desligado
                 # por teoria. A inversao troca so a DIRECAO do sinal, nao a arquitetura.
-                if is_long and mkt_type == 'B3':
+                # [BAD-HOURS 22-jul-2026, decisao Beto] LIBERADO via env
+                # (B3_BAD_HOURS_BLOCK=false). Racional: o filtro foi calibrado no
+                # sinal B3 NAO invertido; com a inversao total, as "horas ruins de
+                # compra" viram horas de venda. Reversivel na hora.
+                if is_long and mkt_type == 'B3' \
+                        and os.environ.get('B3_BAD_HOURS_BLOCK', 'true').lower() != 'false':
                     # [FIX 30/abr] datetime ja importado no topo do modulo, NAO re-importar local
                     import datetime as _dt_bh
                     _now_utc = _dt_bh.datetime.utcnow()

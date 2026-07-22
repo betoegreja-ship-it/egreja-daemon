@@ -14940,6 +14940,95 @@ def ops_void_trade(trade_id: str):
         try: conn.close()
         except Exception: pass
 
+@app.route('/ops/correct-trade/<trade_id>', methods=['POST'])
+@require_auth
+def ops_correct_trade(trade_id: str):
+    """[22-jul-2026, decisao Beto] Corrige trade fechada com PRECO FANTASMA
+    (feed caido) usando os precos REAIS. Diferente do void (que zera), a
+    correcao reprecifica entrada/saida e recalcula o P&L honesto.
+
+    CRITICO: atualiza a MEMORIA (stocks_closed/crypto_closed) + DB. Update
+    direto no MySQL nao gruda: a memoria re-grava via upsert no proximo
+    snapshot/boot (foi o que desfez a correcao de 22/07).
+
+    Body JSON: { "entry_price": 5.47, "exit_price": 5.84, "reason": "..." }
+    (qualquer um dos dois precos e opcional; o que vier e aplicado)
+    """
+    payload = request.get_json(silent=True) or {}
+    reason = (payload.get('reason') or 'correcao preco fantasma')[:200]
+    new_ep = payload.get('entry_price')
+    new_xp = payload.get('exit_price')
+    if new_ep is None and new_xp is None:
+        return jsonify({'error': 'informe entry_price e/ou exit_price'}), 400
+
+    global stocks_capital, crypto_capital
+    target = None
+    which = None
+    with state_lock:
+        for lst, name in ((stocks_closed, 'stocks'), (crypto_closed, 'crypto')):
+            for t in lst:
+                if str(t.get('id')) == str(trade_id):
+                    target, which = t, name
+                    break
+            if target:
+                break
+        if not target:
+            return jsonify({'error': f'trade {trade_id} nao encontrada na memoria',
+                            'hint': 'correcao em memoria so p/ trades da sessao; use SQL p/ historicas'}), 404
+        old_pnl = float(target.get('pnl') or 0)
+        ep = float(new_ep) if new_ep is not None else float(target.get('entry_price') or 0)
+        xp = float(new_xp) if new_xp is not None else float(target.get('exit_price') or 0)
+        qty = float(target.get('quantity') or 0)
+        sign = 1.0 if str(target.get('direction', 'LONG')).upper() == 'LONG' else -1.0
+        new_pnl = round(sign * qty * (xp - ep), 2)
+        new_pct = round(sign * ((xp / ep) - 1) * 100, 4) if ep else 0.0
+        target['entry_price'] = ep
+        target['exit_price'] = xp
+        target['pnl'] = new_pnl
+        target['pnl_pct'] = new_pct
+        target['close_reason'] = 'CORRECTED_REAL'
+        delta = new_pnl - old_pnl
+        if which == 'stocks':
+            stocks_capital += delta
+        else:
+            crypto_capital += delta
+        snapshot = dict(target)
+
+    # Persiste imediatamente (upsert com os valores corrigidos da memoria)
+    try:
+        _db_save_trade(snapshot)
+    except Exception as pe:
+        log.warning(f'[correct-trade] persist imediato falhou (memoria OK): {pe}')
+    # pnl_net/pnl_gross (colunas fora do upsert) + ledger de auditoria
+    try:
+        conn = get_db()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE trades SET pnl_net=%s, pnl_gross=%s WHERE id=%s",
+                        (new_pnl, new_pnl, trade_id))
+            cur.execute(
+                """INSERT INTO capital_ledger
+                   (ts, strategy, event, symbol, amount, balance_after,
+                    trade_id, idempotency_key, metadata_json, created_by)
+                   VALUES (NOW(3), %s, 'MANUAL_ADJUSTMENT', %s, %s, NULL,
+                           %s, %s, %s, 'correct-trade-endpoint')""",
+                (which, snapshot.get('symbol'), delta, trade_id,
+                 f'CORRECT:{which}:{trade_id}',
+                 json.dumps({'reason': reason, 'old_pnl': old_pnl, 'new_pnl': new_pnl,
+                             'entry_price': ep, 'exit_price': xp,
+                             'corrected_at': datetime.utcnow().isoformat()})))
+            conn.commit()
+            cur.close(); conn.close()
+    except Exception as le:
+        log.warning(f'[correct-trade] ledger falhou: {le}')
+
+    log.warning(f'[CORRECT-TRADE] {which}/{snapshot.get("symbol")} id={trade_id}: '
+                f'pnl {old_pnl:+.2f} -> {new_pnl:+.2f} (ep={ep} xp={xp}) "{reason}"')
+    return jsonify({'corrected': True, 'trade_id': trade_id, 'symbol': snapshot.get('symbol'),
+                    'old_pnl': old_pnl, 'new_pnl': new_pnl, 'delta': round(delta, 2),
+                    'entry_price': ep, 'exit_price': xp})
+
+
 @app.route('/debug/reload-stocks-closed-from-db', methods=['POST'])
 def debug_reload_stocks_closed():
     """[DEBUG 06/mai] Forca reload da lista in-memory stocks_closed do banco.

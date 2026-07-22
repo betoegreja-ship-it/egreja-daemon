@@ -1035,6 +1035,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'uspairs_shadow_loop':  2000,    # [18-jul] cadencia 15min + scan diario demorado
     'crypto_rv_shadow_loop': 600,    # [22-jul] RV BTC-ETH shadow: beat 300s + fetch klines
     'crossasset_rv_shadow_loop': 3600,  # [22-jul] RV commodities/FX diario: beat 30min
+    'stocks_intel_loop': 3600,       # [22-jul] master+CA+factors+earnings: refresh pesado 12h
     'exit_requote_loop':     120,    # [EXIT-REAL] ciclo ~20s + fetches
     'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
     # [v11] Portfolio Accounting — shadow comparator (60s interval + margem)
@@ -9095,6 +9096,24 @@ def stock_execution_worker():
                     except Exception as _sr_e:
                         log.debug(f'[STOCKS-REGIME] gate {sym}: {_sr_e}')
 
+                # ═══ [CA-GUARD 22-jul, decisao Beto] Evento corporativo hoje ═══
+                # (ex-dividendo/JCP/split): o gap do preco e PROVENTO, nao
+                # movimento — nao pode virar sinal (ja nos custou caro: mapa
+                # ADR errado, pares nao-convergentes, precos ajustados x brutos).
+                # Env: STOCKS_CA_GUARD=false desliga.
+                if os.environ.get('STOCKS_CA_GUARD', 'true').lower() != 'false':
+                    try:
+                        from modules.stocks_intel import ca_event_today
+                        _cae = ca_event_today(sym)
+                        if _cae:
+                            log.info(f'[CA-GUARD] {sym}: {_cae.get("type")} ex-date '
+                                     f'{_cae.get("ex_date")} ({_cae.get("label")}, '
+                                     f'{_cae.get("amount") or _cae.get("ratio")}) — gap de provento '
+                                     f'nao e sinal, sem entrada hoje')
+                            continue
+                    except Exception as _ca_e:
+                        log.debug(f'[CA-GUARD] {sym}: {_ca_e}')
+
                 # ═══ [B3-PULSE 18-jul-2026, recalibracao Beto+Claude] ═══
                 # Dissecacao da era limpa (165 trades): 92% das perdas em
                 # clusters de whipsaw (22 juntas, -$20k, nas 2 direcoes); 42%
@@ -9664,6 +9683,28 @@ def stock_execution_worker():
                         except Exception: pass
                         ledger_record('stocks', 'RESERVE', sym,
                                       round(price*qty, 2), stocks_capital, pre_trade_id)
+                        # [FASE-A/C 22-jul, decisao Beto] Factor scores + earnings tag
+                        # nas features (SHADOW): o cerebro aprende com a ancora
+                        # economica; nada e bloqueado por isso ainda.
+                        try:
+                            from modules.stocks_intel import get_factor_scores, earnings_tag
+                            _fsc = get_factor_scores(sym)
+                            if _fsc and isinstance(features, dict):
+                                features['factor_quality'] = _fsc.get('quality')
+                                features['factor_value'] = _fsc.get('value')
+                                features['factor_momentum'] = _fsc.get('momentum')
+                                features['factor_composite'] = _fsc.get('composite')
+                                log.info(f'[FACTOR-SHADOW] {sym}: composite={_fsc.get("composite")} '
+                                         f'(Q={_fsc.get("quality")} V={_fsc.get("value")} '
+                                         f'M={_fsc.get("momentum")})')
+                            _etag = earnings_tag(sym)
+                            if _etag and isinstance(features, dict):
+                                features['earnings_tag'] = _etag.get('tag')
+                                features['earnings_surprise_pct'] = _etag.get('surprise_pct')
+                                log.info(f'[EARNINGS-SHADOW] {sym}: {_etag.get("tag")} '
+                                         f'(surpresa {_etag.get("surprise_pct")}%, {_etag.get("date")})')
+                        except Exception:
+                            pass
                         # [V91-1] order_id já está no trade dentro do lock
                         trade = {
                             'id':pre_trade_id,'symbol':sym,'market':mkt,'asset_type':'stock',
@@ -12424,6 +12465,29 @@ def start_background_threads():
             log.info('[CROSSASSET-RV] motor RV commodities/FX shadow adicionado (diario)')
         except Exception as _xe:
             log.warning(f'[CROSSASSET-RV] setup falhou: {_xe}')
+
+    # [22-jul, decisao Beto] STOCKS INTEL — Fases A+B+C da mesa quant:
+    # Instrument Master + Corporate Actions + Factor Engine (shadow) +
+    # Earnings Intel (surpresa/tag). Desliga via STOCKS_INTEL_ENABLED=false.
+    if os.environ.get('STOCKS_INTEL_ENABLED', 'true').lower() != 'false':
+        try:
+            from modules.stocks_intel import stocks_intel_loop as _si_loop
+            def _si_universe():
+                try:
+                    with state_lock:
+                        return [s for s in stock_prices.keys()]
+                except Exception:
+                    return []
+            def _si_loop_wrapper():
+                try:
+                    _si_loop(_si_universe, beat_fn=beat)
+                except Exception as _se:
+                    log.error(f'[STOCKS-INTEL] crash: {_se}')
+                    import traceback; traceback.print_exc()
+            defs['stocks_intel_loop'] = _si_loop_wrapper
+            log.info('[STOCKS-INTEL] motor master+CA+factors+earnings adicionado')
+        except Exception as _se:
+            log.warning(f'[STOCKS-INTEL] setup falhou: {_se}')
     else:
         log.info('[SPECIALIST] DISABLE_BRAIN_SPECIALIST=true — desligado')
 
@@ -18619,6 +18683,16 @@ def debug_crypto_rv():
             out['meta'] = {r['k']: r['v'] for r in c.fetchall()}
             c.close(); conn.close()
         return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/factors')
+def debug_factors():
+    """[22-jul] Stocks Intel: ranking de fatores, cobertura, CA e earnings tags."""
+    try:
+        from modules.stocks_intel import snapshot
+        return jsonify(snapshot())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

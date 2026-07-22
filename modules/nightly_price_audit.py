@@ -97,7 +97,10 @@ def run_nightly_audit(ctx):
     port = ctx.get('port', 3001)
     send_whatsapp = ctx.get('send_whatsapp')
     dev_lim = float(os.environ.get('NIGHT_AUDIT_DEV_PCT', 0.5))
-    autovoid = os.environ.get('NIGHT_AUDIT_AUTOVOID', 'true').lower() != 'false'
+    # [NIGHT-AUDIT FIX 22-jul-2026, decisao Beto] default agora FALSE: a auditoria
+    # ALERTA mas NAO anula sozinha. Humano revisa e anula manualmente se for
+    # fantasma real. NIGHT_AUDIT_AUTOVOID=true reativa (so afeta >= PHANTOM_PCT).
+    autovoid = os.environ.get('NIGHT_AUDIT_AUTOVOID', 'false').lower() == 'true'
 
     cutoff = datetime.utcnow() - timedelta(hours=26)
     trades = [t for t in get_closed()
@@ -127,9 +130,21 @@ def run_nightly_audit(ctx):
         if mx >= dev_lim:
             ghosts.append((t['id'], sym, float(t.get('pnl_net') or t.get('pnl') or 0), round(mx, 2)))
 
+    # [NIGHT-AUDIT FIX 22-jul-2026, decisao Beto] NUNCA mais zerar trade REAL.
+    # O bug: a auditoria anulava (zerava) qualquer trade com desvio >= 0.5%,
+    # apagando +$7k de ganhos reais na madrugada de 20->21. Correcao:
+    #   - so e candidato a auto-anular quem esta GROSSEIRAMENTE fora (>= PHANTOM_PCT,
+    #     default 3% = preco que praticamente nao existiu, fantasma de verdade);
+    #   - desvios menores (0.5%-3%) sao SO alertados p/ revisao humana, nunca anulados;
+    #   - auto-anular so se NIGHT_AUDIT_AUTOVOID=true (default agora FALSE).
+    _phantom = float(os.environ.get('NIGHT_AUDIT_PHANTOM_PCT', 3.0))
+    _real_ghosts = [gh for gh in ghosts if gh[3] >= _phantom]
+    _flag_only = [gh for gh in ghosts if gh[3] < _phantom]
     voided = 0
-    for tid, sym, pnl, mx in ghosts:
-        log.warning(f'[NIGHT-AUDIT] FANTASMA: {sym} {tid} pnl=${pnl:,.0f} dev={mx}%')
+    for tid, sym, pnl, mx in _flag_only:
+        log.info(f'[NIGHT-AUDIT] REVISAR (desvio {mx}% < {_phantom}% — NAO anulado): {sym} {tid} pnl=${pnl:,.0f}')
+    for tid, sym, pnl, mx in _real_ghosts:
+        log.warning(f'[NIGHT-AUDIT] FANTASMA REAL: {sym} {tid} pnl=${pnl:,.0f} dev={mx}% (>= {_phantom}%)')
         if autovoid:
             try:
                 req = urllib.request.Request(

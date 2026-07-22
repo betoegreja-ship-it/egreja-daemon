@@ -1516,6 +1516,70 @@ def _crypto_regime():
 def _crypto_regime_detail():
     return _crypto_regime_cache.get('detail', '')
 
+# ═══ [RED-DAY/ANTI-TOPO 22-jul v2, decisao Beto] Contexto do dia do BTC ═══
+# Estudo causa-raiz (30 melhores/piores janelas): melhores vieram de vespera
+# VERDE (+0.43%) com alinhamento 0.80; piores de vespera VERMELHA (-0.24%)
+# com alinhamento 0.37 (o vies de ontem envenena o dia da virada). E em dias
+# de BTC em ALTA perdemos -$1.830/dia (60d) = compra de topo atrasada.
+_btc_dayctx_cache = {'ts': 0, 'prev_ret': None, 'today_ret': None}
+
+def _btc_day_context():
+    import time as _t
+    if _t.time() - _btc_dayctx_cache['ts'] < 600 and _btc_dayctx_cache['prev_ret'] is not None:
+        return _btc_dayctx_cache
+    try:
+        for _host in ('https://data-api.binance.vision', 'https://api.binance.com'):
+            try:
+                _rc = requests.get(f'{_host}/api/v3/klines',
+                                   params={'symbol': 'BTCUSDT', 'interval': '1d', 'limit': 3},
+                                   headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+                if _rc.status_code == 200:
+                    _k = _rc.json()
+                    if isinstance(_k, list) and len(_k) >= 2:
+                        _prev = (float(_k[-2][4]) / float(_k[-2][1]) - 1) * 100
+                        _tod = (float(_k[-1][4]) / float(_k[-1][1]) - 1) * 100
+                        _btc_dayctx_cache.update({'ts': _t.time(), 'prev_ret': round(_prev, 2),
+                                                  'today_ret': round(_tod, 2)})
+                        return _btc_dayctx_cache
+            except Exception:
+                continue
+    except Exception as _e:
+        log.debug(f'[BTC-DAYCTX] {_e}')
+    return None
+
+# ═══ [STOCKS-REGIME 22-jul v2, decisao Beto] Born-dead gate B3/NYSE ═══
+# Mesmo detector do CRYPTO-REGIME aplicado a acoes: peak mediano nas 30
+# piores janelas foi 0.09% (B3) / 0.13% (NYSE) — trades nascem mortas.
+# Se as ultimas N do mercado nasceram mortas => CHOP => barra sobe.
+_stocks_regime_cache = {'B3': {'ts': 0, 'regime': 'TREND', 'detail': ''},
+                        'NYSE': {'ts': 0, 'regime': 'TREND', 'detail': ''}}
+
+def _stocks_regime(mkt):
+    import time as _t
+    _c = _stocks_regime_cache.setdefault(mkt, {'ts': 0, 'regime': 'TREND', 'detail': ''})
+    if _t.time() - _c['ts'] < float(os.environ.get('STOCKS_REGIME_TTL_S', 300)):
+        return _c['regime']
+    try:
+        _n = int(os.environ.get('STOCKS_REGIME_LOOKBACK', 12))
+        with state_lock:
+            _recent = [t for t in stocks_closed if t.get('market') == mkt][:_n]
+        if len(_recent) < max(6, _n // 2):
+            _c.update({'ts': _t.time(), 'regime': 'TREND', 'detail': 'amostra pequena'})
+            return 'TREND'
+        _dead = sum(1 for t in _recent
+                    if t.get('close_reason') in ('EARLY_STOP', 'FLAT_EXIT', 'TIMEOUT', 'BREAKEVEN_PROTECT')
+                    and abs(float(t.get('peak_pnl_pct') or 0)) < 0.25)
+        _trail = sum(1 for t in _recent if t.get('close_reason') in ('TRAILING_STOP', 'TAKE_PROFIT'))
+        _frac = _dead / len(_recent)
+        _reg = 'CHOP' if _frac >= float(os.environ.get('STOCKS_CHOP_DEAD_FRAC', 0.55)) else 'TREND'
+        _c.update({'ts': _t.time(), 'regime': _reg,
+                   'detail': f'{_dead}/{len(_recent)} nascidas mortas ({_frac*100:.0f}%), {_trail} capturas'})
+        if _reg == 'CHOP':
+            log.info(f'[STOCKS-REGIME] {mkt} CHOP: {_c["detail"]}')
+    except Exception as _e:
+        log.debug(f'[STOCKS-REGIME] {_e}')
+    return _c['regime']
+
 def _b3_cluster_break():
     """[B3-PULSE 18-jul] >=N perdas B3 em WIN min => pausa PAUSE min.
     Dissecacao: 92% das perdas B3 em clusters (22 trades juntas, -$20k)."""
@@ -9013,6 +9077,24 @@ def stock_execution_worker():
                     except Exception as _mp_e:
                         log.warning(f'[MARKET-PULSE] erro no gate ({sym}): {_mp_e} — fail-open')
 
+                # ═══ [STOCKS-REGIME 22-jul v2, decisao Beto] Born-dead gate ═══
+                # Clone do CRYPTO-REGIME p/ acoes: se as ultimas N do mercado
+                # nasceram mortas (peak<0.25%), CHOP => barra sobe. Estudo dos
+                # extremos: peak mediano 0.09% (B3) / 0.13% (NYSE) nas 30 piores
+                # janelas vs 0.33/0.38 nas melhores. Env: STOCKS_REGIME_ENABLED.
+                if os.environ.get('STOCKS_REGIME_ENABLED', 'true').lower() != 'false':
+                    try:
+                        if _stocks_regime(mkt_type) == 'CHOP':
+                            _sr_bar = _eff_min + int(os.environ.get('STOCKS_CHOP_SCORE_PENALTY', 12))
+                            _sr_str = score if is_long else 100 - score
+                            if _sr_str < _sr_bar:
+                                log.info(f'[STOCKS-REGIME] {sym}({mkt_type}): CHOP '
+                                         f'({_stocks_regime_cache[mkt_type]["detail"]}) — exige forca >= '
+                                         f'{_sr_bar:.0f} (forca={_sr_str:.0f}), sem entrada')
+                                continue
+                    except Exception as _sr_e:
+                        log.debug(f'[STOCKS-REGIME] gate {sym}: {_sr_e}')
+
                 # ═══ [B3-PULSE 18-jul-2026, recalibracao Beto+Claude] ═══
                 # Dissecacao da era limpa (165 trades): 92% das perdas em
                 # clusters de whipsaw (22 juntas, -$20k, nas 2 direcoes); 42%
@@ -9950,7 +10032,9 @@ def auto_trade_crypto():
                         continue
                     # (d) horas toxicas (00/06/07 UTC = -$17k): score +10 graduado
                     _hr_p = datetime.utcnow().hour
-                    _tox_p = [int(x) for x in os.environ.get('CRYPTO_TOXIC_HOURS', '0,6,7').split(',') if x.strip().isdigit()]
+                    # [22-jul v2] +tarde US (14-19 UTC): estudo das 30 piores janelas
+                    # de 10h — comecam as 14/16/17/19 UTC; melhores na madrugada/manha.
+                    _tox_p = [int(x) for x in os.environ.get('CRYPTO_TOXIC_HOURS', '0,6,7,14,15,16,17,18,19').split(',') if x.strip().isdigit()]
                     if _hr_p in _tox_p and score < MIN_SCORE_AUTO_CRYPTO + 10:
                         log.info(f'[CRYPTO-PULSE] {display}: hora toxica {_hr_p}h UTC — exige score >= {MIN_SCORE_AUTO_CRYPTO + 10}')
                         continue
@@ -9991,6 +10075,50 @@ def auto_trade_crypto():
                                 log.info(f'[CRYPTO-REGIME] {display}: CHOP ({_crypto_regime_detail()}) '
                                          f'— exige forca >= {_chop_bar} (forca={_str_reg:.0f}), sem entrada')
                                 continue
+                    # (h) [RED-DAY 22-jul v2, decisao Beto] Vespera VERMELHA e dia
+                    # ainda indefinido: o vies herdado de ontem e veneno (estudo:
+                    # piores janelas vieram de vespera -0.24% com alinhamento 0.37;
+                    # melhores de vespera +0.43% com alinhamento 0.80). Barra sobe
+                    # ate o dia se definir. Env: CRYPTO_REDDAY_ENABLED.
+                    if os.environ.get('CRYPTO_REDDAY_ENABLED', 'true').lower() != 'false':
+                        _bdc = _btc_day_context()
+                        if _bdc and _bdc['prev_ret'] is not None and \
+                           _bdc['prev_ret'] <= float(os.environ.get('CRYPTO_REDDAY_THRESH', -0.5)) and \
+                           abs(_bdc['today_ret'] or 0) < float(os.environ.get('CRYPTO_DAY_DEFINED_PCT', 0.5)):
+                            _rd_bar = MIN_SCORE_AUTO_CRYPTO + int(os.environ.get('CRYPTO_REDDAY_PENALTY', 12))
+                            _str_rd = score if direction == 'LONG' else 100 - score
+                            if _str_rd < _rd_bar:
+                                log.info(f'[RED-DAY] {display}: vespera {_bdc["prev_ret"]:+.1f}% e dia '
+                                         f'indefinido ({_bdc["today_ret"]:+.1f}%) — exige forca >= {_rd_bar} '
+                                         f'(forca={_str_rd:.0f}), sem entrada')
+                                continue
+                    # (i) [ANTI-TOPO 22-jul v2, decisao Beto] BTC bombando hoje:
+                    # LONG atrasado paga pedagio (estudo: em dias de BTC em ALTA
+                    # perdemos -$1.830/dia em 60 dias — assinatura de compra de
+                    # topo na tarde). Env: CRYPTO_ANTITOP_ENABLED.
+                    if direction == 'LONG' and \
+                       os.environ.get('CRYPTO_ANTITOP_ENABLED', 'true').lower() != 'false':
+                        _bdc = _btc_day_context()
+                        if _bdc and (_bdc['today_ret'] or 0) >= float(os.environ.get('CRYPTO_ANTITOP_PCT', 2.5)):
+                            _at_bar = MIN_SCORE_AUTO_CRYPTO + int(os.environ.get('CRYPTO_ANTITOP_PENALTY', 15))
+                            if score < _at_bar:
+                                log.info(f'[ANTI-TOPO] {display}: BTC ja +{_bdc["today_ret"]:.1f}% hoje — '
+                                         f'LONG atrasado exige score >= {_at_bar} (score={score}), sem entrada')
+                                continue
+                    # (j) [CRYPTO-DERIVS 22-jul, decisao Beto] Market Data Engine
+                    # (funding/OI) em SOMBRA: loga o que vetaria (comprados lotados,
+                    # squeeze, desalavancagem). So bloqueia com CRYPTO_DERIVS_MODE=
+                    # enforce (apos validacao do shadow). Fail-open sem dados.
+                    try:
+                        from modules.crypto_derivs import shadow_advice as _dv_advice
+                        _dv_veto, _dv_why = _dv_advice(direction)
+                        if _dv_veto:
+                            if os.environ.get('CRYPTO_DERIVS_MODE', 'shadow').lower() == 'enforce':
+                                log.info(f'[CRYPTO-DERIVS] {display}: VETO {direction} — {_dv_why}')
+                                continue
+                            log.info(f'[CRYPTO-DERIVS-SHADOW] {display}: vetaria {direction} — {_dv_why}')
+                    except Exception as _dv_e:
+                        log.debug(f'[CRYPTO-DERIVS] {display}: {_dv_e}')
 
                 # [CRYPTO-24/7 04/mai/2026] Hard-blocks REMOVIDOS — alinhamento com decisao do
                 # commit 84de0f0 ("DECISAO DO USUARIO: operar 24/7 mantido. Forca maxima em horas
@@ -10333,6 +10461,18 @@ def auto_trade_crypto():
                         except Exception: pass
                         ledger_record('crypto', 'RESERVE', display,
                                       round(approved_size, 2), crypto_capital, pre_trade_id)
+                        # [FASE-3 22-jul, decisao Beto] Features de derivativos p/ o
+                        # cerebro: funding/OI/regime entram no features_json da trade
+                        # — o aprendizado semanal passa a aprender com dado ANTECIPADOR.
+                        try:
+                            from modules.crypto_derivs import get_derivs_snapshot as _dv_snap
+                            _dvf = _dv_snap()
+                            if _dvf and isinstance(features_c, dict):
+                                features_c['funding_pct_8h'] = _dvf['funding_pct_8h']
+                                features_c['oi_chg_24h_pct'] = _dvf['oi_chg_24h_pct']
+                                features_c['derivs_regime'] = _dvf['regime']
+                        except Exception:
+                            pass
                         trade={
                             'id':pre_trade_id,'symbol':display,'market':'CRYPTO','asset_type':'crypto',
                             'direction':direction,'entry_price':price,'current_price':price,
@@ -18478,6 +18618,24 @@ def debug_crypto_rv():
             c.execute("SELECT k, v FROM crypto_rv_shadow_meta")
             out['meta'] = {r['k']: r['v'] for r in c.fetchall()}
             c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/crypto-derivs')
+def debug_crypto_derivs():
+    """[22-jul] Market Data Engine: funding/OI/regime do BTC + contexto do dia
+    + regimes born-dead de B3/NYSE. ?force=1 ignora cache."""
+    try:
+        from modules.crypto_derivs import get_derivs_snapshot
+        out = {'derivs': get_derivs_snapshot(force=request.args.get('force') == '1'),
+               'btc_day': _btc_day_context(),
+               'crypto_regime': {'regime': _crypto_regime(), 'detail': _crypto_regime_detail()},
+               'stocks_regime': {m: {'regime': _stocks_regime(m),
+                                     'detail': _stocks_regime_cache[m]['detail']}
+                                 for m in ('B3', 'NYSE')},
+               'mode': os.environ.get('CRYPTO_DERIVS_MODE', 'shadow')}
         return jsonify(out)
     except Exception as e:
         return jsonify({'error': str(e)}), 500

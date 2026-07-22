@@ -8984,13 +8984,10 @@ def stock_execution_worker():
                     log.warning(f'[HIGH-VOL-BLOCK] {sym} stock bloqueado: regime HIGH_VOL (historico edge -0.157, WR 43%)')
                     continue
 
-                # [B3-INVERT 22-jul-2026] O BAD-HOURS-BLOCK foi medido em abril com
-                # o sinal B3 NAO invertido (14h BRT: WR 39% = o sinal errado). Com a
-                # inversao ativa, esse horario "catastrofico" vira o horario BOM —
-                # o filtro nao se aplica ao mundo invertido. Desligado quando invertido.
-                _b3_inv_active = (os.environ.get('B3_INVERT_SIGNAL', 'false').lower() == 'true')
-                if is_long and mkt_type == 'B3' and not _b3_inv_active \
-                        and os.environ.get('B3_BAD_HOURS_BLOCK', 'true').lower() != 'false':
+                # [B3-INVERT 22-jul] Decisao Beto: filtros de protecao ficam INTACTOS
+                # sob inversao — os gemeos shadow medem os dois lados; nada e desligado
+                # por teoria. A inversao troca so a DIRECAO do sinal, nao a arquitetura.
+                if is_long and mkt_type == 'B3':
                     # [FIX 30/abr] datetime ja importado no topo do modulo, NAO re-importar local
                     import datetime as _dt_bh
                     _now_utc = _dt_bh.datetime.utcnow()
@@ -9011,11 +9008,7 @@ def stock_execution_worker():
                     _ema50 = sig.get('ema50', 0) or 0
                     _atr_pct = sig.get('atr_pct', 0) or 0
                     # BEARISH_STACK = ema9 < ema21 < ema50
-                    # [B3-INVERT 22-jul] o WR 29% deste bucket e o sinal ANTIGO indo
-                    # LONG em setup baixista (contraditorio). Sob inversao, o LONG
-                    # nasce justo de um SELL original em setup baixista — e o esperado,
-                    # nao toxico. Filtro so vale no mundo NAO invertido.
-                    if (not _b3_inv_active and _ema9 > 0 and _ema21 > 0 and _ema50 > 0
+                    if (_ema9 > 0 and _ema21 > 0 and _ema50 > 0
                             and _ema9 < _ema21 < _ema50):
                         log.warning(f'[B3-TOXIC-FEATURES] {sym} LONG B3 bloqueado: EMA_BEARISH_STACK (ema9={_ema9:.2f} < ema21={_ema21:.2f} < ema50={_ema50:.2f}). Historico: avg -0.426%, WR 29%')
                         continue
@@ -9026,9 +9019,7 @@ def stock_execution_worker():
 
                 # [v10.9-TrendFilter] Bloquear LONGs em ações com queda >5% nos últimos 5 preços
                 # Previne loops como RAIZ4 — ação em tendência de queda não deve receber COMPRA
-                # [B3-INVERT 22-jul] sob inversao B3, comprar a queda E a tese (o
-                # sinal original vendia a queda). Filtro so vale para NYSE ou B3 nao-invertida.
-                if is_long and not (mkt_type == 'B3' and _b3_inv_active):
+                if is_long:
                     _hist = pd_data.get('price_history') or []
                     if len(_hist) >= 5:
                         _p_now  = pd_data.get('price', 0)

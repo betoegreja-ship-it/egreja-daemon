@@ -447,7 +447,13 @@ except Exception as _pe:
 _cedro_socket = None
 try:
     from modules.cedro_socket_provider import get_cedro as _get_cedro_socket, is_enabled as _cedro_enabled
-    if _cedro_enabled():
+    _cedro_role = os.environ.get('SERVICE_ROLE', 'all').lower().strip()
+    if _cedro_role not in ('core', 'all'):
+        # Only ONE instance may hold the Cedro credential (single-session license).
+        # The dedicated Arbi service uses brapi and must NOT open a Cedro socket,
+        # otherwise both instances fight for the session and trigger a reconnect loop.
+        log.info(f'[v10.31] CedroSocketProvider skipped (SERVICE_ROLE={_cedro_role}, usa brapi)')
+    elif _cedro_enabled():
         _cedro_socket = _get_cedro_socket()
         log.info('[v10.31] CedroSocketProvider STARTED (primary for B3 real-time quotes)')
     else:

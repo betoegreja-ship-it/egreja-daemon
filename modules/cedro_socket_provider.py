@@ -1018,6 +1018,7 @@ class CedroSocketProvider:
     def _run(self):
         """Main reader loop: connect → login → subscribe → read stream → reconnect on drop."""
         backoff = 1.0
+        login_fail_streak = 0
         hosts = [self.host, self.host_backup]
         host_idx = 0
         buf = b''
@@ -1026,10 +1027,21 @@ class CedroSocketProvider:
             if not self._connect_and_login(host):
                 host_idx += 1
                 self._reconnect_count += 1
-                time.sleep(min(backoff, 30))
+                login_fail_streak += 1
+                # Repeated login rejections mean the credential is blocked or in
+                # use by another instance. Do NOT hammer the provider — long cooldown.
+                if login_fail_streak >= int(os.environ.get('CEDRO_LOGIN_FAIL_MAX', 3)):
+                    cooldown = float(os.environ.get('CEDRO_LOGIN_COOLDOWN_S', 300))
+                    log.error(f'[cedro-socket] {login_fail_streak} logins rejeitados seguidos; '
+                              f'aguardando {cooldown:.0f}s (evita loop de reconexao)')
+                    self._stop.wait(cooldown)
+                else:
+                    time.sleep(min(backoff, 30))
                 backoff = min(backoff * 1.6, 30)
                 continue
-            backoff = 1.0
+            # Connected + logged in
+            login_fail_streak = 0
+            conn_start = time.time()
             # Re-subscribe everything
             self._resubscribe_all()
             buf = b''
@@ -1068,11 +1080,23 @@ class CedroSocketProvider:
                 except Exception as e:
                     log.warning(f'[cedro-socket] read error: {e}')
                     break
+            uptime = time.time() - conn_start
             self._connected.clear()
             try: self._sock.close()
             except: pass
             self._sock = None
             self._reconnect_count += 1
+            # Only allow a fast reconnect if the session lasted a healthy while.
+            # A session that dies in seconds is likely another client kicking us
+            # with the same credential — escalate backoff to avoid a ping-pong storm.
+            if uptime >= float(os.environ.get('CEDRO_MIN_HEALTHY_UPTIME_S', 20)):
+                backoff = 1.0
+            else:
+                host_idx += 1
+                log.warning(f'[cedro-socket] sessao caiu em {uptime:.1f}s '
+                            f'(possivel conflito de credencial); backoff={backoff:.1f}s')
+                time.sleep(min(backoff, 30))
+                backoff = min(backoff * 1.6, 30)
 
 
 # ─── Singleton helper ───────────────────────────────────────────────────

@@ -1033,6 +1033,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'weekly_learning_loop':  900,    # [SHADOW-WEEKLY] beat 60s; pipeline domingo demora minutos
     'inverse_shadow_loop':   300,    # [INVERSE-SHADOW] ciclo de 30s + DB
     'uspairs_shadow_loop':  2000,    # [18-jul] cadencia 15min + scan diario demorado
+    'crypto_rv_shadow_loop': 600,    # [22-jul] RV BTC-ETH shadow: beat 300s + fetch klines
     'exit_requote_loop':     120,    # [EXIT-REAL] ciclo ~20s + fetches
     'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
     # [v11] Portfolio Accounting — shadow comparator (60s interval + margem)
@@ -12159,6 +12160,24 @@ def start_background_threads():
             log.info('[USPAIRS] motor shadow US pairs adicionado (14 pares, cadencia diaria)')
         except Exception as _ue:
             log.warning(f'[USPAIRS] setup falhou: {_ue}')
+
+    # [22-jul] MOTOR CRYPTO RELATIVE VALUE — shadow (book nocional separado).
+    # Valor relativo ETH-BTC (neutro a direcao), clone da logica Arbi/US-Pairs.
+    # Barras 4h 24/7, z 2.0/0.5/3.5, book 1MM, SEM taxa. Tabelas crypto_rv_shadow_*.
+    # Desliga via CRYPTO_RV_SHADOW_ENABLED=false.
+    if os.environ.get('CRYPTO_RV_SHADOW_ENABLED', 'true').lower() != 'false':
+        try:
+            from modules.crypto_rv_shadow import crypto_rv_shadow_loop as _crv_loop
+            def _crv_loop_wrapper():
+                try:
+                    _crv_loop(beat_fn=beat)
+                except Exception as _ce:
+                    log.error(f'[CRYPTO-RV] crash: {_ce}')
+                    import traceback; traceback.print_exc()
+            defs['crypto_rv_shadow_loop'] = _crv_loop_wrapper
+            log.info('[CRYPTO-RV] motor RV BTC-ETH shadow adicionado (book 1MM, barras 4h)')
+        except Exception as _ce:
+            log.warning(f'[CRYPTO-RV] setup falhou: {_ce}')
     else:
         log.info('[SPECIALIST] DISABLE_BRAIN_SPECIALIST=true — desligado')
 
@@ -18233,6 +18252,35 @@ def debug_uspairs():
             c.execute("SELECT status, COUNT(*) n, ROUND(SUM(pnl_net),2) pnl FROM uspairs_shadow_trades GROUP BY status")
             out['trades'] = list(c.fetchall())
             c.execute("SELECT k, v FROM uspairs_shadow_meta")
+            out['meta'] = {r['k']: r['v'] for r in c.fetchall()}
+            c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/crypto-rv')
+def debug_crypto_rv():
+    """[22-jul] Status do motor Crypto RV (BTC-ETH) shadow; ?run=1 forca scan."""
+    try:
+        from modules.crypto_rv_shadow import scan_once
+        out = {}
+        if request.args.get('run') == '1':
+            out['scan'] = scan_once() or 'sem barra nova'
+        conn = get_db()
+        if conn:
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT status, COUNT(*) n, ROUND(SUM(pnl_net),2) pnl_total, "
+                      "ROUND(AVG(pnl_pct),3) avg_pct, SUM(pnl_net>0) wins "
+                      "FROM crypto_rv_shadow_trades GROUP BY status")
+            out['trades'] = list(c.fetchall())
+            c.execute("SELECT pair, direction, opened_bar, entry_z, notional_a, bars_held "
+                      "FROM crypto_rv_shadow_trades WHERE status='OPEN' ORDER BY opened_bar")
+            out['open_positions'] = list(c.fetchall())
+            c.execute("SELECT bar, pair, z, beta, signal_hyp FROM crypto_rv_shadow_snapshots "
+                      "ORDER BY bar DESC LIMIT 3")
+            out['last_snapshots'] = list(c.fetchall())
+            c.execute("SELECT k, v FROM crypto_rv_shadow_meta")
             out['meta'] = {r['k']: r['v'] for r in c.fetchall()}
             c.close(); conn.close()
         return jsonify(out)

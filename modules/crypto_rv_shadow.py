@@ -39,9 +39,14 @@ import pymysql
 
 log = logging.getLogger('egreja.crypto.rv.shadow')
 
-# A-B: A e o "numerador" (ETH), B o "denominador" (BTC). Extensivel no futuro.
+# A-B: A e o "numerador", B o "denominador". Pares aprovados no screen de
+# edge de 22-jul-2026 (RV z-score 4h, janela 60, entrada 2.0). Somente pares
+# com soma de spread POSITIVA e WR>=55% entraram — os reprovados (LTC-BCH,
+# NEAR-SOL, SOL-BNB, XRP-XLM, etc.) foram descartados de proposito.
 PAIRS = {
-    'ETH-BTC': {'a': 'ETHUSDT', 'b': 'BTCUSDT', 'book': 'CORE_MAJORS'},
+    'ETH-BTC':  {'a': 'ETHUSDT',  'b': 'BTCUSDT',  'book': 'CORE_MAJORS'},   # +7.7% WR62
+    'BNB-BTC':  {'a': 'BNBUSDT',  'b': 'BTCUSDT',  'book': 'CORE_MAJORS'},   # +15.4% WR64
+    'UNI-AAVE': {'a': 'UNIUSDT',  'b': 'AAVEUSDT', 'book': 'DEFI'},          # +12.8% WR55
 }
 
 _BINANCE_HOSTS = [

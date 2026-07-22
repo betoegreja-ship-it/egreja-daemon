@@ -1034,6 +1034,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'inverse_shadow_loop':   300,    # [INVERSE-SHADOW] ciclo de 30s + DB
     'uspairs_shadow_loop':  2000,    # [18-jul] cadencia 15min + scan diario demorado
     'crypto_rv_shadow_loop': 600,    # [22-jul] RV BTC-ETH shadow: beat 300s + fetch klines
+    'crossasset_rv_shadow_loop': 3600,  # [22-jul] RV commodities/FX diario: beat 30min
     'exit_requote_loop':     120,    # [EXIT-REAL] ciclo ~20s + fetches
     'pattern_discovery':     7200,   # [v10.13] minera a cada 6h
     # [v11] Portfolio Accounting — shadow comparator (60s interval + margem)
@@ -12178,6 +12179,23 @@ def start_background_threads():
             log.info('[CRYPTO-RV] motor RV BTC-ETH shadow adicionado (book 1MM, barras 4h)')
         except Exception as _ce:
             log.warning(f'[CRYPTO-RV] setup falhou: {_ce}')
+
+    # [22-jul] MOTOR CROSS-ASSET RV — shadow (commodities + FX, diario, Polygon).
+    # Irmao do crypto_rv: GLD-GDX, CPER-XME, WEAT-CORN, EUR-GBP (aprovados no screen).
+    # Tabelas crossasset_rv_shadow_*. Desliga via CROSSASSET_RV_SHADOW_ENABLED=false.
+    if os.environ.get('CROSSASSET_RV_SHADOW_ENABLED', 'true').lower() != 'false':
+        try:
+            from modules.crossasset_rv_shadow import crossasset_rv_shadow_loop as _xrv_loop
+            def _xrv_loop_wrapper():
+                try:
+                    _xrv_loop(beat_fn=beat)
+                except Exception as _xe:
+                    log.error(f'[CROSSASSET-RV] crash: {_xe}')
+                    import traceback; traceback.print_exc()
+            defs['crossasset_rv_shadow_loop'] = _xrv_loop_wrapper
+            log.info('[CROSSASSET-RV] motor RV commodities/FX shadow adicionado (diario)')
+        except Exception as _xe:
+            log.warning(f'[CROSSASSET-RV] setup falhou: {_xe}')
     else:
         log.info('[SPECIALIST] DISABLE_BRAIN_SPECIALIST=true — desligado')
 
@@ -18281,6 +18299,35 @@ def debug_crypto_rv():
                       "ORDER BY bar DESC LIMIT 3")
             out['last_snapshots'] = list(c.fetchall())
             c.execute("SELECT k, v FROM crypto_rv_shadow_meta")
+            out['meta'] = {r['k']: r['v'] for r in c.fetchall()}
+            c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/crossasset-rv')
+def debug_crossasset_rv():
+    """[22-jul] Status do motor Cross-Asset RV (commodities/FX); ?run=1 forca scan."""
+    try:
+        from modules.crossasset_rv_shadow import scan_once
+        out = {}
+        if request.args.get('run') == '1':
+            out['scan'] = scan_once() or 'sem dia novo'
+        conn = get_db()
+        if conn:
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT status, COUNT(*) n, ROUND(SUM(pnl_net),2) pnl_total, "
+                      "ROUND(AVG(pnl_pct),3) avg_pct, SUM(pnl_net>0) wins "
+                      "FROM crossasset_rv_shadow_trades GROUP BY status")
+            out['trades'] = list(c.fetchall())
+            c.execute("SELECT pair, direction, opened_day, entry_z, notional_a, days_held "
+                      "FROM crossasset_rv_shadow_trades WHERE status='OPEN' ORDER BY opened_day")
+            out['open_positions'] = list(c.fetchall())
+            c.execute("SELECT day, pair, z, beta, signal_hyp FROM crossasset_rv_shadow_snapshots "
+                      "ORDER BY day DESC, pair LIMIT 8")
+            out['last_snapshots'] = list(c.fetchall())
+            c.execute("SELECT k, v FROM crossasset_rv_shadow_meta")
             out['meta'] = {r['k']: r['v'] for r in c.fetchall()}
             c.close(); conn.close()
         return jsonify(out)

@@ -8777,6 +8777,44 @@ def stock_execution_worker():
                         elif _pat_wr >= 0.70: _eff_min = MIN_SCORE_AUTO            # padrão ok
                 is_long=score>=_eff_min and signal_val=='COMPRA'
                 is_short=score<=(100-_eff_min) and signal_val=='VENDA'
+                # ═══ [MP-TAILWIND-SIDE 22-jul-2026, decisao Beto] A MARE DEFINE ═══
+                # O LADO. Motivo (22/07): Ibov +2.3% e a maioria dos papeis dizia
+                # MANTER — o bottom-up nao enxerga o dia, entramos pouco e tarde
+                # num rally. Regra: em dia RISK_ON (ou vies pre-abertura UP na 1a
+                # janela), papel MANTER com score >= _eff_min - MP_TAILWIND_BONUS
+                # vira candidato LONG (espelho p/ SHORT em RISK_OFF). O mercado da
+                # a direcao; o papel so precisa nao contradizer (VENDA segue
+                # bloqueando LONG via V3-coherence). Todos os filtros/gates
+                # posteriores continuam valendo. MP_TAILWIND_ENABLED=false desliga.
+                if (not is_long and not is_short and signal_val == 'MANTER' and
+                        os.environ.get('MP_TAILWIND_ENABLED', 'true').lower() != 'false' and
+                        os.environ.get('MARKET_PULSE_ENABLED', 'true').lower() != 'false'):
+                    try:
+                        _tw = float(os.environ.get('MP_TAILWIND_BONUS', 10))
+                        _tw_state, _tw_det = None, ''
+                        _mso_tw = _mp_minutes_since_open(mkt_type)
+                        _wu_tw = float(os.environ.get(f'MP_WARMUP_{mkt_type}_MIN',
+                                                      20 if mkt_type == 'NYSE' else 15))
+                        if _mso_tw is not None and _mso_tw < _wu_tw:
+                            _twb, _twbd = _mp_preopen_bias(mkt_type)
+                            _tw_state = 'RISK_ON' if _twb == 'UP' else ('RISK_OFF' if _twb == 'DOWN' else None)
+                            _tw_det = f'pre-abertura {_twbd}'
+                        else:
+                            _mp_tw = market_pulse(mkt_type)
+                            if _mp_tw.get('state') in ('RISK_ON', 'RISK_OFF'):
+                                _tw_state = _mp_tw['state']
+                                _tw_det = _mp_tw.get('detail', '')
+                        _tw_bar = max(40.0, _eff_min - _tw)
+                        if _tw_state == 'RISK_ON' and score >= _tw_bar:
+                            is_long = True
+                            log.info(f'[MP-TAILWIND-SIDE] {sym}: MANTER (score={score}) vira LONG — '
+                                     f'mare {_tw_state} ({_tw_det}), barra {_tw_bar:.0f}')
+                        elif _tw_state == 'RISK_OFF' and (100 - score) >= _tw_bar:
+                            is_short = True
+                            log.info(f'[MP-TAILWIND-SIDE] {sym}: MANTER (score={score}) vira SHORT — '
+                                     f'mare {_tw_state} ({_tw_det}), barra {_tw_bar:.0f}')
+                    except Exception as _twe:
+                        log.debug(f'[MP-TAILWIND-SIDE] {sym}: {_twe}')
                 # [adaptive-v1] Guard: bloquear SHORT stocks se env var dizer
                 _allow_short = os.environ.get('ALLOW_SHORT_STOCKS', 'true').lower() != 'false'
                 if is_short and not _allow_short:
@@ -8857,8 +8895,33 @@ def stock_execution_worker():
                                          f"{_mp_wu:.0f}min pos-abertura, vies pre-abertura={_mp_bias} "
                                          f"({_mp_bdet}) — {'LONG' if is_long else 'SHORT'} contrario bloqueado")
                                 continue
+                            # ═══ [MP-TAILWIND 22-jul-2026, decisao Beto] Na abertura,
+                            # entrada ALINHADA ao vies pre-abertura ganha vento a favor:
+                            # _eff_min desce MP_TAILWIND_BONUS. Motivo (22/07): Ibov
+                            # +2.3% e o bottom-up dizia MANTER — sistema entrou pouco
+                            # e tarde em dia de mare forte. O lado do mercado deve ser
+                            # decidido ANTES da abertura (dossie) e empurrar o lado certo,
+                            # nao so vetar o errado.
+                            if (is_long and _mp_bias == 'UP') or (is_short and _mp_bias == 'DOWN'):
+                                _tw = float(os.environ.get('MP_TAILWIND_BONUS', 10))
+                                _eff_min = max(40.0, _eff_min - _tw)
+                                log.info(f"[MP-TAILWIND] {sym}({mkt_type}): abertura alinhada ao "
+                                         f"vies pre-abertura {_mp_bias} ({_mp_bdet}) — barra {_eff_min:.0f}")
                         _mp = market_pulse(mkt_type)
                         _mp_pen = float(os.environ.get('MP_SCORE_PENALTY', 10))
+                        # ═══ [MP-TAILWIND 22-jul-2026] Espelho do penalty: dia
+                        # RISK_ON empurra LONG (barra desce); RISK_OFF empurra SHORT.
+                        # Piso 40. Reversivel: MP_TAILWIND_ENABLED=false.
+                        if os.environ.get('MP_TAILWIND_ENABLED', 'true').lower() != 'false':
+                            _tw = float(os.environ.get('MP_TAILWIND_BONUS', 10))
+                            if _mp.get('state') == 'RISK_ON' and is_long:
+                                _eff_min = max(40.0, _eff_min - _tw)
+                                log.info(f"[MP-TAILWIND] {sym}({mkt_type}): RISK_ON + LONG — "
+                                         f"barra {_eff_min:.0f} ({_mp.get('detail', '')})")
+                            elif _mp.get('state') == 'RISK_OFF' and is_short:
+                                _eff_min = max(40.0, _eff_min - _tw)
+                                log.info(f"[MP-TAILWIND] {sym}({mkt_type}): RISK_OFF + SHORT — "
+                                         f"barra {_eff_min:.0f} ({_mp.get('detail', '')})")
                         # ═══ [SHORT-RISKOFF 13-jul-2026, decisao Beto] Short em ═══
                         # stocks (B3 e NYSE) religado (ALLOW_SHORT_STOCKS=true),
                         # mas SO em dia RISK_OFF do proprio mercado — a favor da

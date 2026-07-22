@@ -161,6 +161,22 @@ def apply_fee_to_trade(trade: dict, vip_tier: int = None, use_bnb: bool = None) 
     if trade.get('_fee_applied'):
         return trade
 
+    # [NO-FEES 22-jul-2026, decisao Beto] P&L de TODAS as estrategias e BRUTO —
+    # nao descontar taxa nenhuma. pnl_net = pnl (bruto), fee = 0. Reversivel via
+    # env DEDUCT_FEES=true (volta a descontar).
+    if os.environ.get('DEDUCT_FEES', 'false').lower() != 'true':
+        _g = float(trade.get('pnl', 0) or 0)
+        trade['pnl_gross'] = _g
+        trade['fee_estimated'] = 0.0
+        trade['slippage_estimated'] = 0.0
+        trade['pnl_net'] = _g
+        _pv0 = float(trade.get('position_value', 0) or trade.get('position_size', 0) or 0)
+        trade['pnl_net_pct'] = round(_g / _pv0 * 100, 4) if _pv0 > 0 else 0
+        trade['pnl_learn'] = _g
+        trade['pnl_learn_pct'] = trade['pnl_net_pct']
+        trade['_fee_applied'] = True
+        return trade
+
     pv    = float(trade.get('position_value', 0) or trade.get('position_size', 0) or 0)
     mkt   = trade.get('market', 'NYSE')
     atype = trade.get('asset_type', 'stock')

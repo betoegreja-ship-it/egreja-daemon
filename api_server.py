@@ -1470,6 +1470,44 @@ def _crypto_cluster_break():
     except Exception:
         return None
 
+# ═══ [CRYPTO-REGIME 22-jul-2026, decisao Beto] Detector de regime CHOP vs TENDENCIA ═══
+# Estudo das 30 melhores janelas provou: ouro = trailing captura tendencia;
+# sangria = entradas nascem mortas no chop (626 early-stops com peak medio +0.11%,
+# 99% nunca passaram de 0.4%; reentrada no mesmo ativo ganha so 43%). O problema
+# NAO e o stop cortar lucro — e ENTRAR em ruido no chop. Este detector le as
+# ultimas N fechadas: se dominadas por early-stop "nascendo morto" => CHOP =>
+# sobe a barra de entrada. Se trailing captura => TENDENCIA => barra normal.
+_crypto_regime_cache = {'ts': 0, 'regime': 'TREND', 'detail': ''}
+
+def _crypto_regime():
+    import time as _t
+    if _t.time() - _crypto_regime_cache['ts'] < float(os.environ.get('CRYPTO_REGIME_TTL_S', 300)):
+        return _crypto_regime_cache['regime']
+    try:
+        _n = int(os.environ.get('CRYPTO_REGIME_LOOKBACK', 12))
+        with state_lock:
+            _recent = [t for t in list(crypto_closed)[:_n]]
+        if len(_recent) < max(6, _n // 2):
+            _crypto_regime_cache.update({'ts': _t.time(), 'regime': 'TREND', 'detail': 'amostra pequena'})
+            return 'TREND'
+        # "nascida morta" = early-stop/flat/timeout com peak baixo (nunca andou)
+        _dead = sum(1 for t in _recent
+                    if t.get('close_reason') in ('EARLY_STOP', 'FLAT_EXIT', 'TIMEOUT', 'BREAKEVEN_PROTECT')
+                    and abs(float(t.get('peak_pnl_pct') or 0)) < 0.4)
+        _trail = sum(1 for t in _recent if t.get('close_reason') == 'TRAILING_STOP')
+        _dead_frac = _dead / len(_recent)
+        _thr = float(os.environ.get('CRYPTO_CHOP_DEAD_FRAC', 0.55))
+        _reg = 'CHOP' if _dead_frac >= _thr else 'TREND'
+        _crypto_regime_cache.update({'ts': _t.time(), 'regime': _reg,
+            'detail': f'{_dead}/{len(_recent)} nascidas mortas ({_dead_frac*100:.0f}%), {_trail} trailing'})
+        log.info(f'[CRYPTO-REGIME] {_reg}: {_crypto_regime_cache["detail"]}')
+    except Exception as _e:
+        log.debug(f'[CRYPTO-REGIME] {_e}')
+    return _crypto_regime_cache['regime']
+
+def _crypto_regime_detail():
+    return _crypto_regime_cache.get('detail', '')
+
 def _b3_cluster_break():
     """[B3-PULSE 18-jul] >=N perdas B3 em WIN min => pausa PAUSE min.
     Dissecacao: 92% das perdas B3 em clusters (22 trades juntas, -$20k)."""
@@ -9844,6 +9882,19 @@ def auto_trade_crypto():
                                          f'({_crypto_btc_frames_detail()}) — exige score >= '
                                          f'{MIN_SCORE_AUTO_CRYPTO + _pen_bf}')
                                 continue
+                    # (g) [CRYPTO-REGIME 22-jul-2026, decisao Beto] Em CHOP a barra
+                    # de entrada sobe: 99% das entradas de chop nascem mortas
+                    # (early-stop peak +0.11%). Em vez de comprar ruido, so os
+                    # sinais MAIS fortes passam. Em TENDENCIA, barra normal (deixa
+                    # o trailing capturar). Env: CRYPTO_REGIME_ENABLED.
+                    if os.environ.get('CRYPTO_REGIME_ENABLED', 'true').lower() != 'false':
+                        if _crypto_regime() == 'CHOP':
+                            _chop_bar = MIN_SCORE_AUTO_CRYPTO + int(os.environ.get('CRYPTO_CHOP_SCORE_PENALTY', 15))
+                            _str_reg = score if direction == 'LONG' else 100 - score
+                            if _str_reg < _chop_bar:
+                                log.info(f'[CRYPTO-REGIME] {display}: CHOP ({_crypto_regime_detail()}) '
+                                         f'— exige forca >= {_chop_bar} (forca={_str_reg:.0f}), sem entrada')
+                                continue
 
                 # [CRYPTO-24/7 04/mai/2026] Hard-blocks REMOVIDOS — alinhamento com decisao do
                 # commit 84de0f0 ("DECISAO DO USUARIO: operar 24/7 mantido. Forca maxima em horas
@@ -18060,6 +18111,19 @@ def debug_shadow_rules():
         return jsonify({'rules': agg,
                         'note': 'Trades rotuladas na entrada, NADA foi bloqueado. '
                                 'Bucket deficitario = a regra teria economizado esse PnL.'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/crypto-regime')
+def debug_crypto_regime():
+    """[CRYPTO-REGIME 22-jul] Estado atual do detector CHOP vs TENDENCIA."""
+    try:
+        reg = _crypto_regime()
+        return jsonify({'regime': reg, 'detail': _crypto_regime_detail(),
+                        'chop_bar': MIN_SCORE_AUTO_CRYPTO + int(os.environ.get('CRYPTO_CHOP_SCORE_PENALTY', 15)),
+                        'nota': 'CHOP = entradas nascem mortas (early-stop) -> sobe a barra; '
+                                'TENDENCIA = trailing captura -> barra normal'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

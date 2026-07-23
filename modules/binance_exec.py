@@ -241,7 +241,10 @@ def exec_on_close(trade):
 
 
 def summary():
+    global _tbl_ready
     try:
+        if not _tbl_ready:
+            create_tables(); _tbl_ready = True
         c = _conn()
         cur = c.cursor(pymysql.cursors.DictCursor)
         cur.execute("""SELECT mode, event, status, COUNT(*) n, ROUND(SUM(quote_usdt),2) vol,

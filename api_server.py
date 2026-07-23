@@ -2009,7 +2009,11 @@ CRYPTO_SYMBOLS = [
     'NEARUSDT',  # NEAR
     'APTUSDT',   # Aptos
     'ARBUSDT',   # Arbitrum
-    'TONUSDT',   # The Open Network — TOP performer (avg +$99/trade)
+    # [23-jul, decisao Beto] TONUSDT REMOVIDO: feed estruturalmente nao-confiavel
+    # (fallback confunde Toncoin com Tokamak 'TON-USD'; 176 trades VOIDED — recorde
+    # da casa; precos zerados recorrentes; pnl liquido negativo pos-limpeza).
+    # Para religar: descomentar a linha abaixo.
+    # 'TONUSDT',
 ]
 CRYPTO_NAMES = {
     'BTCUSDT':'Bitcoin','ETHUSDT':'Ethereum','BNBUSDT':'BNB','SOLUSDT':'Solana',

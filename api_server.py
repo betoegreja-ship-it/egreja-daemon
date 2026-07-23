@@ -8069,6 +8069,13 @@ def monitor_trades():
                         except Exception as _hte:
                             log.debug(f'[HOLD-TEST] check: {_hte}')
                     if reason:
+                        # [IB-EXEC 23-jul] fechamento real NYSE via ponte IB (fail-open)
+                        try:
+                            if trade.get('market') == 'NYSE':
+                                from modules.ib_exec import exec_on_close as _ib_close
+                                _ib_close(trade)
+                        except Exception:
+                            pass
                         # [v10.7-Fix2] Devolução de capital correta para LONG e SHORT:
                         # Debitado na abertura: position_value = entry_price * qty
                         # Retornado no fechamento: position_value + pnl
@@ -9784,6 +9791,14 @@ def stock_execution_worker():
                             '_temporal_adj':       float(sig.get('_temporal_adj') or 0),  # [FIX 10-jul-2026]
                         }
                         stocks_open.append(trade)
+                        # [IB-EXEC 23-jul, decisao Beto] Execucao real NYSE via ponte
+                        # IB (ghost/paper/live). So NYSE (B3 sera ProfitDLL). Fail-open.
+                        try:
+                            if trade.get('market') == 'NYSE':
+                                from modules.ib_exec import exec_on_open as _ib_open
+                                _ib_open(trade)
+                        except Exception:
+                            pass
                         # [DUALMATCH-SHADOW 16-jul-2026] veredito-sombra (nao bloqueia)
                         try:
                             _egr_str = score if direction == 'LONG' else 100 - score
@@ -18836,6 +18851,16 @@ def internal_cedro_quotes():
                 except Exception:
                     continue
         return jsonify({'cedro_connected': _conn_ok, 'quotes': out})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/ib')
+def debug_ib():
+    """[23-jul] Saude da ponte IB (paper/live) + modo de execucao NYSE."""
+    try:
+        from modules.ib_exec import bridge_health
+        return jsonify(bridge_health())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

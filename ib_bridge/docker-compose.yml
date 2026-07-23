@@ -1,0 +1,33 @@
+# [23-jul-2026] Stack da VPS: IB Gateway (paper) + ponte Egreja.
+# Credenciais da IB vivem SO no arquivo .env (voce preenche na VPS, nunca no chat).
+services:
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    restart: always
+    environment:
+      TWS_USERID: ${TWS_USERID}        # <- seu usuario IB (preenche no .env da VPS)
+      TWS_PASSWORD: ${TWS_PASSWORD}    # <- sua senha IB    (preenche no .env da VPS)
+      TRADING_MODE: paper              # paper | live  (comeca em paper)
+      READ_ONLY_API: "no"
+      TWS_ACCEPT_INCOMING: accept
+      TIME_ZONE: America/Sao_Paulo
+    ports:
+      - "127.0.0.1:4002:4002"          # paper (so localhost — a ponte acessa)
+    networks: [egreja]
+
+  bridge:
+    build: .
+    restart: always
+    environment:
+      BRIDGE_SECRET: ${BRIDGE_SECRET}  # mesmo valor do IB_BRIDGE_SECRET no Railway
+      IB_HOST: ib-gateway
+      IB_PORT: 4002
+      IB_CLIENT_ID: 7
+      BRIDGE_PORT: 8088
+    ports:
+      - "8088:8088"                    # o core (Railway) chama aqui
+    depends_on: [ib-gateway]
+    networks: [egreja]
+
+networks:
+  egreja: {}

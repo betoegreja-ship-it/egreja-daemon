@@ -214,28 +214,29 @@ def _execute(trade, event, side):
 
 
 def exec_on_open(trade):
-    """Chamado quando o motor cripto ABRE uma trade paper."""
+    """Chamado quando o motor cripto ABRE uma trade paper.
+    [23-jul v2] Spot nao tem short: SHORT so e MEDIDO pelo ghost. Em qualquer
+    modo REAL (testnet/live) short e pulado inteiro (open E close) — senao o
+    'cover' compraria cripto sem nunca ter vendido, sujando a reconciliacao."""
     try:
-        side = 'BUY' if str(trade.get('direction', 'LONG')).upper() == 'LONG' else 'SELL'
-        # SHORT spot real nao existe sem margem: em ghost/testnet registramos para
-        # medir; em live, SHORTs sao pulados (spot-only) ate decisao de margem.
-        if side == 'SELL' and _mode() == 'live':
+        is_short = str(trade.get('direction', 'LONG')).upper() == 'SHORT'
+        if is_short and _mode() != 'ghost':
             _record({'trade_id': trade.get('id'), 'symbol': trade.get('symbol'),
-                     'side': side, 'event': 'OPEN', 'mode': 'live',
-                     'status': 'SKIPPED', 'error': 'SHORT ignorado em spot live'})
+                     'side': 'SELL', 'event': 'OPEN', 'mode': _mode(),
+                     'status': 'SKIPPED', 'error': 'SHORT ignorado (spot sem venda a descoberto)'})
             return
-        _execute(trade, 'OPEN', side)
+        _execute(trade, 'OPEN', 'BUY' if not is_short else 'SELL')
     except Exception as e:
         log.debug(f'[EXEC] on_open: {e}')
 
 
 def exec_on_close(trade):
-    """Chamado quando o motor cripto FECHA uma trade paper (lado inverso)."""
+    """Fecha LONG -> SELL. SHORT so no ghost (no real foi pulado na abertura)."""
     try:
-        side = 'SELL' if str(trade.get('direction', 'LONG')).upper() == 'LONG' else 'BUY'
-        if side == 'BUY' and _mode() == 'live' and str(trade.get('direction')).upper() == 'SHORT':
-            return  # short nunca abriu em live
-        _execute(trade, 'CLOSE', side)
+        is_short = str(trade.get('direction', 'LONG')).upper() == 'SHORT'
+        if is_short and _mode() != 'ghost':
+            return  # short nunca abriu no real
+        _execute(trade, 'CLOSE', 'SELL' if not is_short else 'BUY')
     except Exception as e:
         log.debug(f'[EXEC] on_close: {e}')
 

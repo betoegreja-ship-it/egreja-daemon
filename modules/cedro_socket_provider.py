@@ -270,9 +270,15 @@ class CedroSocketProvider:
         self._gch_next_id: int = 1
         self._gch_id_lock = threading.Lock()
 
-        self.enabled = bool(self.user and self.password)
+        # [23-jul] gate por papel: servico que nao e core NUNCA conecta
+        # (sessao unica; caminhos preguicosos tambem passam por aqui)
+        _role_ok = os.environ.get('SERVICE_ROLE', 'all').lower().strip() in ('core', 'all')
+        self.enabled = bool(self.user and self.password) and _role_ok
         if not self.enabled:
-            log.warning('[cedro-socket] disabled — CEDRO_USER/CEDRO_PASSWORD not set')
+            if not _role_ok:
+                log.info('[cedro-socket] disabled — SERVICE_ROLE nao e core (sessao unica protegida)')
+            else:
+                log.warning('[cedro-socket] disabled — CEDRO_USER/CEDRO_PASSWORD not set')
 
     # ─── Public API ─────────────────────────────────────────────────────
 
@@ -1114,5 +1120,15 @@ def get_cedro() -> CedroSocketProvider:
         return _instance
 
 
+def _role_allows_cedro() -> bool:
+    """[23-jul, decisao Beto] SO o core (ou monolito) pode abrir socket Cedro.
+    A licenca e de sessao UNICA: o servico Arbi chamava get_cedro() por um
+    caminho preguicoso (/prices/live) e tentava login a cada cooldown —
+    o 'loop lento' que a Cedro reclamou, e risco de duelo de sessao a cada
+    deploy. Gate no MODULO fecha todos os caminhos de uma vez."""
+    return os.environ.get('SERVICE_ROLE', 'all').lower().strip() in ('core', 'all')
+
+
 def is_enabled() -> bool:
-    return bool(os.environ.get('CEDRO_USER') and os.environ.get('CEDRO_PASSWORD'))
+    return (_role_allows_cedro() and
+            bool(os.environ.get('CEDRO_USER') and os.environ.get('CEDRO_PASSWORD')))

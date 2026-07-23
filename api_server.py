@@ -11306,11 +11306,26 @@ def arbi_scan_loop():
                 # 49min nas boas) e 50% morre forcado no MARKET_CLOSE. As 30
                 # melhores: 13 comecam as 11h UTC. SO afeta abertura; monitor,
                 # gestao e fechamento de posicoes abertas seguem intocados.
+                # [v2 23-jul, decisao Beto] Backtest da regra 17h: teria custado
+                # +$229k em 5 meses (positivo TODO mes; 17-18h WR 64%). Corte
+                # movido para 19:20 UTC — preserva a tarde lucrativa e corta so
+                # o rabo final (19h+ WR 50%). Aceita "HH:MM" ou decimal no env.
                 # Reversivel: ARBI_ENTRY_CUTOFF_UTC=0 desliga.
-                _cut_h = float(os.environ.get('ARBI_ENTRY_CUTOFF_UTC', 17))
-                if _cut_h > 0 and datetime.utcnow().hour >= _cut_h:
-                    log.info(f"[ARBI-CUTOFF] {pair['id']}: {datetime.utcnow().hour}h UTC >= "
-                             f"{_cut_h:.0f}h — sem abertura nova (abertas seguem geridas)")
+                _cut_raw = os.environ.get('ARBI_ENTRY_CUTOFF_UTC', '19:20')
+                try:
+                    if ':' in str(_cut_raw):
+                        _ch, _cm = str(_cut_raw).split(':')
+                        _cut_h = int(_ch) + int(_cm) / 60.0
+                    else:
+                        _cut_h = float(_cut_raw)
+                except Exception:
+                    _cut_h = 19 + 20 / 60.0
+                _now_c = datetime.utcnow()
+                _now_frac = _now_c.hour + _now_c.minute / 60.0
+                if _cut_h > 0 and _now_frac >= _cut_h:
+                    log.info(f"[ARBI-CUTOFF] {pair['id']}: {_now_c.strftime('%H:%M')} UTC >= "
+                             f"{int(_cut_h):02d}:{int(round((_cut_h % 1) * 60)):02d} — sem abertura "
+                             f"nova (abertas seguem geridas)")
                     time.sleep(1.5); continue
 
                 # [v10.11] Position size dinâmico = portfolio_arbi / 3 (cresce com lucros)

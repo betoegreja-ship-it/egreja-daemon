@@ -6349,6 +6349,28 @@ def init_trades_tables():
                 elif _k == 'STOCK_SL_PCT':         STOCK_SL_PCT = _v
                 log.info(f'STARTUP settings: {_k}={_v}')
         except Exception as _e: log.warning(f'runtime_settings load: {_e}')
+        # [23-jul, decisao Beto] Re-aplicar pedidos de fechamento manual que
+        # sobreviveram a um restart (flag em memoria evaporava no deploy).
+        # Marca a flag nas trades ainda abertas e limpa as chaves consumidas.
+        try:
+            cursor.execute("SELECT key_name FROM runtime_settings WHERE key_name LIKE 'manual_close:%'")
+            _mc_keys = [r['key_name'] for r in cursor.fetchall()]
+            if _mc_keys:
+                _mc_ids = {k.split(':', 1)[1] for k in _mc_keys}
+                _mc_applied = 0
+                with state_lock:
+                    for _mt in stocks_open + crypto_open:
+                        if str(_mt.get('id')) in _mc_ids:
+                            _mt['_manual_close_req'] = True
+                            _mc_applied += 1
+                            log.warning(f"[MANUAL-CLOSE] boot: pedido pendente re-aplicado "
+                                        f"em {_mt.get('symbol')} ({_mt.get('id')})")
+                cursor.execute("DELETE FROM runtime_settings WHERE key_name LIKE 'manual_close:%'")
+                conn.commit()
+                log.info(f'[MANUAL-CLOSE] boot: {_mc_applied} pedido(s) re-aplicado(s), '
+                         f'{len(_mc_keys)} chave(s) limpa(s)')
+        except Exception as _mce:
+            log.warning(f'[MANUAL-CLOSE] boot re-apply: {_mce}')
         cursor.execute("SELECT symbol FROM symbol_blocked_persistent")
         for r in cursor.fetchall():
             symbol_blocked.add(r['symbol'])
@@ -15023,6 +15045,19 @@ def ops_request_close(trade_id: str):
         log.warning(f"[MANUAL-CLOSE] {_mc_info['symbol']} {trade_id}: fechamento manual "
                     f"solicitado via dashboard (pnl {float(_mc_info.get('pnl_pct') or 0):+.2f}%)")
         audit('MANUAL_CLOSE_REQUEST', {'trade_id': trade_id, **_mc_info})
+        # [23-jul, decisao Beto] Persistir o pedido: a flag em memoria evapora
+        # se um deploy reiniciar o core antes do ciclo fechar. runtime_settings
+        # guarda; o boot re-aplica (ver _reapply_manual_close_requests).
+        try:
+            _pc = get_db()
+            if _pc:
+                _pcur = _pc.cursor()
+                _pcur.execute("INSERT INTO runtime_settings (key_name, value_float) "
+                              "VALUES (%s, %s) ON DUPLICATE KEY UPDATE value_float=VALUES(value_float)",
+                              (f'manual_close:{trade_id}', time.time()))
+                _pc.commit(); _pcur.close(); _pc.close()
+        except Exception as _pe:
+            log.debug(f'[MANUAL-CLOSE] persist pedido: {_pe}')
         return jsonify({'ok': True, 'status': 'fechamento solicitado — executa em segundos',
                         **_mc_info})
     except Exception as e:

@@ -908,10 +908,77 @@ function _catOfTrade(t){
   if(at==='arbi'||mkt==='ARBI') return 'arbi';
   return 'stocks';
 }
+/* [23-jul, pedido Beto] categorias com sub-mercado + filtro por data */
+function _histMatch(t,cat){
+  var c=_catOfTrade(t);
+  if(cat==='all') return true;
+  if(cat==='b3')   return c==='stocks'&&(t.market||'').toUpperCase()==='B3';
+  if(cat==='nyse') return c==='stocks'&&(t.market||'').toUpperCase()!=='B3';
+  return c===cat;
+}
+var _histFrom=null,_histTo=null;
+function _histDateOk(t){
+  var d=(t.closed_at||t.opened_at||'').slice(0,10);
+  if(!d) return true;
+  if(_histFrom&&d<_histFrom) return false;
+  if(_histTo&&d>_histTo) return false;
+  return true;
+}
+function _filteredHist(){return _allHistTrades.filter(_histDateOk);}
+function applyHistDates(){
+  _histFrom=(document.getElementById('hist-date-from')||{}).value||null;
+  _histTo=(document.getElementById('hist-date-to')||{}).value||null;
+  var lb=document.getElementById('hist-date-label');
+  if(lb)lb.textContent=(_histFrom||_histTo)?('filtrado: '+(_histFrom||'início')+' → '+(_histTo||'hoje')):'';
+  _renderHistoryTable(_allHistTrades);
+  _updateHistCards();
+}
+function clearHistDates(){
+  _histFrom=null;_histTo=null;
+  var f=document.getElementById('hist-date-from');if(f)f.value='';
+  var t=document.getElementById('hist-date-to');if(t)t.value='';
+  var lb=document.getElementById('hist-date-label');if(lb)lb.textContent='';
+  _renderHistoryTable(_allHistTrades);
+  _updateHistCards();
+}
+function _updateHistCards(){
+  function setEl(id,val,color){var e=document.getElementById(id);if(e){e.textContent=val;if(color)e.style.color=color;}}
+  function pcolor(v){return v>=0?'#2ecc71':'#e74c3c';}
+  var list=_filteredHist();
+  var today=new Date().toISOString().slice(0,10);
+  ['b3','nyse'].forEach(function(cat){
+    var sub=list.filter(function(t){return _histMatch(t,cat);});
+    var wins=sub.filter(function(t){return (t.pnl||0)>0;}).length;
+    var pnl=sub.reduce(function(a,t){return a+(t.pnl||0);},0);
+    var dtoday=sub.filter(function(t){return (t.closed_at||'').slice(0,10)===today;})
+                  .reduce(function(a,t){return a+(t.pnl||0);},0);
+    var wr=sub.length?100*wins/sub.length:0;
+    setEl('hist-'+cat+'-pnl',fmtBig(pnl),pcolor(pnl));
+    setEl('hist-'+cat+'-wr',wr.toFixed(1)+'%',wr>=50?'#2ecc71':'#e74c3c');
+    setEl('hist-'+cat+'-daily',fmtBig(dtoday),pcolor(dtoday));
+    setEl('hist-'+cat+'-count',sub.length+' trades');
+  });
+  /* com filtro de data ativo, cripto e arbi tambem refletem o periodo */
+  if(_histFrom||_histTo){
+    ['crypto','arbi'].forEach(function(cat){
+      var sub=list.filter(function(t){return _histMatch(t,cat);});
+      var wins=sub.filter(function(t){return (t.pnl||0)>0;}).length;
+      var pnl=sub.reduce(function(a,t){return a+(t.pnl||0);},0);
+      var wr=sub.length?100*wins/sub.length:0;
+      setEl('hist-'+cat+'-pnl',fmtBig(pnl),pcolor(pnl));
+      setEl('hist-'+cat+'-wr',wr.toFixed(1)+'%',wr>=50?'#2ecc71':'#e74c3c');
+      setEl('hist-'+cat+'-count',sub.length+' trades');
+      setEl('hist-'+cat+'-monthly','—');setEl('hist-'+cat+'-annual','—');
+      var dtoday=sub.filter(function(t){return (t.closed_at||'').slice(0,10)===today;})
+                    .reduce(function(a,t){return a+(t.pnl||0);},0);
+      setEl('hist-'+cat+'-daily',fmtBig(dtoday),pcolor(dtoday));
+    });
+  }
+}
 function _renderHistoryTable(trades){
   var tb=document.getElementById('history-body');if(!tb)return;
   var rm={'TAKE_PROFIT':'TP','TRAILING_STOP':'Trail','STOP_LOSS':'SL','TIMEOUT':'Timeout','MARKET_CLOSE':'Mkt Close'};
-  var list=_histTab==='all'?trades:trades.filter(function(t){return _catOfTrade(t)===_histTab;});
+  var list=trades.filter(function(t){return _histDateOk(t)&&_histMatch(t,_histTab);});
   if(!list.length){tb.innerHTML='<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--text3)">Sem trades nesta categoria</td></tr>';return;}
   tb.innerHTML=list.map(function(t){
     var pnl=t.pnl||0,pct=t.pnl_pct||0;
@@ -969,15 +1036,9 @@ function renderHistory(trades,s){
   function setEl(id,val,color){var e=document.getElementById(id);if(e){e.textContent=val;if(color)e.style.color=color;}}
   function pcolor(v){return v>=0?'#2ecc71':'#e74c3c';}
   if(s){
-    // STOCKS
-    var stkStats=_calcCatStats(_allHistTrades,'stocks');
-    setEl('hist-stocks-pnl',fmtBig(s.stocks_closed_pnl||stkStats.pnl),pcolor(s.stocks_closed_pnl||stkStats.pnl));
-    var sWr=s.stocks_win_rate||stkStats.wr;
-    setEl('hist-stocks-wr',sWr.toFixed(1)+'%',sWr>=50?'#2ecc71':'#e74c3c');
-    setEl('hist-stocks-daily',fmtBig(s.stocks_daily_pnl||0),pcolor(s.stocks_daily_pnl||0));
-    setEl('hist-stocks-monthly',fmtBig(s.stocks_monthly_pnl||0),pcolor(s.stocks_monthly_pnl||0));
-    setEl('hist-stocks-annual',fmtBig(s.stocks_annual_pnl||0),pcolor(s.stocks_annual_pnl||0));
-    setEl('hist-stocks-count',(s.stocks_closed_trades||stkStats.count)+' trades');
+    // [23-jul, pedido Beto] B3 e NYSE separados (com filtro de data)
+    _updateHistCards();
+    if(!_histFrom&&!_histTo){
     // CRYPTO
     var cryStats=_calcCatStats(_allHistTrades,'crypto');
     setEl('hist-crypto-pnl',fmtBig(s.crypto_closed_pnl||cryStats.pnl),pcolor(s.crypto_closed_pnl||cryStats.pnl));
@@ -995,6 +1056,7 @@ function renderHistory(trades,s){
     setEl('hist-arbi-monthly',fmtBig(ab.monthly_pnl||0),pcolor(ab.monthly_pnl||0));
     setEl('hist-arbi-annual',fmtBig(ab.annual_pnl||0),pcolor(ab.annual_pnl||0));
     setEl('hist-arbi-count',(ab.closed_trades||0)+' trades');
+    }
   }
 }
 

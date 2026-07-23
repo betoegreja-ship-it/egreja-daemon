@@ -676,16 +676,33 @@ async function doLogout() {
           <div class="pnl-block"><div class="pnl-block-label">Total Trades</div><div class="pnl-block-val" id="hist-total">—</div></div>
           <div class="pnl-block"><div class="pnl-block-label">P&L Total</div><div class="pnl-block-val" id="hist-best">—</div></div><div class="pnl-block"><div class="pnl-block-label">% Sobre Capital</div><div class="pnl-block-val" id="hist-pct-capital">—</div></div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin:16px 0;padding:0 2px">
-          <div style="background:var(--navy2);border:1px solid var(--line);padding:16px;border-radius:4px;border-top:2px solid var(--blue)">
-            <div style="font-family:monospace;font-size:9px;letter-spacing:.2em;color:var(--text3);margin-bottom:10px">STOCKS B3/NYSE</div>
+        <!-- [23-jul, pedido Beto] Filtro por data: vale para cards e tabela -->
+        <div style="display:flex;gap:10px;align-items:center;margin:14px 0 4px;padding:10px 14px;background:var(--navy2);border:1px solid var(--line);border-radius:4px;flex-wrap:wrap">
+          <span style="font-family:monospace;font-size:9px;letter-spacing:.2em;color:var(--text3)">PERÍODO</span>
+          <input type="date" id="hist-date-from" style="background:var(--navy);border:1px solid var(--line);color:var(--text1);padding:5px 8px;border-radius:3px;font-family:monospace;font-size:11px">
+          <span style="color:var(--text3);font-size:10px">até</span>
+          <input type="date" id="hist-date-to" style="background:var(--navy);border:1px solid var(--line);color:var(--text1);padding:5px 8px;border-radius:3px;font-family:monospace;font-size:11px">
+          <button onclick="applyHistDates()" style="padding:5px 14px;background:var(--blue);color:var(--white);border:none;cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px">APLICAR</button>
+          <button onclick="clearHistDates()" style="padding:5px 14px;background:transparent;color:var(--text2);border:1px solid var(--line);cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px">LIMPAR</button>
+          <span id="hist-date-label" style="font-family:monospace;font-size:10px;color:var(--gold)"></span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:12px 0;padding:0 2px">
+          <div style="background:var(--navy2);border:1px solid var(--line);padding:14px;border-radius:4px;border-top:2px solid var(--blue)">
+            <div style="font-family:monospace;font-size:9px;letter-spacing:.2em;color:var(--text3);margin-bottom:10px">B3</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">P&L TOTAL</div><div id="hist-stocks-pnl" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
-              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">WIN RATE</div><div id="hist-stocks-wr" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
-              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">DIÁRIO</div><div id="hist-stocks-daily" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
-              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">MENSAL</div><div id="hist-stocks-monthly" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
-              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">ANUAL</div><div id="hist-stocks-annual" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
-              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">TRADES</div><div id="hist-stocks-count" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
+              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">P&L PERÍODO</div><div id="hist-b3-pnl" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
+              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">WIN RATE</div><div id="hist-b3-wr" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
+              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">HOJE</div><div id="hist-b3-daily" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
+              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">TRADES</div><div id="hist-b3-count" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
+            </div>
+          </div>
+          <div style="background:var(--navy2);border:1px solid var(--line);padding:14px;border-radius:4px;border-top:2px solid #8e44ad">
+            <div style="font-family:monospace;font-size:9px;letter-spacing:.2em;color:var(--text3);margin-bottom:10px">NYSE</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">P&L PERÍODO</div><div id="hist-nyse-pnl" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
+              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">WIN RATE</div><div id="hist-nyse-wr" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
+              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">HOJE</div><div id="hist-nyse-daily" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
+              <div><div style="font-size:9px;color:var(--text3);font-family:monospace">TRADES</div><div id="hist-nyse-count" style="font-size:16px;font-family:'EB Garamond',serif">—</div></div>
             </div>
           </div>
           <div style="background:var(--navy2);border:1px solid var(--line);padding:16px;border-radius:4px;border-top:2px solid var(--gold2)">
@@ -714,6 +731,8 @@ async function doLogout() {
         <div style="display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid var(--line)">
           <button onclick="switchHistTab('all',this)" id="htab-all" style="padding:8px 16px;background:var(--blue);color:var(--white);border:none;cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px 3px 0 0">ALL</button>
           <button onclick="switchHistTab('stocks',this)" id="htab-stocks" style="padding:8px 16px;background:transparent;color:var(--text2);border:none;cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px 3px 0 0">STOCKS</button>
+          <button onclick="switchHistTab('b3',this)" id="htab-b3" style="padding:8px 16px;background:transparent;color:var(--text2);border:none;cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px 3px 0 0">B3</button>
+          <button onclick="switchHistTab('nyse',this)" id="htab-nyse" style="padding:8px 16px;background:transparent;color:var(--text2);border:none;cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px 3px 0 0">NYSE</button>
           <button onclick="switchHistTab('crypto',this)" id="htab-crypto" style="padding:8px 16px;background:transparent;color:var(--text2);border:none;cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px 3px 0 0">CRYPTO</button>
           <button onclick="switchHistTab('arbi',this)" id="htab-arbi" style="padding:8px 16px;background:transparent;color:var(--text2);border:none;cursor:pointer;font-family:monospace;font-size:10px;letter-spacing:.1em;border-radius:3px 3px 0 0">ARBI</button>
         </div>

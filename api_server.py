@@ -1238,6 +1238,28 @@ def market_pulse(mkt):
     _ttl = float(os.environ.get('MP_CACHE_MIN', 5)) * 60.0
     if _t.time() - _c.get('ts', 0) < _ttl and _c.get('state'):
         return _c
+    # ═══ [MP-DELAYED-BLIND 23-jul, decisao Beto] Sem Cedro conectado, a brapi ═══
+    # atrasa ~15min e na abertura ainda mostra ONTEM (23/07: IBOV congelado no
+    # fechamento com chg 0%, mas o pulse leu +2.44% = eco do rally de ontem =
+    # RISK_ON fantasma que travou o dia em impasse). Regra: B3 sem tick real
+    # nos primeiros MP_B3_DELAYED_BLIND_MIN (30) do pregao => NEUTRAL; o vies
+    # pre-abertura (dado fresco Polygon) e quem manda nessa janela.
+    if mkt == 'B3':
+        try:
+            _ced_ok = (_cedro_socket is not None and getattr(_cedro_socket, 'enabled', False)
+                       and _cedro_socket._connected.is_set())
+            _mso_bl = _mp_minutes_since_open('B3')
+            _blind_min = float(os.environ.get('MP_B3_DELAYED_BLIND_MIN', 30))
+            if (not _ced_ok) and _mso_bl is not None and 0 <= _mso_bl < _blind_min:
+                _c.update({'ts': _t.time(), 'state': 'NEUTRAL',
+                           'breadth_up_pct': 0, 'breadth_dn_pct': 0,
+                           'avg_change_pct': 0, 'n_symbols': 0, 'index_chg_pct': None,
+                           'detail': f'sem tick real (Cedro off): brapi atrasa 15min e mostra '
+                                     f'ontem — NEUTRAL nos primeiros {_blind_min:.0f}min do pregao'})
+                log.info(f"[MARKET-PULSE] B3: NEUTRAL (cego-atrasado, {_mso_bl:.0f}min pos-abertura)")
+                return _c
+        except Exception:
+            pass
     _up = _dn = 0
     _chgs = []
     # [MP-v3 13-jul-2026] NYSE: breadth do mercado US INTEIRO (Full Market

@@ -107,7 +107,7 @@ def _jget(url, params=None, timeout=15):
 
 def _is_b3(sym):
     import re
-    return bool(re.match(r'^[A-Z]{4}[0-9]{1,2}$', sym))
+    return bool(re.match(r'^[A-Z][A-Z0-9]{3}[0-9]{1,2}$', sym))
 
 
 # ═══════════════ FASE B: master + corporate actions ═══════════════

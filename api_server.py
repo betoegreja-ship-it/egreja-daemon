@@ -1274,7 +1274,7 @@ def market_pulse(mkt):
     for _sym, _pd in _sp.items():
         if not _pd or not isinstance(_pd, dict):
             continue
-        _is_b3 = bool(re.match(r'^[A-Z]{4}[0-9]+$', _sym))
+        _is_b3 = bool(re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', _sym))
         if (mkt == 'B3') != _is_b3:
             continue
         _ch = _pd.get('change_pct')
@@ -1614,7 +1614,7 @@ def _b3_cluster_break():
         with state_lock:
             _rec = [str(t.get('closed_at'))[:19] for t in stocks_closed
                     if float(t.get('pnl') or 0) < 0 and t.get('closed_at')
-                    and re.match(r'^[A-Z]{4}[0-9]+$', t.get('symbol', ''))]
+                    and re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', t.get('symbol', ''))]
         _ds = []
         for _s in _rec:
             try:
@@ -1642,7 +1642,7 @@ def _nyse_cluster_break():
         with state_lock:
             _rec = [str(t.get('closed_at'))[:19] for t in stocks_closed
                     if float(t.get('pnl') or 0) < 0 and t.get('closed_at')
-                    and not re.match(r'^[A-Z]{4}[0-9]+$', t.get('symbol', ''))]
+                    and not re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', t.get('symbol', ''))]
         _ds = []
         for _s in _rec:
             try:
@@ -2697,7 +2697,7 @@ def check_risk(symbol, market_type, position_value, strategy='stocks'):
         # aplicado) passa a valer para NYSE. Teto total = soma dos dois.
         _mkt_r = 'B3' if str(market_type).upper() == 'B3' else 'NYSE'
         def _mkt_of_r(t):
-            return 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', str(t.get('symbol', ''))) else 'NYSE'
+            return 'B3' if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', str(t.get('symbol', ''))) else 'NYSE'
         _mkt_count_r = sum(1 for t in s_open if t.get('asset_type') == 'stock' and _mkt_of_r(t) == _mkt_r)
         _mkt_limit_r = MAX_POSITIONS_STOCKS if _mkt_r == 'B3' else MAX_POSITIONS_NYSE
         if _mkt_count_r >= _mkt_limit_r:
@@ -4507,7 +4507,7 @@ def check_v3_reversal(trade: dict, asset_type: str = 'crypto') -> tuple:
             v = pd_data.get('volumes_series', [])
             if len(c) < 30:
                 return False, None, None, 'stock_no_series'
-            _mkt_rev = trade.get('market') or ('B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE')
+            _mkt_rev = trade.get('market') or ('B3' if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sym) else 'NYSE')
             r = compute_score_v3(c, h, l, v,
                                  factor_stats_cache=factor_stats_cache,
                                  pattern_stats_cache=pattern_stats_cache,
@@ -7164,7 +7164,7 @@ def _fetch_single_stock(sym: str) -> tuple:
     regularMarketPreviousClose, evitando o problema de cache parcial.
     Para reverter ao comportamento anterior: setar env CEDRO_PRIMARY=true.
     """
-    is_b3 = sym.endswith('.SA') or bool(re.match(r'^[A-Z]{4}[0-9]+$', sym))
+    is_b3 = sym.endswith('.SA') or bool(re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sym))
     display = sym.replace('.SA', '')
     _cedro_primary = os.environ.get('CEDRO_PRIMARY', 'false').lower() == 'true'
 
@@ -8465,7 +8465,7 @@ def stock_execution_worker():
             # outage de provider resulte em entradas parciais ruins.
             _b3_total = 0; _b3_stale = 0
             for _s, _pd in sp_snap.items():
-                if not _pd or not re.match(r'^[A-Z]{4}[0-9]+$', _s): continue
+                if not _pd or not re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', _s): continue
                 _b3_total += 1
                 _u = _pd.get('updated_at') or ''
                 _last_ts = _pd.get('last_candle_ts')
@@ -8501,7 +8501,7 @@ def stock_execution_worker():
                 if not pd_data or pd_data.get('price', 0) <= 0:
                     _diag_counts['price0'] += 1
                     continue
-                mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
+                mkt_type = 'B3' if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
                 # ── CIRCUIT-BREAKER B3: pausa global se feed degradado ──────────
                 if mkt_type == 'B3' and _b3_circuit_open:
                     _diag_counts['circuit'] += 1
@@ -8633,7 +8633,7 @@ def stock_execution_worker():
                 # [v10.13] Ajuste temporal para stocks
                 _now_s = datetime.utcnow()
                 # [adaptive-v1] B3 pattern CODE+NUMBER
-                _mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'
+                _mkt_type = 'B3' if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sym) else 'NYSE'
                 _st_adj, _st_blocked, _st_reason = get_temporal_stock_score(_now_s.hour, _now_s.weekday(), _mkt_type)
                 # [v10.14-FIX] Temporal block NÃO bloqueia SHORTs — foi calibrado só com LONGs
                 # SHORTs têm comportamento diferente em janelas ruins para LONGs
@@ -8853,14 +8853,14 @@ def stock_execution_worker():
                 # [P0-FIX 13-jul-2026] mkt_type ficava STALE aqui (vinha da ultima
                 # iteracao do loop de sinais anterior), fazendo NYSE-REGIME e
                 # BAD-HOURS mirarem o mercado ERRADO. Recalcular por sinal:
-                mkt_type = mkt if mkt in ('B3', 'NYSE') else ('B3' if re.match(r'^[A-Z]{4}[0-9]+$', sig.get('symbol', '')) else 'NYSE')
+                mkt_type = mkt if mkt in ('B3', 'NYSE') else ('B3' if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sig.get('symbol', '')) else 'NYSE')
                 signal_val=sig.get('signal',''); sym=sig.get('symbol','')
                 price=sig.get('price', 0)
                 if price<=0: continue
                 # [PENNY-BLOCK 15-jul-2026, decisao Beto] AZEV4 a R$0.13: um tick
                 # de R$0.01 = 7.7% — nenhuma protecao sobrevive. Nao ENTRA abaixo
                 # do preco minimo (simbolo continua na lista, so nao opera assim).
-                _min_px = float(os.environ.get('MIN_ENTRY_PRICE_B3', 1.0)) if re.match(r'^[A-Z]{4}[0-9]+$', sym) \
+                _min_px = float(os.environ.get('MIN_ENTRY_PRICE_B3', 1.0)) if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sym) \
                           else float(os.environ.get('MIN_ENTRY_PRICE_NYSE', 2.0))
                 if price < _min_px:
                     log.info(f'[PENNY-BLOCK] {sym}: preco {price} < minimo {_min_px} — tick e % demais')
@@ -8870,7 +8870,7 @@ def stock_execution_worker():
                 # abertos as 16:56 BRT (4min antes do sino) — nascem sem tempo
                 # de gestao e fecham no MARKET_CLOSE as cegas.
                 # Env: LATE_ENTRY_BLOCK_MIN (default 15).
-                _mtc = _mp_minutes_to_close('B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE')
+                _mtc = _mp_minutes_to_close('B3' if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sym) else 'NYSE')
                 if _mtc is not None and _mtc < float(os.environ.get('LATE_ENTRY_BLOCK_MIN', 15)):
                     log.info(f'[LATE-ENTRY-BLOCK] {sym}: faltam {_mtc:.0f}min para o fechamento — sem entrada nova')
                     continue
@@ -12037,9 +12037,9 @@ def start_background_threads():
                 # saidas com cache velho (ADA dev 4.6%, HAPV3 1.1%).
                 with state_lock:
                     _syms = sorted(set(t['symbol'] for t in stocks_open
-                                       if not re.match(r'^[A-Z]{4}[0-9]+$', t.get('symbol', ''))))
+                                       if not re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', t.get('symbol', ''))))
                     _syms_b3 = sorted(set(t['symbol'] for t in stocks_open
-                                          if re.match(r'^[A-Z]{4}[0-9]+$', t.get('symbol', ''))))
+                                          if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', t.get('symbol', ''))))
                     _syms_cry = sorted(set(t['symbol'] for t in crypto_open))
                 # crypto 24/7 via espelho publico da Binance
                 for _sc_ in _syms_cry[:12]:
@@ -16795,7 +16795,7 @@ def signals():
         for sym, pd in sp_snap.items():
             if not pd or pd.get('price', 0) <= 0: continue
             if sym in syms_in_rows: continue  # já veio do banco, não duplicar
-            mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
+            mkt_type = 'B3' if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
             mkt_open = b3_open if mkt_type == 'B3' else nyse_open
             rsi  = pd.get('rsi', 50) or 50
             ema9 = pd.get('ema9', 0)  or 0
@@ -16898,7 +16898,7 @@ def signals():
             for sym, pd in sp_snap.items():
                 if not pd or pd.get('price', 0) <= 0: continue
                 # Determinar mercado pelo símbolo
-                mkt_type = 'B3' if re.match(r'^[A-Z]{4}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
+                mkt_type = 'B3' if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sym) else 'NYSE'  # [adaptive-v1] pattern match
                 rows.append({
                     'symbol': sym, 'price': pd.get('price', 0),
                     'signal': 'MANTER', 'score': 50,
@@ -18547,7 +18547,7 @@ def sync_prices():
                 continue
             entry = {'price': px, 'updated_at': pd_.get('updated_at', ''),
                      'change_pct': pd_.get('change_pct')}
-            if re.match(r'^[A-Z]{4}[0-9]+$', sym):
+            if re.match(r'^[A-Z][A-Z0-9]{3}[0-9]+$', sym):
                 out['b3'][sym] = entry
             else:
                 out['nyse'][sym] = entry

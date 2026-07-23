@@ -8333,6 +8333,12 @@ def monitor_trades():
                     if trade.get('_manual_close_req'):
                         reason = 'MANUAL_CLOSE'
                     if reason:
+                        # [EXEC 23-jul] fechamento espelhado no adaptador real (fail-open)
+                        try:
+                            from modules.binance_exec import exec_on_close
+                            exec_on_close(trade)
+                        except Exception:
+                            pass
                         # [v10.18] Ledger: RELEASE margin first, then PNL_CREDIT
                         crypto_capital += trade['position_value']
                         # [v11-hook] dual-write crypto close
@@ -10585,6 +10591,14 @@ def auto_trade_crypto():
                             'signal_v2':           locals().get('signal_v2_c'),
                         }
                         crypto_open.append(trade)
+                        # [EXEC 23-jul, decisao Beto] Adaptador de execucao real
+                        # (ghost/testnet/live). Em ghost: so loga+registra a ordem
+                        # que seria enviada com taxas reais. Fail-open total.
+                        try:
+                            from modules.binance_exec import exec_on_open
+                            exec_on_open(trade)
+                        except Exception:
+                            pass
                         # [DUALMATCH-SHADOW 16-jul-2026] veredito-sombra (nao bloqueia)
                         try:
                             _dir_c = str(trade.get('direction', 'LONG')).upper()
@@ -18822,6 +18836,17 @@ def internal_cedro_quotes():
                 except Exception:
                     continue
         return jsonify({'cedro_connected': _conn_ok, 'quotes': out})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/exec')
+def debug_exec():
+    """[23-jul] Adaptador de execucao real: modo, ordens (ghost/testnet/live),
+    volume e taxas real-sim dos ultimos 7 dias."""
+    try:
+        from modules.binance_exec import summary
+        return jsonify(summary())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

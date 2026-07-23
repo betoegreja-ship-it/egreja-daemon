@@ -11299,6 +11299,20 @@ def arbi_scan_loop():
                         pass
                     time.sleep(1.5); continue
 
+                # ═══ [ARBI-CUTOFF 23-jul-2026, decisao Beto] Sem abertura NOVA ═══
+                # apos ARBI_ENTRY_CUTOFF_UTC (default 17h UTC). Estudo das 30
+                # piores janelas de 10h: as ruins comecam 16-20h UTC — par aberto
+                # tarde nao tem tempo de convergir, se arrasta (hold 109min vs
+                # 49min nas boas) e 50% morre forcado no MARKET_CLOSE. As 30
+                # melhores: 13 comecam as 11h UTC. SO afeta abertura; monitor,
+                # gestao e fechamento de posicoes abertas seguem intocados.
+                # Reversivel: ARBI_ENTRY_CUTOFF_UTC=0 desliga.
+                _cut_h = float(os.environ.get('ARBI_ENTRY_CUTOFF_UTC', 17))
+                if _cut_h > 0 and datetime.utcnow().hour >= _cut_h:
+                    log.info(f"[ARBI-CUTOFF] {pair['id']}: {datetime.utcnow().hour}h UTC >= "
+                             f"{_cut_h:.0f}h — sem abertura nova (abertas seguem geridas)")
+                    time.sleep(1.5); continue
+
                 # [v10.11] Position size dinâmico = portfolio_arbi / 3 (cresce com lucros)
                 with state_lock:
                     _arbi_pnl_total = sum(t.get('pnl',0) for t in arbi_open) + sum(t.get('pnl',0) for t in arbi_closed)

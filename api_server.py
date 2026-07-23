@@ -19757,6 +19757,28 @@ def admin_db_cleanup():
 # ═══════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     port=int(os.environ.get('PORT',3001))
+    # [23-jul, decisao Beto] SIGTERM gracioso: quando o Railway troca de
+    # container no deploy, o antigo SOLTA a sessao Cedro imediatamente —
+    # o novo loga limpo sem 'Invalid Login' (sessao unica, zero duelo).
+    try:
+        import signal as _sig
+        def _release_cedro_on_term(_signum, _frame):
+            try:
+                from modules import cedro_socket_provider as _csp
+                if getattr(_csp, '_instance', None):
+                    _csp._instance._stop.set()
+                    try:
+                        if _csp._instance._sock:
+                            _csp._instance._sock.close()
+                    except Exception:
+                        pass
+                    log.info('[cedro-socket] SIGTERM: sessao liberada para o proximo container')
+            except Exception:
+                pass
+            raise SystemExit(0)
+        _sig.signal(_sig.SIGTERM, _release_cedro_on_term)
+    except Exception as _se:
+        log.debug(f'SIGTERM handler: {_se}')
     log.info(f'━━━ Egreja Investment AI v10.22.0 | {ENV.upper()} | port {port} | single-process ━━━')
     log.info('[BOOT-MARKER-21JUN-2226] commit e11eb5c+ deploy ativo — investigando crypto travado desde 19-jun')
     log.info(f'FMP: {"SET" if FMP_API_KEY else "NOT SET"} | Auth: {"ENABLED" if API_SECRET_KEY else "DISABLED (dev)"} | Alerts: {"ON" if ALERTS_ENABLED else "OFF"}')

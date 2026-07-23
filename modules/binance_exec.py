@@ -31,10 +31,17 @@ import pymysql
 
 log = logging.getLogger('egreja.exec.binance')
 
-_URLS = {
-    'testnet': 'https://testnet.binance.vision',
-    'live': 'https://api.binance.com',
-}
+def _base_url():
+    """Base URL por modo. testnet aceita override por env porque a 'Demo
+    Trading' (demo.binance.com) pode usar endpoint diferente da testnet
+    classica (testnet.binance.vision)."""
+    m = _mode()
+    if m == 'testnet':
+        return os.environ.get('EXEC_TESTNET_URL', 'https://testnet.binance.vision').rstrip('/')
+    if m == 'live':
+        return os.environ.get('EXEC_LIVE_URL', 'https://api.binance.com').rstrip('/')
+    return None
+
 _day_count = {'d': None, 'n': 0}
 
 
@@ -82,7 +89,7 @@ def _sign(params: dict) -> str:
 
 
 def _api(method, path, params=None, signed=True):
-    base = _URLS.get(_mode())
+    base = _base_url()
     if not base:
         return None, 'modo ghost nao chama API'
     key = os.environ.get('BINANCE_TRADE_KEY', '')

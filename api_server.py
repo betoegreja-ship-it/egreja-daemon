@@ -10995,6 +10995,8 @@ ARBI_PAIRS = [
     # BRF (BRFS3/BRFS) removida — ticker sem cobertura de preço disponível
 ]
 
+_cedro_relay_cache = {}  # [CEDRO-RELAY 23-jul] {sym: (price, ts)} TTL 2s no servico Arbi
+
 def _fetch_arbi_price(symbol: str) -> float:
     """[v10.4][v10.6-P4] Preço para arbitragem com ADR fallback para legs B3.
     Cadência: Binance (crypto) → Polygon (US + ADR de B3) → brapi (B3) → FMP → Yahoo.
@@ -11017,6 +11019,29 @@ def _fetch_arbi_price(symbol: str) -> float:
         p = _cedro_socket.get_price(display, wait_ms=800)
         if p and p > 0:
             return float(p)
+
+    # ═══ [CEDRO-RELAY 23-jul, decisao Beto] Servico Arbi sem socket proprio ═══
+    # (sessao unica da Cedro vive no core): pede o tick B3 ao core via relay
+    # interno — a Arbi volta a ter perna B3 tick-level como antes da separacao.
+    # Fallback total: relay indisponivel (core reiniciando / Cedro off) => brapi.
+    if is_b3_sym and os.environ.get('SERVICE_ROLE', 'all').lower().strip() == 'arbi':
+        _core_url = os.environ.get('CORE_SERVICE_URL', '').rstrip('/')
+        if _core_url:
+            import time as _tr
+            _rcached = _cedro_relay_cache.get(display)
+            if _rcached and _tr.time() - _rcached[1] < float(os.environ.get('CEDRO_RELAY_TTL_S', 2)):
+                return _rcached[0]
+            try:
+                _rr = requests.get(f'{_core_url}/internal/cedro-quotes',
+                                   params={'symbols': display},
+                                   headers={'X-API-Key': API_SECRET_KEY}, timeout=3)
+                if _rr.status_code == 200:
+                    _rq = (_rr.json().get('quotes') or {}).get(display)
+                    if _rq and float(_rq.get('price', 0)) > 0:
+                        _cedro_relay_cache[display] = (float(_rq['price']), _tr.time())
+                        return float(_rq['price'])
+            except Exception:
+                pass  # fail-open -> brapi abaixo
 
     # brapi primário para B3 (snapshot, usa cache)
     if is_b3_sym and BRAPI_TOKEN:
@@ -18769,6 +18794,30 @@ def debug_crypto_rv():
             out['meta'] = {r['k']: r['v'] for r in c.fetchall()}
             c.close(); conn.close()
         return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/internal/cedro-quotes')
+def internal_cedro_quotes():
+    """[CEDRO-RELAY 23-jul, decisao Beto] O core (dono da sessao UNICA da
+    Cedro) repassa o tick B3 ao servico Arbi: uma sessao, dois consumidores,
+    custo zero. Auth: X-API-Key (before_request). ?symbols=PETR4,VALE3"""
+    try:
+        syms = [s.strip().upper().replace('.SA', '')
+                for s in (request.args.get('symbols') or '').split(',') if s.strip()][:20]
+        out = {}
+        _conn_ok = bool(_cedro_socket and getattr(_cedro_socket, 'enabled', False)
+                        and _cedro_socket._connected.is_set())
+        if _conn_ok:
+            for s in syms:
+                try:
+                    p = _cedro_socket.get_price(s, wait_ms=400)
+                    if p and p > 0:
+                        out[s] = {'price': float(p), 'src': 'cedro-relay'}
+                except Exception:
+                    continue
+        return jsonify({'cedro_connected': _conn_ok, 'quotes': out})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

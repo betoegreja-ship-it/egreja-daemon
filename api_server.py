@@ -8071,6 +8071,21 @@ def monitor_trades():
                         except Exception as _hte:
                             log.debug(f'[HOLD-TEST] check: {_hte}')
                     if reason:
+                        # [P1 v4 24-jul] outcome no score_log_v4 (acrescenta, nunca sobrescreve)
+                        try:
+                            from modules.score_v4_shadow import log_close as _v4close
+                            _h_min = None
+                            try:
+                                _h_min = int((now - datetime.fromisoformat(
+                                    str(trade.get('opened_at', '')).replace('Z', ''))).total_seconds() / 60)
+                            except Exception:
+                                pass
+                            _v4close(trade['id'], trade.get('pnl'), trade.get('pnl_pct'),
+                                     reason, hold_min=_h_min,
+                                     voided='VOID' in str(reason).upper(),
+                                     void_reason=reason if 'VOID' in str(reason).upper() else None)
+                        except Exception as _v4ce:
+                            log.debug(f'[V4] stocks close log: {_v4ce}')
                         # [IB-EXEC 23-jul] fechamento real NYSE via ponte IB (fail-open)
                         try:
                             if trade.get('market') == 'NYSE':
@@ -8342,6 +8357,21 @@ def monitor_trades():
                     if trade.get('_manual_close_req'):
                         reason = 'MANUAL_CLOSE'
                     if reason:
+                        # [P1 v4 24-jul] outcome no score_log_v4 (acrescenta, nunca sobrescreve)
+                        try:
+                            from modules.score_v4_shadow import log_close as _v4closec
+                            _h_min_c = None
+                            try:
+                                _h_min_c = int((now - datetime.fromisoformat(
+                                    str(trade.get('opened_at', '')).replace('Z', ''))).total_seconds() / 60)
+                            except Exception:
+                                pass
+                            _v4closec(trade['id'], trade.get('pnl'), trade.get('pnl_pct'),
+                                      reason, hold_min=_h_min_c,
+                                      voided='VOID' in str(reason).upper(),
+                                      void_reason=reason if 'VOID' in str(reason).upper() else None)
+                        except Exception as _v4cec:
+                            log.debug(f'[V4] crypto close log: {_v4cec}')
                         # [EXEC 23-jul] fechamento espelhado no adaptador real (fail-open)
                         try:
                             from modules.binance_exec import exec_on_close
@@ -8780,7 +8810,7 @@ def stock_execution_worker():
                 # ═══ FIM CALIBRATOR ════════════════════════════════════
                 # [v10.47] SISTEMA APENAS V3 — score v1 acima é ignorado, só v3 decide
                 # Se v3 falhar para este símbolo, skip (não abrir trade)
-                regime_v2_val = None; signal_v2_val = None
+                regime_v2_val = None; signal_v2_val = None; _v4_v3res_s = None  # [P1 v4]
                 try:
                     from modules.score_engine_v2 import compute_score_v3 as _csv3
                     _c = pd_data.get('closes_series', [])
@@ -8801,6 +8831,7 @@ def stock_execution_worker():
                     score = _r['score']
                     regime_v2_val = _r['regime']
                     signal_v2_val = _r['signal']
+                    _v4_v3res_s = _r  # [P1 v4] snapshot imutavel p/ score_log_v4
                     # [P0-FIX 28-jun-2026] Respeitar blocked=True do compute_score_v3
                     # [29-jun HOTFIX] Bug: bloqueava trades SCORE 100 (AMD/UNH/QQQ).
                     # Score forte (>=85) deve passar mesmo com pattern moderadamente ruim.
@@ -9818,7 +9849,19 @@ def stock_execution_worker():
                             'signal_v2':           sig.get('signal_v2'),
                             '_temporal_adj':       float(sig.get('_temporal_adj') or 0),  # [FIX 10-jul-2026]
                         }
+                        # [P1 v4 24-jul, decisao Beto] strategy_id obrigatorio + log v4
+                        trade['strategy'] = f'directional_{mkt.lower()}'
                         stocks_open.append(trade)
+                        # [P1 v4] snapshot imutavel na decisao (shadow puro, fail-open)
+                        try:
+                            if _v4_v3res_s:
+                                from modules.score_v4_shadow import log_decision as _v4log
+                                _v4log(pre_trade_id, signal_id, trade['strategy'], sym, mkt,
+                                       direction, _v4_v3res_s, score,
+                                       regime_v2_val, get_score_sizing_mult(score),
+                                       trade['position_value'], sig.get('atr_pct'))
+                        except Exception as _v4e:
+                            log.debug(f'[V4] stocks open log: {_v4e}')
                         # [IB-EXEC 23-jul, decisao Beto] Execucao real NYSE via ponte
                         # IB (ghost/paper/live). So NYSE (B3 sera ProfitDLL). Fail-open.
                         try:
@@ -9935,7 +9978,7 @@ def auto_trade_crypto():
                     highs_k  = klines_data.get('highs', [])
                     lows_k   = klines_data.get('lows', [])
                     vols_k   = klines_data.get('volumes', [])
-                    regime_v2_c = None; signal_v2_c = None
+                    regime_v2_c = None; signal_v2_c = None; _v4_v3res_c = None  # [P1 v4]
                     try:
                         from modules.score_engine_v2 import compute_score_v3 as _csv3c
                         if len(closes_k) < 30:
@@ -9949,6 +9992,7 @@ def auto_trade_crypto():
                         score = _rc['score']
                         regime_v2_c = _rc['regime']
                         signal_v2_c = _rc['signal']
+                        _v4_v3res_c = _rc  # [P1 v4] snapshot imutavel p/ score_log_v4
                         log.info(f"V3_CRYPTO {sym}: score={score} regime={regime_v2_c} sig={signal_v2_c}")
                     except Exception as _e:
                         log.warning(f"V3_CRYPTO_FAIL {sym}: {_e} — símbolo pulado")
@@ -10633,7 +10677,20 @@ def auto_trade_crypto():
                             'regime_v2':           locals().get('regime_v2_c'),
                             'signal_v2':           locals().get('signal_v2_c'),
                         }
+                        # [P1 v4 24-jul, decisao Beto] strategy_id obrigatorio + log v4
+                        trade['strategy'] = 'directional_crypto'
                         crypto_open.append(trade)
+                        # [P1 v4] snapshot imutavel na decisao (shadow puro, fail-open)
+                        try:
+                            if locals().get('_v4_v3res_c'):
+                                from modules.score_v4_shadow import log_decision as _v4logc
+                                _v4logc(pre_trade_id, sig_id_c, 'directional_crypto',
+                                        display, 'CRYPTO', direction, _v4_v3res_c, score,
+                                        locals().get('regime_v2_c'),
+                                        get_score_sizing_mult(score),
+                                        trade['position_value'], atr_pct_c)
+                        except Exception as _v4ec:
+                            log.debug(f'[V4] crypto open log: {_v4ec}')
                         # [EXEC 23-jul, decisao Beto] Adaptador de execucao real
                         # (ghost/testnet/live). Em ghost: so loga+registra a ordem
                         # que seria enviada com taxas reais. Fail-open total.
@@ -18899,6 +18956,33 @@ def debug_arbix():
             c.execute("SELECT pair,direction,status,entry_spread_pct,exit_spread_pct,pnl_gross,close_reason,opened_at "
                       "FROM arbix_shadow_trades ORDER BY id DESC LIMIT 12")
             out['last'] = list(c.fetchall())
+            c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/scorev4')
+def debug_scorev4():
+    """[P1 24-jul] Status do score_log_v4 (shadow): cobertura, quality vs outcome."""
+    try:
+        out = {}
+        conn = get_db()
+        if conn:
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT market, trade_status, COUNT(*) n, ROUND(AVG(trade_quality_v4),1) q_avg, "
+                      "SUM(audit_ok=0) audit_fail, SUM(regime_status='QUARANTINE') quarantine "
+                      "FROM score_log_v4 GROUP BY market, trade_status")
+            out['resumo'] = list(c.fetchall())
+            c.execute("SELECT market, CASE WHEN trade_quality_v4>=60 THEN 'q60+' "
+                      "WHEN trade_quality_v4>=50 THEN 'q50-60' ELSE 'q<50' END b, COUNT(*) n, "
+                      "ROUND(100*SUM(pnl_real>0)/COUNT(*),1) wr, ROUND(AVG(pnl_real),1) avg_pnl "
+                      "FROM score_log_v4 WHERE trade_status='CLOSED' AND pnl_real IS NOT NULL "
+                      "GROUP BY market, b ORDER BY market, b")
+            out['quality_vs_outcome'] = list(c.fetchall())
+            c.execute("SELECT book_trade_id,symbol,market,direction,trade_quality_v4,direction_score_v4,"
+                      "strength_v4,regime_status,trade_status,pnl_real FROM score_log_v4 ORDER BY id DESC LIMIT 12")
+            out['ultimos'] = list(c.fetchall())
             c.close(); conn.close()
         return jsonify(out)
     except Exception as e:

@@ -796,6 +796,8 @@ def compute_score_v2(
             'macd_hist': macd_val['hist'] if macd_val else None,
             'bb_pct_b': boll_val['pct_b'] if boll_val else None,
             'adx': adx_val['adx'] if adx_val else None,
+            'plus_di': adx_val.get('plus_di') if adx_val else None,   # [P1 v4 24-jul] log bruto
+            'minus_di': adx_val.get('minus_di') if adx_val else None,
             'cci': cci_val,
             'stoch_k': stoch_val['k'] if stoch_val else None,
             'williams': williams_val,
@@ -1600,6 +1602,8 @@ def compute_score_v3(
             'macd_hist': macd_val['hist'] if macd_val else None,
             'bb_pct_b': boll_val['pct_b'] if boll_val else None,
             'adx': adx_val['adx'] if adx_val else None,
+            'plus_di': adx_val.get('plus_di') if adx_val else None,   # [P1 v4 24-jul] log bruto
+            'minus_di': adx_val.get('minus_di') if adx_val else None,
             'cci': cci_val,
             'stoch_k': stoch_val['k'] if stoch_val else None,
             'williams': williams_val,

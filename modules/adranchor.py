@@ -114,6 +114,7 @@ class _State:
         self.fx_hist = deque(maxlen=200)   # (ts, usdbrl)
         self.pending = {}            # adr -> (side, ts)
         self.bias = {}               # b3_sym -> (side, dev, ts)  p/ motor B3
+        self.min_dev = {}            # [24-jul calib] threshold por par (meta), fallback env
         self.loaded = False
 
     def load(self, cur):
@@ -123,6 +124,13 @@ class _State:
             try:
                 raw = json.loads(row[0])
                 self.k_samples = {p: [(int(t), float(x)) for t, x in v] for p, v in raw.items()}
+            except Exception: pass
+        # calibragem por par (seed de 24/jul: distribuicao real 5m/60d)
+        cur.execute("SELECT v FROM adranchor_meta WHERE k='min_dev'")
+        row = cur.fetchone()
+        if row:
+            try:
+                self.min_dev = {p: float(x) for p, x in json.loads(row[0]).items()}
             except Exception: pass
         self.loaded = True
 
@@ -212,6 +220,9 @@ def scan_cycle():
                 dev = 100.0 * (pb3 / (k * padr * fx) - 1.0)
 
             kind = 'ANCHOR' if b3s in ANCHOR_PAIRS else 'CATCH'
+            # [24-jul calib] threshold por par (seed da distribuicao 5m/60d);
+            # anchor usa o global (1.0, faixa validada na auditoria)
+            _thr = _st.min_dev.get(b3s, min_dev) if kind == 'CATCH' else min_dev
 
             # ---- gestao de posicao CATCHUP aberta ----
             if adr in open_by_adr:
@@ -250,12 +261,12 @@ def scan_cycle():
                          (dev_oldfx * dev <= 0 or abs(dev_oldfx) < 0.6 * abs(dev)))
 
             # registra sinal relevante (auditoria continua, mesmo sem acao)
-            if abs(dev) >= 0.8 * min_dev:
+            if abs(dev) >= 0.8 * _thr:
                 side = None
                 if b3s in ANCHOR_PAIRS:
-                    side = 'LONG' if dev <= -min_dev else ('SHORT' if dev >= min_dev else None)
+                    side = 'LONG' if dev <= -_thr else ('SHORT' if dev >= _thr else None)
                 else:
-                    side = 'LONG' if dev >= min_dev else ('SHORT' if dev <= -min_dev else None)
+                    side = 'LONG' if dev >= _thr else ('SHORT' if dev <= -_thr else None)
                 cur.execute("""INSERT INTO adranchor_signals (ts,pair,kind,dev_pct,dev_oldfx_pct,
                     fx,fx_driven,quote_age_s,quote_lag_s,side) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (now.replace(tzinfo=None), b3s, kind, round(dev, 4),
@@ -276,7 +287,7 @@ def scan_cycle():
             # ---- CATCHUP: trade direcional no ADR (executa IB paper) ----
             if not window or n_open >= max_open:
                 _st.pending.pop(adr, None); continue
-            if abs(dev) < min_dev:
+            if abs(dev) < _thr:
                 _st.pending.pop(adr, None); continue
             # dev>0: B3 rica vs ADR -> ADR barato -> LONG ADR. dev<0 -> SHORT ADR.
             side = 'LONG' if dev > 0 else 'SHORT'

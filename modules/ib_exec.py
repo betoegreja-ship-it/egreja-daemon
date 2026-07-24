@@ -243,6 +243,76 @@ def exec_arbi(pair, direction, price_a, price_b, event, ref_id=None):
         log.debug(f'[IB-ARBI] exec {e}')
 
 
+def exec_uspairs(pair, direction, price_a, price_b, notional_a, notional_b, event, ref_id=None):
+    """[24-jul, decisao Beto] Espelha um trade do motor US Pairs (shadow) no IB
+    paper. As DUAS pernas sao acoes US (SMART/USD), sempre IB-reachable. O motor
+    decide pos-fechamento (candle diario), entao usamos Market-on-Open (tif=OPG):
+    a ordem enche na abertura seguinte -> slippage real, execucao honesta.
+
+    direction: SHORT_A (vende A, compra B) | LONG_A (compra A, vende B).
+    event: OPEN | CLOSE (no CLOSE as pernas invertem).
+    O book shadow (uspairs_shadow_trades) NAO e tocado — isto e ledger paralelo."""
+    try:
+        if os.environ.get('IB_USPAIRS_ENABLED', 'true').lower() == 'false':
+            return
+        _tid = ref_id or pair
+        try:
+            a, b = str(pair).split('-')
+        except Exception:
+            return
+        pa = float(price_a or 0)
+        pb = float(price_b or 0)
+        if pa <= 0 or pb <= 0:
+            return
+        na = float(notional_a or 0)
+        nb = float(notional_b or 0)
+        qa = max(1, int(round(na / pa)))
+        qb = max(1, int(round(nb / pb)))
+        if str(direction).upper() == 'SHORT_A':
+            act_a, act_b = 'SELL', 'BUY'
+        else:  # LONG_A
+            act_a, act_b = 'BUY', 'SELL'
+        if str(event).upper() == 'CLOSE':
+            act_a = 'SELL' if act_a == 'BUY' else 'BUY'
+            act_b = 'SELL' if act_b == 'BUY' else 'BUY'
+        mode = _mode()
+        tif = os.environ.get('IB_USPAIRS_TIF', 'OPG').upper()
+        # teto por perna: reaproveita IB_EXEC_MAX_USD
+        for leg_sym, qty, act, notion in ((a, qa, act_a, na), (b, qb, act_b, nb)):
+            g = _guard(min(notion, _f('IB_EXEC_MAX_USD', 2000)))
+            if g:
+                _record({'trade_id': _tid, 'symbol': leg_sym, 'side': act,
+                         'event': f'USPAIRS_{event}', 'mode': mode, 'status': 'BLOCKED',
+                         'usd': notion, 'error': g})
+                continue
+            if mode == 'ghost':
+                _day['n'] += 1
+                _record({'trade_id': _tid, 'symbol': leg_sym, 'side': act,
+                         'event': f'USPAIRS_{event}', 'mode': 'ghost', 'status': 'SIMULATED',
+                         'qty': qty, 'usd': notion, 'price_ref': pa if leg_sym == a else pb})
+                log.info(f'[IB-GHOST-USPAIRS] {event} {pair} {leg_sym} {act} {qty}sh (tif={tif})')
+                continue
+            d, err = _bridge({'symbol': leg_sym, 'action': act, 'quantity': qty,
+                              'exchange': 'SMART', 'currency': 'USD', 'tif': tif,
+                              'mode': mode, 'trade_id': _tid})
+            if err:
+                _record({'trade_id': _tid, 'symbol': leg_sym, 'side': act,
+                         'event': f'USPAIRS_{event}', 'mode': mode, 'status': 'ERROR',
+                         'qty': qty, 'usd': notion, 'error': err[:200]})
+                log.warning(f'[IB-USPAIRS] {pair} {leg_sym} {act} ERRO: {err}')
+                continue
+            _day['n'] += 1
+            _record({'trade_id': _tid, 'symbol': leg_sym, 'side': act, 'event': f'USPAIRS_{event}',
+                     'mode': mode, 'status': d.get('status', 'SENT'), 'qty': d.get('filled', qty),
+                     'usd': notion, 'price_ref': pa if leg_sym == a else pb,
+                     'price_fill': d.get('avg_price'), 'fee': d.get('commission'),
+                     'ib_order_id': d.get('order_id'), 'resp': d})
+            log.warning(f'[IB-USPAIRS] {event} {pair} {leg_sym} {act} {qty} (tif={tif}) -> '
+                        f'{d.get("status")} @ {d.get("avg_price")} id={d.get("order_id")}')
+    except Exception as e:
+        log.debug(f'[IB-USPAIRS] exec {e}')
+
+
 def bridge_health():
     url = os.environ.get('IB_BRIDGE_URL', '').rstrip('/')
     if not url:

@@ -260,6 +260,14 @@ def scan_once():
                          r['price_b'], round(pnl_gross, 2), round(fees, 2),
                          round(pnl_net, 2), reason, held, tid))
                     n_closed += 1
+                    # [REAL-EXEC 24-jul] fecha as duas pernas no IB paper (Market-on-Open,
+                    # invertendo os lados). Fail-open. Book shadow intacto.
+                    try:
+                        from modules.ib_exec import exec_uspairs
+                        exec_uspairs(pair, direction, r['price_a'], r['price_b'],
+                                     float(na or 0), float(nb or 0), 'CLOSE', ref_id=tid)
+                    except Exception as _xe:
+                        log.error(f'[USPAIRS] exec CLOSE {pair}: {_xe}')
                     reserved -= float(na) + abs(float(nb))
                     for s in pair.split('-'):
                         sym_count[s] = max(0, sym_count.get(s, 1) - 1)
@@ -295,6 +303,14 @@ def scan_once():
                              round(spread, 5), r['beta'], r['price_a'], r['price_b'],
                              round(na, 2), round(nb, 2)))
                         n_opened += 1
+                        # [REAL-EXEC 24-jul] espelha no IB paper (Market-on-Open).
+                        # Fail-open: nunca afeta o book shadow.
+                        try:
+                            from modules.ib_exec import exec_uspairs
+                            exec_uspairs(pair, direction, r['price_a'], r['price_b'],
+                                         na, nb, 'OPEN', ref_id=cur.lastrowid)
+                        except Exception as _xe:
+                            log.error(f'[USPAIRS] exec OPEN {pair}: {_xe}')
                         open_now.add(pair)
                         reserved += na + nb
                         for s in pair.split('-'):

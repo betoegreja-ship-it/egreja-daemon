@@ -78,6 +78,7 @@ def order():
     qty = int(b.get('quantity', 0))
     exch = str(b.get('exchange') or 'SMART')       # [24-jul] multi-bolsa (LSE/IBIS/AEB/SBF/TSE)
     curr = str(b.get('currency') or 'USD')
+    tif = str(b.get('tif') or 'DAY').upper()        # [24-jul] OPG = Market-on-Open (US Pairs pos-close)
     if not sym or action not in ('BUY', 'SELL') or qty <= 0:
         return jsonify({'error': 'payload invalido'}), 400
     async def _o():
@@ -87,11 +88,22 @@ def order():
         q = await _ib.qualifyContractsAsync(contract)
         if not q:
             raise RuntimeError(f'contrato nao qualificado: {sym}/{exch}/{curr}')
-        trade = _ib.placeOrder(contract, MarketOrder(action, qty))
-        for _ in range(24):
-            await asyncio.sleep(0.25)
-            if trade.orderStatus.status in ('Filled', 'Cancelled', 'ApiCancelled', 'Inactive'):
-                break
+        mo = MarketOrder(action, qty)
+        if tif == 'OPG':
+            mo.tif = 'OPG'   # Market-on-Open: enche na abertura seguinte, nao agora
+        trade = _ib.placeOrder(contract, mo)
+        if tif == 'OPG':
+            # nao espera fill (pregao fechado); confirma que foi aceita e retorna
+            for _ in range(12):
+                await asyncio.sleep(0.25)
+                if trade.orderStatus.status in ('Submitted', 'PreSubmitted', 'Filled',
+                                                'Cancelled', 'ApiCancelled', 'Inactive'):
+                    break
+        else:
+            for _ in range(24):
+                await asyncio.sleep(0.25)
+                if trade.orderStatus.status in ('Filled', 'Cancelled', 'ApiCancelled', 'Inactive'):
+                    break
         st = trade.orderStatus
         comm = 0.0
         try:

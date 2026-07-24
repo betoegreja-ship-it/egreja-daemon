@@ -11547,6 +11547,13 @@ def arbi_scan_loop():
                     audit('ARBI_OPENED',{'id':trade_id,'pair':pair['id'],'spread':spread['abs_spread']})
                     enqueue_persist('arbi',trade)
                     send_whatsapp(f"ARBI: {pair['name']} spread {spread['abs_spread']:.2f}% ${pos:,.0f}")
+                    # [REAL-EXEC ARBI] espelha no IB paper apenas se AMBAS pernas forem IB-reachable
+                    # (cross-listed NYSE<->LSE/EUR/TSX). Fail-open: nunca afeta o book fantasma.
+                    try:
+                        from modules.ib_exec import exec_arbi
+                        exec_arbi(pair, spread['direction'], _entry_price_a, _entry_price_b, 'OPEN', ref_id=trade_id)
+                    except Exception as _e:
+                        log.error(f'exec_arbi OPEN: {_e}')
 
                 time.sleep(1.5)
         except Exception as e: log.error(f'arbi_scan: {e}')
@@ -11667,6 +11674,15 @@ def arbi_monitor_loop():
 
             for c in closed_trades:
                 audit('ARBI_CLOSED',{'id':c['id'],'pair':c['pair_id'],'pnl':c['pnl'],'reason':c['close_reason']})
+                # [REAL-EXEC ARBI] fecha as pernas no IB paper (so cross-listed IB-reachable).
+                # O dict do trade ja carrega leg_a/leg_b/mkt_a/mkt_b/direction. Fail-open.
+                try:
+                    from modules.ib_exec import exec_arbi
+                    exec_arbi(c, c.get('direction','LONG_A'),
+                              c.get('price_a_entry'), c.get('price_b_entry'),
+                              'CLOSE', ref_id=c['id'])
+                except Exception as _e:
+                    log.error(f'exec_arbi CLOSE: {_e}')
                 # [v10.14] Aprendizado por par — ajusta threshold após cada fechamento
                 _pair_recent = [t for t in list(arbi_closed)[:20] if t.get('pair_id')==c['pair_id']]
                 if len(_pair_recent) >= 3:

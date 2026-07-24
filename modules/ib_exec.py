@@ -77,6 +77,40 @@ def _guard(usd):
     return None
 
 
+# [24-jul, decisao Beto] mapa mercado interno -> (bolsa IB, moeda). Sufixo do
+# ticker tambem resolve. B3 NAO esta aqui (nao e alcancavel via IB -> ProfitDLL).
+_IB_EXCH = {
+    'NYSE': ('SMART', 'USD'), 'NASDAQ': ('SMART', 'USD'), 'US': ('SMART', 'USD'),
+    'LSE': ('LSE', 'GBP'), 'XETRA': ('IBIS', 'EUR'),
+    'EURONEXT': ('SMART', 'EUR'), 'TSX': ('TSE', 'CAD'), 'TSXV': ('VENTURE', 'CAD'),
+}
+_SUFFIX_EXCH = {
+    '.L': ('LSE', 'GBP'), '.DE': ('IBIS', 'EUR'), '.AS': ('AEB', 'EUR'),
+    '.PA': ('SBF', 'EUR'), '.MI': ('BVME', 'EUR'), '.SW': ('EBS', 'CHF'),
+    '.TO': ('TSE', 'CAD'), '.V': ('VENTURE', 'CAD'),
+}
+
+
+def ib_reachable(mkt, leg=''):
+    """True se a perna e negociavel na IB (nao e B3)."""
+    m = str(mkt or '').upper()
+    if m == 'B3':
+        return False
+    if m in _IB_EXCH:
+        return True
+    return any(str(leg).upper().endswith(s) for s in _SUFFIX_EXCH)
+
+
+def _resolve_leg(leg, mkt):
+    """Retorna (symbol_ib, exchange, currency) para uma perna cross-listada."""
+    leg = str(leg).upper()
+    for suf, (ex, cur) in _SUFFIX_EXCH.items():
+        if leg.endswith(suf.upper()):
+            return leg[:-len(suf)], ex, cur
+    ex, cur = _IB_EXCH.get(str(mkt or '').upper(), ('SMART', 'USD'))
+    return leg, ex, cur
+
+
 def _bridge(payload):
     url = os.environ.get('IB_BRIDGE_URL', '').rstrip('/')
     if not url:
@@ -148,6 +182,65 @@ def exec_on_close(trade):
         _execute(trade, 'CLOSE', 'SELL' if d == 'LONG' else 'COVER')
     except Exception as e:
         log.debug(f'[IB-EXEC] on_close: {e}')
+
+
+def exec_arbi(pair, direction, price_a, price_b, event, ref_id=None):
+    """[24-jul, decisao Beto] Executa as DUAS pernas de um par Arbi cross-listado
+    na IB (long + short reais). So dispara se AMBAS as pernas sao alcancaveis na
+    IB; par com perna B3 e pulado (espera ProfitDLL). event = OPEN | CLOSE.
+    ref_id: id do trade fantasma, para amarrar exec_orders ao book."""
+    try:
+        if os.environ.get('IB_ARBI_ENABLED', 'true').lower() == 'false':
+            return
+        _tid = ref_id or pair.get('id')
+        la, lb = pair.get('leg_a'), pair.get('leg_b')
+        ma, mb = pair.get('mkt_a'), pair.get('mkt_b')
+        if not (ib_reachable(ma, la) and ib_reachable(mb, lb)):
+            return  # perna B3 -> nao executavel na IB
+        mode = _mode()
+        ra = float(pair.get('ratio_a') or 1) or 1.0
+        rb = float(pair.get('ratio_b') or 1) or 1.0
+        pa = float(price_a or 0)
+        if pa <= 0:
+            return
+        leg_usd = _f('IB_ARBI_LEG_USD', 500)
+        qa = max(1, int(leg_usd / pa))
+        qb = max(1, int(qa * rb / ra))
+        if direction == 'LONG_A':
+            act_a, act_b = 'BUY', 'SELL'
+        else:  # LONG_B
+            act_a, act_b = 'SELL', 'BUY'
+        if event == 'CLOSE':
+            act_a = 'SELL' if act_a == 'BUY' else 'BUY'
+            act_b = 'SELL' if act_b == 'BUY' else 'BUY'
+        g = _guard(leg_usd)
+        if g:
+            _record({'trade_id': _tid, 'symbol': f'{la}/{lb}', 'side': f'{act_a}/{act_b}',
+                     'event': f'ARBI_{event}', 'mode': mode, 'status': 'BLOCKED', 'usd': leg_usd, 'error': g})
+            return
+        for leg, mkt, qty, act in ((la, ma, qa, act_a), (lb, mb, qb, act_b)):
+            sym_ib, exch, cur = _resolve_leg(leg, mkt)
+            if mode == 'ghost':
+                _record({'trade_id': _tid, 'symbol': sym_ib, 'side': act,
+                         'event': f'ARBI_{event}', 'mode': 'ghost', 'status': 'SIMULATED', 'qty': qty})
+                log.info(f'[IB-GHOST-ARBI] {event} {pair.get("id")} {sym_ib}({exch}) {act} {qty}sh')
+                continue
+            d, err = _bridge({'symbol': sym_ib, 'action': act, 'quantity': qty,
+                              'exchange': exch, 'currency': cur, 'mode': mode})
+            if err:
+                _record({'trade_id': _tid, 'symbol': sym_ib, 'side': act,
+                         'event': f'ARBI_{event}', 'mode': mode, 'status': 'ERROR', 'qty': qty, 'error': err[:200]})
+                log.warning(f'[IB-ARBI] {sym_ib}({exch}) {act} ERRO: {err}')
+                continue
+            _record({'trade_id': _tid, 'symbol': sym_ib, 'side': act, 'event': f'ARBI_{event}',
+                     'mode': mode, 'status': d.get('status'), 'qty': d.get('filled', qty),
+                     'price_fill': d.get('avg_price'), 'fee': d.get('commission'),
+                     'ib_order_id': d.get('order_id'), 'resp': d})
+            log.warning(f'[IB-ARBI] {event} {pair.get("id")} {sym_ib}({exch}) {act} {qty} -> '
+                        f'{d.get("status")} @ {d.get("avg_price")}')
+        _day['n'] += 1
+    except Exception as e:
+        log.debug(f'[IB-ARBI] exec {e}')
 
 
 def bridge_health():

@@ -1033,6 +1033,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'weekly_learning_loop':  900,    # [SHADOW-WEEKLY] beat 60s; pipeline domingo demora minutos
     'inverse_shadow_loop':   300,    # [INVERSE-SHADOW] ciclo de 30s + DB
     'uspairs_shadow_loop':  2000,    # [18-jul] cadencia 15min + scan diario demorado
+    'arbix_shadow_loop':    2000,    # [24-jul] ciclo 75s na janela, 5min fora
     'crypto_rv_shadow_loop': 600,    # [22-jul] RV BTC-ETH shadow: beat 300s + fetch klines
     'crossasset_rv_shadow_loop': 3600,  # [22-jul] RV commodities/FX diario: beat 30min
     'stocks_intel_loop': 3600,       # [22-jul] master+CA+factors+earnings: refresh pesado 12h
@@ -12578,6 +12579,24 @@ def start_background_threads():
         except Exception as _ue:
             log.warning(f'[USPAIRS] setup falhou: {_ue}')
 
+    # [24-jul, pos-auditoria forense] ARBIX — Arbi v2 SHADOW com gate de
+    # simultaneidade. 17 pares cross-listed IB (13 atuais + NGG/RELX/PUK/LYG
+    # do screening). Book paper proprio, NAO toca no livro Arbi de producao.
+    # Desliga via ARBIX_ENABLED=false.
+    if os.environ.get('ARBIX_ENABLED', 'true').lower() != 'false':
+        try:
+            from modules.arbix_shadow import arbix_shadow_loop as _abx_loop
+            def _abx_loop_wrapper():
+                try:
+                    _abx_loop(beat_fn=beat)
+                except Exception as _ae:
+                    log.error(f'[ARBIX] crash: {_ae}')
+                    import traceback; traceback.print_exc()
+            defs['arbix_shadow_loop'] = _abx_loop_wrapper
+            log.info('[ARBIX] Arbi v2 shadow adicionado (17 pares, gate de simultaneidade)')
+        except Exception as _ae:
+            log.warning(f'[ARBIX] setup falhou: {_ae}')
+
     # [22-jul] MOTOR CRYPTO RELATIVE VALUE — shadow (book nocional separado).
     # Valor relativo ETH-BTC (neutro a direcao), clone da logica Arbi/US-Pairs.
     # Barras 4h 24/7, z 2.0/0.5/3.5, book 1MM, SEM taxa. Tabelas crypto_rv_shadow_*.
@@ -18812,6 +18831,29 @@ def debug_uspairs():
             out['trades'] = list(c.fetchall())
             c.execute("SELECT k, v FROM uspairs_shadow_meta")
             out['meta'] = {r['k']: r['v'] for r in c.fetchall()}
+            c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/arbix')
+def debug_arbix():
+    """[24-jul] Status do ARBIX (Arbi v2 shadow, gate de simultaneidade); ?run=1 forca ciclo."""
+    try:
+        from modules.arbix_shadow import scan_cycle, PAIRS, _st
+        out = {'pairs': len(PAIRS)}
+        if request.args.get('run') == '1':
+            scan_cycle(); out['cycle'] = 'executado'
+        out['k_warm'] = {p: len(v) for p, v in _st.k_samples.items()}
+        conn = get_db()
+        if conn:
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT status, COUNT(*) n, ROUND(SUM(pnl_gross),2) pnl FROM arbix_shadow_trades GROUP BY status")
+            out['trades'] = list(c.fetchall())
+            c.execute("SELECT pair,direction,status,entry_spread_pct,exit_spread_pct,pnl_gross,close_reason,opened_at "
+                      "FROM arbix_shadow_trades ORDER BY id DESC LIMIT 12")
+            out['last'] = list(c.fetchall())
             c.close(); conn.close()
         return jsonify(out)
     except Exception as e:

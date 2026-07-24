@@ -243,6 +243,25 @@ def exec_arbi(pair, direction, price_a, price_b, event, ref_id=None):
         log.debug(f'[IB-ARBI] exec {e}')
 
 
+def _has_open_exec(tid):
+    """True se ja houve um USPAIRS_OPEN executado (nao ERROR/BLOCKED) para este
+    trade_id. Evita disparar CLOSE de posicoes legadas sem perna real no IB."""
+    if not tid:
+        return False
+    try:
+        from modules.binance_exec import _conn
+        c = _conn()
+        cur = c.cursor()
+        cur.execute("SELECT COUNT(*) FROM exec_orders WHERE venue='IB' AND event='USPAIRS_OPEN' "
+                    "AND trade_id=%s AND status NOT IN ('ERROR','BLOCKED')", (str(tid),))
+        n = cur.fetchone()[0]
+        c.close()
+        return n > 0
+    except Exception as e:
+        log.debug(f'[IB-USPAIRS] _has_open_exec: {e}')
+        return False  # em duvida, NAO fecha (fail-safe: evita ordem naked)
+
+
 def exec_uspairs(pair, direction, price_a, price_b, notional_a, notional_b, event, ref_id=None):
     """[24-jul, decisao Beto] Espelha um trade do motor US Pairs (shadow) no IB
     paper. As DUAS pernas sao acoes US (SMART/USD), sempre IB-reachable. O motor
@@ -273,6 +292,12 @@ def exec_uspairs(pair, direction, price_a, price_b, notional_a, notional_b, even
         else:  # LONG_A
             act_a, act_b = 'BUY', 'SELL'
         if str(event).upper() == 'CLOSE':
+            # trava: so fecha no IB se ESTE trade teve um OPEN executado antes.
+            # posicoes abertas no shadow antes do hook existir NAO tem perna IB —
+            # fechar geraria ordem naked. _has_open_exec evita isso.
+            if not _has_open_exec(_tid):
+                log.info(f'[IB-USPAIRS] CLOSE {pair} ignorado: sem OPEN no IB (trade legado)')
+                return
             act_a = 'SELL' if act_a == 'BUY' else 'BUY'
             act_b = 'SELL' if act_b == 'BUY' else 'BUY'
         mode = _mode()

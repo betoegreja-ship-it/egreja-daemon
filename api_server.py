@@ -1034,6 +1034,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'inverse_shadow_loop':   300,    # [INVERSE-SHADOW] ciclo de 30s + DB
     'uspairs_shadow_loop':  2000,    # [18-jul] cadencia 15min + scan diario demorado
     'arbix_shadow_loop':    2000,    # [24-jul] ciclo 75s na janela, 5min fora
+    'adranchor_loop':       2000,    # [24-jul] anchor B3 + ADR catchup, ciclo 90s
     'crypto_rv_shadow_loop': 600,    # [22-jul] RV BTC-ETH shadow: beat 300s + fetch klines
     'crossasset_rv_shadow_loop': 3600,  # [22-jul] RV commodities/FX diario: beat 30min
     'stocks_intel_loop': 3600,       # [22-jul] master+CA+factors+earnings: refresh pesado 12h
@@ -8989,6 +8990,32 @@ def stock_execution_worker():
                                  f'contradiz v3 signal={_sig_v3_s} — entrada bloqueada')
                         continue
 
+                # ═══ [ARBI-ANCHOR 24-jul-2026, decisao Beto] ═══
+                # Ensinamento real extraido da auditoria forense da Arbi: desvio
+                # >=1% da acao B3 vs valor justo implicito pelo ADR (ADR x USDBRL,
+                # cotacoes frescas+sincronizadas, com guarda de cambio) preve a
+                # direcao com 60-72% de acerto (SBSP3 100%, ITUB4 90%, GGBR4 74%,
+                # ABEV3 71%, BBDC4 64% em 405 trades auditadas). Regra:
+                #   - vies CONTRA a direcao -> bloqueia a entrada
+                #   - vies A FAVOR -> deixa passar (so loga o reforco)
+                # Fail-open: sem vies fresco/erro -> segue fluxo normal.
+                # Env: ARBI_ANCHOR_GATE=false para desligar.
+                if mkt == 'B3' and os.environ.get('ARBI_ANCHOR_GATE', 'true').lower() != 'false':
+                    try:
+                        from modules.adranchor import anchor_bias
+                        _ab = anchor_bias(sym)
+                        if _ab:
+                            _ab_side, _ab_dev = _ab
+                            _dir_s = 'LONG' if is_long else 'SHORT'
+                            if _ab_side != _dir_s:
+                                log.info(f'[ARBI-ANCHOR] {sym}: {_dir_s} bloqueado — ADR-fair '
+                                         f'aponta {_ab_side} (dev={_ab_dev:+.2f}%)')
+                                continue
+                            log.info(f'[ARBI-ANCHOR] {sym}: {_dir_s} reforcado pelo ADR-fair '
+                                     f'(dev={_ab_dev:+.2f}%)')
+                    except Exception as _abe:
+                        log.debug(f'[ARBI-ANCHOR] {sym}: {_abe}')
+
                 # [P2 10-jul-2026] FILTRO DE REGIME DO ÍNDICE — só NYSE, só LONG.
                 # Regime DOWN no QQQ (abaixo da EMA50 e ret20d<0) bloqueia NOVOS
                 # LONGs NYSE. Estudo: NYSE long-only perde -R$30-40k/semana fora
@@ -12596,6 +12623,24 @@ def start_background_threads():
             log.info('[ARBIX] Arbi v2 shadow adicionado (17 pares, gate de simultaneidade)')
         except Exception as _ae:
             log.warning(f'[ARBIX] setup falhou: {_ae}')
+
+    # [24-jul, decisao Beto] ADRANCHOR — os 2 ensinamentos reais da Arbi:
+    # vies ARBI-ANCHOR p/ motor B3 (60-72% acerto) + book ADR-CATCHUP
+    # direcional no IB paper (CIG/SID/TIMB/UGP). FX-guard contra desvio
+    # que na verdade e cambio. Desliga via ADRANCHOR_ENABLED=false.
+    if os.environ.get('ADRANCHOR_ENABLED', 'true').lower() != 'false':
+        try:
+            from modules.adranchor import adranchor_loop as _adr_loop
+            def _adr_loop_wrapper():
+                try:
+                    _adr_loop(beat_fn=beat)
+                except Exception as _de:
+                    log.error(f'[ADRA] crash: {_de}')
+                    import traceback; traceback.print_exc()
+            defs['adranchor_loop'] = _adr_loop_wrapper
+            log.info('[ADRA] ADRANCHOR adicionado (5 anchor B3 + 4 catchup ADR/IB, fx-guard)')
+        except Exception as _de:
+            log.warning(f'[ADRA] setup falhou: {_de}')
 
     # [22-jul] MOTOR CRYPTO RELATIVE VALUE — shadow (book nocional separado).
     # Valor relativo ETH-BTC (neutro a direcao), clone da logica Arbi/US-Pairs.
@@ -18854,6 +18899,33 @@ def debug_arbix():
             c.execute("SELECT pair,direction,status,entry_spread_pct,exit_spread_pct,pnl_gross,close_reason,opened_at "
                       "FROM arbix_shadow_trades ORDER BY id DESC LIMIT 12")
             out['last'] = list(c.fetchall())
+            c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/adranchor')
+def debug_adranchor():
+    """[24-jul] ADRANCHOR: vies anchor ativo, sinais recentes, trades catchup; ?run=1 forca ciclo."""
+    try:
+        from modules.adranchor import scan_cycle, _st, ANCHOR_PAIRS, CATCHUP_PAIRS
+        out = {'anchor_pairs': list(ANCHOR_PAIRS), 'catchup_pairs': list(CATCHUP_PAIRS)}
+        if request.args.get('run') == '1':
+            scan_cycle(); out['cycle'] = 'executado'
+        out['bias_ativo'] = {k: {'side': v[0], 'dev': v[1]} for k, v in _st.bias.items()}
+        out['k_warm'] = {p: len(v) for p, v in _st.k_samples.items()}
+        conn = get_db()
+        if conn:
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT status,COUNT(*) n,ROUND(SUM(pnl_gross),2) pnl FROM adranchor_trades GROUP BY status")
+            out['trades'] = list(c.fetchall())
+            c.execute("SELECT ts,pair,kind,dev_pct,dev_oldfx_pct,fx_driven,side,actioned "
+                      "FROM adranchor_signals ORDER BY id DESC LIMIT 15")
+            out['sinais'] = list(c.fetchall())
+            c.execute("SELECT adr,direction,status,entry_dev_pct,pnl_gross,close_reason,opened_at "
+                      "FROM adranchor_trades ORDER BY id DESC LIMIT 10")
+            out['last_trades'] = list(c.fetchall())
             c.close(); conn.close()
         return jsonify(out)
     except Exception as e:

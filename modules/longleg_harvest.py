@@ -69,7 +69,8 @@ def create_tables():
         dir_status VARCHAR(8) DEFAULT 'PENDING',
         dir_exit_ret_pct DECIMAL(10,4), dir_exit_reason VARCHAR(16),
         exit_ambiguous TINYINT DEFAULT 0, atr_pct_entry DECIMAL(10,4),
-        matched_ctrl_ret_pct DECIMAL(10,4),
+        matched_ctrl_ret_pct DECIMAL(10,4), matched_ctrl_n INT DEFAULT 0,
+        proc_claimed_at DATETIME NULL,
         mfe_pct DECIMAL(10,4), mae_pct DECIMAL(10,4),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX ix_pair (pair), INDEX ix_status (status),
@@ -277,14 +278,17 @@ def finalize_directional(limit=20):
         create_tables()
         cutoff = int(datetime.now(timezone.utc).timestamp()) - (TIMEOUT_MIN + 5) * 60
         c = _conn(); cur = c.cursor()
+        # [v5 GPT] recupera PROC orfaos (crash no meio): >15min volta p/ PENDING
+        cur.execute("""UPDATE longleg_harvest SET dir_status='PENDING'
+            WHERE dir_status='PROC' AND proc_claimed_at < (NOW() - INTERVAL 15 MINUTE)""")
         cur.execute("""SELECT arbi_id,long_leg,long_mkt,long_px_entry,opened_epoch,index_ret_pct
             FROM longleg_harvest WHERE dir_status='PENDING' AND status='CLOSED'
             AND opened_epoch IS NOT NULL AND opened_epoch < %s
             ORDER BY opened_epoch LIMIT %s""", (cutoff, limit))
         rows = cur.fetchall(); done = 0
         for arbi_id, ll, lm, lpe, oe, idx_ret in rows:
-            # CLAIM atomico: so processa se ganhar a linha (idempotencia)
-            cur.execute("UPDATE longleg_harvest SET dir_status='PROC' WHERE arbi_id=%s AND dir_status='PENDING'", (arbi_id,))
+            # CLAIM atomico + timestamp (idempotencia + recuperacao de orfao)
+            cur.execute("UPDATE longleg_harvest SET dir_status='PROC', proc_claimed_at=NOW() WHERE arbi_id=%s AND dir_status='PENDING'", (arbi_id,))
             if cur.rowcount != 1:
                 continue
             ysym = _ysym(ll, lm); entry_px = float(lpe) if lpe else None
@@ -299,26 +303,44 @@ def finalize_directional(limit=20):
             beta = _ex_ante_beta(ysym, _idx_sym(lm), oe)
             loc = (win[-1][4] / entry_px - 1) * 100 if (win and entry_px) else None
             hb = (loc - beta * float(idx_ret)) if (loc is not None and idx_ret is not None) else None
-            # MATCHED_CONTROL: entrada ALEATORIA no mesmo dia/ativo, MESMA logica de saida
-            mc = None
+            # [v5 GPT] MATCHED_CONTROL PAREADO: ate 5 controles no MESMO ativo/dia,
+            # MESMO bloco de horario (+-30min do sinal), ATR parecido (0.5x-2x),
+            # MESMA logica de saida. Compara o sinal com a MEDIANA dos controles.
+            # Seed deterministica (reproduzivel, nao cherry-pick). atr do sinal = atrp.
+            mc = None; mc_n = 0
             try:
                 import random
-                cand = [b for b in same_day if b[0] <= (session_end or oe) - TIMEOUT_MIN*60 and b[0] != oe]
-                if cand:
-                    rnd = random.Random(hash(arbi_id) & 0xffffffff)
-                    cb = rnd.choice(cand); cepoch = cb[0]; cpx = cb[4]
-                    cpre = [b for b in day_bars if b[0] < cepoch][-12:]
-                    cwin = [b for b in day_bars if cepoch <= b[0] <= cepoch + (TIMEOUT_MIN+5)*60]
-                    mc, _, _, _, _, _ = _simulate_directional(cpre, cwin, cpx, session_end)
+                sig_hm = oe % 86400  # segundos no dia (proxy do horario)
+                elig = []
+                for b in same_day:
+                    ce = b[0]
+                    if ce == oe: continue
+                    if ce > (session_end or oe) - TIMEOUT_MIN * 60: continue  # precisa janela cheia
+                    if abs((ce % 86400) - sig_hm) > 1800: continue           # +-30min do sinal
+                    elig.append(b)
+                rnd = random.Random(hash(('mc', arbi_id, '2026-07-25')) & 0xffffffff)
+                rnd.shuffle(elig)
+                ctrl_rets = []
+                for cb in elig[:5]:
+                    cepoch = cb[0]; cpx = cb[4]
+                    cpre = [x for x in day_bars if x[0] < cepoch][-12:]
+                    cwin = [x for x in day_bars if cepoch <= x[0] <= cepoch + (TIMEOUT_MIN + 5) * 60]
+                    cr, _, _, _, catr, _ = _simulate_directional(cpre, cwin, cpx, session_end)
+                    # ATR parecido: descarta controle com vol muito diferente do sinal
+                    if cr is None or (atrp and catr and not (0.5 * atrp <= catr <= 2.0 * atrp)):
+                        continue
+                    ctrl_rets.append(cr)
+                if ctrl_rets:
+                    mc = statistics.median(ctrl_rets); mc_n = len(ctrl_rets)
             except Exception:
                 pass
             cur.execute("""UPDATE longleg_harvest SET dir_status='DONE',
                 dir_exit_ret_pct=%s, dir_exit_reason=%s, mfe_pct=%s, mae_pct=%s,
                 atr_pct_entry=%s, exit_ambiguous=%s, hedge_beta=%s, hedged_beta_ret_pct=%s,
-                matched_ctrl_ret_pct=%s WHERE arbi_id=%s""",
+                matched_ctrl_ret_pct=%s, matched_ctrl_n=%s WHERE arbi_id=%s""",
                 (None if dr is None else round(dr, 4), rsn, mfe, mae, atrp, amb,
                  round(beta, 4), None if hb is None else round(hb, 4),
-                 None if mc is None else round(mc, 4), arbi_id))
+                 None if mc is None else round(mc, 4), mc_n, arbi_id))
             done += 1
         c.close()
         if done:

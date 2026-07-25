@@ -42,6 +42,7 @@ MATCHED_CTRL_VERSION = 'matched_v3'      # v3: nearest-5 por tempo+ATR (nao alea
 # Nome honesto: TIME_VOL_MATCHED_CONTROL — pareado por ativo/dia/horario/vol + sem Arbi proxima.
 # NAO pareado por regime/pulse (adiado; nao ha snapshot historico). Nao e controle causal pleno.
 ATR_MATCH_LO, ATR_MATCH_HI = 0.67, 1.50  # banda ATR do controle (mais rigida que 0.5-2.0)
+CTRL_WINDOW_MIN = 30                     # controles a +-30min do sinal (proxy de contexto)
 CTRL_MIN_N = 3                           # lift so vale como metrica principal com >=3 controles
 PROC_MAX_ATTEMPTS = 3                    # apos N tentativas presas -> ERROR (sem loop infinito)
 
@@ -331,7 +332,13 @@ def finalize_directional(limit=20):
         create_tables()
         if not _schema_ok['v']:
             return  # fail-closed: schema incompleto
-        cutoff = int(datetime.now(timezone.utc).timestamp()) - (TIMEOUT_MIN + 5) * 60
+        # [v5 GPT round-8] MATURIDADE DO CONTROLE POSTERIOR: controles podem ser ate
+        # +CTRL_WINDOW_MIN depois do sinal; cada um precisa dos seus 90min completos.
+        # Se finalizasse em signal+95min, um controle das +25min so teria ~70min (truncado,
+        # lift artificial). Adia TUDO ate signal + CTRL_WINDOW_MIN + TIMEOUT_MIN + 5, garantindo
+        # que qualquer controle ate +30min ja tem horizonte cheio de dados reais. Controles
+        # perto do fechamento maturam antes (MARKET_CLOSE limita o horizonte) — buffer conservador.
+        cutoff = int(datetime.now(timezone.utc).timestamp()) - (CTRL_WINDOW_MIN + TIMEOUT_MIN + 5) * 60
         c = _conn(); cur = c.cursor()
         # [v5 GPT round-6] recupera PROC orfaos (crash no meio): >15min. Incrementa a
         # tentativa; apos PROC_MAX_ATTEMPTS -> ERROR (nao volta a PENDING, evita loop
@@ -387,7 +394,7 @@ def finalize_directional(limit=20):
                     ce = b[0]
                     if ce == oe: continue
                     if ce > (session_end or oe) - TIMEOUT_MIN * 60: continue  # precisa janela cheia
-                    if abs((ce % 86400) - sig_hm) > 1800: continue           # +-30min do sinal
+                    if abs((ce % 86400) - sig_hm) > CTRL_WINDOW_MIN * 60: continue  # +-janela do sinal
                     c_elig_before += 1
                     if any(abs(ce - s) < TIMEOUT_MIN * 60 for s in sig_epochs):
                         c_excl_arbi += 1; continue                            # contaminado por Arbi

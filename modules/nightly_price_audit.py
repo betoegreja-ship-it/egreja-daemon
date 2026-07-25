@@ -128,7 +128,7 @@ def run_nightly_audit(ctx):
         checked += 1
         mx = max(abs(ed or 0), abs(xd or 0))
         if mx >= dev_lim:
-            ghosts.append((t['id'], sym, float(t.get('pnl_net') or t.get('pnl') or 0), round(mx, 2)))
+            ghosts.append((t['id'], sym, float(t.get('pnl_net') or t.get('pnl') or 0), round(mx, 2), atype))
 
     # [NIGHT-AUDIT FIX 22-jul-2026, decisao Beto] NUNCA mais zerar trade REAL.
     # O bug: a auditoria anulava (zerava) qualquer trade com desvio >= 0.5%,
@@ -138,12 +138,22 @@ def run_nightly_audit(ctx):
     #   - desvios menores (0.5%-3%) sao SO alertados p/ revisao humana, nunca anulados;
     #   - auto-anular so se NIGHT_AUDIT_AUTOVOID=true (default agora FALSE).
     _phantom = float(os.environ.get('NIGHT_AUDIT_PHANTOM_PCT', 3.0))
-    _real_ghosts = [gh for gh in ghosts if gh[3] >= _phantom]
-    _flag_only = [gh for gh in ghosts if gh[3] < _phantom]
+    # [NIGHT-AUDIT FIX 25-jul-2026, decisao Beto — auditoria VOID] A cripto NUNCA
+    # e auto-anulada: o candle 1m do mirror publico tem lacunas na madrugada UTC
+    # (baixa liquidez), gerando FALSO POSITIVO. Auditoria de 25/jul provou que
+    # ~90% dos 4.185 VOID de cripto tinham preco DENTRO do candle real. Cripto so
+    # ALERTA para revisao humana. Auto-void continua valendo so para stocks/arbi.
+    def _is_crypto(gh):
+        return len(gh) > 4 and str(gh[4]).lower() == 'crypto'
+    _crypto_ghosts = [gh for gh in ghosts if _is_crypto(gh)]
+    _real_ghosts = [gh for gh in ghosts if gh[3] >= _phantom and not _is_crypto(gh)]
+    _flag_only = [gh for gh in ghosts if (gh not in _real_ghosts and not _is_crypto(gh))]
+    for gh in _crypto_ghosts:
+        log.info(f'[NIGHT-AUDIT] CRIPTO nao-anulavel (so alerta): {gh[1]} {gh[0]} dev={gh[3]}% pnl=${gh[2]:,.0f}')
     voided = 0
-    for tid, sym, pnl, mx in _flag_only:
+    for tid, sym, pnl, mx, *_ in _flag_only:
         log.info(f'[NIGHT-AUDIT] REVISAR (desvio {mx}% < {_phantom}% — NAO anulado): {sym} {tid} pnl=${pnl:,.0f}')
-    for tid, sym, pnl, mx in _real_ghosts:
+    for tid, sym, pnl, mx, *_ in _real_ghosts:
         log.warning(f'[NIGHT-AUDIT] FANTASMA REAL: {sym} {tid} pnl=${pnl:,.0f} dev={mx}% (>= {_phantom}%)')
         if autovoid:
             try:

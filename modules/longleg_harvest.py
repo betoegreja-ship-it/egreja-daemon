@@ -75,6 +75,18 @@ def create_tables():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX ix_pair (pair), INDEX ix_status (status),
         INDEX ix_dir (dir_status), INDEX ix_band (spread_band)) CHARACTER SET utf8mb4""")
+    # [v5] migracao idempotente: tabela pode preexistir (v3/v4) sem as colunas novas.
+    # ADD COLUMN IF NOT EXISTS nao existe em MySQL 5.x -> tenta e ignora "Duplicate column".
+    for ddl in (
+        "ALTER TABLE longleg_harvest ADD COLUMN matched_ctrl_ret_pct DECIMAL(10,4) NULL",
+        "ALTER TABLE longleg_harvest ADD COLUMN matched_ctrl_n INT DEFAULT 0",
+        "ALTER TABLE longleg_harvest ADD COLUMN proc_claimed_at DATETIME NULL",
+    ):
+        try:
+            cur.execute(ddl)
+        except Exception as e:
+            if '1060' not in str(e) and 'Duplicate column' not in str(e):
+                log.debug(f'[LONGLEG] migracao: {e}')
     c.close(); _ready['v'] = True
 
 

@@ -37,6 +37,11 @@ STOP_ATR = 1.5
 TRAIL_ACT_ATR = 1.0
 TIMEOUT_MIN = 90
 BETA_WINDOW_D = 60
+# [v5 GPT round-6] pareamento do matched control (congelado)
+MATCHED_CTRL_VERSION = 'matched_v2'      # muda -> nova versao, nao mistura na analise
+ATR_MATCH_LO, ATR_MATCH_HI = 0.67, 1.50  # banda ATR do controle (mais rigida que 0.5-2.0)
+CTRL_MIN_N = 3                           # lift so vale como metrica principal com >=3 controles
+PROC_MAX_ATTEMPTS = 3                    # apos N tentativas presas -> ERROR (sem loop infinito)
 
 
 def _conn():
@@ -70,7 +75,7 @@ def create_tables():
         dir_exit_ret_pct DECIMAL(10,4), dir_exit_reason VARCHAR(16),
         exit_ambiguous TINYINT DEFAULT 0, atr_pct_entry DECIMAL(10,4),
         matched_ctrl_ret_pct DECIMAL(10,4), matched_ctrl_n INT DEFAULT 0,
-        proc_claimed_at DATETIME NULL,
+        proc_claimed_at DATETIME NULL, processing_attempts INT DEFAULT 0,
         mfe_pct DECIMAL(10,4), mae_pct DECIMAL(10,4),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX ix_pair (pair), INDEX ix_status (status),
@@ -81,12 +86,16 @@ def create_tables():
         "ALTER TABLE longleg_harvest ADD COLUMN matched_ctrl_ret_pct DECIMAL(10,4) NULL",
         "ALTER TABLE longleg_harvest ADD COLUMN matched_ctrl_n INT DEFAULT 0",
         "ALTER TABLE longleg_harvest ADD COLUMN proc_claimed_at DATETIME NULL",
+        "ALTER TABLE longleg_harvest ADD COLUMN processing_attempts INT DEFAULT 0",
     ):
         try:
             cur.execute(ddl)
         except Exception as e:
+            # [v5 GPT round-6] so ignora "coluna ja existe" (1060). Qualquer outro erro
+            # (permissao, tipo incompativel, conexao) e LOGADO em nivel ERROR e visivel.
+            # NAO derruba o boot: e tabela SHADOW e nao pode parar producao (Arbi/cripto/stocks).
             if '1060' not in str(e) and 'Duplicate column' not in str(e):
-                log.debug(f'[LONGLEG] migracao: {e}')
+                log.error(f'[LONGLEG] migracao FALHOU (schema pode estar incompleto): {ddl} -> {e}')
     c.close(); _ready['v'] = True
 
 
@@ -290,15 +299,20 @@ def finalize_directional(limit=20):
         create_tables()
         cutoff = int(datetime.now(timezone.utc).timestamp()) - (TIMEOUT_MIN + 5) * 60
         c = _conn(); cur = c.cursor()
-        # [v5 GPT] recupera PROC orfaos (crash no meio): >15min volta p/ PENDING
-        cur.execute("""UPDATE longleg_harvest SET dir_status='PENDING'
-            WHERE dir_status='PROC' AND proc_claimed_at < (NOW() - INTERVAL 15 MINUTE)""")
-        cur.execute("""SELECT arbi_id,long_leg,long_mkt,long_px_entry,opened_epoch,index_ret_pct
+        # [v5 GPT round-6] recupera PROC orfaos (crash no meio): >15min. Incrementa a
+        # tentativa; apos PROC_MAX_ATTEMPTS -> ERROR (nao volta a PENDING, evita loop
+        # infinito num trade que sempre falha, ex.: simbolo sem barras no Yahoo).
+        cur.execute("""UPDATE longleg_harvest
+            SET dir_status = IF(processing_attempts + 1 >= %s, 'ERROR', 'PENDING'),
+                processing_attempts = processing_attempts + 1
+            WHERE dir_status='PROC' AND proc_claimed_at < (NOW() - INTERVAL 15 MINUTE)""",
+            (PROC_MAX_ATTEMPTS,))
+        cur.execute("""SELECT arbi_id,long_leg,long_mkt,long_px_entry,opened_epoch,index_ret_pct,pair
             FROM longleg_harvest WHERE dir_status='PENDING' AND status='CLOSED'
             AND opened_epoch IS NOT NULL AND opened_epoch < %s
             ORDER BY opened_epoch LIMIT %s""", (cutoff, limit))
         rows = cur.fetchall(); done = 0
-        for arbi_id, ll, lm, lpe, oe, idx_ret in rows:
+        for arbi_id, ll, lm, lpe, oe, idx_ret, pair in rows:
             # CLAIM atomico + timestamp (idempotencia + recuperacao de orfao)
             cur.execute("UPDATE longleg_harvest SET dir_status='PROC', proc_claimed_at=NOW() WHERE arbi_id=%s AND dir_status='PENDING'", (arbi_id,))
             if cur.rowcount != 1:
@@ -315,13 +329,22 @@ def finalize_directional(limit=20):
             beta = _ex_ante_beta(ysym, _idx_sym(lm), oe)
             loc = (win[-1][4] / entry_px - 1) * 100 if (win and entry_px) else None
             hb = (loc - beta * float(idx_ret)) if (loc is not None and idx_ret is not None) else None
-            # [v5 GPT] MATCHED_CONTROL PAREADO: ate 5 controles no MESMO ativo/dia,
-            # MESMO bloco de horario (+-30min do sinal), ATR parecido (0.5x-2x),
-            # MESMA logica de saida. Compara o sinal com a MEDIANA dos controles.
-            # Seed deterministica (reproduzivel, nao cherry-pick). atr do sinal = atrp.
+            # [v5 GPT round-6] MATCHED_CONTROL PAREADO ({MATCHED_CTRL_VERSION}): ate 5
+            # controles no MESMO ativo/dia, MESMA direcao (long, mesma _simulate_directional),
+            # MESMO bloco de horario (+-30min), ATR parecido (0.67x-1.50x), MESMA logica de
+            # saida (stop/trail/timeout/gap/close identicos por construcao). Compara o sinal
+            # com a MEDIANA dos controles. Seed deterministica (reproduzivel).
+            # CONTAMINACAO: descarta horarios de controle proximos de QUALQUER sinal de spread
+            # (outra Arbi) no MESMO par -> controle tem que ser "sem tratamento".
             mc = None; mc_n = 0
             try:
                 import random
+                # sinais de spread do mesmo par no dia (para excluir contaminacao)
+                cur.execute("""SELECT opened_epoch FROM longleg_harvest
+                    WHERE pair=%s AND opened_epoch IS NOT NULL
+                      AND opened_epoch BETWEEN %s AND %s""",
+                    (pair, oe - 8 * 3600, oe + 8 * 3600))
+                sig_epochs = [int(r[0]) for r in cur.fetchall()]
                 sig_hm = oe % 86400  # segundos no dia (proxy do horario)
                 elig = []
                 for b in same_day:
@@ -329,8 +352,9 @@ def finalize_directional(limit=20):
                     if ce == oe: continue
                     if ce > (session_end or oe) - TIMEOUT_MIN * 60: continue  # precisa janela cheia
                     if abs((ce % 86400) - sig_hm) > 1800: continue           # +-30min do sinal
+                    if any(abs(ce - s) < TIMEOUT_MIN * 60 for s in sig_epochs): continue  # sem spread ativo
                     elig.append(b)
-                rnd = random.Random(hash(('mc', arbi_id, '2026-07-25')) & 0xffffffff)
+                rnd = random.Random(hash(('mc', arbi_id, MATCHED_CTRL_VERSION)) & 0xffffffff)
                 rnd.shuffle(elig)
                 ctrl_rets = []
                 for cb in elig[:5]:
@@ -339,7 +363,7 @@ def finalize_directional(limit=20):
                     cwin = [x for x in day_bars if cepoch <= x[0] <= cepoch + (TIMEOUT_MIN + 5) * 60]
                     cr, _, _, _, catr, _ = _simulate_directional(cpre, cwin, cpx, session_end)
                     # ATR parecido: descarta controle com vol muito diferente do sinal
-                    if cr is None or (atrp and catr and not (0.5 * atrp <= catr <= 2.0 * atrp)):
+                    if cr is None or (atrp and catr and not (ATR_MATCH_LO * atrp <= catr <= ATR_MATCH_HI * atrp)):
                         continue
                     ctrl_rets.append(cr)
                 if ctrl_rets:
@@ -392,10 +416,25 @@ def summary():
     b['LIQUID_LEG_BETA_REDUCED'] = stat([r['hedged_beta_ret_pct'] for r in rows])
     b['DIRECTIONAL_EXIT'] = stat([r['dir_exit_ret_pct'] for r in rows if r['dir_status'] == 'DONE'])
     b['MATCHED_CONTROL'] = stat([r['matched_ctrl_ret_pct'] for r in rows if r['dir_status'] == 'DONE'])
-    # o teste decisivo: directional (sinal) SUPERA o matched control (aleatorio)?
-    _dir = [float(r['dir_exit_ret_pct']) for r in rows if r['dir_status'] == 'DONE' and r['dir_exit_ret_pct'] is not None]
-    _mc = [float(r['matched_ctrl_ret_pct']) for r in rows if r['dir_status'] == 'DONE' and r['matched_ctrl_ret_pct'] is not None]
-    b['_LIFT_dir_vs_matched'] = round((statistics.mean(_dir) - statistics.mean(_mc)), 4) if (_dir and _mc) else None
+    # [v5 GPT round-6] TESTE DECISIVO — lift PAREADO POR TRADE (nao pooled):
+    # lift_i = R_sinal_i - mediana(controles_i). So conta trade com >=CTRL_MIN_N controles
+    # validos (pareamento fraco nao entra na metrica principal). Reporta media, MEDIANA e
+    # % de lifts positivos — nao julgar edge so pela media (assimetria/outliers).
+    lifts = [float(r['dir_exit_ret_pct']) - float(r['matched_ctrl_ret_pct'])
+             for r in rows if r['dir_status'] == 'DONE'
+             and r['dir_exit_ret_pct'] is not None and r['matched_ctrl_ret_pct'] is not None
+             and (r.get('matched_ctrl_n') or 0) >= CTRL_MIN_N]
+    if lifts:
+        pos = sum(1 for x in lifts if x > 0)
+        b['_LIFT_dir_vs_matched'] = {
+            'n_pareado': len(lifts),
+            'media': round(statistics.mean(lifts), 4),
+            'mediana': round(statistics.median(lifts), 4),
+            'pct_positivos': round(100 * pos / len(lifts), 1),
+            'ctrl_min_n': CTRL_MIN_N,
+            'nota': 'lift pareado por trade; media+mediana; CI por bootstrap-por-dia quando houver dados'}
+    else:
+        b['_LIFT_dir_vs_matched'] = {'n_pareado': 0, 'nota': f'sem trades com >={CTRL_MIN_N} controles ainda'}
 
     bypair = {}
     for r in rows:
@@ -408,7 +447,9 @@ def summary():
         byband.setdefault(r['spread_band'], []).append(r['long_ret_pct'])
     por_faixa = {k: stat(v) for k, v in sorted(byband.items())}
     dir_pend = sum(1 for r in rows if r['dir_status'] == 'PENDING')
-    return {'version': FILTER_VERSION, 'books': b, 'por_par': por_par,
+    dir_err = sum(1 for r in rows if r['dir_status'] == 'ERROR')
+    return {'version': FILTER_VERSION, 'matched_ctrl_version': MATCHED_CTRL_VERSION,
+            'books': b, 'por_par': por_par,
             'por_faixa_spread': por_faixa, 'total_registrados': len(rows),
-            'directional_pendentes': dir_pend,
+            'directional_pendentes': dir_pend, 'directional_erro_manual': dir_err,
             'nota': 'SHORT=teorico (borrow a modelar); hedge beta ex-ante 60d; ATR ex-ante; dir 90min deferido'}

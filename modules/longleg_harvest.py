@@ -69,6 +69,7 @@ def create_tables():
         dir_status VARCHAR(8) DEFAULT 'PENDING',
         dir_exit_ret_pct DECIMAL(10,4), dir_exit_reason VARCHAR(16),
         exit_ambiguous TINYINT DEFAULT 0, atr_pct_entry DECIMAL(10,4),
+        matched_ctrl_ret_pct DECIMAL(10,4),
         mfe_pct DECIMAL(10,4), mae_pct DECIMAL(10,4),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX ix_pair (pair), INDEX ix_status (status),
@@ -148,12 +149,14 @@ def _ex_ante_beta(leg_sym, idx_sym, entry_epoch):
         return 1.0
 
 
-def _simulate_directional(pre_bars, win_bars, entry_px):
+def _simulate_directional(pre_bars, win_bars, entry_px, session_end_epoch=None):
     """ATR ex-ante (pre_bars, ANTES da entrada). Simula LONG na janela (win_bars).
-    Ambiguidade: stop primeiro (conservador). Retorna (ret,reason,mfe,mae,atr_pct,ambig)."""
+    [v4 GPT] Gap atraves do stop: se o candle ABRE cruzado, sai no open (conservador).
+    [v4 GPT] Timeout perto do fechamento: encerra no ultimo preco antes da sessao
+    fechar (MARKET_CLOSE). Ambiguidade intrabar: stop primeiro (conservador)+flag.
+    Retorna (ret,reason,mfe,mae,atr_pct,ambig)."""
     if not entry_px or len(win_bars) < 2:
         return None, 'NO_BARS', None, None, None, 0
-    # ATR EX-ANTE das barras anteriores a entrada
     trs = []
     for i in range(1, len(pre_bars)):
         h, l, pc = pre_bars[i][2], pre_bars[i][3], pre_bars[i-1][4]
@@ -165,12 +168,18 @@ def _simulate_directional(pre_bars, win_bars, entry_px):
     peak = entry_px; trailing = False; mfe = mae = 0.0; ambig = 0
     t0 = win_bars[0][0]
     for (t, o, h, l, cl) in win_bars:
+        # [v4] fechamento de sessao: encerra no ultimo executavel
+        if session_end_epoch and t >= session_end_epoch:
+            return (o / entry_px - 1) * 100, 'MARKET_CLOSE', round(mfe, 4), round(mae, 4), round(atr_pct, 4), ambig
         mfe = max(mfe, (h / entry_px - 1) * 100)
         mae = min(mae, (l / entry_px - 1) * 100)
+        # [v4] GAP atraves do stop: candle ABRE ja abaixo do stop -> sai no open (pior)
+        if o <= stop:
+            return (o / entry_px - 1) * 100, ('STOP_GAP'), round(mfe, 4), round(mae, 4), round(atr_pct, 4), ambig
         hit_stop = l <= stop
         act_trail = h >= entry_px + TRAIL_ACT_ATR * atr
         if hit_stop and act_trail:
-            ambig = 1  # ambiguo no candle -> STOP primeiro (conservador)
+            ambig = 1  # ambiguo -> STOP primeiro (conservador)
         if hit_stop:
             return (stop / entry_px - 1) * 100, ('TRAIL_STOP' if trailing else 'STOP'), \
                    round(mfe, 4), round(mae, 4), round(atr_pct, 4), ambig
@@ -254,14 +263,16 @@ def on_arbi_close(trade):
              None if idx_ret is None else round(idx_ret, 4),
              None if hedged is None else round(hedged, 4), trade.get('id')))
         c.close()
-        finalize_directional()  # oportunistico: drena os PENDING cuja janela ja passou
+        # directional NAO e finalizado aqui (candles do futuro ainda nao existem);
+        # o scheduler (arbi_monitor -> finalize_directional) resolve quando a janela passa.
     except Exception as e:
         log.debug(f'[LONGLEG] close: {e}')
 
 
 def finalize_directional(limit=20):
-    """Finaliza DIRECTIONAL_EXIT + beta ex-ante dos trades cuja janela de 90min JA
-    passou (candles reais existem). Chamado oportunisticamente. Fail-open."""
+    """Finaliza DIRECTIONAL_EXIT + beta ex-ante + MATCHED_CONTROL dos trades cuja
+    janela de 90min JA passou. IDEMPOTENTE: claim atomico por linha (WHERE
+    dir_status='PENDING' + rowcount==1). So no scheduler (nao no endpoint). Fail-open."""
     try:
         create_tables()
         cutoff = int(datetime.now(timezone.utc).timestamp()) - (TIMEOUT_MIN + 5) * 60
@@ -270,34 +281,55 @@ def finalize_directional(limit=20):
             FROM longleg_harvest WHERE dir_status='PENDING' AND status='CLOSED'
             AND opened_epoch IS NOT NULL AND opened_epoch < %s
             ORDER BY opened_epoch LIMIT %s""", (cutoff, limit))
-        rows = cur.fetchall()
+        rows = cur.fetchall(); done = 0
         for arbi_id, ll, lm, lpe, oe, idx_ret in rows:
-            ysym = _ysym(ll, lm)
-            pre = _yahoo_bars(ysym, oe - 4000, oe)              # barras ANTES da entrada (ATR ex-ante)
-            win = [x for x in _yahoo_bars(ysym, oe - 300, oe + (TIMEOUT_MIN + 5) * 60) if x[0] >= oe]
-            dr, rsn, mfe, mae, atrp, amb = _simulate_directional(pre, win, float(lpe) if lpe else None)
+            # CLAIM atomico: so processa se ganhar a linha (idempotencia)
+            cur.execute("UPDATE longleg_harvest SET dir_status='PROC' WHERE arbi_id=%s AND dir_status='PENDING'", (arbi_id,))
+            if cur.rowcount != 1:
+                continue
+            ysym = _ysym(ll, lm); entry_px = float(lpe) if lpe else None
+            pre = _yahoo_bars(ysym, oe - 4000, oe)                       # ATR ex-ante
+            day_bars = _yahoo_bars(ysym, oe - 6*3600, oe + 8*3600)       # dia amplo (sessao + janela)
+            # fim de sessao = ultimo bar do MESMO dia calendario da entrada
+            ed = datetime.utcfromtimestamp(oe).strftime('%Y-%m-%d')
+            same_day = [b for b in day_bars if datetime.utcfromtimestamp(b[0]).strftime('%Y-%m-%d') == ed]
+            session_end = same_day[-1][0] if same_day else None
+            win = [b for b in day_bars if oe <= b[0] <= oe + (TIMEOUT_MIN + 5) * 60]
+            dr, rsn, mfe, mae, atrp, amb = _simulate_directional(pre, win, entry_px, session_end)
             beta = _ex_ante_beta(ysym, _idx_sym(lm), oe)
-            # hedged com beta ex-ante: usa o retorno LOCAL da perna na janela do dir
-            loc = None
-            if win and lpe:
-                loc = (win[-1][4] / float(lpe) - 1) * 100
+            loc = (win[-1][4] / entry_px - 1) * 100 if (win and entry_px) else None
             hb = (loc - beta * float(idx_ret)) if (loc is not None and idx_ret is not None) else None
+            # MATCHED_CONTROL: entrada ALEATORIA no mesmo dia/ativo, MESMA logica de saida
+            mc = None
+            try:
+                import random
+                cand = [b for b in same_day if b[0] <= (session_end or oe) - TIMEOUT_MIN*60 and b[0] != oe]
+                if cand:
+                    rnd = random.Random(hash(arbi_id) & 0xffffffff)
+                    cb = rnd.choice(cand); cepoch = cb[0]; cpx = cb[4]
+                    cpre = [b for b in day_bars if b[0] < cepoch][-12:]
+                    cwin = [b for b in day_bars if cepoch <= b[0] <= cepoch + (TIMEOUT_MIN+5)*60]
+                    mc, _, _, _, _, _ = _simulate_directional(cpre, cwin, cpx, session_end)
+            except Exception:
+                pass
             cur.execute("""UPDATE longleg_harvest SET dir_status='DONE',
                 dir_exit_ret_pct=%s, dir_exit_reason=%s, mfe_pct=%s, mae_pct=%s,
-                atr_pct_entry=%s, exit_ambiguous=%s, hedge_beta=%s, hedged_beta_ret_pct=%s
-                WHERE arbi_id=%s""",
+                atr_pct_entry=%s, exit_ambiguous=%s, hedge_beta=%s, hedged_beta_ret_pct=%s,
+                matched_ctrl_ret_pct=%s WHERE arbi_id=%s""",
                 (None if dr is None else round(dr, 4), rsn, mfe, mae, atrp, amb,
-                 round(beta, 4), None if hb is None else round(hb, 4), arbi_id))
+                 round(beta, 4), None if hb is None else round(hb, 4),
+                 None if mc is None else round(mc, 4), arbi_id))
+            done += 1
         c.close()
-        if rows:
-            log.info(f'[LONGLEG] finalize_directional: {len(rows)} trades finalizados')
+        if done:
+            log.info(f'[LONGLEG] finalize_directional: {done} finalizados (+matched control)')
     except Exception as e:
         log.debug(f'[LONGLEG] finalize: {e}')
 
 
 def summary():
+    # [v4 GPT] READ-ONLY: nao finaliza aqui (isso e do scheduler/monitor).
     create_tables()
-    finalize_directional()  # drena pendentes ao consultar
     c = _conn(); cur = c.cursor(pymysql.cursors.DictCursor)
     cur.execute("SELECT * FROM longleg_harvest WHERE status='CLOSED'")
     rows = cur.fetchall(); c.close()
@@ -323,8 +355,13 @@ def summary():
         if p == 'RISK_ON' and r['long_ret_pct'] is not None: smart.append(r['long_ret_pct'])
         elif p == 'RISK_OFF' and r['short_ret_pct'] is not None: smart.append(-r['short_ret_pct'])
     b['SMART_LEG'] = stat(smart)
-    b['LIQUID_LEG_HEDGED'] = stat([r['hedged_beta_ret_pct'] for r in rows])
+    b['LIQUID_LEG_BETA_REDUCED'] = stat([r['hedged_beta_ret_pct'] for r in rows])
     b['DIRECTIONAL_EXIT'] = stat([r['dir_exit_ret_pct'] for r in rows if r['dir_status'] == 'DONE'])
+    b['MATCHED_CONTROL'] = stat([r['matched_ctrl_ret_pct'] for r in rows if r['dir_status'] == 'DONE'])
+    # o teste decisivo: directional (sinal) SUPERA o matched control (aleatorio)?
+    _dir = [float(r['dir_exit_ret_pct']) for r in rows if r['dir_status'] == 'DONE' and r['dir_exit_ret_pct'] is not None]
+    _mc = [float(r['matched_ctrl_ret_pct']) for r in rows if r['dir_status'] == 'DONE' and r['matched_ctrl_ret_pct'] is not None]
+    b['_LIFT_dir_vs_matched'] = round((statistics.mean(_dir) - statistics.mean(_mc)), 4) if (_dir and _mc) else None
 
     bypair = {}
     for r in rows:

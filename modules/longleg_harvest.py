@@ -22,7 +22,7 @@ Books:
 
 Congelado: LONGLEG_FILTER_VERSION=2026-07-25. Nao retocar no meio do teste.
 """
-import os, json, logging, urllib.request, statistics
+import os, json, logging, urllib.request, statistics, math
 from datetime import datetime, timezone
 
 import pymysql
@@ -38,7 +38,9 @@ TRAIL_ACT_ATR = 1.0
 TIMEOUT_MIN = 90
 BETA_WINDOW_D = 60
 # [v5 GPT round-6] pareamento do matched control (congelado)
-MATCHED_CTRL_VERSION = 'matched_v2'      # muda -> nova versao, nao mistura na analise
+MATCHED_CTRL_VERSION = 'matched_v3'      # v3: nearest-5 por tempo+ATR (nao aleatorio). Congelado.
+# Nome honesto: TIME_VOL_MATCHED_CONTROL — pareado por ativo/dia/horario/vol + sem Arbi proxima.
+# NAO pareado por regime/pulse (adiado; nao ha snapshot historico). Nao e controle causal pleno.
 ATR_MATCH_LO, ATR_MATCH_HI = 0.67, 1.50  # banda ATR do controle (mais rigida que 0.5-2.0)
 CTRL_MIN_N = 3                           # lift so vale como metrica principal com >=3 controles
 PROC_MAX_ATTEMPTS = 3                    # apos N tentativas presas -> ERROR (sem loop infinito)
@@ -52,6 +54,14 @@ def _conn():
 
 
 _ready = {'v': False}
+# [v5 GPT round-7] fail-CLOSED: se a migracao de schema falhar (erro != coluna-existe),
+# o Long-Leg PARA de operar (schema incompleto), mas producao segue viva. So volta a
+# operar quando a migracao passar num boot futuro. Nunca opera com schema quebrado.
+_schema_ok = {'v': True}
+
+
+def shadow_enabled():
+    return _schema_ok['v']
 
 
 def create_tables():
@@ -75,6 +85,7 @@ def create_tables():
         dir_exit_ret_pct DECIMAL(10,4), dir_exit_reason VARCHAR(16),
         exit_ambiguous TINYINT DEFAULT 0, atr_pct_entry DECIMAL(10,4),
         matched_ctrl_ret_pct DECIMAL(10,4), matched_ctrl_n INT DEFAULT 0,
+        ctrl_elig_before INT DEFAULT 0, ctrl_excl_arbi INT DEFAULT 0, ctrl_excl_atr INT DEFAULT 0,
         proc_claimed_at DATETIME NULL, processing_attempts INT DEFAULT 0,
         mfe_pct DECIMAL(10,4), mae_pct DECIMAL(10,4),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -87,6 +98,9 @@ def create_tables():
         "ALTER TABLE longleg_harvest ADD COLUMN matched_ctrl_n INT DEFAULT 0",
         "ALTER TABLE longleg_harvest ADD COLUMN proc_claimed_at DATETIME NULL",
         "ALTER TABLE longleg_harvest ADD COLUMN processing_attempts INT DEFAULT 0",
+        "ALTER TABLE longleg_harvest ADD COLUMN ctrl_elig_before INT DEFAULT 0",
+        "ALTER TABLE longleg_harvest ADD COLUMN ctrl_excl_arbi INT DEFAULT 0",
+        "ALTER TABLE longleg_harvest ADD COLUMN ctrl_excl_atr INT DEFAULT 0",
     ):
         try:
             cur.execute(ddl)
@@ -95,7 +109,8 @@ def create_tables():
             # (permissao, tipo incompativel, conexao) e LOGADO em nivel ERROR e visivel.
             # NAO derruba o boot: e tabela SHADOW e nao pode parar producao (Arbi/cripto/stocks).
             if '1060' not in str(e) and 'Duplicate column' not in str(e):
-                log.error(f'[LONGLEG] migracao FALHOU (schema pode estar incompleto): {ddl} -> {e}')
+                log.error(f'[LONGLEG] migracao FALHOU — Long-Leg DESABILITADO (fail-closed): {ddl} -> {e}')
+                _schema_ok['v'] = False
     c.close(); _ready['v'] = True
 
 
@@ -171,6 +186,21 @@ def _ex_ante_beta(leg_sym, idx_sym, entry_epoch):
         return 1.0
 
 
+def _atr_pct_cheap(pre_bars, px):
+    """[v5 GPT round-7] ATR% ex-ante barato (mesma formula do _simulate_directional)
+    para RANKEAR candidatos a controle por distancia, sem simular todos. So leitura."""
+    if not pre_bars or len(pre_bars) < 2 or not px:
+        return None
+    trs = []
+    for i in range(1, len(pre_bars)):
+        h, l, pc = pre_bars[i][2], pre_bars[i][3], pre_bars[i-1][4]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    if not trs:
+        return None
+    atr = statistics.mean(trs)
+    return (atr / px * 100) if px else None
+
+
 def _simulate_directional(pre_bars, win_bars, entry_px, session_end_epoch=None):
     """ATR ex-ante (pre_bars, ANTES da entrada). Simula LONG na janela (win_bars).
     [v4 GPT] Gap atraves do stop: se o candle ABRE cruzado, sai no open (conservador).
@@ -218,6 +248,8 @@ def _simulate_directional(pre_bars, win_bars, entry_px, session_end_epoch=None):
 def on_arbi_open(trade, pulse=None):
     try:
         create_tables()
+        if not _schema_ok['v']:
+            return  # fail-closed: schema incompleto, nao grava nada
         pair = trade.get('pair_id') or trade.get('id')
         direction = str(trade.get('direction', 'LONG_A')).upper()
         if direction == 'LONG_A':
@@ -297,6 +329,8 @@ def finalize_directional(limit=20):
     dir_status='PENDING' + rowcount==1). So no scheduler (nao no endpoint). Fail-open."""
     try:
         create_tables()
+        if not _schema_ok['v']:
+            return  # fail-closed: schema incompleto
         cutoff = int(datetime.now(timezone.utc).timestamp()) - (TIMEOUT_MIN + 5) * 60
         c = _conn(); cur = c.cursor()
         # [v5 GPT round-6] recupera PROC orfaos (crash no meio): >15min. Incrementa a
@@ -329,43 +363,54 @@ def finalize_directional(limit=20):
             beta = _ex_ante_beta(ysym, _idx_sym(lm), oe)
             loc = (win[-1][4] / entry_px - 1) * 100 if (win and entry_px) else None
             hb = (loc - beta * float(idx_ret)) if (loc is not None and idx_ret is not None) else None
-            # [v5 GPT round-6] MATCHED_CONTROL PAREADO ({MATCHED_CTRL_VERSION}): ate 5
-            # controles no MESMO ativo/dia, MESMA direcao (long, mesma _simulate_directional),
-            # MESMO bloco de horario (+-30min), ATR parecido (0.67x-1.50x), MESMA logica de
-            # saida (stop/trail/timeout/gap/close identicos por construcao). Compara o sinal
-            # com a MEDIANA dos controles. Seed deterministica (reproduzivel).
-            # CONTAMINACAO: descarta horarios de controle proximos de QUALQUER sinal de spread
-            # (outra Arbi) no MESMO par -> controle tem que ser "sem tratamento".
-            mc = None; mc_n = 0
+            # [v5 GPT round-7] TIME_VOL_MATCHED_CONTROL ({MATCHED_CTRL_VERSION}): os 5 controles
+            # MAIS PROXIMOS (nao aleatorios) no MESMO ativo/dia, MESMA direcao (long, mesma
+            # _simulate_directional), MESMA logica de saida (stop/trail/timeout/gap/close
+            # identicos por construcao). Distancia = |dt_min|/30 + |ln(atr_c/atr_sig)|.
+            # Filtros: +-30min do sinal, ATR 0.67x-1.50x, e SEM outra Arbi do mesmo par a
+            # +-90min (anti-contaminacao). Seed so p/ desempate. Compara com a MEDIANA.
+            # Diagnostico gravado: elegiveis antes, excluidos por Arbi, excluidos por ATR.
+            mc = None; mc_n = 0; c_elig_before = 0; c_excl_arbi = 0; c_excl_atr = 0
             try:
                 import random
-                # sinais de spread do mesmo par no dia (para excluir contaminacao)
+                # sinais de spread do mesmo par no dia (para excluir contaminacao).
+                # Analise retrospectiva shadow: pode olhar depois do horario candidato
+                # (nao decide entrada/saida do direcional -> nao e look-ahead).
                 cur.execute("""SELECT opened_epoch FROM longleg_harvest
                     WHERE pair=%s AND opened_epoch IS NOT NULL
                       AND opened_epoch BETWEEN %s AND %s""",
                     (pair, oe - 8 * 3600, oe + 8 * 3600))
                 sig_epochs = [int(r[0]) for r in cur.fetchall()]
                 sig_hm = oe % 86400  # segundos no dia (proxy do horario)
-                elig = []
+                cand = []  # (distancia, epoch, px) dos elegiveis
                 for b in same_day:
                     ce = b[0]
                     if ce == oe: continue
                     if ce > (session_end or oe) - TIMEOUT_MIN * 60: continue  # precisa janela cheia
                     if abs((ce % 86400) - sig_hm) > 1800: continue           # +-30min do sinal
-                    if any(abs(ce - s) < TIMEOUT_MIN * 60 for s in sig_epochs): continue  # sem spread ativo
-                    elig.append(b)
+                    c_elig_before += 1
+                    if any(abs(ce - s) < TIMEOUT_MIN * 60 for s in sig_epochs):
+                        c_excl_arbi += 1; continue                            # contaminado por Arbi
+                    cpx = b[4]
+                    cpre = [x for x in day_bars if x[0] < ce][-12:]
+                    catr = _atr_pct_cheap(cpre, cpx)
+                    # descarta ja aqui se ATR fora da banda (nao entra no ranking)
+                    if atrp and catr and not (ATR_MATCH_LO * atrp <= catr <= ATR_MATCH_HI * atrp):
+                        c_excl_atr += 1; continue
+                    dt_min = abs(ce - oe) / 60.0
+                    atr_term = abs(math.log(catr / atrp)) if (catr and atrp) else 0.0
+                    dist = dt_min / 30.0 + atr_term
+                    cand.append((dist, ce, cpx))
+                # nearest-5 por distancia; seed so desempata distancias iguais
                 rnd = random.Random(hash(('mc', arbi_id, MATCHED_CTRL_VERSION)) & 0xffffffff)
-                rnd.shuffle(elig)
+                cand.sort(key=lambda x: (x[0], rnd.random()))
                 ctrl_rets = []
-                for cb in elig[:5]:
-                    cepoch = cb[0]; cpx = cb[4]
+                for _dist, cepoch, cpx in cand[:5]:
                     cpre = [x for x in day_bars if x[0] < cepoch][-12:]
                     cwin = [x for x in day_bars if cepoch <= x[0] <= cepoch + (TIMEOUT_MIN + 5) * 60]
-                    cr, _, _, _, catr, _ = _simulate_directional(cpre, cwin, cpx, session_end)
-                    # ATR parecido: descarta controle com vol muito diferente do sinal
-                    if cr is None or (atrp and catr and not (ATR_MATCH_LO * atrp <= catr <= ATR_MATCH_HI * atrp)):
-                        continue
-                    ctrl_rets.append(cr)
+                    cr, _, _, _, _catr, _ = _simulate_directional(cpre, cwin, cpx, session_end)
+                    if cr is not None:
+                        ctrl_rets.append(cr)
                 if ctrl_rets:
                     mc = statistics.median(ctrl_rets); mc_n = len(ctrl_rets)
             except Exception:
@@ -373,10 +418,12 @@ def finalize_directional(limit=20):
             cur.execute("""UPDATE longleg_harvest SET dir_status='DONE',
                 dir_exit_ret_pct=%s, dir_exit_reason=%s, mfe_pct=%s, mae_pct=%s,
                 atr_pct_entry=%s, exit_ambiguous=%s, hedge_beta=%s, hedged_beta_ret_pct=%s,
-                matched_ctrl_ret_pct=%s, matched_ctrl_n=%s WHERE arbi_id=%s""",
+                matched_ctrl_ret_pct=%s, matched_ctrl_n=%s,
+                ctrl_elig_before=%s, ctrl_excl_arbi=%s, ctrl_excl_atr=%s WHERE arbi_id=%s""",
                 (None if dr is None else round(dr, 4), rsn, mfe, mae, atrp, amb,
                  round(beta, 4), None if hb is None else round(hb, 4),
-                 None if mc is None else round(mc, 4), mc_n, arbi_id))
+                 None if mc is None else round(mc, 4), mc_n,
+                 c_elig_before, c_excl_arbi, c_excl_atr, arbi_id))
             done += 1
         c.close()
         if done:
@@ -448,8 +495,22 @@ def summary():
     por_faixa = {k: stat(v) for k, v in sorted(byband.items())}
     dir_pend = sum(1 for r in rows if r['dir_status'] == 'PENDING')
     dir_err = sum(1 for r in rows if r['dir_status'] == 'ERROR')
+    # [v5 GPT round-7] diagnostico de pareamento (viés de seleção): dos DONE, quantos
+    # ficaram SEM 3 controles, e onde os candidatos se perderam (Arbi proxima / ATR).
+    _done = [r for r in rows if r['dir_status'] == 'DONE']
+    _lt3 = sum(1 for r in _done if (r.get('matched_ctrl_n') or 0) < CTRL_MIN_N)
+    matched_diag = {
+        'done': len(_done),
+        'com_ctrl_valido_>=3': sum(1 for r in _done if (r.get('matched_ctrl_n') or 0) >= CTRL_MIN_N),
+        'sem_3_controles': _lt3,
+        'pct_sem_3_controles': round(100 * _lt3 / len(_done), 1) if _done else 0,
+        'media_elegiveis_antes': round(statistics.mean([r.get('ctrl_elig_before') or 0 for r in _done]), 1) if _done else 0,
+        'media_excl_por_arbi': round(statistics.mean([r.get('ctrl_excl_arbi') or 0 for r in _done]), 2) if _done else 0,
+        'media_excl_por_atr': round(statistics.mean([r.get('ctrl_excl_atr') or 0 for r in _done]), 2) if _done else 0,
+        'alerta': 'se pct_sem_3_controles alto, o lift vale so p/ parte dos sinais (viés de seleção)'}
     return {'version': FILTER_VERSION, 'matched_ctrl_version': MATCHED_CTRL_VERSION,
             'books': b, 'por_par': por_par,
             'por_faixa_spread': por_faixa, 'total_registrados': len(rows),
             'directional_pendentes': dir_pend, 'directional_erro_manual': dir_err,
-            'nota': 'SHORT=teorico (borrow a modelar); hedge beta ex-ante 60d; ATR ex-ante; dir 90min deferido'}
+            'matched_ctrl_diag': matched_diag,
+            'nota': 'SHORT=teorico (borrow a modelar); hedge beta ex-ante 60d; ATR ex-ante; dir 90min deferido; controle=TIME_VOL (nao pareado por regime/pulse)'}

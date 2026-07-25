@@ -11646,6 +11646,13 @@ def arbi_scan_loop():
                         exec_arbi(pair, spread['direction'], _entry_price_a, _entry_price_b, 'OPEN', ref_id=trade_id)
                     except Exception as _e:
                         log.error(f'exec_arbi OPEN: {_e}')
+                    # [LONGLEG 25-jul, decisao Beto] limonada: registra a perna long
+                    # nos 3 books shadow (ALL / FILTERED_6 / FILTERED_10). Fail-open.
+                    try:
+                        from modules.longleg_harvest import on_arbi_open as _ll_open
+                        _ll_open(trade)
+                    except Exception as _lle:
+                        log.debug(f'longleg open: {_lle}')
 
                 time.sleep(1.5)
         except Exception as e: log.error(f'arbi_scan: {e}')
@@ -11775,6 +11782,12 @@ def arbi_monitor_loop():
                               'CLOSE', ref_id=c['id'])
                 except Exception as _e:
                     log.error(f'exec_arbi CLOSE: {_e}')
+                # [LONGLEG 25-jul] fecha a perna long nos 3 books shadow. Fail-open.
+                try:
+                    from modules.longleg_harvest import on_arbi_close as _ll_close
+                    _ll_close(c)
+                except Exception as _lle:
+                    log.debug(f'longleg close: {_lle}')
                 # [v10.14] Aprendizado por par — ajusta threshold após cada fechamento
                 _pair_recent = [t for t in list(arbi_closed)[:20] if t.get('pair_id')==c['pair_id']]
                 if len(_pair_recent) >= 3:
@@ -19006,6 +19019,18 @@ def debug_arbix():
                       "FROM arbix_shadow_trades ORDER BY id DESC LIMIT 12")
             out['last'] = list(c.fetchall())
             c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/longleg')
+def debug_longleg():
+    """[25-jul] LONG-LEG Harvest: 3 books (ALL/FILTERED_6/FILTERED_10) da perna long da Arbi."""
+    try:
+        from modules.longleg_harvest import summary, GOOD6, GOOD10
+        out = summary()
+        out['pares_f6'] = sorted(GOOD6); out['pares_f10'] = sorted(GOOD10)
         return jsonify(out)
     except Exception as e:
         return jsonify({'error': str(e)}), 500

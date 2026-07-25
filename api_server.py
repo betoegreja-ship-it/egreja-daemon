@@ -1035,6 +1035,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'uspairs_shadow_loop':  2000,    # [18-jul] cadencia 15min + scan diario demorado
     'arbix_shadow_loop':    2000,    # [24-jul] ciclo 75s na janela, 5min fora
     'adranchor_loop':       2000,    # [24-jul] anchor B3 + ADR catchup, ciclo 90s
+    'funding_arb_loop':     2000,    # [25-jul] funding-arb delta-neutro, ciclo 15min
     'crypto_rv_shadow_loop': 600,    # [22-jul] RV BTC-ETH shadow: beat 300s + fetch klines
     'crossasset_rv_shadow_loop': 3600,  # [22-jul] RV commodities/FX diario: beat 30min
     'stocks_intel_loop': 3600,       # [22-jul] master+CA+factors+earnings: refresh pesado 12h
@@ -12705,6 +12706,23 @@ def start_background_threads():
         except Exception as _de:
             log.warning(f'[ADRA] setup falhou: {_de}')
 
+    # [25-jul, decisao Beto] FUNDING-ARB — arbitragem de funding delta-neutro em
+    # shadow. Rendimento neutro a mercado (long spot + short perp, coleta funding).
+    # Desliga via FUNDING_ARB_ENABLED=false.
+    if os.environ.get('FUNDING_ARB_ENABLED', 'true').lower() != 'false':
+        try:
+            from modules.funding_arb_shadow import funding_arb_loop as _fa_loop
+            def _fa_loop_wrapper():
+                try:
+                    _fa_loop(beat_fn=beat)
+                except Exception as _fe:
+                    log.error(f'[FUNDARB] crash: {_fe}')
+                    import traceback; traceback.print_exc()
+            defs['funding_arb_loop'] = _fa_loop_wrapper
+            log.info('[FUNDARB] Funding-Arb shadow adicionado (18 perps, delta-neutro)')
+        except Exception as _fe:
+            log.warning(f'[FUNDARB] setup falhou: {_fe}')
+
     # [22-jul] MOTOR CRYPTO RELATIVE VALUE — shadow (book nocional separado).
     # Valor relativo ETH-BTC (neutro a direcao), clone da logica Arbi/US-Pairs.
     # Barras 4h 24/7, z 2.0/0.5/3.5, book 1MM, SEM taxa. Tabelas crypto_rv_shadow_*.
@@ -18987,6 +19005,30 @@ def debug_arbix():
             c.execute("SELECT pair,direction,status,entry_spread_pct,exit_spread_pct,pnl_gross,close_reason,opened_at "
                       "FROM arbix_shadow_trades ORDER BY id DESC LIMIT 12")
             out['last'] = list(c.fetchall())
+            c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/funding-arb')
+def debug_funding_arb():
+    """[25-jul] Funding-Arb shadow (delta-neutro): posicoes, funding coletado, ?run=1 forca ciclo."""
+    try:
+        out = {}
+        if request.args.get('run') == '1':
+            from modules.funding_arb_shadow import scan_cycle
+            scan_cycle(); out['cycle'] = 'executado'
+        conn = get_db()
+        if conn:
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT status,COUNT(*) n, ROUND(SUM(funding_collected_usd),2) bruto, "
+                      "ROUND(SUM(est_fees_usd),2) fees, ROUND(SUM(net_usd),2) net FROM funding_arb_shadow GROUP BY status")
+            out['resumo'] = list(c.fetchall())
+            c.execute("SELECT symbol,status,funding_entry_pct,intervals_held,"
+                      "ROUND(funding_collected_usd,2) bruto,ROUND(net_usd,2) net,ROUND(annualized_pct,1) ann,close_reason "
+                      "FROM funding_arb_shadow ORDER BY id DESC LIMIT 15")
+            out['posicoes'] = list(c.fetchall())
             c.close(); conn.close()
         return jsonify(out)
     except Exception as e:

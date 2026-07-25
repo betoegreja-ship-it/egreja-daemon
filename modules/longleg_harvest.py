@@ -1,27 +1,28 @@
 # -*- coding: utf-8 -*-
-"""[25-jul-2026, decisao Beto — "limonada da Arbi" v2, pos-revisao GPT+Grok] LONG-LEG HARVEST.
+"""[25-jul-2026, decisao Beto — "limonada da Arbi" v3, pos-revisao 3x GPT+Grok] LONG-LEG HARVEST.
 
-A Arbi de 2 pernas era fantasma, mas a INFORMACAO de direcao do spread e real.
-Revisao GPT+Grok apontou 2 furos que esta v2 corrige:
-  1. Fechar a perna com a Arbi herda a saida do spread (logica fantasma).
-     -> book DIRECTIONAL_EXIT: saida PROPRIA (stop 1.5 ATR, trailing 1 ATR,
-        timeout 90min), simulada nos candles intraday REAIS da perna no fecho.
-  2. Perna unica perde o hedge (beta/gap/cambio/noticia).
-     -> book LIQUID_LEG_HEDGED: perna liquida - beta*indice (IBOV/SPY).
+O spread da Arbi (2 pernas fantasma) pode conter INFORMACAO direcional real.
+7 books SHADOW derivados do MESMO sinal (parent = arbi_id), nada toca producao.
 
-Todos os books sao registros VIRTUAIS do MESMO sinal (nada toca producao).
-Guarda os retornos CRUS (long, short, indice, directional) por trade; cada
-"book" e uma view derivada. Congelado: LONGLEG_FILTER_VERSION=2026-07-25.
+v3 corrige os 4 bugs de correcao que GPT+Grok apontaram:
+  1. DIRECTIONAL_EXIT DEFERIDO — no fecho da Arbi os candles dos 90min ainda nao
+     existem. Marca PENDING; finalize_directional() simula depois que a janela
+     de 90min ja passou (bars reais disponiveis). Independente do fecho da Arbi.
+  2. ATR CONGELADO EX-ANTE — calculado so com barras ANTES da entrada (sem look-ahead).
+  3. BETA DO HEDGE EX-ANTE — 60 pregoes ate a entrada, congelado (nao 1.0 fixo).
+  4. AMBIGUIDADE NO CANDLE — politica conservadora congelada: se stop e trailing
+     no mesmo candle, STOP primeiro. Flag exit_ambiguous.
 
-  ALL              long da perna barata em TODA Arbi (rede aberta, benchmark)
-  FILTERED_6       6 pares (WR>=60% backtest) + |spread| 0.8-2.0%
-  FILTERED_10      10 pares (P&L>0) + PETR4-PBR.A + janela
-  SHORT_ALL        short da perna cara (mede a outra metade da intuicao)
-  SMART_LEG        long/short conforme Market Pulse confirma; senao NO_TRADE
-  LIQUID_LEG_HEDGED  perna liquida - beta*indice (neutraliza mercado)
-  DIRECTIONAL_EXIT saida propria (stop/trailing/timeout) na perna long
+Books:
+  ALL / FILTERED_6 / FILTERED_10  — perna long (barata)
+  SHORT_ALL (teorico)             — perna cara (short); executabilidade a modelar
+  SMART_LEG                       — long/short conforme Market Pulse (snapshot na entrada)
+  LIQUID_LEG_HEDGED               — perna liquida - beta_exante*indice (IBOV/SPY)
+  DIRECTIONAL_EXIT                — saida propria (stop 1.5ATR / trailing 1ATR / timeout 90min)
+
+Congelado: LONGLEG_FILTER_VERSION=2026-07-25. Nao retocar no meio do teste.
 """
-import os, json, logging, urllib.request
+import os, json, logging, urllib.request, statistics
 from datetime import datetime, timezone
 
 import pymysql
@@ -32,11 +33,10 @@ FILTER_VERSION = '2026-07-25'
 GOOD6 = {'SBSP3-SBS', 'GGBR4-GGB', 'SAP-SAP.DE', 'ASML-ASML.AS', 'ITUB4-ITUB', 'UGPA3-UGP'}
 GOOD10 = GOOD6 | {'CSNA3-SID', 'CMIG4-CIG', 'PETR4-PBR', 'PETR4-PBR.A'}
 SPREAD_LO, SPREAD_HI = 0.8, 2.0
-# saida direcional (congelada)
 STOP_ATR = 1.5
 TRAIL_ACT_ATR = 1.0
 TIMEOUT_MIN = 90
-HEDGE_BETA = 1.0   # v1 fixo; refinar por par depois
+BETA_WINDOW_D = 60
 
 
 def _conn():
@@ -62,13 +62,17 @@ def create_tables():
         in_f6 TINYINT, in_f10 TINYINT,
         long_px_entry DECIMAL(18,6), short_px_entry DECIMAL(18,6), fx_entry DECIMAL(12,6),
         status VARCHAR(8) DEFAULT 'OPEN', opened_at DATETIME, closed_at DATETIME,
+        opened_epoch BIGINT,
         long_ret_pct DECIMAL(10,4), short_ret_pct DECIMAL(10,4),
         index_ret_pct DECIMAL(10,4), hedged_ret_pct DECIMAL(10,4),
+        hedge_beta DECIMAL(8,4), hedged_beta_ret_pct DECIMAL(10,4),
+        dir_status VARCHAR(8) DEFAULT 'PENDING',
         dir_exit_ret_pct DECIMAL(10,4), dir_exit_reason VARCHAR(16),
+        exit_ambiguous TINYINT DEFAULT 0, atr_pct_entry DECIMAL(10,4),
         mfe_pct DECIMAL(10,4), mae_pct DECIMAL(10,4),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX ix_pair (pair), INDEX ix_status (status), INDEX ix_band (spread_band)
-        ) CHARACTER SET utf8mb4""")
+        INDEX ix_pair (pair), INDEX ix_status (status),
+        INDEX ix_dir (dir_status), INDEX ix_band (spread_band)) CHARACTER SET utf8mb4""")
     c.close(); _ready['v'] = True
 
 
@@ -91,78 +95,96 @@ def _usd(p, fx, mkt):
 
 def _ysym(leg, mkt):
     leg = str(leg or '')
-    if mkt == 'B3': return (leg if leg.endswith('.SA') else leg + '.SA')
-    return leg  # NYSE/LSE/EUR ja vem com sufixo quando aplicavel
+    return (leg if leg.endswith('.SA') else leg + '.SA') if mkt == 'B3' else leg
 
 
 def _idx_sym(mkt):
     return '^BVSP' if mkt == 'B3' else 'SPY'
 
 
-def _yahoo_bars(sym, t0, t1):
-    """barras 5m [(ts,o,h,l,c), ...] entre t0 e t1 (epoch). Fail-open -> []."""
+def _yahoo_bars(sym, t0, t1, interval='5m'):
     try:
         url = (f'https://query1.finance.yahoo.com/v8/finance/chart/{sym}'
-               f'?period1={int(t0)-3600}&period2={int(t1)+300}&interval=5m')
+               f'?period1={int(t0)}&period2={int(t1)}&interval={interval}')
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=8) as r:
             d = json.load(r)
         res = d['chart']['result'][0]; ts = res['timestamp']; q = res['indicators']['quote'][0]
-        out = []
-        for i, t in enumerate(ts):
-            if q['close'][i] is None: continue
-            if t0 <= t <= t1 + 300:
-                out.append((t, q['open'][i], q['high'][i], q['low'][i], q['close'][i]))
-        return out
+        return [(t, q['open'][i], q['high'][i], q['low'][i], q['close'][i])
+                for i, t in enumerate(ts) if q['close'][i] is not None]
     except Exception as e:
         log.debug(f'[LONGLEG] bars {sym}: {e}')
         return []
 
 
+def _daily(sym, t0, t1):
+    b = _yahoo_bars(sym, t0, t1, '1d')
+    return [(t, cl) for (t, o, h, l, cl) in b]
+
+
 def _ret_between(sym, t0, t1):
-    """retorno % de sym entre t0 e t1 (usa close das barras 5m)."""
-    b = _yahoo_bars(sym, t0, t1)
+    b = _yahoo_bars(sym, t0 - 600, t1 + 300)
+    b = [x for x in b if t0 <= x[0] <= t1 + 300]
     if len(b) < 2: return None
     return (b[-1][4] / b[0][4] - 1.0) * 100
 
 
-def _simulate_directional(bars, entry_px):
-    """Simula saida propria LONG na perna (stop 1.5ATR, trailing 1ATR, timeout 90min).
-    Retorna (ret_pct, reason, mfe_pct, mae_pct)."""
-    if len(bars) < 3 or not entry_px:
-        return None, 'NO_BARS', None, None
-    # ATR simples nas barras
+def _ex_ante_beta(leg_sym, idx_sym, entry_epoch):
+    """Beta de 60 pregoes ATE (exclusive) a data de entrada. Frozen. Fallback 1.0."""
+    try:
+        t1 = entry_epoch - 86400  # ate o dia anterior (ex-ante)
+        t0 = t1 - BETA_WINDOW_D * 2 * 86400
+        dl = dict(_daily(leg_sym, t0, t1)); di = dict(_daily(idx_sym, t0, t1))
+        days = sorted(set(dl) & set(di))[-BETA_WINDOW_D:]
+        if len(days) < 20: return 1.0
+        rl = [dl[days[i]] / dl[days[i-1]] - 1 for i in range(1, len(days))]
+        ri = [di[days[i]] / di[days[i-1]] - 1 for i in range(1, len(days))]
+        vi = sum(x*x for x in ri)
+        if vi <= 0: return 1.0
+        cov = sum(a*b for a, b in zip(rl, ri))
+        beta = cov / vi
+        return max(0.0, min(2.5, beta))  # sanidade
+    except Exception:
+        return 1.0
+
+
+def _simulate_directional(pre_bars, win_bars, entry_px):
+    """ATR ex-ante (pre_bars, ANTES da entrada). Simula LONG na janela (win_bars).
+    Ambiguidade: stop primeiro (conservador). Retorna (ret,reason,mfe,mae,atr_pct,ambig)."""
+    if not entry_px or len(win_bars) < 2:
+        return None, 'NO_BARS', None, None, None, 0
+    # ATR EX-ANTE das barras anteriores a entrada
     trs = []
-    for i in range(1, len(bars)):
-        h, l, pc = bars[i][2], bars[i][3], bars[i-1][4]
+    for i in range(1, len(pre_bars)):
+        h, l, pc = pre_bars[i][2], pre_bars[i][3], pre_bars[i-1][4]
         trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    atr = (sum(trs) / len(trs)) if trs else entry_px * 0.005
+    atr = statistics.mean(trs) if trs else entry_px * 0.005
     if atr <= 0: atr = entry_px * 0.005
+    atr_pct = atr / entry_px * 100
     stop = entry_px - STOP_ATR * atr
-    peak = entry_px; trailing = False
-    mfe = mae = 0.0
-    t0 = bars[0][0]
-    for (t, o, h, l, cl) in bars:
+    peak = entry_px; trailing = False; mfe = mae = 0.0; ambig = 0
+    t0 = win_bars[0][0]
+    for (t, o, h, l, cl) in win_bars:
         mfe = max(mfe, (h / entry_px - 1) * 100)
         mae = min(mae, (l / entry_px - 1) * 100)
-        # stop hit intrabar?
-        if l <= stop:
-            return (stop / entry_px - 1) * 100, ('TRAIL_STOP' if trailing else 'STOP'), round(mfe, 4), round(mae, 4)
-        # ativa trailing apos +1 ATR
-        if h >= entry_px + TRAIL_ACT_ATR * atr:
+        hit_stop = l <= stop
+        act_trail = h >= entry_px + TRAIL_ACT_ATR * atr
+        if hit_stop and act_trail:
+            ambig = 1  # ambiguo no candle -> STOP primeiro (conservador)
+        if hit_stop:
+            return (stop / entry_px - 1) * 100, ('TRAIL_STOP' if trailing else 'STOP'), \
+                   round(mfe, 4), round(mae, 4), round(atr_pct, 4), ambig
+        if act_trail:
             trailing = True
         if trailing:
             peak = max(peak, h)
             stop = max(stop, peak - STOP_ATR * atr)
-        # timeout
         if (t - t0) / 60 >= TIMEOUT_MIN:
-            return (cl / entry_px - 1) * 100, 'TIMEOUT', round(mfe, 4), round(mae, 4)
-    # fim das barras (fechou junto com a Arbi)
-    return (bars[-1][4] / entry_px - 1) * 100, 'WINDOW_END', round(mfe, 4), round(mae, 4)
+            return (cl / entry_px - 1) * 100, 'TIMEOUT', round(mfe, 4), round(mae, 4), round(atr_pct, 4), ambig
+    return (win_bars[-1][4] / entry_px - 1) * 100, 'WINDOW_END', round(mfe, 4), round(mae, 4), round(atr_pct, 4), ambig
 
 
 def on_arbi_open(trade, pulse=None):
-    """Snapshot na abertura. pulse: 'RISK_ON'|'RISK_OFF'|'NEUTRAL' se disponivel."""
     try:
         create_tables()
         pair = trade.get('pair_id') or trade.get('id')
@@ -177,81 +199,105 @@ def on_arbi_open(trade, pulse=None):
         fx = trade.get('fx_a_entry') or trade.get('fx_rate_entry') or trade.get('fx_rate') or 1
         notional = float(trade.get('position_size') or 0)
         inw = SPREAD_LO <= abss <= SPREAD_HI
+        now = datetime.now(timezone.utc)
         c = _conn(); cur = c.cursor()
         cur.execute("""INSERT IGNORE INTO longleg_harvest (arbi_id,pair,long_leg,long_mkt,
             short_leg,short_mkt,direction,entry_spread_abs,spread_band,pulse_at_open,
-            notional_usd,in_f6,in_f10,long_px_entry,short_px_entry,fx_entry,status,opened_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s)""",
+            notional_usd,in_f6,in_f10,long_px_entry,short_px_entry,fx_entry,status,opened_at,opened_epoch)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s,%s)""",
             (trade.get('id'), pair, ll, lm, sl, sm, direction, round(abss, 4), _band(abss),
              str(pulse or 'NA'), notional, 1 if (pair in GOOD6 and inw) else 0,
              1 if (pair in GOOD10 and inw) else 0, lpx, spx, fx,
-             datetime.now(timezone.utc).replace(tzinfo=None)))
+             now.replace(tzinfo=None), int(now.timestamp())))
         c.close()
     except Exception as e:
         log.debug(f'[LONGLEG] open: {e}')
 
 
 def on_arbi_close(trade):
-    """No fecho: retornos crus (long/short/indice) + saida direcional simulada."""
+    """No fecho: retornos crus (long/short/indice/hedge beta=1). Directional fica PENDING."""
     try:
         create_tables()
         c = _conn(); cur = c.cursor()
-        cur.execute("""SELECT long_leg,long_mkt,short_leg,short_mkt,direction,
-            long_px_entry,short_px_entry,fx_entry,opened_at FROM longleg_harvest
-            WHERE arbi_id=%s AND status='OPEN'""", (trade.get('id'),))
+        cur.execute("""SELECT long_mkt,short_mkt,direction,long_px_entry,short_px_entry,
+            fx_entry,opened_epoch FROM longleg_harvest WHERE arbi_id=%s AND status='OPEN'""",
+            (trade.get('id'),))
         row = cur.fetchone()
         if not row:
             c.close(); return
-        ll, lm, sl, sm, direction, lpe, spe, fxe, oat = row
-        # precos de saida (do dict da Arbi)
+        lm, sm, direction, lpe, spe, fxe, oepoch = row
         if direction == 'LONG_A':
             lpx1, spx1 = trade.get('price_a_exit'), trade.get('price_b_exit')
         else:
             lpx1, spx1 = trade.get('price_b_exit'), trade.get('price_a_exit')
         fx1 = trade.get('fx_a_exit') or trade.get('fx_rate_exit') or trade.get('fx_rate') or fxe
-        # retorno da perna long (USD-normalizado, como no backtest)
         u0 = _usd(lpe, fxe, lm); u1 = _usd(lpx1, fx1, lm)
         long_ret = (u1 / u0 - 1) * 100 if (u0 and u1) else None
-        # retorno da perna short (USD-normalizado)
         su0 = _usd(spe, fxe, sm); su1 = _usd(spx1, fx1, sm)
         short_ret = (su1 / su0 - 1) * 100 if (su0 and su1) else None
-        # janela de tempo
         try:
-            t0 = int(oat.replace(tzinfo=timezone.utc).timestamp())
             t1 = int(datetime.fromisoformat(str(trade.get('closed_at'))[:19]).replace(tzinfo=timezone.utc).timestamp())
         except Exception:
-            t0 = t1 = None
-        # indice do mercado da perna long (hedge, retorno LOCAL)
-        idx_ret = None; hedged = None
-        if t0 and t1 and t1 > t0:
-            idx_ret = _ret_between(_idx_sym(lm), t0, t1)
-            # retorno LOCAL da perna (sem FX) p/ hedge same-market
+            t1 = None
+        idx_ret = hedged = None
+        if oepoch and t1 and t1 > oepoch:
+            idx_ret = _ret_between(_idx_sym(lm), oepoch, t1)
             loc = (float(lpx1) / float(lpe) - 1) * 100 if lpe and lpx1 else None
             if loc is not None and idx_ret is not None:
-                hedged = loc - HEDGE_BETA * idx_ret
-        # saida direcional simulada nos candles reais da perna (preco LOCAL)
-        dir_ret = dir_reason = mfe = mae = None
-        if t0 and t1:
-            bars = _yahoo_bars(_ysym(ll, lm), t0, t1 + TIMEOUT_MIN * 60)
-            dir_ret, dir_reason, mfe, mae = _simulate_directional(bars, float(lpe) if lpe else None)
+                hedged = loc - 1.0 * idx_ret  # beta=1 cru; hedged_beta refinado no finalize
         cur.execute("""UPDATE longleg_harvest SET status='CLOSED', closed_at=%s,
-            long_ret_pct=%s, short_ret_pct=%s, index_ret_pct=%s, hedged_ret_pct=%s,
-            dir_exit_ret_pct=%s, dir_exit_reason=%s, mfe_pct=%s, mae_pct=%s
+            long_ret_pct=%s, short_ret_pct=%s, index_ret_pct=%s, hedged_ret_pct=%s
             WHERE arbi_id=%s AND status='OPEN'""",
             (datetime.now(timezone.utc).replace(tzinfo=None),
              None if long_ret is None else round(long_ret, 4),
              None if short_ret is None else round(short_ret, 4),
              None if idx_ret is None else round(idx_ret, 4),
-             None if hedged is None else round(hedged, 4),
-             None if dir_ret is None else round(dir_ret, 4), dir_reason, mfe, mae,
-             trade.get('id')))
+             None if hedged is None else round(hedged, 4), trade.get('id')))
         c.close()
+        finalize_directional()  # oportunistico: drena os PENDING cuja janela ja passou
     except Exception as e:
         log.debug(f'[LONGLEG] close: {e}')
 
 
+def finalize_directional(limit=20):
+    """Finaliza DIRECTIONAL_EXIT + beta ex-ante dos trades cuja janela de 90min JA
+    passou (candles reais existem). Chamado oportunisticamente. Fail-open."""
+    try:
+        create_tables()
+        cutoff = int(datetime.now(timezone.utc).timestamp()) - (TIMEOUT_MIN + 5) * 60
+        c = _conn(); cur = c.cursor()
+        cur.execute("""SELECT arbi_id,long_leg,long_mkt,long_px_entry,opened_epoch,index_ret_pct
+            FROM longleg_harvest WHERE dir_status='PENDING' AND status='CLOSED'
+            AND opened_epoch IS NOT NULL AND opened_epoch < %s
+            ORDER BY opened_epoch LIMIT %s""", (cutoff, limit))
+        rows = cur.fetchall()
+        for arbi_id, ll, lm, lpe, oe, idx_ret in rows:
+            ysym = _ysym(ll, lm)
+            pre = _yahoo_bars(ysym, oe - 4000, oe)              # barras ANTES da entrada (ATR ex-ante)
+            win = [x for x in _yahoo_bars(ysym, oe - 300, oe + (TIMEOUT_MIN + 5) * 60) if x[0] >= oe]
+            dr, rsn, mfe, mae, atrp, amb = _simulate_directional(pre, win, float(lpe) if lpe else None)
+            beta = _ex_ante_beta(ysym, _idx_sym(lm), oe)
+            # hedged com beta ex-ante: usa o retorno LOCAL da perna na janela do dir
+            loc = None
+            if win and lpe:
+                loc = (win[-1][4] / float(lpe) - 1) * 100
+            hb = (loc - beta * float(idx_ret)) if (loc is not None and idx_ret is not None) else None
+            cur.execute("""UPDATE longleg_harvest SET dir_status='DONE',
+                dir_exit_ret_pct=%s, dir_exit_reason=%s, mfe_pct=%s, mae_pct=%s,
+                atr_pct_entry=%s, exit_ambiguous=%s, hedge_beta=%s, hedged_beta_ret_pct=%s
+                WHERE arbi_id=%s""",
+                (None if dr is None else round(dr, 4), rsn, mfe, mae, atrp, amb,
+                 round(beta, 4), None if hb is None else round(hb, 4), arbi_id))
+        c.close()
+        if rows:
+            log.info(f'[LONGLEG] finalize_directional: {len(rows)} trades finalizados')
+    except Exception as e:
+        log.debug(f'[LONGLEG] finalize: {e}')
+
+
 def summary():
     create_tables()
+    finalize_directional()  # drena pendentes ao consultar
     c = _conn(); cur = c.cursor(pymysql.cursors.DictCursor)
     cur.execute("SELECT * FROM longleg_harvest WHERE status='CLOSED'")
     rows = cur.fetchall(); c.close()
@@ -260,38 +306,38 @@ def summary():
         vals = [v for v in vals if v is not None]
         n = len(vals)
         if not n: return {'n': 0}
-        wins = sum(1 for v in vals if v > 0)
-        return {'n': n, 'wr': round(100 * wins / n, 1),
-                'ret_med': round(sum(vals) / n, 3),
-                'total_ret': round(sum(vals), 2)}
-    books = {}
-    books['ALL'] = stat([float(r['long_ret_pct']) for r in rows if r['long_ret_pct'] is not None])
-    books['FILTERED_6'] = stat([float(r['long_ret_pct']) for r in rows if r['in_f6'] and r['long_ret_pct'] is not None])
-    books['FILTERED_10'] = stat([float(r['long_ret_pct']) for r in rows if r['in_f10'] and r['long_ret_pct'] is not None])
-    books['SHORT_ALL'] = stat([-float(r['short_ret_pct']) for r in rows if r['short_ret_pct'] is not None])
-    # SMART: long se pulse RISK_ON; short se RISK_OFF; senao nao entra
+        wins = [v for v in vals if v > 0]; los = [v for v in vals if v <= 0]
+        gm = statistics.mean(wins) if wins else 0; lm = statistics.mean(los) if los else 0
+        p = len(wins) / n
+        return {'n': n, 'wr': round(100 * p, 1), 'ret_med': round(statistics.mean(vals), 3),
+                'mediana': round(statistics.median(vals), 3),
+                'expectancy': round(p * gm + (1 - p) * lm, 3), 'total_ret': round(sum(vals), 2)}
+    b = {}
+    b['ALL'] = stat([r['long_ret_pct'] for r in rows])
+    b['FILTERED_6'] = stat([r['long_ret_pct'] for r in rows if r['in_f6']])
+    b['FILTERED_10'] = stat([r['long_ret_pct'] for r in rows if r['in_f10']])
+    b['SHORT_ALL_teorico'] = stat([(-r['short_ret_pct']) if r['short_ret_pct'] is not None else None for r in rows])
     smart = []
     for r in rows:
         p = str(r.get('pulse_at_open') or '')
-        if p == 'RISK_ON' and r['long_ret_pct'] is not None: smart.append(float(r['long_ret_pct']))
-        elif p == 'RISK_OFF' and r['short_ret_pct'] is not None: smart.append(-float(r['short_ret_pct']))
-    books['SMART_LEG'] = stat(smart)
-    books['LIQUID_LEG_HEDGED'] = stat([float(r['hedged_ret_pct']) for r in rows if r['hedged_ret_pct'] is not None])
-    books['DIRECTIONAL_EXIT'] = stat([float(r['dir_exit_ret_pct']) for r in rows if r['dir_exit_ret_pct'] is not None])
+        if p == 'RISK_ON' and r['long_ret_pct'] is not None: smart.append(r['long_ret_pct'])
+        elif p == 'RISK_OFF' and r['short_ret_pct'] is not None: smart.append(-r['short_ret_pct'])
+    b['SMART_LEG'] = stat(smart)
+    b['LIQUID_LEG_HEDGED'] = stat([r['hedged_beta_ret_pct'] for r in rows])
+    b['DIRECTIONAL_EXIT'] = stat([r['dir_exit_ret_pct'] for r in rows if r['dir_status'] == 'DONE'])
 
-    # por par (long)
     bypair = {}
     for r in rows:
         if r['long_ret_pct'] is None: continue
-        d = bypair.setdefault(r['pair'], [])
-        d.append(float(r['long_ret_pct']))
+        bypair.setdefault(r['pair'], []).append(r['long_ret_pct'])
     por_par = [{'pair': k, **stat(v)} for k, v in sorted(bypair.items(), key=lambda x: -sum(x[1]))]
-    # por faixa de spread (long)
     byband = {}
     for r in rows:
         if r['long_ret_pct'] is None: continue
-        byband.setdefault(r['spread_band'], []).append(float(r['long_ret_pct']))
+        byband.setdefault(r['spread_band'], []).append(r['long_ret_pct'])
     por_faixa = {k: stat(v) for k, v in sorted(byband.items())}
-    return {'version': FILTER_VERSION, 'books': books, 'por_par': por_par,
-            'por_faixa_spread': por_faixa,
-            'total_registrados': len(rows)}
+    dir_pend = sum(1 for r in rows if r['dir_status'] == 'PENDING')
+    return {'version': FILTER_VERSION, 'books': b, 'por_par': por_par,
+            'por_faixa_spread': por_faixa, 'total_registrados': len(rows),
+            'directional_pendentes': dir_pend,
+            'nota': 'SHORT=teorico (borrow a modelar); hedge beta ex-ante 60d; ATR ex-ante; dir 90min deferido'}

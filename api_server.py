@@ -11682,6 +11682,12 @@ def arbi_monitor_loop():
             _fx_refresh_counter = 0
             try: fetch_fx_rates()
             except Exception as _fx_e: log.debug(f'[arbi_monitor] FX refresh: {_fx_e}')
+        # [LONGLEG 25-jul] finaliza directionals cuja janela de 90min ja passou
+        try:
+            from modules.longleg_harvest import finalize_directional as _ll_fin
+            _ll_fin()
+        except Exception:
+            pass
         try:
             closed_trades=[]
             with state_lock:

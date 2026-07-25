@@ -322,7 +322,15 @@ def log_close(trade_id, pnl, pnl_pct, close_reason, hold_min=None,
              hold_min, close_reason,
              json.dumps({'capped_mult': capped_mult, 'orig_mult': mult0,
                          'notional_flat_atr': round(notional_flat_atr, 0),
-                         'stop_pct_used': round(stop_pct, 3)}),
+                         'stop_pct_used': round(stop_pct, 3),
+                         # [revisao 24-jul] moedas NUNCA misturadas: risco e
+                         # notional contrafactuais sao na moeda do BOOK do
+                         # mercado (B3=BRL-book, NYSE=USD, CRYPTO=USDT).
+                         # Comparacao entre mercados: usar pnl_pct/r-multiple.
+                         'risk_ccy': CURR.get(market, 'OTHER'),
+                         'risk_budget_book_ccy': 1000.0,
+                         'flat_notional_book_ccy': 100000.0,
+                         'nota': 'aproximacao analitica: sem lote-padrao/custos; livro executavel = P2'}),
              trade_id))
         c.close()
     except Exception as e:

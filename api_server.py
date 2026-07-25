@@ -18983,6 +18983,21 @@ def debug_scorev4():
             c.execute("SELECT book_trade_id,symbol,market,direction,trade_quality_v4,direction_score_v4,"
                       "strength_v4,regime_status,trade_status,pnl_real FROM score_log_v4 ORDER BY id DESC LIMIT 12")
             out['ultimos'] = list(c.fetchall())
+            # [revisao 24-jul] painel de saude diario da implementacao (nao e performance)
+            c.execute("""SELECT market, COUNT(*) sinais, SUM(score_v4_valid=1) validos,
+                ROUND(AVG(total_coverage),3) cobertura_media,
+                ROUND(AVG(trade_quality_v4),1) quality_medio,
+                ROUND(AVG(strength_v4),3) strength_medio,
+                SUM(audit_ok=0) audit_errors,
+                SUM(direction='LONG') longs, SUM(direction='SHORT') shorts,
+                SUM(regime_smoothed='TRENDING') trending, SUM(regime_smoothed='RANGING') ranging,
+                SUM(regime_smoothed IN ('MIXED','CHOPPY')) mixed_choppy,
+                SUM(regime_status='QUARANTINE') quarantine,
+                SUM(trade_status='VOIDED') voided,
+                SUM(direction_score_v4 BETWEEN 45 AND 55) zona_45_55,
+                SUM(direction_score_v4<=20 OR direction_score_v4>=80) extremos
+                FROM score_log_v4 WHERE DATE(decision_timestamp)=UTC_DATE() GROUP BY market""")
+            out['saude_hoje'] = list(c.fetchall())
             c.close(); conn.close()
         return jsonify(out)
     except Exception as e:

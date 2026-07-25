@@ -10258,7 +10258,7 @@ def auto_trade_crypto():
                     # o trailing capturar). Env: CRYPTO_REGIME_ENABLED.
                     if os.environ.get('CRYPTO_REGIME_ENABLED', 'true').lower() != 'false':
                         if _crypto_regime() == 'CHOP':
-                            _chop_bar = MIN_SCORE_AUTO_CRYPTO + int(os.environ.get('CRYPTO_CHOP_SCORE_PENALTY', 15))
+                            _chop_bar = MIN_SCORE_AUTO_CRYPTO + int(os.environ.get('CRYPTO_CHOP_SCORE_PENALTY', 8))
                             _str_reg = score if direction == 'LONG' else 100 - score
                             if _str_reg < _chop_bar:
                                 log.info(f'[CRYPTO-REGIME] {display}: CHOP ({_crypto_regime_detail()}) '
@@ -10274,7 +10274,7 @@ def auto_trade_crypto():
                         if _bdc and _bdc['prev_ret'] is not None and \
                            _bdc['prev_ret'] <= float(os.environ.get('CRYPTO_REDDAY_THRESH', -0.5)) and \
                            abs(_bdc['today_ret'] or 0) < float(os.environ.get('CRYPTO_DAY_DEFINED_PCT', 0.5)):
-                            _rd_bar = MIN_SCORE_AUTO_CRYPTO + int(os.environ.get('CRYPTO_REDDAY_PENALTY', 12))
+                            _rd_bar = MIN_SCORE_AUTO_CRYPTO + int(os.environ.get('CRYPTO_REDDAY_PENALTY', 6))
                             _str_rd = score if direction == 'LONG' else 100 - score
                             if _str_rd < _rd_bar:
                                 log.info(f'[RED-DAY] {display}: vespera {_bdc["prev_ret"]:+.1f}% e dia '

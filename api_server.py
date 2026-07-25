@@ -11646,11 +11646,17 @@ def arbi_scan_loop():
                         exec_arbi(pair, spread['direction'], _entry_price_a, _entry_price_b, 'OPEN', ref_id=trade_id)
                     except Exception as _e:
                         log.error(f'exec_arbi OPEN: {_e}')
-                    # [LONGLEG 25-jul, decisao Beto] limonada: registra a perna long
-                    # nos 3 books shadow (ALL / FILTERED_6 / FILTERED_10). Fail-open.
+                    # [LONGLEG 25-jul, decisao Beto — v2 pos-GPT+Grok] limonada:
+                    # registra a perna long nos books shadow + pulse p/ SMART_LEG. Fail-open.
                     try:
                         from modules.longleg_harvest import on_arbi_open as _ll_open
-                        _ll_open(trade)
+                        _ll_mkt = trade.get('mkt_a') if spread['direction'] == 'LONG_A' else trade.get('mkt_b')
+                        _ll_pulse = None
+                        try:
+                            _ll_pulse = market_pulse(_ll_mkt).get('state')
+                        except Exception:
+                            pass
+                        _ll_open(trade, pulse=_ll_pulse)
                     except Exception as _lle:
                         log.debug(f'longleg open: {_lle}')
 

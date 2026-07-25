@@ -144,15 +144,27 @@ def _record(row):
         if not _tbl_ready:
             create_tables()
             _tbl_ready = True
-        c = _conn()
-        c.cursor().execute("""INSERT INTO exec_orders (trade_id,symbol,side,event,mode,
-            status,qty,quote_usdt,price_ref,price_fill,fee_usdt,binance_order_id,error,resp_json)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        c = _conn(); cur = c.cursor()
+        # [25-jul Tier1] colunas de custo de execucao (idempotente)
+        for _col in ("shortfall_bps DECIMAL(10,3)", "total_cost_bps DECIMAL(10,3)"):
+            try: cur.execute(f"ALTER TABLE exec_orders ADD COLUMN {_col}")
+            except Exception: pass
+        try:
+            from modules.exec_metrics import implementation_shortfall_bps, total_cost_bps
+            _sf = implementation_shortfall_bps(row.get('side'), row.get('price_ref'), row.get('price_fill'))
+            _tc = total_cost_bps(_sf, row.get('fee_usdt'), row.get('quote_usdt'))
+        except Exception:
+            _sf = _tc = None
+        cur.execute("""INSERT INTO exec_orders (trade_id,symbol,side,event,mode,
+            status,qty,quote_usdt,price_ref,price_fill,fee_usdt,binance_order_id,error,resp_json,
+            shortfall_bps,total_cost_bps)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (row.get('trade_id'), row.get('symbol'), row.get('side'), row.get('event'),
              row.get('mode'), row.get('status'), row.get('qty'), row.get('quote_usdt'),
              row.get('price_ref'), row.get('price_fill'), row.get('fee_usdt'),
              row.get('binance_order_id'), row.get('error'),
-             json.dumps(row.get('resp'), default=str)[:2000] if row.get('resp') else None))
+             json.dumps(row.get('resp'), default=str)[:2000] if row.get('resp') else None,
+             _sf, _tc))
         c.close()
     except Exception as e:
         log.debug(f'[EXEC] record: {e}')

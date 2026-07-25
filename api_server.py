@@ -10212,11 +10212,17 @@ def auto_trade_crypto():
                     if _same_dir_p >= int(os.environ.get('CRYPTO_MAX_SAME_DIR', 6)):
                         log.info(f'[CRYPTO-PULSE] {display}: ja ha {_same_dir_p} {direction} abertas — teto de correlacao')
                         continue
-                    # (d) horas toxicas (00/06/07 UTC = -$17k): score +10 graduado
+                    # (d) horas toxicas: score +10 graduado (penalidade, nao bloqueio).
                     _hr_p = datetime.utcnow().hour
-                    # [22-jul v2] +tarde US (14-19 UTC): estudo das 30 piores janelas
-                    # de 10h — comecam as 14/16/17/19 UTC; melhores na madrugada/manha.
-                    _tox_p = [int(x) for x in os.environ.get('CRYPTO_TOXIC_HOURS', '0,6,7,14,15,16,17,18,19').split(',') if x.strip().isdigit()]
+                    # [25-jul-2026, decisao Beto — pos-auditoria VOID] RECALIBRADO com
+                    # o book CORRIGIDO (4.167 trades restaurados do falso-VOID). O
+                    # padrao de 5 MESES: janela 5-12h UTC lucra TODO mes (distribuida,
+                    # top5=14%); o resto perde. Toxicas = horas com < -$10k em 5 meses.
+                    # BUG CORRIGIDO: a lista antiga (0,6,7,14,15,16,17,18,19) penalizava
+                    # 06/07h (a 2a MELHOR hora, +$27k) e ignorava 13h (a PIOR, -$43k) e
+                    # 20-23h. Nova lista tira 06,07,17; poe 13,20,21,22; mantem 5-12
+                    # sem penalidade. Reversivel por env CRYPTO_TOXIC_HOURS.
+                    _tox_p = [int(x) for x in os.environ.get('CRYPTO_TOXIC_HOURS', '0,2,4,13,14,15,16,18,19,20,21,22').split(',') if x.strip().isdigit()]
                     if _hr_p in _tox_p and score < MIN_SCORE_AUTO_CRYPTO + 10:
                         log.info(f'[CRYPTO-PULSE] {display}: hora toxica {_hr_p}h UTC — exige score >= {MIN_SCORE_AUTO_CRYPTO + 10}')
                         continue
@@ -15368,6 +15374,31 @@ def ops_void_trade(trade_id: str):
             ('VOIDED', trade_id)
         )
         cur2.close()
+
+        # [25-jul-2026 Tier1 — taxonomia de VOID] trilha estruturada: nunca mais
+        # ter void sem explicacao (como os 4.185 falso-VOID de cripto). Classifica
+        # a fonte pelo texto do motivo. Fail-open: erro aqui nao aborta o void.
+        try:
+            _vsource = 'MANUAL'
+            _rl = str(reason).lower()
+            if 'auditoria noturna' in _rl or 'night' in _rl: _vsource = 'NIGHTLY_AUDIT'
+            elif 'batch' in _rl or 'stale' in _rl: _vsource = 'BATCH'
+            elif 'dedup' in _rl or 'orphan' in _rl: _vsource = 'DEDUP'
+            cur_vt = conn.cursor()
+            cur_vt.execute("""CREATE TABLE IF NOT EXISTS void_audit_log (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY, trade_id VARCHAR(40), tbl VARCHAR(16),
+                symbol VARCHAR(20), strategy VARCHAR(12), void_source VARCHAR(16),
+                void_reason VARCHAR(255), original_pnl DECIMAL(16,4),
+                original_close_reason VARCHAR(40), voided_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX ix_tid (trade_id), INDEX ix_src (void_source)) CHARACTER SET utf8mb4""")
+            cur_vt.execute("""INSERT INTO void_audit_log
+                (trade_id,tbl,symbol,strategy,void_source,void_reason,original_pnl,original_close_reason)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (trade_id, table, str(symbol)[:20], strategy, _vsource, str(reason)[:255],
+                 orig_pnl, str(existing_reason)[:40]))
+            cur_vt.close()
+        except Exception as _vte:
+            log.debug(f'[VOID-TAXONOMY] {trade_id}: {_vte}')
 
         # 3) Registrar MANUAL_ADJUSTMENT no capital_ledger que REVERTE
         #    o PnL original. Se trade tinha pnl=+55K, adjustment=-55K.

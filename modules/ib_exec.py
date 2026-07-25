@@ -48,19 +48,27 @@ def _record(row):
         create_tables()
         c = _conn()
         cur = c.cursor()
-        # garante a coluna venue (idempotente)
+        # garante colunas idempotentes (venue + custo de execucao Tier1 25-jul)
+        for _col in ("venue VARCHAR(8) DEFAULT 'BINANCE'", "shortfall_bps DECIMAL(10,3)",
+                     "total_cost_bps DECIMAL(10,3)"):
+            try: cur.execute(f"ALTER TABLE exec_orders ADD COLUMN {_col}")
+            except Exception: pass
         try:
-            cur.execute("ALTER TABLE exec_orders ADD COLUMN venue VARCHAR(8) DEFAULT 'BINANCE'")
+            from modules.exec_metrics import implementation_shortfall_bps, total_cost_bps
+            _sf = implementation_shortfall_bps(row.get('side'), row.get('price_ref'), row.get('price_fill'))
+            _tc = total_cost_bps(_sf, row.get('fee'), row.get('usd'))
         except Exception:
-            pass
+            _sf = _tc = None
         cur.execute("""INSERT INTO exec_orders (trade_id,symbol,side,event,mode,status,
-            qty,quote_usdt,price_ref,price_fill,fee_usdt,binance_order_id,error,resp_json,venue)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'IB')""",
+            qty,quote_usdt,price_ref,price_fill,fee_usdt,binance_order_id,error,resp_json,venue,
+            shortfall_bps,total_cost_bps)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'IB',%s,%s)""",
             (row.get('trade_id'), row.get('symbol'), row.get('side'), row.get('event'),
              row.get('mode'), row.get('status'), row.get('qty'), row.get('usd'),
              row.get('price_ref'), row.get('price_fill'), row.get('fee'),
              str(row.get('ib_order_id') or ''), row.get('error'),
-             json.dumps(row.get('resp'), default=str)[:2000] if row.get('resp') else None))
+             json.dumps(row.get('resp'), default=str)[:2000] if row.get('resp') else None,
+             _sf, _tc))
         c.close()
     except Exception as e:
         log.debug(f'[IB-EXEC] record: {e}')

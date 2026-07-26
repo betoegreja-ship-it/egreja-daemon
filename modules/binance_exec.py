@@ -15,7 +15,7 @@ na conta Binance Brasil do Beto). Modos, por env EXEC_MODE:
 
 Regras de seguranca (invioladas em qualquer modo):
   - A chave NUNCA pode ter permissao de saque (checagem no boot em live).
-  - Teto por ordem: EXEC_MAX_ORDER_USDT (default 200).
+  - Teto por ordem: EXEC_MAX_ORDER_USDT (default 550; ticket EXEC_ORDER_USDT default 500).
   - Teto diario de ordens: EXEC_MAX_ORDERS_DAY (default 60).
   - Kill switch da plataforma bloqueia execucao.
   - Fail-open: qualquer erro NUNCA derruba o paper (que segue soberano).
@@ -125,7 +125,7 @@ def check_key_safety():
 
 
 def _guards_ok(quote_usdt):
-    if quote_usdt > _env_f('EXEC_MAX_ORDER_USDT', 200):
+    if quote_usdt > _env_f('EXEC_MAX_ORDER_USDT', 550):
         return f'ordem ${quote_usdt:.0f} > teto EXEC_MAX_ORDER_USDT'
     today = date.today()
     if _day_count['d'] != today:
@@ -179,7 +179,7 @@ def _execute(trade, event, side):
     pair = sym + 'USDT' if not sym.endswith('USDT') else sym
     price_ref = float(trade.get('current_price') or trade.get('entry_price') or 0)
     # dimensionamento real e INDEPENDENTE do paper: fracao fixa pequena
-    quote = min(_env_f('EXEC_ORDER_USDT', 100), _env_f('EXEC_MAX_ORDER_USDT', 200))
+    quote = min(_env_f('EXEC_ORDER_USDT', 500), _env_f('EXEC_MAX_ORDER_USDT', 550))
     fee_pct = _env_f('EXEC_TAKER_FEE_PCT', 0.075) / 100.0  # BNB discount default
     guard = _guards_ok(quote)
     if guard:
@@ -269,7 +269,7 @@ def summary():
         last = list(cur.fetchall())
         c.close()
         return {'mode': _mode(), 'last_7d': rows, 'last_orders': last,
-                'order_usdt': _env_f('EXEC_ORDER_USDT', 100),
+                'order_usdt': _env_f('EXEC_ORDER_USDT', 500),
                 'engine_enabled': os.environ.get('EXEC_ENGINE_ENABLED', 'true')}
     except Exception as e:
         return {'error': str(e)}

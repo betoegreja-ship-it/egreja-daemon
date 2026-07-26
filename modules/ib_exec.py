@@ -16,7 +16,8 @@ relay Cedro, ao contrario.
   so conhece a URL da ponte (IB_BRIDGE_URL) e um segredo compartilhado
   (IB_BRIDGE_SECRET) para autenticar as chamadas.
 
-Regras (qualquer modo): teto por ordem IB_EXEC_MAX_USD (2000), teto diario
+Regras (qualquer modo): teto de LIQUIDEZ por ordem IB_EXEC_MAX_USD (150000; espelha
+o notional real do book ate esse teto — nunca o fill fantasma de US$1M/perna), teto diario
 IB_EXEC_MAX_ORDERS_DAY (80), fail-open total (nunca derruba o paper). Trilha
 na MESMA tabela exec_orders (venue='IB').
 """
@@ -75,7 +76,7 @@ def _record(row):
 
 
 def _guard(usd):
-    if usd > _f('IB_EXEC_MAX_USD', 2000):
+    if usd > _f('IB_EXEC_MAX_USD', 150000):
         return f'ordem ${usd:.0f} > teto IB_EXEC_MAX_USD'
     today = date.today()
     if _day['d'] != today:
@@ -141,7 +142,10 @@ def _execute(trade, event, action):
     mode = _mode()
     sym = str(trade.get('symbol', '')).upper()
     px = float(trade.get('current_price') or trade.get('entry_price') or 0)
-    usd = min(_f('IB_EXEC_ORDER_USD', 1000), _f('IB_EXEC_MAX_USD', 2000))
+    # [decisao Beto] espelha o notional REAL da posicao do book (nao ticket de US$1k),
+    # com TETO DE LIQUIDEZ por ordem (IB_EXEC_MAX_USD) — nunca o fill impossivel de US$1M.
+    _real = float(trade.get('position_value') or trade.get('position_size') or 0)
+    usd = min(_real if _real > 0 else _f('IB_EXEC_ORDER_USD', 1000), _f('IB_EXEC_MAX_USD', 150000))
     qty = max(1, int(usd / px)) if px > 0 else 0
     g = _guard(usd)
     if g:
@@ -211,7 +215,11 @@ def exec_arbi(pair, direction, price_a, price_b, event, ref_id=None):
         pa = float(price_a or 0)
         if pa <= 0:
             return
-        leg_usd = _f('IB_ARBI_LEG_USD', 500)
+        # [decisao Beto] espelha o notional real da perna, com TETO DE LIQUIDEZ.
+        # O $1M/perna do book e inexequivel em ADR iliquido (auditoria forense) —
+        # por isso o teto IB_EXEC_MAX_USD limita, evitando o fill fantasma.
+        _arbi_real = float(pair.get('position_size') or pair.get('leg_notional') or 0)
+        leg_usd = min(_arbi_real if _arbi_real > 0 else _f('IB_ARBI_LEG_USD', 50000), _f('IB_EXEC_MAX_USD', 150000))
         qa = max(1, int(leg_usd / pa))
         qb = max(1, int(qa * rb / ra))
         if direction == 'LONG_A':
@@ -291,8 +299,11 @@ def exec_uspairs(pair, direction, price_a, price_b, notional_a, notional_b, even
         pb = float(price_b or 0)
         if pa <= 0 or pb <= 0:
             return
-        na = float(notional_a or 0)
-        nb = float(notional_b or 0)
+        # [decisao Beto] espelha o notional real, MAS capado pelo teto de liquidez
+        # ANTES de calcular a quantidade (senao o qty sairia do notional cheio).
+        _cap = _f('IB_EXEC_MAX_USD', 150000)
+        na = min(float(notional_a or 0), _cap)
+        nb = min(float(notional_b or 0), _cap)
         qa = max(1, int(round(na / pa)))
         qb = max(1, int(round(nb / pb)))
         if str(direction).upper() == 'SHORT_A':
@@ -312,7 +323,7 @@ def exec_uspairs(pair, direction, price_a, price_b, notional_a, notional_b, even
         tif = os.environ.get('IB_USPAIRS_TIF', 'OPG').upper()
         # teto por perna: reaproveita IB_EXEC_MAX_USD
         for leg_sym, qty, act, notion in ((a, qa, act_a, na), (b, qb, act_b, nb)):
-            g = _guard(min(notion, _f('IB_EXEC_MAX_USD', 2000)))
+            g = _guard(min(notion, _f('IB_EXEC_MAX_USD', 150000)))
             if g:
                 _record({'trade_id': _tid, 'symbol': leg_sym, 'side': act,
                          'event': f'USPAIRS_{event}', 'mode': mode, 'status': 'BLOCKED',

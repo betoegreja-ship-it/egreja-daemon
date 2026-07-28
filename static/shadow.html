@@ -46,7 +46,7 @@ const cls=v=>v>=0?'g':'r';
 async function jget(u){const r=await fetch(API_BASE+u,{credentials:'omit'});if(!r.ok)throw new Error(u+' '+r.status);return r.json();}
 
 function tradeRows(t,moeda){
-  if(!t||!t.length) return '<tr><td colspan="6" class="muted">nenhuma trade</td></tr>';
+  if(!t||!t.length) return '<tr><td colspan="7" class="muted">nenhuma trade</td></tr>';
   return t.map(x=>{
     const op=(x.status||'').toUpperCase()==='OPEN';
     return `<tr class="${op?'open':''}">
@@ -54,7 +54,8 @@ function tradeRows(t,moeda){
       <td>${x.dir||'—'}</td>
       <td><span class="pill ${op?'open':'closed'}">${x.status||''}</span></td>
       <td>${x.entry!=null?Number(x.entry).toLocaleString('pt-BR'):'—'}</td>
-      <td class="${cls(x.pnl||0)}">${x.pnl!=null?money(x.pnl,moeda):'—'}</td>
+      <td class="${op&&x.parcial!=null?cls(x.parcial):''}">${op?(x.parcial!=null?money(x.parcial,moeda):'<span class="muted">sem preço</span>'):'—'}</td>
+      <td class="${cls(x.pnl||0)}">${!op&&x.pnl!=null?money(x.pnl,moeda):'—'}</td>
       <td class="muted">${x.opened?String(x.opened).slice(5,16).replace('T',' '):'—'}</td>
     </tr>`;}).join('');
 }
@@ -66,9 +67,10 @@ function stratCard(s){
       <div class="kpi">abertas <b class="${s.abertas>0?'g':''}">${s.abertas}</b></div>
       <div class="kpi">fechadas <b>${s.fechadas}</b></div>
       <div class="kpi">WR <b>${s.wr}%</b></div>
-      <div class="kpi">P&L <b class="${cls(s.pnl)}">${money(s.pnl,s.moeda)}</b></div>
+      <div class="kpi">P&L realizado <b class="${cls(s.pnl)}">${money(s.pnl,s.moeda)}</b></div>
+      ${s.abertas>0?`<div class="kpi">P&L parcial (abertas) <b class="${cls(s.parcial_abertas||0)}">${money(s.parcial_abertas||0,s.moeda)}</b></div>`:''}
     </div>
-    <table><thead><tr><th>Ativo/Par</th><th>Dir</th><th>Status</th><th>Entrada</th><th>P&L</th><th>Aberta em</th></tr></thead>
+    <table><thead><tr><th>Ativo/Par</th><th>Dir</th><th>Status</th><th>Entrada</th><th>Parcial (aberta)</th><th>P&L (fechada)</th><th>Aberta em</th></tr></thead>
     <tbody>${tradeRows(s.trades,s.moeda)}</tbody></table>
   </div>`;
 }

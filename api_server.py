@@ -19171,20 +19171,73 @@ def public_shadow():
     """[28-jul, decisao Beto] Consolidado PUBLICO das estrategias em shadow (paper):
     resumo + trades (abertas + recentes) de cada book, como um blotter. So paper."""
     STRATS = [
-        ('inverse_shadow_trades', 'Inverse (cripto)', 'USD'),
-        ('pairs_trades', 'Pairs Trade B3', 'BRL'),
-        ('crypto_rv_shadow_trades', 'Crypto RV (BTC-ETH)', 'USD'),
-        ('uspairs_shadow_trades', 'US Pairs', 'USD'),
-        ('arbix_shadow_trades', 'Arbix v2 (cross-listed)', 'USD'),
-        ('crossasset_rv_shadow_trades', 'Cross-asset RV', 'USD'),
+        {'t': 'inverse_shadow_trades', 'nome': 'Inverse (cripto)', 'moeda': 'USD', 'kind': 'single', 'asset': 'crypto'},
+        {'t': 'pairs_trades', 'nome': 'Pairs Trade B3', 'moeda': 'BRL', 'kind': 'pair', 'asset': 'stock'},
+        {'t': 'crypto_rv_shadow_trades', 'nome': 'Crypto RV (BTC-ETH)', 'moeda': 'USD', 'kind': 'pair', 'asset': 'crypto'},
+        {'t': 'uspairs_shadow_trades', 'nome': 'US Pairs', 'moeda': 'USD', 'kind': 'pair', 'asset': 'stock'},
+        {'t': 'crossasset_rv_shadow_trades', 'nome': 'Cross-asset RV', 'moeda': 'USD', 'kind': 'pair', 'asset': 'stock'},
+        {'t': 'arbix_shadow_trades', 'nome': 'Arbix v2 (cross-listed)', 'moeda': 'USD', 'kind': 'pair', 'asset': 'stock'},
     ]
+
+    def _cache_px(cache, keys):
+        for k in keys:
+            v = cache.get(k)
+            if isinstance(v, dict):
+                v = v.get('price') or v.get('last') or v.get('close')
+            try:
+                v = float(v)
+                if v > 0:
+                    return v
+            except Exception:
+                continue
+        return None
+
+    def _px(sym, asset):
+        sym = str(sym or '').upper()
+        if asset == 'crypto':
+            return _cache_px(crypto_prices, [sym, sym.replace('USDT', ''), sym + 'USDT'])
+        base = sym.replace('.SA', '')
+        return _cache_px(stock_prices, [sym, base, base + '.SA'])
+
+    def _mark(st, r):
+        """P&L parcial (mark-to-market) de uma trade ABERTA. None se sem preco."""
+        try:
+            if st['kind'] == 'single':
+                entry = r.get('entry_price'); size = r.get('position_value') or 0
+                cur = _px(r.get('symbol'), st['asset'])
+                if not (cur and entry and size):
+                    return None
+                sign = 1 if str(r.get('direction') or '').upper().startswith('LONG') else -1
+                return sign * (cur - float(entry)) / float(entry) * float(size)
+            # par (2 pernas)
+            la = r.get('leg_a'); lb = r.get('leg_b')
+            if not (la and lb):
+                parts = str(r.get('pair') or '').split('-'); la, lb = (parts + ['', ''])[:2]
+            pae, pbe = r.get('price_a_entry'), r.get('price_b_entry')
+            ca, cb = _px(la, st['asset']), _px(lb, st['asset'])
+            if not (ca and cb and pae and pbe):
+                return None
+            pae, pbe = float(pae), float(pbe)
+            d = str(r.get('direction') or '').upper()
+            sa = 1 if d == 'LONG_A' else -1; sb = -sa
+            qa, qb = r.get('qty_a'), r.get('qty_b')
+            na, nb = r.get('notional_a'), r.get('notional_b')
+            if qa and qb:
+                return sa * (ca - pae) * float(qa) + sb * (cb - pbe) * float(qb)
+            if na and nb:
+                return sa * (ca - pae) / pae * float(na) + sb * (cb - pbe) / pbe * float(nb)
+            return None
+        except Exception:
+            return None
+
     out = {'updated': datetime.utcnow().isoformat(), 'strategies': []}
     try:
         conn = get_db()
         if not conn:
             return jsonify({'error': 'db'}), 503
         c = conn.cursor(dictionary=True)
-        for table, label, moeda in STRATS:
+        for st in STRATS:
+            table = st['t']
             try:
                 c.execute("SELECT COLUMN_NAME FROM information_schema.columns "
                           "WHERE table_name=%s AND table_schema=DATABASE()", (table,))
@@ -19194,9 +19247,6 @@ def public_shadow():
                 pnlc = next((x for x in ('pnl', 'pnl_gross', 'pnl_real', 'net_pnl') if x in cols), None)
                 symc = next((x for x in ('symbol', 'pair', 'pair_id') if x in cols), None)
                 dtc = next((x for x in ('opened_at', 'created_at') if x in cols), None)
-                entryc = next((x for x in ('entry_price', 'price', 'entry_px') if x in cols), None)
-                exitc = next((x for x in ('exit_price', 'close_price') if x in cols), None)
-                dirc = 'direction' if 'direction' in cols else None
                 stc = 'status' if 'status' in cols else None
                 if not (pnlc and symc and stc):
                     continue
@@ -19206,25 +19256,28 @@ def public_shadow():
                 s = c.fetchone()
                 fech = int(s['fech'] or 0)
                 wr = round(100 * (s['w'] or 0) / fech, 1) if fech else 0
-                sel = (f"{symc} sym, {dirc or 'NULL'} dir, {pnlc} pnl, {stc} st, "
-                       f"{entryc or 'NULL'} entry, {exitc or 'NULL'} exitp, {dtc or 'NULL'} dt")
-                c.execute(f"SELECT {sel} FROM `{table}` "
-                          f"ORDER BY ({stc}='OPEN') DESC, {dtc or 'id'} DESC LIMIT 25")
-                trades = []
+                c.execute(f"SELECT * FROM `{table}` ORDER BY ({stc}='OPEN') DESC, {dtc or 'id'} DESC LIMIT 25")
+                trades = []; parcial_tot = 0.0
                 for r in c.fetchall():
+                    isopen = str(r.get(stc) or '').upper() == 'OPEN'
+                    parcial = _mark(st, r) if isopen else None
+                    if parcial is not None:
+                        parcial_tot += parcial
+                    entry = r.get('entry_price') or r.get('price_a_entry') or r.get('price')
                     trades.append({
-                        'sym': r['sym'], 'dir': r['dir'],
-                        'pnl': float(r['pnl']) if r['pnl'] is not None else None,
-                        'status': r['st'],
-                        'entry': float(r['entry']) if r['entry'] else None,
-                        'exit': float(r['exitp']) if r['exitp'] else None,
-                        'opened': str(r['dt']) if r['dt'] else None})
+                        'sym': r.get(symc), 'dir': r.get('direction'),
+                        'pnl': float(r[pnlc]) if r.get(pnlc) is not None else None,
+                        'status': r.get(stc),
+                        'entry': float(entry) if entry else None,
+                        'parcial': round(parcial, 0) if parcial is not None else None,
+                        'opened': str(r.get(dtc)) if r.get(dtc) else None})
                 out['strategies'].append({
-                    'key': table, 'nome': label, 'moeda': moeda,
+                    'key': table, 'nome': st['nome'], 'moeda': st['moeda'],
                     'n': int(s['n'] or 0), 'abertas': int(s['ab'] or 0),
-                    'fechadas': fech, 'wr': wr, 'pnl': float(s['pnl'] or 0), 'trades': trades})
+                    'fechadas': fech, 'wr': wr, 'pnl': float(s['pnl'] or 0),
+                    'parcial_abertas': round(parcial_tot, 0), 'trades': trades})
             except Exception as _e:
-                out['strategies'].append({'key': table, 'nome': label, 'erro': str(_e)[:100]})
+                out['strategies'].append({'key': table, 'nome': st['nome'], 'erro': str(_e)[:100]})
         try:
             from modules.longleg_harvest import summary as _llsum
             out['limonada'] = _llsum()

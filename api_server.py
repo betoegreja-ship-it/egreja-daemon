@@ -11702,6 +11702,11 @@ def arbi_monitor_loop():
             _llib_mon()
         except Exception:
             pass
+        # [SPREAD-AUDIT 28-jul] amostra bid/ask real dos papeis da limonada (5min, pregao)
+        try:
+            _spread_audit_sample()
+        except Exception:
+            pass
         try:
             closed_trades=[]
             with state_lock:
@@ -18837,6 +18842,95 @@ def debug_cedro_quote():
             return jsonify({'error': 'cedro socket indisponivel'}), 503
         _q = _cedro_socket.get_quote(_s, wait_ms=2500)
         return jsonify({'symbol': _s, 'chg_pct': _mp_cedro_chg(_s), 'quote': _q})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ═══ [SPREAD-AUDIT 28-jul, decisao Beto] Mede o spread bid/ask REAL dos papeis
+# das pernas long da Arbi (custos da limonada: corretagem e irrelevante, spread decide).
+# Amostra a cada ~5min em horario de pregao: NYSE via Polygon NBBO, B3 via Cedro.
+# Read-only, fail-open, zero impacto em decisao. /debug/spreads agrega mediana.
+_SPREAD_SYMS_NYSE = ['BBD','ABEV','CIG','ASML','ITUB','GGB','SAP','UGP','SUZ','AZN',
+                     'TIMB','DEO','GSK','RIO','SBS','SID','BP','SHEL','UL','BTI']
+_SPREAD_SYMS_B3 = ['CSNA3','PETR4','SBSP3','GGBR4','CMIG4','UGPA3','TIMS3','SUZB3',
+                   'ABEV3','ITUB4','BBDC4','VALE3']
+_spread_audit_state = {'last': 0, 'table': False}
+
+def _spread_audit_sample():
+    """Coleta 1 rodada de bid/ask e grava. Chamada pelo arbi_monitor_loop (throttle 5min)."""
+    try:
+        now = time.time()
+        if now - _spread_audit_state['last'] < 300:
+            return
+        _spread_audit_state['last'] = now
+        conn = get_db()
+        if not conn:
+            return
+        c = conn.cursor()
+        if not _spread_audit_state['table']:
+            c.execute("""CREATE TABLE IF NOT EXISTS spread_audit (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY, symbol VARCHAR(12), mkt VARCHAR(8),
+                bid DECIMAL(18,6), ask DECIMAL(18,6), spread_bps DECIMAL(10,2),
+                src VARCHAR(10), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX ix_sym (symbol)) CHARACTER SET utf8mb4""")
+            _spread_audit_state['table'] = True
+        rows = 0
+        # NYSE via Polygon NBBO (só em pregao NYSE)
+        if POLYGON_API_KEY and is_nyse_open():
+            for _s in _SPREAD_SYMS_NYSE:
+                try:
+                    _r = requests.get(f'https://api.polygon.io/v2/last/nbbo/{_s}',
+                                      params={'apiKey': POLYGON_API_KEY}, timeout=4)
+                    if _r.status_code != 200:
+                        continue
+                    _d = _r.json().get('results') or {}
+                    _b = _d.get('p'); _a = _d.get('P')  # p=bid, P=ask no NBBO v2
+                    if _b and _a and _a > _b > 0:
+                        _bps = (_a - _b) / ((_a + _b) / 2) * 10000
+                        c.execute("INSERT INTO spread_audit (symbol,mkt,bid,ask,spread_bps,src) "
+                                  "VALUES (%s,'NYSE',%s,%s,%s,'polygon')", (_s, _b, _a, round(_bps, 2)))
+                        rows += 1
+                except Exception:
+                    continue
+        # B3 via Cedro (só em pregao B3)
+        if _cedro_socket and getattr(_cedro_socket, 'enabled', False) and is_b3_open():
+            for _s in _SPREAD_SYMS_B3:
+                try:
+                    _q = _cedro_socket.get_quote(_s, wait_ms=1500) or {}
+                    _b = _q.get('bid') or _q.get('best_bid')
+                    _a = _q.get('ask') or _q.get('best_ask')
+                    if _b and _a and float(_a) > float(_b) > 0:
+                        _b, _a = float(_b), float(_a)
+                        _bps = (_a - _b) / ((_a + _b) / 2) * 10000
+                        c.execute("INSERT INTO spread_audit (symbol,mkt,bid,ask,spread_bps,src) "
+                                  "VALUES (%s,'B3',%s,%s,%s,'cedro')", (_s, _b, _a, round(_bps, 2)))
+                        rows += 1
+                except Exception:
+                    continue
+        conn.commit(); c.close(); conn.close()
+        if rows:
+            log.info(f'[SPREAD-AUDIT] {rows} cotacoes bid/ask gravadas')
+    except Exception as _e:
+        log.debug(f'[SPREAD-AUDIT] {_e}')
+
+
+@app.route('/debug/spreads')
+def debug_spreads():
+    """[28-jul] Spread bid/ask medido por papel (mediana, n amostras). Base p/ custo da limonada."""
+    try:
+        conn = get_db()
+        if not conn:
+            return jsonify({'error': 'db'}), 503
+        c = conn.cursor(dictionary=True)
+        c.execute("""SELECT symbol, mkt, COUNT(*) n, ROUND(AVG(spread_bps),1) media,
+            ROUND(MIN(spread_bps),1) minimo, ROUND(MAX(spread_bps),1) maximo
+            FROM spread_audit GROUP BY symbol, mkt ORDER BY media""")
+        out = list(c.fetchall())
+        c.execute("SELECT COUNT(*) t, MIN(created_at) a, MAX(created_at) b FROM spread_audit")
+        meta = c.fetchone(); c.close(); conn.close()
+        return jsonify({'papeis': out, 'amostras_total': meta['t'],
+                        'janela': f"{meta['a']} -> {meta['b']}",
+                        'nota': 'spread em bps; amostrado a cada ~5min em pregao. NYSE=Polygon NBBO, B3=Cedro'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

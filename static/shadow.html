@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Shadow — Estratégias em Teste</title>
+<style>
+  :root{--navy:#1F3864;--green:#2E7D32;--red:#C0392B;--bg:#0f1420;--card:#171e2e;--line:#26304a;--txt:#e8edf6;--mut:#9aa6bd}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--txt);padding:18px 22px 60px}
+  h1{font-size:22px;margin:0;color:#fff}h1 span{color:#7db8ff}
+  .sub{color:var(--mut);font-size:12.5px;margin:4px 0 18px}
+  .wrap{max-width:1200px;margin:0 auto}
+  .strat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:16px}
+  .shead{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-bottom:10px}
+  .shead .nome{font-size:16px;font-weight:700;color:#cfe0ff}
+  .kpi{font-size:12px;color:var(--mut)} .kpi b{color:var(--txt);font-size:14px}
+  .g{color:#4ade80}.r{color:#f87171}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+  th,td{padding:5px 9px;text-align:right;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--mut);font-weight:600;font-size:10.5px;text-transform:uppercase}
+  tr.open td{background:#15243a}
+  .pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10.5px;font-weight:700}
+  .pill.open{background:#1e3a5f;color:#7db8ff}.pill.closed{background:#1c2436;color:#9fb0c9}
+  .muted{color:var(--mut);font-size:11.5px}
+  .foot{color:#5b6472;font-size:11px;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
+  .tot{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .tcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 15px;flex:1;min-width:140px}
+  .tcard .l{color:var(--mut);font-size:11px;text-transform:uppercase}.tcard .v{font-size:22px;font-weight:700;margin-top:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Shadow <span>— Estratégias em Teste</span></h1>
+  <div class="sub" id="sub">carregando…</div>
+  <div class="tot" id="tot"></div>
+  <div id="strats"></div>
+  <div class="foot" id="foot"></div>
+</div>
+<script>
+const API_BASE=(location.hostname.includes('railway.app')||location.hostname==='localhost')?'':'https://diligent-spirit-production.up.railway.app';
+const $=s=>document.querySelector(s);
+const money=(v,m)=>(v>=0?'+':'')+(m==='BRL'?'R$ ':'US$ ')+Math.round(v).toLocaleString('pt-BR');
+const cls=v=>v>=0?'g':'r';
+async function jget(u){const r=await fetch(API_BASE+u,{credentials:'omit'});if(!r.ok)throw new Error(u+' '+r.status);return r.json();}
+
+function tradeRows(t,moeda){
+  if(!t||!t.length) return '<tr><td colspan="6" class="muted">nenhuma trade</td></tr>';
+  return t.map(x=>{
+    const op=(x.status||'').toUpperCase()==='OPEN';
+    return `<tr class="${op?'open':''}">
+      <td>${x.sym||'—'}</td>
+      <td>${x.dir||'—'}</td>
+      <td><span class="pill ${op?'open':'closed'}">${x.status||''}</span></td>
+      <td>${x.entry!=null?Number(x.entry).toLocaleString('pt-BR'):'—'}</td>
+      <td class="${cls(x.pnl||0)}">${x.pnl!=null?money(x.pnl,moeda):'—'}</td>
+      <td class="muted">${x.opened?String(x.opened).slice(5,16).replace('T',' '):'—'}</td>
+    </tr>`;}).join('');
+}
+function stratCard(s){
+  if(s.erro) return `<div class="strat"><div class="nome">${s.nome}</div><div class="muted">indisponível: ${s.erro}</div></div>`;
+  return `<div class="strat">
+    <div class="shead">
+      <div class="nome">${s.nome}</div>
+      <div class="kpi">abertas <b class="${s.abertas>0?'g':''}">${s.abertas}</b></div>
+      <div class="kpi">fechadas <b>${s.fechadas}</b></div>
+      <div class="kpi">WR <b>${s.wr}%</b></div>
+      <div class="kpi">P&L <b class="${cls(s.pnl)}">${money(s.pnl,s.moeda)}</b></div>
+    </div>
+    <table><thead><tr><th>Ativo/Par</th><th>Dir</th><th>Status</th><th>Entrada</th><th>P&L</th><th>Aberta em</th></tr></thead>
+    <tbody>${tradeRows(s.trades,s.moeda)}</tbody></table>
+  </div>`;
+}
+function limonadaCard(d){
+  if(!d||d.error) return '';
+  const b=(d.books&&d.books.ALL)||{}, cap=d.capital||{};
+  return `<div class="strat" style="border-color:#7a5a1f">
+    <div class="shead"><div class="nome">🍋 Limonada (perna long da Arbi)</div>
+      <div class="kpi">trades <b>${d.total_registrados||0}</b></div>
+      <div class="kpi">WR <b>${b.wr!=null?b.wr+'%':'—'}</b></div>
+      <div class="kpi">ret/trade <b class="${cls(b.ret_med||0)}">${b.ret_med!=null?(b.ret_med>=0?'+':'')+b.ret_med+'%':'—'}</b></div>
+      <div class="kpi">P&L (US$100k) <b class="${cls(b.pnl_usd||0)}">${b.pnl_usd!=null?money(b.pnl_usd,'USD'):'—'}</b></div>
+      <div class="kpi">ret s/ capital <b class="${cls(b.ret_sobre_capital_pct||0)}">${b.ret_sobre_capital_pct!=null?(b.ret_sobre_capital_pct>=0?'+':'')+b.ret_sobre_capital_pct+'%':'—'}</b></div>
+    </div>
+    <div class="muted">7 books em teste · detalhe completo na aba 🍋 Limonada</div>
+  </div>`;
+}
+async function load(){
+  try{
+    const d=await jget('/public/shadow');
+    // totais
+    let openTot=0,closedTot=0;
+    (d.strategies||[]).forEach(s=>{openTot+=(s.abertas||0);closedTot+=(s.fechadas||0);});
+    $('#tot').innerHTML=[
+      ['Estratégias em teste',(d.strategies||[]).length+(d.limonada&&!d.limonada.error?1:0)],
+      ['Trades abertas agora',openTot],
+      ['Trades fechadas (total)',closedTot.toLocaleString('pt-BR')],
+    ].map(c=>`<div class="tcard"><div class="l">${c[0]}</div><div class="v">${c[1]}</div></div>`).join('');
+    let html=limonadaCard(d.limonada);
+    (d.strategies||[]).sort((a,b)=>(b.abertas||0)-(a.abertas||0)).forEach(s=>html+=stratCard(s));
+    $('#strats').innerHTML=html;
+    $('#sub').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR')+' · atualiza sozinho a cada 45s · linhas azuladas = trades ABERTAS';
+    $('#foot').textContent='Fonte: /public/shadow · books em paper/shadow (sem capital real) · moeda por estratégia (R$ B3, US$ demais)';
+  }catch(e){$('#sub').textContent='erro: '+e.message;}
+}
+load(); setInterval(load,45000);
+</script>
+</body>
+</html>

@@ -2477,6 +2477,7 @@ def auth_check():
         '/debug/longleg',
         '/debug/longleg-ib',
         '/debug/spreads',
+        '/debug/ib-quote-test',
         '/public/shadow',
     }
     _public_read_prefixes = ('/static/', '/assets/')
@@ -19297,6 +19298,37 @@ def public_shadow():
         return jsonify(out)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/ib-quote-test')
+def debug_ib_quote_test():
+    """[28-jul] Testa as SUBSCRIPTIONS de market data internacional da IB via bridge.
+    Pinga 1 papel de cada bolsa (US, Londres, Xetra, Amsterdam, Paris, Toronto, Madri,
+    Dublin) e reporta se veio real-time (md_type=1), atrasado (3) ou sem permissao (erro).
+    Serve pra decidir se liga o Arbix na fonte IB. Nao opera nada."""
+    try:
+        from modules.ib_exec import bridge_quote
+        # amostra representativa (Yahoo-style; o cliente traduz p/ exchange/currency IB)
+        sample = ['AAPL', 'BP.L', 'SAP.DE', 'AGN.AS', 'MC.PA', 'CCO.TO', 'TEF.MC', 'RYA.IR']
+        md_names = {1: 'REAL-TIME', 2: 'frozen', 3: 'ATRASADO', 4: 'delayed-frozen'}
+        rows, err = bridge_quote(sample, md_type=1, timeout=20)
+        if err:
+            return jsonify({'ok': False, 'erro': err,
+                            'dica': 'bridge fora do ar, IB_BRIDGE_URL ausente, ou IB Gateway desconectado'}), 200
+        out = []
+        for sym in sample:
+            r = rows.get(sym, {}) if rows else {}
+            md = r.get('md_type')
+            out.append({'ticker': sym, 'exchange': r.get('exchange'), 'moeda': r.get('currency'),
+                        'preco': r.get('price'), 'fonte_dado': md_names.get(md, md),
+                        'assinado': (r.get('price') is not None and md in (1, 2)),
+                        'erro': r.get('error')})
+        n_live = sum(1 for x in out if x['fonte_dado'] == 'REAL-TIME' and x['preco'])
+        return jsonify({'ok': True, 'resumo': f'{n_live}/{len(sample)} com dado real-time',
+                        'legenda': 'assinado=true e fonte=REAL-TIME -> subscription OK p/ aquela bolsa',
+                        'papeis': out})
+    except Exception as e:
+        return jsonify({'ok': False, 'erro': str(e)}), 500
 
 
 @app.route('/debug/longleg')

@@ -135,6 +135,51 @@ def _bridge(payload):
         return None, str(e)
 
 
+# ═══ [28-jul-2026] COTACAO via bridge IB (real-time, mesma fonte das duas pernas) ═══
+# Mapa sufixo Yahoo -> (exchange IB, moeda). US sem sufixo -> SMART/USD.
+_YH2IB = {
+    '.L':  ('LSE',  'GBP'), '.AS': ('AEB',  'EUR'), '.PA': ('SBF',  'EUR'),
+    '.DE': ('IBIS', 'EUR'), '.MC': ('BM',   'EUR'), '.IR': ('ISED', 'EUR'),
+    '.TO': ('TSE',  'CAD'), '.MI': ('BVME', 'EUR'), '.SW': ('EBS',  'CHF'),
+}
+
+def yahoo_to_ib(sym):
+    """'BP.L' -> ('BP','LSE','GBP'); 'AAPL' -> ('AAPL','SMART','USD')."""
+    s = str(sym or '').upper()
+    for suf, (exch, curr) in _YH2IB.items():
+        if s.endswith(suf):
+            return s[:-len(suf)], exch, curr
+    return s, 'SMART', 'USD'
+
+def bridge_quote(instruments, md_type=1, timeout=15):
+    """Cotacao snapshot de N papeis via bridge IB. instruments: lista de
+    {symbol,exchange,currency} OU strings estilo Yahoo ('BP.L').
+    Retorna (dict{sym_original: row}, err)."""
+    url = os.environ.get('IB_BRIDGE_URL', '').rstrip('/')
+    if not url:
+        return None, 'IB_BRIDGE_URL nao configurada'
+    payload = []
+    orig = []
+    for it in instruments:
+        if isinstance(it, str):
+            sym, exch, curr = yahoo_to_ib(it)
+            payload.append({'symbol': sym, 'exchange': exch, 'currency': curr})
+            orig.append(it)
+        else:
+            payload.append(it); orig.append(it.get('symbol'))
+    try:
+        r = requests.post(f'{url}/quote', json={'instruments': payload, 'md_type': md_type},
+                          headers={'X-Bridge-Secret': os.environ.get('IB_BRIDGE_SECRET', '')},
+                          timeout=timeout)
+        if r.status_code != 200:
+            return None, f'{r.status_code}: {r.text[:180]}'
+        rows = (r.json() or {}).get('quotes', [])
+        out = {orig[i]: rows[i] for i in range(min(len(orig), len(rows)))}
+        return out, None
+    except Exception as e:
+        return None, str(e)
+
+
 def _execute(trade, event, action):
     """action = BUY | SELL | SHORT | COVER."""
     if os.environ.get('IB_EXEC_ENGINE_ENABLED', 'true').lower() == 'false':

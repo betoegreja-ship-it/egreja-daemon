@@ -6,7 +6,7 @@ Flask multi-thread nao o tem nas threads de request. Solucao: uma thread de
 fundo roda o loop pra sempre e e a UNICA dona da conexao IB; as requests do
 Flask despacham corrotinas pra ela via run_coroutine_threadsafe.
 """
-import os, time, asyncio, threading, logging
+import os, time, asyncio, threading, logging, math
 from flask import Flask, request, jsonify
 from ib_insync import IB, Stock, MarketOrder
 
@@ -119,6 +119,89 @@ def order():
         return jsonify(r)
     except Exception as e:
         log.warning(f'order {sym} {action} {qty}: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/quote', methods=['POST'])
+def quote():
+    """[28-jul] Cotacao snapshot de N instrumentos, mesma fonte/relogio (IB).
+    Payload: {"instruments":[{"symbol","exchange","currency"}...], "md_type":1}
+      md_type: 1=live, 2=frozen, 3=delayed, 4=delayed-frozen.
+    Resposta por papel: price/bid/ask, md_type efetivo, error (ex.: 354 sem sub)."""
+    if not _auth():
+        return jsonify({'error': 'unauthorized'}), 401
+    b = request.get_json(silent=True) or {}
+    items = b.get('instruments') or []
+    if not items:
+        return jsonify({'error': 'sem instruments'}), 400
+    md_type = int(b.get('md_type', 1))
+
+    async def _q():
+        if not await _connect():
+            return None
+        try:
+            _ib.reqMarketDataType(md_type)
+        except Exception:
+            pass
+        errs = {}
+        def _on_err(*a):  # (reqId, code, msg, contract) em versoes do ib_insync
+            try:
+                code = a[1]; msg = a[2]; contract = a[3] if len(a) > 3 else None
+                if code in (354, 10089, 10090, 10091, 10167, 10197, 162, 200):
+                    sym = getattr(contract, 'symbol', '?') if contract else '?'
+                    errs[sym] = f'{code}:{str(msg)[:70]}'
+            except Exception:
+                pass
+        _ib.errorEvent += _on_err
+
+        def _v(x):
+            if x is None: return None
+            try:
+                x = float(x)
+                return None if math.isnan(x) else x
+            except Exception:
+                return None
+
+        out = []
+        try:
+            contracts, meta = [], []
+            for it in items:
+                sym = str(it.get('symbol', '')).upper()
+                exch = str(it.get('exchange') or 'SMART')
+                curr = str(it.get('currency') or 'USD')
+                contracts.append(Stock(sym, exch, curr)); meta.append((sym, exch, curr))
+            await _ib.qualifyContractsAsync(*contracts)
+            qual = [c for c in contracts if c.conId]
+            tickers = await _ib.reqTickersAsync(*qual, timeout=8) if qual else []
+            tk = {t.contract.conId: t for t in tickers}
+            for c, (sym, exch, curr) in zip(contracts, meta):
+                row = {'symbol': sym, 'exchange': exch, 'currency': curr,
+                       'price': None, 'bid': None, 'ask': None, 'md_type': None,
+                       'ts': int(time.time()), 'error': errs.get(sym)}
+                if not c.conId:
+                    row['error'] = row['error'] or 'contrato_nao_qualificado'
+                    out.append(row); continue
+                t = tk.get(c.conId)
+                if t:
+                    bid, ask, last, close = _v(t.bid), _v(t.ask), _v(t.last), _v(t.close)
+                    try: mp = _v(t.marketPrice())
+                    except Exception: mp = None
+                    row['bid'], row['ask'] = bid, ask
+                    row['price'] = last or mp or ((bid + ask) / 2 if bid and ask else None) or close
+                    row['md_type'] = getattr(t, 'marketDataType', None)
+                out.append(row)
+        finally:
+            try: _ib.errorEvent -= _on_err
+            except Exception: pass
+        return {'quotes': out, 'md_type_req': md_type}
+
+    try:
+        r = _call(_q(), timeout=20)
+        if r is None:
+            return jsonify({'error': 'IB desconectado'}), 503
+        return jsonify(r)
+    except Exception as e:
+        log.warning(f'quote: {e}')
         return jsonify({'error': str(e)}), 500
 
 

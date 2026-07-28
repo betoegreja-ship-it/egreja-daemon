@@ -446,6 +446,23 @@ def summary():
     cur.execute("SELECT * FROM longleg_harvest WHERE status='CLOSED'")
     rows = cur.fetchall(); c.close()
 
+    # [decisao Beto] P&L em US$ a NOTIONAL/posicao, mas retorno sobre a CAPACIDADE real:
+    # a Arbi tem teto de posicoes simultaneas (ARBI_MAX_POSITIONS, default 4), entao o
+    # capital-base = max_concorrentes_observado x NOTIONAL — nao a soma ingenua das trades.
+    NOTIONAL = float(os.environ.get('LL_NOTIONAL_USD', 100000))
+    MAX_SLOTS = int(os.environ.get('ARBI_MAX_POSITIONS', 4))
+    # concorrencia maxima REAL (quantas ficaram abertas ao mesmo tempo)
+    _ivs = []
+    for r in rows:
+        if r.get('opened_at') and r.get('closed_at'):
+            _ivs.append((r['opened_at'], 1)); _ivs.append((r['closed_at'], -1))
+    _ivs.sort(key=lambda x: (x[0], x[1]))
+    _cur = _maxc = 0
+    for _, d in _ivs:
+        _cur += d; _maxc = max(_maxc, _cur)
+    max_concurrent = min(_maxc, MAX_SLOTS) if _maxc else 0
+    capital_base = (max_concurrent or MAX_SLOTS) * NOTIONAL
+
     def stat(vals):
         vals = [v for v in vals if v is not None]
         n = len(vals)
@@ -453,9 +470,12 @@ def summary():
         wins = [v for v in vals if v > 0]; los = [v for v in vals if v <= 0]
         gm = statistics.mean(wins) if wins else 0; lm = statistics.mean(los) if los else 0
         p = len(wins) / n
+        pnl_usd = round(sum(vals) / 100 * NOTIONAL, 0)
         return {'n': n, 'wr': round(100 * p, 1), 'ret_med': round(statistics.mean(vals), 3),
                 'mediana': round(statistics.median(vals), 3),
-                'expectancy': round(p * gm + (1 - p) * lm, 3), 'total_ret': round(sum(vals), 2)}
+                'expectancy': round(p * gm + (1 - p) * lm, 3), 'total_ret': round(sum(vals), 2),
+                'pnl_usd': pnl_usd,
+                'ret_sobre_capital_pct': round(pnl_usd / capital_base * 100, 3) if capital_base else None}
     b = {}
     b['ALL'] = stat([r['long_ret_pct'] for r in rows])
     b['FILTERED_6'] = stat([r['long_ret_pct'] for r in rows if r['in_f6']])
@@ -515,7 +535,19 @@ def summary():
         'media_excl_por_arbi': round(statistics.mean([r.get('ctrl_excl_arbi') or 0 for r in _done]), 2) if _done else 0,
         'media_excl_por_atr': round(statistics.mean([r.get('ctrl_excl_atr') or 0 for r in _done]), 2) if _done else 0,
         'alerta': 'se pct_sem_3_controles alto, o lift vale so p/ parte dos sinais (viés de seleção)'}
+    _all = b.get('ALL', {})
+    capital = {
+        'notional_por_posicao_usd': NOTIONAL,
+        'max_slots_arbi': MAX_SLOTS,
+        'max_simultaneas_observado': max_concurrent,
+        'capital_base_usd': capital_base,
+        'nota': ('P&L soma / max concorrentes x notional. A Arbi limita a '
+                 f'{MAX_SLOTS} posicoes -> nunca usa soma_das_trades x notional. '
+                 'Trades giram pelos slots; retorno e sobre o capital que fica reservado.'),
+        'ALL_pnl_usd': _all.get('pnl_usd'),
+        'ALL_ret_sobre_capital_pct': _all.get('ret_sobre_capital_pct')}
     return {'version': FILTER_VERSION, 'matched_ctrl_version': MATCHED_CTRL_VERSION,
+            'capital': capital,
             'books': b, 'por_par': por_par,
             'por_faixa_spread': por_faixa, 'total_registrados': len(rows),
             'directional_pendentes': dir_pend, 'directional_erro_manual': dir_err,

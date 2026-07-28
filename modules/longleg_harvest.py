@@ -464,7 +464,7 @@ def summary():
     capital_base = (max_concurrent or MAX_SLOTS) * NOTIONAL
 
     def stat(vals):
-        vals = [v for v in vals if v is not None]
+        vals = [float(v) for v in vals if v is not None]  # Decimal->float (evita Decimal*float)
         n = len(vals)
         if not n: return {'n': 0}
         wins = [v for v in vals if v > 0]; los = [v for v in vals if v <= 0]

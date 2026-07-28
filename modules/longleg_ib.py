@@ -94,7 +94,7 @@ def on_arbi_open(trade):
             return
         if not ib_exec.ib_reachable(lm, ll):
             return  # perna long em B3 -> IB nao alcanca
-        arbi_id = str(trade.get('pair_id') or trade.get('id') or f'{ll}-{int(time.time())}')
+        arbi_id = str(trade.get('id') or trade.get('pair_id') or f'{ll}-{int(time.time())}')
         arbi_id = ('LL-' + arbi_id)[:48]
         # ja existe? (idempotente)
         c = _conn(); cur = c.cursor()
@@ -129,66 +129,91 @@ def on_arbi_open(trade):
         log.debug(f'[LL-IB] on_arbi_open: {e}')
 
 
-def monitor(limit=30):
-    """Gerencia posicoes vivas: trailing + stop + timeout. Vende no IB ao disparar.
-    Idempotente: claim atomico por linha. Fail-open."""
+def on_arbi_close(trade):
+    """[decisao Beto] SAIDA PELA ARBI (principal): quando a Arbi fecha o par, vende a
+    perna long no IB paper. O trail/saida-propria fica so em shadow (longleg_harvest)."""
     try:
         if os.environ.get('IB_LONGLEG_ENABLED', 'true').lower() == 'false':
             return
         create_tables()
         from modules import ib_exec
         from modules.longleg_harvest import _ysym
+        arbi_id = ('LL-' + str(trade.get('id') or trade.get('pair_id') or ''))[:48]
+        if arbi_id == 'LL-':
+            return
         c = _conn(); cur = c.cursor()
-        # recupera claim orfao (>10min preso em CLOSING)
+        cur.execute("""UPDATE ll_ib_positions SET status='CLOSING', claimed_at=NOW()
+            WHERE arbi_id=%s AND status='OPEN'""", (arbi_id,))
+        if cur.rowcount != 1:
+            c.close(); return
+        cur.execute("SELECT symbol,market,qty,entry_px FROM ll_ib_positions WHERE arbi_id=%s", (arbi_id,))
+        row = cur.fetchone(); c.close()
+        if not row:
+            return
+        sym, mkt, qty, entry_px = row[0], row[1], int(row[2] or 0), float(row[3] or 0)
+        direction = str(trade.get('direction', 'LONG_A')).upper()
+        if direction == 'LONG_A':
+            exit_ref = trade.get('price_a_exit') or trade.get('price_a')
+        else:
+            exit_ref = trade.get('price_b_exit') or trade.get('price_b')
+        exit_ref = float(exit_ref) if exit_ref else _last_px(_ysym(sym, mkt))
+        if not exit_ref:
+            c = _conn(); cur = c.cursor()
+            cur.execute("UPDATE ll_ib_positions SET status='OPEN' WHERE arbi_id=%s", (arbi_id,))
+            c.close(); return  # sem preco -> volta OPEN, safety fecha depois
+        fill, stt = ib_exec.exec_longleg(sym, mkt, 'SELL', qty, arbi_id, price_ref=exit_ref)
+        exit_px = float(fill) if fill else exit_ref
+        pnl = (exit_px - entry_px) * qty
+        ret = (exit_px / entry_px - 1) * 100 if entry_px else 0
+        c = _conn(); cur = c.cursor()
+        cur.execute("""UPDATE ll_ib_positions SET status='CLOSED', exit_px=%s,
+            exit_reason='ARBI_CLOSE', pnl=%s, ret_pct=%s, closed_at=NOW() WHERE arbi_id=%s""",
+            (round(exit_px, 6), round(pnl, 4), round(ret, 4), arbi_id))
+        c.close()
+        log.warning(f'[LL-IB] FECHOU (Arbi) {sym} @ {exit_px} pnl={pnl:+.2f} ({stt})')
+    except Exception as e:
+        log.debug(f'[LL-IB] on_arbi_close: {e}')
+
+
+def monitor(limit=40):
+    """[decisao Beto] Saida principal = fecho da Arbi (on_arbi_close). Aqui e so REDE DE
+    SEGURANCA: recupera claim orfao e fecha posicoes presas ha muito tempo (Arbi que
+    nunca fechou / hook perdido). Stop/trail fica so em shadow (longleg_harvest)."""
+    try:
+        if os.environ.get('IB_LONGLEG_ENABLED', 'true').lower() == 'false':
+            return
+        create_tables()
+        from modules import ib_exec
+        from modules.longleg_harvest import _ysym
+        safety_min = int(ib_exec._f('IB_LONGLEG_SAFETY_MIN', 4320))  # 3 dias
+        c = _conn(); cur = c.cursor()
         cur.execute("""UPDATE ll_ib_positions SET status='OPEN'
             WHERE status='CLOSING' AND claimed_at < (NOW() - INTERVAL 10 MINUTE)""")
-        cur.execute("""SELECT arbi_id,symbol,market,qty,entry_px,atr_abs,stop_px,peak_px,
-            trailing,opened_epoch FROM ll_ib_positions WHERE status='OPEN'
-            ORDER BY opened_epoch LIMIT %s""", (limit,))
+        cur.execute("""SELECT arbi_id,symbol,market,qty,entry_px FROM ll_ib_positions
+            WHERE status='OPEN' AND opened_epoch < %s ORDER BY opened_epoch LIMIT %s""",
+            (int(time.time()) - safety_min * 60, limit))
         rows = cur.fetchall(); c.close()
-        now = int(time.time())
-        for (arbi_id, sym, mkt, qty, entry_px, atr, stop, peak, trailing, oe) in rows:
-            entry_px = float(entry_px); atr = float(atr or 0); stop = float(stop or 0)
-            peak = float(peak or entry_px)
+        for (arbi_id, sym, mkt, qty, entry_px) in rows:
             cp = _last_px(_ysym(sym, mkt))
-            elapsed_min = (now - int(oe)) / 60.0 if oe else 0
-            reason = None
-            if cp is not None:
-                if cp > peak:
-                    peak = cp
-                if (not trailing) and atr and cp >= entry_px + TRAIL_ACT_ATR * atr:
-                    trailing = 1
-                if trailing and atr:
-                    stop = max(stop, peak - STOP_ATR * atr)
-                if cp <= stop:
-                    reason = 'STOP'
-            if reason is None and elapsed_min >= TIMEOUT_MIN:
-                reason = 'TIMEOUT'
-            # persiste trailing/peak/stop mesmo sem fechar
-            c = _conn(); cur = c.cursor()
-            if reason is None:
-                cur.execute("""UPDATE ll_ib_positions SET peak_px=%s, stop_px=%s, trailing=%s
-                    WHERE arbi_id=%s AND status='OPEN'""",
-                    (round(peak, 6), round(stop, 6), int(trailing), arbi_id))
-                c.close(); continue
             if cp is None:
-                c.close(); continue  # sem preco nao fecha; tenta no proximo ciclo
-            # CLAIM atomico p/ fechar
+                continue
+            c = _conn(); cur = c.cursor()
             cur.execute("""UPDATE ll_ib_positions SET status='CLOSING', claimed_at=NOW()
                 WHERE arbi_id=%s AND status='OPEN'""", (arbi_id,))
             if cur.rowcount != 1:
                 c.close(); continue
             c.close()
-            fill, st2 = ib_exec.exec_longleg(sym, mkt, 'SELL', int(qty), arbi_id, price_ref=cp)
+            fill, stt = ib_exec.exec_longleg(sym, mkt, 'SELL', int(qty), arbi_id, price_ref=cp)
             exit_px = float(fill) if fill else cp
+            entry_px = float(entry_px or 0)
             pnl = (exit_px - entry_px) * int(qty)
             ret = (exit_px / entry_px - 1) * 100 if entry_px else 0
             c = _conn(); cur = c.cursor()
             cur.execute("""UPDATE ll_ib_positions SET status='CLOSED', exit_px=%s,
-                exit_reason=%s, pnl=%s, ret_pct=%s, closed_at=NOW() WHERE arbi_id=%s""",
-                (round(exit_px, 6), reason, round(pnl, 4), round(ret, 4), arbi_id))
+                exit_reason='SAFETY_TIMEOUT', pnl=%s, ret_pct=%s, closed_at=NOW() WHERE arbi_id=%s""",
+                (round(exit_px, 6), round(pnl, 4), round(ret, 4), arbi_id))
             c.close()
-            log.warning(f'[LL-IB] FECHOU {sym} {reason} @ {exit_px} pnl={pnl:+.2f} ({st2})')
+            log.warning(f'[LL-IB] FECHOU (safety) {sym} @ {exit_px} pnl={pnl:+.2f}')
     except Exception as e:
         log.debug(f'[LL-IB] monitor: {e}')
 

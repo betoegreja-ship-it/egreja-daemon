@@ -11814,6 +11814,13 @@ def arbi_monitor_loop():
                     _ll_close(c)
                 except Exception as _lle:
                     log.debug(f'longleg close: {_lle}')
+                # [LONGLEG-IB 28-jul, decisao Beto] saida PELA ARBI: vende a perna long
+                # no IB paper quando a Arbi fecha o par (trail fica so em shadow). Fail-open.
+                try:
+                    from modules.longleg_ib import on_arbi_close as _llib_close
+                    _llib_close(c)
+                except Exception as _llibe:
+                    log.debug(f'longleg-ib close: {_llibe}')
                 # [v10.14] Aprendizado por par — ajusta threshold após cada fechamento
                 _pair_recent = [t for t in list(arbi_closed)[:20] if t.get('pair_id')==c['pair_id']]
                 if len(_pair_recent) >= 3:

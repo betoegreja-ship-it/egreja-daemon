@@ -36,6 +36,15 @@ PAIRS = {
     'CPER-XME':  {'a': 'CPER',      'b': 'XME',       'book': 'METAIS',    'kind': 'commodity'},
     'WEAT-CORN': {'a': 'WEAT',      'b': 'CORN',      'book': 'AGRO',      'kind': 'commodity'},
     'EUR-GBP':   {'a': 'C:EURUSD',  'b': 'C:GBPUSD',  'book': 'FX_MAJORS', 'kind': 'fx'},
+    # ═══ [28-jul-2026, decisao Beto] Candidatos novos direto no shadow ═══
+    # Metal-vs-mineradoras (analogos do GLD-GDX vencedor) + energia/agro.
+    # Provam o edge ao vivo; sem backtest previo, sem risco (shadow puro).
+    'SLV-SIL':   {'a': 'SLV',       'b': 'SIL',       'book': 'METAIS',    'kind': 'commodity'},
+    'GDX-GDXJ':  {'a': 'GDX',       'b': 'GDXJ',      'book': 'METAIS',    'kind': 'commodity'},
+    'PPLT-PALL': {'a': 'PPLT',      'b': 'PALL',      'book': 'METAIS',    'kind': 'commodity'},
+    'URA-URNM':  {'a': 'URA',       'b': 'URNM',      'book': 'ENERGIA',   'kind': 'commodity'},
+    'XLE-XOP':   {'a': 'XLE',       'b': 'XOP',       'book': 'ENERGIA',   'kind': 'commodity'},
+    'SOYB-CORN': {'a': 'SOYB',      'b': 'CORN',      'book': 'AGRO',      'kind': 'commodity'},
 }
 
 
@@ -174,11 +183,18 @@ def scan_once():
         time.sleep(0.2)
     missing = [t for t in tickers if t not in series]
     if missing:
-        log.warning(f'[CROSSASSET-RV] sem dados para {missing} — scan abortado (fail-safe)')
+        # [28-jul] Antes abortava o scan INTEIRO se qualquer ticker faltasse — um
+        # par novo com ticker ruim derrubaria os que funcionam. Agora so pula os
+        # pares afetados e segue com o resto (fail-safe granular).
+        log.warning(f'[CROSSASSET-RV] sem dados para {missing} — pares afetados serao pulados')
+    if len(series) < 2:
+        log.warning('[CROSSASSET-RV] dados insuficientes (<2 tickers) — scan abortado')
         return None
 
     results = {}
     for pair, cfg in PAIRS.items():
+        if cfg['a'] not in series or cfg['b'] not in series:
+            continue  # par sem um dos lados — pula, nao aborta o scan
         r = _compute_pair(series[cfg['a']], series[cfg['b']], beta_window, z_window)
         if r:
             results[pair] = r

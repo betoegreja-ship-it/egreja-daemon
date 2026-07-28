@@ -202,19 +202,29 @@ def exec_arbi(pair, direction, price_a, price_b, event, ref_id=None):
     IB; par com perna B3 e pulado (espera ProfitDLL). event = OPEN | CLOSE.
     ref_id: id do trade fantasma, para amarrar exec_orders ao book."""
     try:
-        if os.environ.get('IB_ARBI_ENABLED', 'true').lower() == 'false':
-            return
+        # [DIAG 28-jul] grava o motivo de pular (Arbi nunca executou no IB — 0 registros).
         _tid = ref_id or pair.get('id')
+        _sym = f"{pair.get('leg_a')}/{pair.get('leg_b')}"
+        def _skip(reason):
+            _record({'trade_id': _tid, 'symbol': _sym, 'side': '-', 'event': f'ARBI_{event}',
+                     'mode': _mode(), 'status': 'BLOCKED', 'error': f'DIAG:{reason}'})
+        if os.environ.get('IB_ARBI_ENABLED', 'true').lower() == 'false':
+            _skip('IB_ARBI_ENABLED=false'); return
         la, lb = pair.get('leg_a'), pair.get('leg_b')
         ma, mb = pair.get('mkt_a'), pair.get('mkt_b')
-        if not (ib_reachable(ma, la) and ib_reachable(mb, lb)):
+        _ra = ib_reachable(ma, la); _rb = ib_reachable(mb, lb)
+        if not (_ra and _rb):
+            # so registra se PELO MENOS uma perna for alcancavel (evita ruido dos pares B3-B3);
+            # o caso interessante e "quase da" (uma perna IB, outra nao).
+            if _ra or _rb:
+                _skip(f'nao_reachable a={ma}:{_ra} b={mb}:{_rb}')
             return  # perna B3 -> nao executavel na IB
         mode = _mode()
         ra = float(pair.get('ratio_a') or 1) or 1.0
         rb = float(pair.get('ratio_b') or 1) or 1.0
         pa = float(price_a or 0)
         if pa <= 0:
-            return
+            _skip(f'price0 pa={price_a}'); return
         # [decisao Beto] espelha o notional real da perna, com TETO DE LIQUIDEZ.
         # O $1M/perna do book e inexequivel em ADR iliquido (auditoria forense) —
         # por isso o teto IB_EXEC_MAX_USD limita, evitando o fill fantasma.

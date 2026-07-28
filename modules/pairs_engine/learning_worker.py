@@ -8,6 +8,7 @@ from .learning import recalibrate_pair, generate_insights
 
 log = logging.getLogger('egreja.pairs.learning_worker')
 
+TIER_AUTOAPPLY = os.environ.get('PAIRS_TIER_AUTOAPPLY', 'true').lower() != 'false'  # Fix 2b
 RECAL_INTERVAL_S = int(os.environ.get('PAIRS_RECALIB_INTERVAL_S', 3600))   # 1h
 INSIGHTS_INTERVAL_S = int(os.environ.get('PAIRS_INSIGHTS_INTERVAL_S', 14400))  # 4h
 INITIAL_DELAY_S = 120  # 2min pra app estabilizar
@@ -40,8 +41,16 @@ def pairs_learning_loop(beat_fn=None, audit_fn=None):
                         n_recal += 1
                         if r['tier_recommended'] != cfg.get('tier'):
                             n_changed_tier += 1
-                            log.info(f'[learning] {cfg["id"]} tier={cfg.get("tier")} '
-                                     f'→ recomendado={r["tier_recommended"]} '
+                            _old = cfg.get('tier')
+                            # [PAIRS-DIVERGENCE-FIX 28-jul, Fix 2b] AUTO-APLICAR o tier
+                            # recomendado (antes so logava). Simetrico: rebaixa pra WATCH
+                            # quando a saude cai, e promove de volta quando melhora. A
+                            # config e o MESMO objeto que o scanner le (gate tier=WATCH).
+                            if TIER_AUTOAPPLY:
+                                cfg['tier'] = r['tier_recommended']
+                            log.info(f'[learning] {cfg["id"]} tier={_old} '
+                                     f'→ {"APLICADO" if TIER_AUTOAPPLY else "recomendado"}='
+                                     f'{r["tier_recommended"]} '
                                      f'(adf={r["adf_tstat"]:+.2f} hl={r["half_life_days"]:.1f}d '
                                      f'corr={r["return_corr"]:.2f} regime={r["regime"]})')
                 except Exception as e:

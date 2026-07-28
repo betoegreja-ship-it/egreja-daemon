@@ -55,6 +55,22 @@ PAIRS_BOOST_WR = float(os.environ.get('PAIRS_BOOST_WR', 0.60))
 PAIRS_BOOST_MIN_TRADES = int(os.environ.get('PAIRS_BOOST_MIN_TRADES', 5))
 _pair_perf_cache = {'ts': 0, 'stats': {}}
 
+# ═══ [PAIRS-DIVERGENCE-FIX 28-jul-2026, decisao Beto] ═══════════════════════
+# Diagnostico: pares com WR 0% (MULT3-ITSA4, RENT3-EQTL3, BPAC11-MULT3...) NAO
+# tinham lados invertidos — o spread TENDIA (deixou de reverter). O motor fadeava
+# e re-entrava na MESMA divergencia varias vezes (espiral de re-entrada). 49
+# STOP_LOSS = -R$10.3k, 6 TIMEOUT = -R$11.0k. Tres freios abaixo:
+#  Fix 1  COOLDOWN: apos STOP/TIMEOUT, nao re-entra o par por N horas.
+#  Fix 3  NO-DEEPER: se |z_now| >= |entry_z do ultimo stop|, ainda divergindo — skip.
+#  Fix 2a REGIME-GATE: nao fadeia par classificado BROKEN/RANDOM_WALK pela recalibracao.
+PAIRS_STOP_COOLDOWN_H = float(os.environ.get('PAIRS_STOP_COOLDOWN_H', 24))  # horas
+PAIRS_NO_DEEPER_MARGIN = float(os.environ.get('PAIRS_NO_DEEPER_MARGIN', 0.0))  # |z| >= |entry_prev|-margin bloqueia
+PAIRS_REGIME_GATE = os.environ.get('PAIRS_REGIME_GATE', 'true').lower() != 'false'
+PAIRS_REGIME_BLOCKED = set(x.strip().upper() for x in
+    os.environ.get('PAIRS_REGIME_BLOCKED', 'BROKEN,RANDOM_WALK').split(',') if x.strip())
+_pair_lastclose_cache = {'ts': 0, 'data': {}}   # {pair_id: {reason, entry_z, closed_epoch}}
+_pair_regime_cache = {'ts': 0, 'data': {}}      # {pair_id: regime}
+
 def _pair_perf_stats():
     """{pair_id: (n_closed, wins, pnl)} do banco, cache 30min."""
     if time.time() - _pair_perf_cache['ts'] < 1800 and _pair_perf_cache['stats']:
@@ -81,6 +97,75 @@ def _pair_is_retired(pair_id):
     if n >= PAIRS_RETIRE_MIN_TRADES and (w / max(n, 1)) < PAIRS_RETIRE_WR:
         return True
     return False
+
+def _pair_lastclose():
+    """{pair_id: {reason, entry_z, closed_epoch}} da trade fechada mais recente. Cache 10min."""
+    if time.time() - _pair_lastclose_cache['ts'] < 600 and _pair_lastclose_cache['data']:
+        return _pair_lastclose_cache['data']
+    data = {}
+    try:
+        from .persistence import _get_conn
+        c = _get_conn(); cur = c.cursor()
+        # Ultima trade fechada por par (maior closed_at)
+        cur.execute("""SELECT t.pair_id, t.close_reason, t.entry_z,
+                              UNIX_TIMESTAMP(t.closed_at)
+                       FROM pairs_trades t
+                       JOIN (SELECT pair_id, MAX(closed_at) mx FROM pairs_trades
+                             WHERE status='CLOSED' GROUP BY pair_id) m
+                         ON t.pair_id=m.pair_id AND t.closed_at=m.mx
+                       WHERE t.status='CLOSED'""")
+        for pid, reason, ez, cep in cur.fetchall():
+            data[pid] = {'reason': reason, 'entry_z': float(ez or 0),
+                         'closed_epoch': float(cep or 0)}
+        cur.close(); c.close()
+        _pair_lastclose_cache.update({'ts': time.time(), 'data': data})
+    except Exception as e:
+        log.debug(f'[PAIRS-FIX] lastclose: {e}')
+    return _pair_lastclose_cache['data'] or data
+
+def _pair_recent_regime(pair_id):
+    """Regime mais recente de pairs_recalibration_history. Cache 30min."""
+    if time.time() - _pair_regime_cache['ts'] < 1800 and _pair_regime_cache['data']:
+        return _pair_regime_cache['data'].get(pair_id)
+    data = {}
+    try:
+        from .persistence import _get_conn
+        c = _get_conn(); cur = c.cursor()
+        cur.execute("""SELECT r.pair_id, r.regime FROM pairs_recalibration_history r
+                       JOIN (SELECT pair_id, MAX(ts) mx FROM pairs_recalibration_history
+                             GROUP BY pair_id) m
+                         ON r.pair_id=m.pair_id AND r.ts=m.mx""")
+        for pid, reg in cur.fetchall():
+            data[pid] = reg
+        cur.close(); c.close()
+        _pair_regime_cache.update({'ts': time.time(), 'data': data})
+    except Exception as e:
+        log.debug(f'[PAIRS-FIX] regime: {e}')
+    return (_pair_regime_cache['data'] or data).get(pair_id)
+
+def _pair_entry_block(pair_id, z_now):
+    """Fix 1 (cooldown) + Fix 3 (no-deeper). Retorna motivo (str) se deve bloquear, senao None."""
+    lc = _pair_lastclose().get(pair_id)
+    if not lc or lc.get('reason') not in ('STOP_LOSS', 'TIMEOUT'):
+        return None
+    # Fix 1: cooldown temporal apos stop/timeout
+    age_h = (time.time() - lc['closed_epoch']) / 3600.0 if lc.get('closed_epoch') else 1e9
+    if age_h < PAIRS_STOP_COOLDOWN_H:
+        return f'cooldown {age_h:.1f}h<{PAIRS_STOP_COOLDOWN_H:.0f}h (ultimo {lc["reason"]})'
+    # Fix 3: nao re-entrar mais fundo na mesma divergencia
+    prev_z = abs(lc.get('entry_z') or 0)
+    if prev_z > 0 and abs(z_now or 0) >= prev_z - PAIRS_NO_DEEPER_MARGIN:
+        return f'no-deeper |z|={abs(z_now or 0):.2f}>=|z_prev|={prev_z:.2f} (spread ainda divergindo)'
+    return None
+
+def _shadow_momentum_feed(signal, block_reason=''):
+    """Fix 4: alimenta a shadow momentum quando um fade real e bloqueado. Nunca levanta."""
+    try:
+        from . import momentum_shadow as _mom
+        _mom.feed(signal, block_reason=block_reason)
+    except Exception as e:
+        log.debug(f'[PAIRS-FIX] shadow momentum feed: {e}')
+
 
 def _pair_size_factor(pair_id):
     """1.0 base; vencedor comprovado 1.0, novo/sem historico 0.6."""
@@ -290,6 +375,24 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
             _n, _w, _pnl = _pair_perf_stats().get(signal['pair_id'], (0, 0, 0))
             log.info(f"[PAIRS-RETIRE] {signal['pair_id']}: aposentado (WR "
                      f"{_w/max(_n,1)*100:.0f}% em {_n} trades, pnl R${_pnl:,.0f}) — sem entrada")
+            return None
+
+        # ═══ [PAIRS-DIVERGENCE-FIX 28-jul] Fix 2a: gate de regime ═══
+        # Nao fadear par que a recalibracao classificou como sem cointegracao.
+        # Sinal de entrada continua sendo gerado (vira alimento do shadow momentum).
+        if PAIRS_REGIME_GATE:
+            _reg = _pair_recent_regime(signal['pair_id'])
+            if _reg in PAIRS_REGIME_BLOCKED:
+                log.info(f"[PAIRS-REGIME] {signal['pair_id']}: regime={_reg} "
+                         f"(sem reversao a media) — entrada BLOQUEADA")
+                _shadow_momentum_feed(signal, block_reason=f'regime={_reg}')
+                return None
+
+        # ═══ Fix 1 (cooldown) + Fix 3 (no-deeper): espiral de re-entrada ═══
+        _blk = _pair_entry_block(signal['pair_id'], signal.get('z_score'))
+        if _blk:
+            log.info(f"[PAIRS-REENTRY] {signal['pair_id']}: {_blk} — entrada BLOQUEADA")
+            _shadow_momentum_feed(signal, block_reason=_blk)
             return None
 
         # ═══ [PAIRS-v2] Teto de perna: max 2 pares abertos compartilhando ═══
@@ -596,6 +699,13 @@ def pairs_scan_loop(beat_fn=None, audit_fn=None, enqueue_fn=None):
                 if not signal:
                     continue
                 pairs_spreads[pcfg['id']] = signal
+
+                # [PAIRS-DIVERGENCE-FIX 28-jul] Fix 4: gerencia shadow momentum do par
+                try:
+                    from . import momentum_shadow as _mom
+                    _mom.monitor(signal)
+                except Exception as e:
+                    log.debug(f'[MOM] monitor hook: {e}')
 
                 # PERSIST signal periodicamente (todo signal vai pro DB pra learning)
                 # Sempre persiste se for ENTRY/CONVERGED/AVOID (eventos importantes)

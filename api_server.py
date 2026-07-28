@@ -19172,7 +19172,7 @@ def public_shadow():
     resumo + trades (abertas + recentes) de cada book, como um blotter. So paper."""
     STRATS = [
         {'t': 'inverse_shadow_trades', 'nome': 'Inverse (cripto)', 'moeda': 'USD', 'kind': 'single', 'asset': 'crypto'},
-        {'t': 'pairs_trades', 'nome': 'Pairs Trade B3', 'moeda': 'BRL', 'kind': 'pair', 'asset': 'stock'},
+        # [28-jul] Pairs Trade B3 saiu do Shadow — tem aba propria no dashboard.
         {'t': 'crypto_rv_shadow_trades', 'nome': 'Crypto RV (BTC-ETH)', 'moeda': 'USD', 'kind': 'pair', 'asset': 'crypto'},
         {'t': 'uspairs_shadow_trades', 'nome': 'US Pairs', 'moeda': 'USD', 'kind': 'pair', 'asset': 'stock'},
         {'t': 'crossasset_rv_shadow_trades', 'nome': 'Cross-asset RV', 'moeda': 'USD', 'kind': 'pair', 'asset': 'stock'},
@@ -19288,6 +19288,11 @@ def public_shadow():
             out['limonada_ib'] = _llibsum()
         except Exception:
             pass
+        try:
+            from modules.pairs_engine.momentum_shadow import summary as _momsum
+            out['pairs_momentum'] = _momsum()
+        except Exception as _e:
+            out['pairs_momentum'] = {'error': str(_e)[:100]}
         c.close(); conn.close()
         return jsonify(out)
     except Exception as e:

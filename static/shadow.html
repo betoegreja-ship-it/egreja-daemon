@@ -88,6 +88,26 @@ function limonadaCard(d){
     <div class="muted">7 books em teste · detalhe completo na aba 🍋 Limonada</div>
   </div>`;
 }
+function momentumCard(d){
+  if(!d||d.error) return '';
+  const rows=(d.por_reason)?Object.entries(d.por_reason).map(([k,v])=>
+    `<tr><td>${k}</td><td>${v.n}</td><td class="${cls(v.pnl)}">${money(v.pnl,'BRL')}</td></tr>`).join(''):'';
+  const openRows=(d.trades||[]).map(t=>
+    `<tr style="background:#0e1c2e"><td>${t.pair_id}</td><td>${(t.dir||'').replace('MOM_','')}</td>`+
+    `<td>z ${t.entry_z!=null?(+t.entry_z).toFixed(2):'—'}→${t.current_z!=null?(+t.current_z).toFixed(2):'—'}</td>`+
+    `<td class="${cls(t.parcial||0)}">${money(t.parcial||0,'BRL')}</td></tr>`).join('');
+  return `<div class="strat" style="border-color:#5a3f7a">
+    <div class="shead"><div class="nome">🔄 Pairs Momentum (teste: "virar o lado")</div>
+      <div class="kpi">abertas <b>${d.abertas||0}</b></div>
+      <div class="kpi">fechadas <b>${d.fechadas||0}</b></div>
+      <div class="kpi">WR <b>${d.wr!=null?d.wr+'%':'—'}</b></div>
+      <div class="kpi">P&L fechado <b class="${cls(d.pnl_fechado||0)}">${money(d.pnl_fechado||0,'BRL')}</b></div>
+      ${d.abertas>0?`<div class="kpi">parcial <b class="${cls(d.pnl_parcial_aberto||0)}">${money(d.pnl_parcial_aberto||0,'BRL')}</b></div>`:''}
+    </div>
+    <div class="muted">Abre trade invertida (segue tendência) quando o fade é bloqueado por regime/cooldown. Só shadow — mede se pares que tendem dariam lucro virando o lado.</div>
+    ${(rows||openRows)?`<table><thead><tr><th>Motivo saída / Par aberto</th><th>n / dir</th><th>P&L / z</th><th></th></tr></thead><tbody>${rows}${openRows}</tbody></table>`:''}
+  </div>`;
+}
 async function load(){
   try{
     const d=await jget('/public/shadow');
@@ -99,7 +119,7 @@ async function load(){
       ['Trades abertas agora',openTot],
       ['Trades fechadas (total)',closedTot.toLocaleString('pt-BR')],
     ].map(c=>`<div class="tcard"><div class="l">${c[0]}</div><div class="v">${c[1]}</div></div>`).join('');
-    let html=limonadaCard(d.limonada);
+    let html=limonadaCard(d.limonada)+momentumCard(d.pairs_momentum);
     (d.strategies||[]).sort((a,b)=>(b.abertas||0)-(a.abertas||0)).forEach(s=>html+=stratCard(s));
     $('#strats').innerHTML=html;
     $('#sub').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR')+' · atualiza sozinho a cada 45s · linhas azuladas = trades ABERTAS';

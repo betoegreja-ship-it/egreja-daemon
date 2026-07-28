@@ -856,7 +856,8 @@ if not FMP_API_KEY and not POLYGON_API_KEY:
     log.warning('Nenhuma API key configurada — usando Yahoo Finance (não recomendado em produção)')
 
 PUBLIC_ROUTES = {'/', '/health', '/degraded',
-                 '/login', '/logout', '/auth/status'}  # [v10.52] login endpoints
+                 '/login', '/logout', '/auth/status',
+                 '/limonada'}  # [28-jul] /limonada: HTML publico; dados via X-API-Key
 
 TWILIO_SID     = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_TOKEN   = os.environ.get('TWILIO_AUTH_TOKEN', '')

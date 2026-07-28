@@ -62,6 +62,10 @@
 </div>
 
 <script>
+// Mesma autenticacao do frontend egreja.net: fetch cross-origin com X-API-Key.
+// Funciona aberto direto (Railway) e embutido no egreja.net (Vercel).
+const API_BASE = (location.hostname.includes('railway.app') || location.hostname==='localhost') ? '' : 'https://diligent-spirit-production.up.railway.app';
+const API_KEY = '262b29fb9a2d2b407fc3a2bbe9c48e819cc7a41b34195f9729b9612f6dc01c26';
 const $=s=>document.querySelector(s);
 const fmtUsd=v=>(v>=0?'+':'')+'US$ '+Math.round(v).toLocaleString('pt-BR');
 const fmtPct=(v,d=2)=>(v>=0?'+':'')+Number(v).toFixed(d)+'%';
@@ -72,7 +76,7 @@ const BOOK_LBL={ALL:'ALL (perna long)',FILTERED_6:'FILTERED_6',FILTERED_10:'FILT
   SHORT_ALL_teorico:'SHORT_ALL (teórico)',SMART_LEG:'SMART_LEG',
   LIQUID_LEG_BETA_REDUCED:'LIQUID_LEG (hedge)',DIRECTIONAL_EXIT:'DIRECTIONAL_EXIT (trail)'};
 
-async function jget(u){const r=await fetch(u,{credentials:'same-origin'});if(!r.ok)throw new Error(u+' '+r.status);return r.json();}
+async function jget(u){const r=await fetch(API_BASE+u,{headers:{'X-API-Key':API_KEY},credentials:'same-origin'});if(!r.ok)throw new Error(u+' '+r.status);return r.json();}
 
 async function load(){
   try{

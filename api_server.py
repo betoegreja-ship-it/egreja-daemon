@@ -19184,11 +19184,10 @@ def public_shadow():
         if not conn:
             return jsonify({'error': 'db'}), 503
         c = conn.cursor(dictionary=True)
-        db = os.environ.get('MYSQLDATABASE', 'railway')
         for table, label, moeda in STRATS:
             try:
                 c.execute("SELECT COLUMN_NAME FROM information_schema.columns "
-                          "WHERE table_name=%s AND table_schema=%s", (table, db))
+                          "WHERE table_name=%s AND table_schema=DATABASE()", (table,))
                 cols = {r['COLUMN_NAME'] for r in c.fetchall()}
                 if not cols:
                     continue

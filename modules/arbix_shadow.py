@@ -35,20 +35,34 @@ import pymysql
 
 log = logging.getLogger('egreja.arbix')
 
-# (pair_id, leg_us, leg_eu, moeda_eu)  moeda: GBX (pence), EUR
+# (pair_id, leg_us, leg_eu, moeda, regiao)
+#   moeda : GBX (pence Londres), EUR (Euronext/Madri), CAD (dolar canadense)
+#   regiao: EU  = majors, janela overlap Europa x NY, perna US$150k
+#           EU2 = 2a linha europeia, mesma janela, perna US$100k
+#           CA  = dual-listing canadense TSX<->NYSE, sessao CHEIA, perna US$100k
 PAIRS = [
-    ('BP-BP.L', 'BP', 'BP.L', 'GBX'), ('SHEL-SHEL.L', 'SHEL', 'SHEL.L', 'GBX'),
-    ('AZN-AZN.L', 'AZN', 'AZN.L', 'GBX'), ('GSK-GSK.L', 'GSK', 'GSK.L', 'GBX'),
-    ('HSBC-HSBA.L', 'HSBC', 'HSBA.L', 'GBX'), ('RIO-RIO.L', 'RIO', 'RIO.L', 'GBX'),
-    ('UL-ULVR.L', 'UL', 'ULVR.L', 'GBX'), ('DEO-DGE.L', 'DEO', 'DGE.L', 'GBX'),
-    ('BTI-BATS.L', 'BTI', 'BATS.L', 'GBX'), ('ASML-ASML.AS', 'ASML', 'ASML.AS', 'EUR'),
-    ('TTE-TTE.PA', 'TTE', 'TTE.PA', 'EUR'), ('SAP-SAP.DE', 'SAP', 'SAP.DE', 'EUR'),
-    ('LVMUY-MC.PA', 'LVMUY', 'MC.PA', 'EUR'),
+    ('BP-BP.L', 'BP', 'BP.L', 'GBX', 'EU'), ('SHEL-SHEL.L', 'SHEL', 'SHEL.L', 'GBX', 'EU'),
+    ('AZN-AZN.L', 'AZN', 'AZN.L', 'GBX', 'EU'), ('GSK-GSK.L', 'GSK', 'GSK.L', 'GBX', 'EU'),
+    ('HSBC-HSBA.L', 'HSBC', 'HSBA.L', 'GBX', 'EU'), ('RIO-RIO.L', 'RIO', 'RIO.L', 'GBX', 'EU'),
+    ('UL-ULVR.L', 'UL', 'ULVR.L', 'GBX', 'EU'), ('DEO-DGE.L', 'DEO', 'DGE.L', 'GBX', 'EU'),
+    ('BTI-BATS.L', 'BTI', 'BATS.L', 'GBX', 'EU'), ('ASML-ASML.AS', 'ASML', 'ASML.AS', 'EUR', 'EU'),
+    ('TTE-TTE.PA', 'TTE', 'TTE.PA', 'EUR', 'EU'), ('SAP-SAP.DE', 'SAP', 'SAP.DE', 'EUR', 'EU'),
+    ('LVMUY-MC.PA', 'LVMUY', 'MC.PA', 'EUR', 'EU'),
     # aprovados no screening 24/jul (episodios reais >=0.3% em 60d)
-    ('NGG-NG.L', 'NGG', 'NG.L', 'GBX'), ('RELX-REL.L', 'RELX', 'REL.L', 'GBX'),
-    ('PUK-PRU.L', 'PUK', 'PRU.L', 'GBX'), ('LYG-LLOY.L', 'LYG', 'LLOY.L', 'GBX'),
+    ('NGG-NG.L', 'NGG', 'NG.L', 'GBX', 'EU'), ('RELX-REL.L', 'RELX', 'REL.L', 'GBX', 'EU'),
+    ('PUK-PRU.L', 'PUK', 'PRU.L', 'GBX', 'EU'), ('LYG-LLOY.L', 'LYG', 'LLOY.L', 'GBX', 'EU'),
+    # ═══ [28-jul-2026, decisao Beto] 2a LINHA — onde o edge cross-listed vive ═══
+    # Canadenses TSX<->NYSE (sessao cheia, 1 FX CAD/USD, mid-caps de mineracao):
+    ('CCJ-CCO.TO',  'CCJ',  'CCO.TO', 'CAD', 'CA'), ('BTG-BTO.TO',  'BTG',  'BTO.TO', 'CAD', 'CA'),
+    ('PAAS-PAAS.TO','PAAS', 'PAAS.TO','CAD', 'CA'), ('HBM-HBM.TO',  'HBM',  'HBM.TO', 'CAD', 'CA'),
+    ('EGO-ELD.TO',  'EGO',  'ELD.TO', 'CAD', 'CA'), ('IAG-IMG.TO',  'IAG',  'IMG.TO', 'CAD', 'CA'),
+    ('NGD-NGD.TO',  'NGD',  'NGD.TO', 'CAD', 'CA'), ('SAND-SSL.TO', 'SAND', 'SSL.TO', 'CAD', 'CA'),
+    # ADRs europeus de 2a linha (razao ADR absorvida pelo k aprendido):
+    ('AEG-AGN.AS',  'AEG',  'AGN.AS', 'EUR', 'EU2'), ('TEF-TEF.MC',  'TEF',  'TEF.MC', 'EUR', 'EU2'),
+    ('RYAAY-RYA.IR','RYAAY','RYA.IR', 'EUR', 'EU2'), ('SNN-SN.L',    'SNN',  'SN.L',   'GBX', 'EU2'),
+    ('WPP-WPP.L',   'WPP',  'WPP.L',  'GBX', 'EU2'), ('NWG-NWG.L',   'NWG',  'NWG.L',  'GBX', 'EU2'),
 ]
-FXSYM = {'GBX': 'GBPUSD=X', 'EUR': 'EURUSD=X'}
+FXSYM = {'GBX': 'GBPUSD=X', 'EUR': 'EURUSD=X', 'CAD': 'CADUSD=X'}
 
 
 def _f(name, d):
@@ -131,10 +145,13 @@ def _median(xs):
     return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
 
 
-def _in_window(now):
-    """Overlap Europa x NYSE: 13:31-15:25 UTC, dias uteis."""
+def _in_window(now, region='EU'):
+    """Janela de negociacao por regiao (dias uteis, UTC).
+    EU/EU2: overlap Europa x NYSE 13:31-15:25. CA: sessao cheia NYSE/TSX 13:31-19:55."""
     if now.weekday() >= 5: return False
     hm = now.hour * 60 + now.minute
+    if region == 'CA':
+        return (13 * 60 + 31) <= hm <= (19 * 60 + 55)   # 9:31-15:55 ET
     return (13 * 60 + 31) <= hm <= (15 * 60 + 25)
 
 
@@ -144,7 +161,8 @@ def scan_cycle():
     min_spr = _f('ARBIX_MIN_SPREAD', 0.30)
     exit_spr = _f('ARBIX_EXIT_SPREAD', 0.10)
     timeout_m = _f('ARBIX_TIMEOUT_MIN', 240)
-    leg_usd = _f('ARBIX_LEG_USD', 150000)
+    leg_major = _f('ARBIX_LEG_USD', 150000)       # majors EU
+    leg_2l = _f('ARBIX_LEG_USD_2L', 100000)       # 2a linha (CA/EU2) — teto US$100k
     max_open = int(_f('ARBIX_MAX_OPEN', 4))
 
     now = datetime.now(timezone.utc)
@@ -153,15 +171,16 @@ def scan_cycle():
     cur.execute("SELECT id,pair,direction,opened_at,entry_spread_pct,k_ratio,"
                 "price_us_entry,price_eu_entry,fx_entry,leg_usd FROM arbix_shadow_trades WHERE status='OPEN'")
     open_rows = {r[1]: r for r in cur.fetchall()}
-    window = _in_window(now)
 
     fx_cache = {}
     for cur_code, fxs in FXSYM.items():
         fx_cache[cur_code] = _quote(fxs)
 
     n_open = len(open_rows)
-    for pid, us, eu, code in PAIRS:
+    for pid, us, eu, code, region in PAIRS:
         try:
+            window = _in_window(now, region)               # janela por regiao
+            leg_usd = leg_2l if region in ('CA', 'EU2') else leg_major
             pu, tu = _quote(us)
             pe_raw, te = _quote(eu)
             fx, tf = fx_cache[code]
@@ -242,7 +261,7 @@ def scan_cycle():
             if os.environ.get('ARBIX_IB_EXEC', 'false').lower() == 'true':
                 try:
                     from modules.ib_exec import exec_arbi
-                    mkt_b = 'LSE' if code == 'GBX' else 'EURONEXT'
+                    mkt_b = 'TSX' if code == 'CAD' else ('LSE' if code == 'GBX' else 'EURONEXT')
                     pair_dict = {'id': f'ARBIX-{pid}', 'leg_a': us, 'leg_b': eu,
                                  'mkt_a': 'NYSE', 'mkt_b': mkt_b, 'ratio_a': 1, 'ratio_b': 1}
                     exec_arbi(pair_dict, 'LONG_A' if sig == 'LONG_US' else 'LONG_B',
@@ -270,9 +289,10 @@ def arbix_shadow_loop(beat_fn=None):
         try:
             if beat_fn: beat_fn('arbix_shadow_loop')
             now = datetime.now(timezone.utc)
-            # roda ciclo dentro da janela (e 10min depois, p/ fechar posicoes)
+            # roda ciclo na uniao das janelas (EU overlap + sessao cheia CA).
+            # A janela por-par decide quem realmente opera em cada horario.
             hm = now.hour * 60 + now.minute
-            if now.weekday() < 5 and (13 * 60 + 25) <= hm <= (15 * 60 + 40):
+            if now.weekday() < 5 and (13 * 60 + 25) <= hm <= (20 * 60 + 10):
                 scan_cycle()
                 time.sleep(75)
             else:

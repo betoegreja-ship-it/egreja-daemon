@@ -13052,6 +13052,13 @@ def derivatives_dashboard():
     """Serve the standalone derivatives trading dashboard."""
     return send_from_directory('static', 'derivatives.html')
 
+@app.route('/limonada')
+def limonada_dashboard():
+    """[28-jul, decisao Beto] Dashboard da estrategia Limonada (perna long da Arbi):
+    7 books shadow + execucao viva no IB + spreads medidos. Consome /debug/longleg,
+    /debug/longleg-ib e /debug/spreads (sessao autenticada)."""
+    return send_from_directory('static', 'limonada.html')
+
 @app.route('/cedro/health')
 def cedro_health():
     """[v10.31] Cedro socket provider status."""

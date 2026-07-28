@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Limonada — Perna Long da Arbi</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root{--navy:#1F3864;--blue:#2E5496;--green:#2E7D32;--red:#C0392B;--grey:#5b6472;--bg:#0f1420;--card:#171e2e;--line:#26304a;--txt:#e8edf6;--mut:#9aa6bd}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--txt);padding:18px 22px 60px}
+  h1{font-size:22px;margin:0;color:#fff}
+  h1 span{color:#ffd35a}
+  .sub{color:var(--mut);font-size:12.5px;margin:4px 0 18px}
+  .row{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;flex:1;min-width:150px}
+  .card .lab{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.4px}
+  .card .val{font-size:24px;font-weight:700;margin-top:4px}
+  .g{color:#4ade80}.r{color:#f87171}.n{color:#cbd5e1}
+  h2{font-size:15px;color:#cfe0ff;border-bottom:1px solid var(--line);padding-bottom:6px;margin:22px 0 10px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase}
+  tr:hover td{background:#1c2436}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+  .pill.open{background:#1e3a5f;color:#7db8ff}.pill.closed{background:#123a1e;color:#7ee29a}
+  .muted{color:var(--mut);font-size:11.5px;margin-top:6px}
+  .wrap{max-width:1180px;margin:0 auto}
+  .chartbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;height:280px}
+  .foot{color:var(--grey);font-size:11px;margin-top:26px;border-top:1px solid var(--line);padding-top:10px}
+  .warn{background:#3a2a12;border:1px solid #7a5a1f;color:#ffd98a;padding:8px 12px;border-radius:8px;font-size:12.5px;margin-bottom:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🍋 Limonada <span>— Perna Long da Arbi</span></h1>
+  <div class="sub" id="sub">carregando…</div>
+  <div class="warn" id="warn" style="display:none"></div>
+
+  <div class="row" id="cards"></div>
+
+  <h2>As 7 books (shadow) — mesmo sinal, saídas diferentes</h2>
+  <div class="chartbox"><canvas id="chartBooks"></canvas></div>
+  <table id="books"><thead><tr>
+    <th>Book</th><th>n</th><th>WR</th><th>Ret médio</th><th>Mediana</th><th>P&L (US$100k)</th><th>Ret s/ capital</th>
+  </tr></thead><tbody></tbody></table>
+  <div class="muted" id="capnote"></div>
+
+  <h2>Execução viva no IB (paper) — saída pela Arbi</h2>
+  <div class="row" id="ibcards"></div>
+  <table id="ibtrades"><thead><tr>
+    <th>Papel</th><th>Status</th><th>Saída</th><th>Ret %</th><th>P&L US$</th>
+  </tr></thead><tbody></tbody></table>
+
+  <h2>Custo — spread bid/ask medido por papel (bps)</h2>
+  <table id="spreads"><thead><tr>
+    <th>Papel</th><th>Mercado</th><th>Amostras</th><th>Spread médio</th><th>Mín</th><th>Máx</th>
+  </tr></thead><tbody><tr><td colspan="6" class="muted">aguardando pregão para medir…</td></tr></tbody></table>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const fmtUsd=v=>(v>=0?'+':'')+'US$ '+Math.round(v).toLocaleString('pt-BR');
+const fmtPct=(v,d=2)=>(v>=0?'+':'')+Number(v).toFixed(d)+'%';
+const cls=v=>v>=0?'g':'r';
+let chart;
+
+const BOOK_LBL={ALL:'ALL (perna long)',FILTERED_6:'FILTERED_6',FILTERED_10:'FILTERED_10',
+  SHORT_ALL_teorico:'SHORT_ALL (teórico)',SMART_LEG:'SMART_LEG',
+  LIQUID_LEG_BETA_REDUCED:'LIQUID_LEG (hedge)',DIRECTIONAL_EXIT:'DIRECTIONAL_EXIT (trail)'};
+
+async function jget(u){const r=await fetch(u,{credentials:'same-origin'});if(!r.ok)throw new Error(u+' '+r.status);return r.json();}
+
+async function load(){
+  try{
+    const [ll,ib,sp]=await Promise.allSettled([jget('/debug/longleg'),jget('/debug/longleg-ib'),jget('/debug/spreads')]);
+    if(ll.status==='fulfilled') renderLL(ll.value); else showWarn('Shadow (/debug/longleg) indisponível: '+ll.reason.message);
+    if(ib.status==='fulfilled') renderIB(ib.value);
+    if(sp.status==='fulfilled') renderSP(sp.value);
+    $('#sub').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR')+' · atualiza sozinho a cada 45s';
+    $('#foot').textContent='Fonte: /debug/longleg · /debug/longleg-ib · /debug/spreads · P&L bruto, US$100k/posição · retorno % independe do notional';
+  }catch(e){showWarn('Erro: '+e.message);}
+}
+function showWarn(m){const w=$('#warn');w.style.display='block';w.textContent=m;}
+
+function renderLL(d){
+  const b=d.books||{}, cap=d.capital||{}, lift=b._LIFT_dir_vs_matched||{};
+  const all=b.ALL||{};
+  $('#cards').innerHTML=[
+    ['Trades', (d.total_registrados||0)+' ', 'n'],
+    ['Win rate', (all.wr!=null?all.wr+'%':'—'), 'n'],
+    ['Ganho médio/trade', all.ret_med!=null?fmtPct(all.ret_med,3):'—', cls(all.ret_med||0)],
+    ['P&L (US$100k)', all.pnl_usd!=null?fmtUsd(all.pnl_usd):'—', cls(all.pnl_usd||0)],
+    ['Ret s/ capital', all.ret_sobre_capital_pct!=null?fmtPct(all.ret_sobre_capital_pct):'—', cls(all.ret_sobre_capital_pct||0)],
+    ['Lift vs controle', lift.n_pareado?fmtPct(lift.media||0,2)+' (n='+lift.n_pareado+')':'sem controle ainda','n'],
+  ].map(c=>`<div class="card"><div class="lab">${c[0]}</div><div class="val ${c[2]}">${c[1]}</div></div>`).join('');
+
+  const order=['ALL','FILTERED_6','FILTERED_10','DIRECTIONAL_EXIT','SMART_LEG','LIQUID_LEG_BETA_REDUCED','SHORT_ALL_teorico'];
+  const tb=$('#books tbody'); tb.innerHTML='';
+  const labels=[],vals=[];
+  order.forEach(k=>{const x=b[k];if(!x||!x.n)return;
+    labels.push((BOOK_LBL[k]||k).split(' ')[0]); vals.push(x.pnl_usd||0);
+    tb.insertAdjacentHTML('beforeend',`<tr><td>${BOOK_LBL[k]||k}</td><td>${x.n}</td><td>${x.wr}%</td>
+      <td class="${cls(x.ret_med||0)}">${fmtPct(x.ret_med||0,2)}</td><td>${fmtPct(x.mediana||0,2)}</td>
+      <td class="${cls(x.pnl_usd||0)}">${fmtUsd(x.pnl_usd||0)}</td>
+      <td class="${cls(x.ret_sobre_capital_pct||0)}">${x.ret_sobre_capital_pct!=null?fmtPct(x.ret_sobre_capital_pct):'—'}</td></tr>`);
+  });
+  $('#capnote').textContent=`Capital-base: ${cap.max_simultaneas_observado||'?'} posições simultâneas × US$${(cap.notional_por_posicao_usd||100000).toLocaleString('pt-BR')} = US$${(cap.capital_base_usd||0).toLocaleString('pt-BR')}. `+(cap.nota||'');
+  drawChart(labels,vals);
+}
+function drawChart(labels,vals){
+  const ctx=$('#chartBooks');
+  if(chart)chart.destroy();
+  chart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{data:vals,
+    backgroundColor:vals.map(v=>v>=0?'#2E7D32':'#C0392B')}]},
+    options:{plugins:{legend:{display:false},title:{display:true,text:'P&L por book (US$100k/posição)',color:'#cfe0ff'}},
+      scales:{x:{ticks:{color:'#9aa6bd'},grid:{display:false}},y:{ticks:{color:'#9aa6bd'},grid:{color:'#26304a'}}}}});
+}
+function renderIB(d){
+  if(d.error){$('#ibcards').innerHTML=`<div class="card"><div class="lab">IB</div><div class="val n">sem posições ainda</div></div>`;return;}
+  $('#ibcards').innerHTML=[
+    ['Abertas', d.abertas||0,'n'],['Fechadas', d.fechadas||0,'n'],
+    ['WR', (d.WR_pct!=null?d.WR_pct+'%':'—'),'n'],
+    ['P&L total', d.pnl_total!=null?fmtUsd(d.pnl_total):'—', cls(d.pnl_total||0)],
+    ['Ret médio', d.ret_medio_pct!=null?fmtPct(d.ret_medio_pct):'—', cls(d.ret_medio_pct||0)],
+  ].map(c=>`<div class="card"><div class="lab">${c[0]}</div><div class="val ${c[2]}">${c[1]}</div></div>`).join('');
+  const tb=$('#ibtrades tbody'); tb.innerHTML='';
+  (d.ultimas||[]).forEach(t=>{
+    const st=(t.status||'').toLowerCase().includes('open')||t.status==='OPEN'?'open':'closed';
+    tb.insertAdjacentHTML('beforeend',`<tr><td>${t.symbol||'—'}</td>
+      <td><span class="pill ${st==='open'?'open':'closed'}">${t.status||''}</span></td>
+      <td>${t.reason||'—'}</td>
+      <td class="${cls(t.ret_pct||0)}">${t.ret_pct!=null?fmtPct(t.ret_pct):'—'}</td>
+      <td class="${cls(t.pnl||0)}">${t.pnl!=null?fmtUsd(t.pnl):'—'}</td></tr>`);
+  });
+  if(!(d.ultimas||[]).length) tb.innerHTML='<tr><td colspan="5" class="muted">nenhuma posição LL ainda — começa quando a Arbi abrir um par IB-alcançável</td></tr>';
+}
+function renderSP(d){
+  const tb=$('#spreads tbody');
+  if(d.error||!(d.papeis||[]).length){tb.innerHTML='<tr><td colspan="6" class="muted">aguardando pregão para medir spreads…</td></tr>';return;}
+  tb.innerHTML='';
+  d.papeis.forEach(p=>{
+    const bad=p.media>15;
+    tb.insertAdjacentHTML('beforeend',`<tr><td>${p.symbol}</td><td>${p.mkt}</td><td>${p.n}</td>
+      <td class="${bad?'r':'g'}">${p.media} bps</td><td>${p.minimo}</td><td>${p.maximo}</td></tr>`);
+  });
+}
+load(); setInterval(load,45000);
+</script>
+</body>
+</html>

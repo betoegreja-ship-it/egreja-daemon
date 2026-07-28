@@ -11659,6 +11659,13 @@ def arbi_scan_loop():
                         _ll_open(trade, pulse=_ll_pulse)
                     except Exception as _lle:
                         log.debug(f'longleg open: {_lle}')
+                    # [LONGLEG-IB 28-jul, decisao Beto] executa a perna long no IB paper
+                    # como book proprio (tag LL-, saida propria stop/trail/timeout). Fail-open.
+                    try:
+                        from modules.longleg_ib import on_arbi_open as _llib_open
+                        _llib_open(trade)
+                    except Exception as _llibe:
+                        log.debug(f'longleg-ib open: {_llibe}')
 
                 time.sleep(1.5)
         except Exception as e: log.error(f'arbi_scan: {e}')
@@ -11686,6 +11693,13 @@ def arbi_monitor_loop():
         try:
             from modules.longleg_harvest import finalize_directional as _ll_fin
             _ll_fin()
+        except Exception:
+            pass
+        # [LONGLEG-IB 28-jul] gerencia as posicoes vivas da perna long no IB
+        # (trailing + stop 1.5ATR + timeout 90min -> vende no IB). Fail-open.
+        try:
+            from modules.longleg_ib import monitor as _llib_mon
+            _llib_mon()
         except Exception:
             pass
         try:
@@ -19044,6 +19058,16 @@ def debug_longleg():
         out = summary()
         out['pares_f6'] = sorted(GOOD6); out['pares_f10'] = sorted(GOOD10)
         return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/longleg-ib')
+def debug_longleg_ib():
+    """[28-jul] LONG-LEG IB: execucao VIVA da perna long (saida propria stop/trail/timeout)."""
+    try:
+        from modules.longleg_ib import summary
+        return jsonify(summary())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

@@ -357,6 +357,51 @@ def exec_uspairs(pair, direction, price_a, price_b, notional_a, notional_b, even
         log.debug(f'[IB-USPAIRS] exec {e}')
 
 
+def exec_longleg(sym, mkt, action, qty, tag, price_ref=None):
+    """[decisao Beto] Perna long da 'limonada' como book proprio (tag LL-, event LONGLEG).
+    action = BUY (abre) | SELL (fecha). Single-leg, so em bolsa IB-reachable (nao-B3).
+    Retorna (fill_price, status). Fail-open: erro NUNCA derruba nada."""
+    try:
+        if os.environ.get('IB_LONGLEG_ENABLED', 'true').lower() == 'false':
+            return None, 'DISABLED'
+        if os.environ.get('IB_EXEC_ENGINE_ENABLED', 'true').lower() == 'false':
+            return None, 'ENGINE_OFF'
+        if not ib_reachable(mkt, sym):
+            return None, 'NAO_IB'
+        qty = int(qty or 0)
+        if qty <= 0:
+            return None, 'QTY0'
+        mode = _mode()
+        sym_ib, exch, cur = _resolve_leg(sym, mkt)
+        usd = (float(price_ref) * qty) if price_ref else 0
+        g = _guard(usd) if usd else None
+        if g:
+            _record({'trade_id': tag, 'symbol': sym_ib, 'side': action, 'event': 'LONGLEG',
+                     'mode': mode, 'status': 'BLOCKED', 'qty': qty, 'usd': usd, 'error': g})
+            return None, 'BLOCKED'
+        if mode == 'ghost':
+            _day['n'] += 1
+            _record({'trade_id': tag, 'symbol': sym_ib, 'side': action, 'event': 'LONGLEG',
+                     'mode': 'ghost', 'status': 'SIMULATED', 'qty': qty, 'usd': usd,
+                     'price_ref': price_ref, 'price_fill': price_ref})
+            return (float(price_ref) if price_ref else None), 'SIMULATED'
+        d, err = _bridge({'symbol': sym_ib, 'action': action, 'quantity': qty,
+                          'exchange': exch, 'currency': cur, 'mode': mode, 'trade_id': tag})
+        if err:
+            _record({'trade_id': tag, 'symbol': sym_ib, 'side': action, 'event': 'LONGLEG',
+                     'mode': mode, 'status': 'ERROR', 'qty': qty, 'usd': usd, 'error': err[:200]})
+            return None, 'ERROR'
+        _day['n'] += 1
+        _record({'trade_id': tag, 'symbol': sym_ib, 'side': action, 'event': 'LONGLEG',
+                 'mode': mode, 'status': d.get('status', 'SENT'), 'qty': d.get('filled', qty),
+                 'usd': usd, 'price_ref': price_ref, 'price_fill': d.get('avg_price'),
+                 'fee': d.get('commission'), 'ib_order_id': d.get('order_id'), 'resp': d})
+        return (d.get('avg_price') or price_ref), d.get('status', 'SENT')
+    except Exception as e:
+        log.debug(f'[IB-LONGLEG] {sym} {action}: {e}')
+        return None, 'EXC'
+
+
 def bridge_health():
     url = os.environ.get('IB_BRIDGE_URL', '').rstrip('/')
     if not url:

@@ -2483,6 +2483,7 @@ def auth_check():
         '/debug/ib-quote-test',
         '/debug/zombie',
         '/debug/fx-sources',
+        '/debug/ib-balance',
         '/public/shadow',
     }
     _public_read_prefixes = ('/static/', '/assets/')
@@ -12813,6 +12814,39 @@ def start_background_threads():
     defs['fx_refresh_loop'] = _fx_refresh_loop
     log.info('[FX-REFRESH] loop de cambio adicionado (2min, Cedro/Awesome)')
 
+    # [IB-BALANCE 29-jul-2026, pedido Beto] Snapshot do saldo do IB paper
+    # (NetLiquidation) a cada 5min — so grava se ESTE servico estiver conectado
+    # ao IB (evita duplicata entre core/arbi). Curva de ganho/perda auditavel.
+    def _ib_balance_loop():
+        _tbl = [False]
+        while True:
+            try:
+                beat('ib_balance_loop')
+                from modules.ib_exec import bridge_health
+                _hh = bridge_health() or {}
+                _br = _hh.get('bridge') or {}
+                _ac = (_br.get('account') or {}) if isinstance(_br, dict) else {}
+                _nlv = _ac.get('NetLiquidation')
+                if _hh.get('ok') and _br.get('ib_connected') and _nlv:
+                    from modules.pairs_engine.persistence import _get_conn as _gc
+                    _c = _gc(); _cur = _c.cursor()
+                    if not _tbl[0]:
+                        _cur.execute("""CREATE TABLE IF NOT EXISTS ib_balance_history (
+                            id BIGINT AUTO_INCREMENT PRIMARY KEY, ts DATETIME,
+                            mode VARCHAR(8), net_liq DOUBLE, buying_power DOUBLE,
+                            available DOUBLE, ib_connected TINYINT, INDEX ix_ts (ts))""")
+                        _tbl[0] = True
+                    _cur.execute("""INSERT INTO ib_balance_history
+                        (ts, mode, net_liq, buying_power, available, ib_connected)
+                        VALUES (NOW(),%s,%s,%s,%s,1)""",
+                        (_hh.get('mode'), float(_nlv), _ac.get('BuyingPower'), _ac.get('AvailableFunds')))
+                    _c.commit(); _cur.close(); _c.close()
+            except Exception as _ie:
+                log.debug(f'[IB-BAL] {_ie}')
+            time.sleep(300)
+    defs['ib_balance_loop'] = _ib_balance_loop
+    log.info('[IB-BALANCE] snapshot do saldo IB paper adicionado (5min)')
+
     # [v12-CALIBRATOR 24-jun-2026] Worker que recalibra brain a cada hora
     # Lê os 12k+ trades historicos, calcula pesos data-driven, atualiza MySQL.
     # Default ENABLED. Desliga via DISABLE_BRAIN_CALIBRATOR=true
@@ -19850,6 +19884,47 @@ def debug_ib():
     try:
         from modules.ib_exec import bridge_health
         return jsonify(bridge_health())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/ib-balance')
+def debug_ib_balance():
+    """[29-jul, pedido Beto] Saldo do IB paper (NetLiquidation) ao longo do tempo,
+    com P&L vs o primeiro registro e o do dia. Leitura publica, sem segredos."""
+    try:
+        from modules.pairs_engine.persistence import _get_conn as _gc
+        c = _gc(); cur = c.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS ib_balance_history (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY, ts DATETIME,
+            mode VARCHAR(8), net_liq DOUBLE, buying_power DOUBLE,
+            available DOUBLE, ib_connected TINYINT, INDEX ix_ts (ts))""")
+        cur.execute("""SELECT ts, mode, net_liq, buying_power, available
+                       FROM ib_balance_history ORDER BY ts""")
+        rows = cur.fetchall()
+        cur.execute("""SELECT net_liq FROM ib_balance_history
+                       WHERE DATE(ts)=CURDATE() ORDER BY ts LIMIT 1""")
+        _open_today = cur.fetchone()
+        cur.close(); c.close()
+        if not rows:
+            return jsonify({'aguardando': 'sem snapshot ainda — o loop grava a cada 5min '
+                            'quando ESTE servico estiver conectado ao IB. Se ficar vazio, '
+                            'o IB paper esta em outro servico (egreja-arbi) — me avise.'})
+        first = float(rows[0][2]); last = float(rows[-1][2])
+        day_open = float(_open_today[0]) if _open_today else last
+        return jsonify({
+            'saldo_atual_usd': round(last, 2),
+            'modo': rows[-1][1],
+            'primeiro_registro_usd': round(first, 2),
+            'pnl_total_usd': round(last - first, 2),
+            'pnl_total_pct': round((last / first - 1) * 100, 3) if first else None,
+            'pnl_hoje_usd': round(last - day_open, 2),
+            'buying_power_usd': round(float(rows[-1][3] or 0), 2),
+            'disponivel_usd': round(float(rows[-1][4] or 0), 2),
+            'n_snapshots': len(rows),
+            'desde': str(rows[0][0]), 'ate': str(rows[-1][0]),
+            'historico': [{'ts': str(r[0]), 'net_liq': round(float(r[2]), 2)} for r in rows[-300:]],
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

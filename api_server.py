@@ -2479,6 +2479,7 @@ def auth_check():
         '/debug/longleg-ib',
         '/debug/spreads',
         '/debug/ib-quote-test',
+        '/debug/zombie',
         '/public/shadow',
     }
     _public_read_prefixes = ('/static/', '/assets/')
@@ -12690,6 +12691,22 @@ def start_background_threads():
         except Exception as _v2e:
             log.warning(f'[PAIRS-V2] setup: {_v2e}')
 
+    # [ZOMBIE-SHADOW 29-jul-2026, consenso GPT+Grok+Kimi] Observador passivo do
+    # ZOMBIE_CUT na NYSE: loga o "teria cortado" (ZC3/ZC4/MIDDAY), reconcilia com
+    # o resultado final e grava a curva de equity intradiaria. NAO fecha nada.
+    try:
+        if os.environ.get('ZOMBIE_SHADOW_ENABLED', 'true').lower() != 'false':
+            from modules.zombie_shadow import zombie_shadow_loop as _zs_loop
+            def _zombie_wrapper():
+                try: _zs_loop(beat_fn=beat)
+                except Exception as _ze:
+                    log.error(f'[zombie.shadow] crash: {_ze}')
+                    import traceback; traceback.print_exc()
+            defs['zombie_shadow_loop'] = _zombie_wrapper
+            log.info('[ZOMBIE-SHADOW] observador passivo adicionado (NYSE)')
+    except Exception as _zse:
+        log.warning(f'[ZOMBIE-SHADOW] setup: {_zse}')
+
     # [v12-CALIBRATOR 24-jun-2026] Worker que recalibra brain a cada hora
     # Lê os 12k+ trades historicos, calcula pesos data-driven, atualiza MySQL.
     # Default ENABLED. Desliga via DISABLE_BRAIN_CALIBRATOR=true
@@ -19368,6 +19385,17 @@ def debug_ib_quote_test():
                         'papeis': out})
     except Exception as e:
         return jsonify({'ok': False, 'erro': str(e)}), 500
+
+
+@app.route('/debug/zombie')
+def debug_zombie():
+    """[29-jul] ZOMBIE_CUT shadow: acionamentos ZC3/ZC4/MIDDAY, economia prospectiva,
+    taxa de ressurreicao vs criterios congelados, e curva de equity intradiaria NYSE."""
+    try:
+        from modules.zombie_shadow import summary as _zsum
+        return jsonify(_zsum())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/debug/longleg-open')

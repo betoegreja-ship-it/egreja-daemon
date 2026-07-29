@@ -18075,6 +18075,38 @@ def db_audit():
         return jsonify({'error': str(e)}), 500
 
 
+def _attach_peak_capital(cursor, where_sql, daily):
+    """[29-jul] Anexa 'peak_cap' (pico de capital simultaneo) a cada linha diaria.
+    Sweep dos intervalos abertura->fechamento; capital reusa com o giro, entao o
+    pico e o denominador honesto do retorno (nao a posicao media, que infla ~Nx)."""
+    try:
+        cursor.execute(f"""SELECT DATE(closed_at) dt, opened_at, closed_at, position_value
+            FROM trades WHERE status='CLOSED'
+              AND (close_reason IS NULL OR close_reason NOT IN ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN'))
+              AND {where_sql} AND opened_at IS NOT NULL AND closed_at IS NOT NULL""")
+        from collections import defaultdict as _dd
+        _byday = _dd(list)
+        for _r in cursor.fetchall():
+            _byday[str(_r['dt'])].append((_r['opened_at'], _r['closed_at'], float(_r['position_value'] or 0)))
+        def _peak(trs):
+            ev = []
+            for o, c, v in trs:
+                if v > 0:
+                    ev.append((o, v)); ev.append((c, -v))
+            ev.sort(key=lambda x: (x[0], -x[1]))
+            cur_c = 0.0; pk = 0.0
+            for _, dv in ev:
+                cur_c += dv; pk = max(pk, cur_c)
+            return pk
+        peaks = {d: _peak(trs) for d, trs in _byday.items()}
+        for row in daily:
+            row['peak_cap'] = round(peaks.get(row['dt'], 0.0), 2)
+    except Exception as _e:
+        log.debug(f'[peak_cap] {_e}')
+        for row in daily:
+            row.setdefault('peak_cap', 0.0)
+
+
 @app.route('/performance/stocks')
 def performance_stocks():
     """[v10.11] Dados detalhados de performance histórica de stocks.
@@ -18096,6 +18128,12 @@ def performance_stocks():
             GROUP BY DATE(closed_at) ORDER BY dt""")
         daily = [{**r,'dt':str(r['dt']),'pnl':float(r['pnl'] or 0),'deployed':float(r['deployed'] or 0),
                   'n':int(r['n']),'wins':int(r['wins']),'avg_dur_h':round(float(r['avg_dur_h'] or 0),2)} for r in cursor.fetchall()]
+        # [29-jul, decisao Beto] PICO de capital simultaneo por dia — denominador
+        # HONESTO do retorno. Antes o front dividia o pnl do dia por UMA posicao
+        # media (inflava ~10x). Agora expomos o max de capital em posicoes ao mesmo
+        # tempo (o dinheiro reusa com o giro, entao o pico e o que voce precisa ter).
+        _attach_peak_capital(cursor,
+            f"asset_type='stock' {_mkt_sql}", daily)
         # Por símbolo
         cursor.execute(f"""
             SELECT symbol, market, COUNT(*) as n, SUM(pnl) as pnl,
@@ -18174,6 +18212,7 @@ def performance_crypto():
             GROUP BY DATE(closed_at) ORDER BY dt""")
         daily = [{**r,'dt':str(r['dt']),'pnl':float(r['pnl'] or 0),'deployed':float(r['deployed'] or 0),
                   'n':int(r['n']),'wins':int(r['wins']),'avg_dur_h':round(float(r['avg_dur_h'] or 0),2)} for r in cursor.fetchall()]
+        _attach_peak_capital(cursor, "asset_type='crypto'", daily)
         cursor.execute("""
             SELECT symbol, COUNT(*) as n, SUM(pnl) as pnl,
                 SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) as wins,

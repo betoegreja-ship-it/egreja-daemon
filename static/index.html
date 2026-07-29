@@ -1903,8 +1903,8 @@ async function doLogout() {
           <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">WIN RATE</th>
           <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">P&amp;L DIA</th>
           <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">ACUMULADO</th>
-          <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">POSIÇÃO MÉDIA</th>
-          <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">RET/RISCO</th>
+          <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">CAPITAL MÁX</th>
+          <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">RET S/ CAPITAL</th>
         </tr></thead>
         <tbody id="sp-daily-body"></tbody>
       </table>
@@ -2014,8 +2014,8 @@ async function doLogout() {
           <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">WIN RATE</th>
           <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">P&amp;L DIA</th>
           <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">ACUMULADO</th>
-          <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">POSIÇÃO MÉDIA</th>
-          <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">RET/RISCO</th>
+          <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">CAPITAL MÁX</th>
+          <th style="padding:8px 12px;text-align:right;font-size:8px;color:var(--text3);font-weight:400">RET S/ CAPITAL</th>
         </tr></thead>
         <tbody id="cp-daily-body"></tbody>
       </table>
@@ -2138,7 +2138,7 @@ function _fillPerfPage(pfx, data, accent) {
   if(sb&&data.by_symbol){sb.innerHTML=data.by_symbol.map(function(s){var swr=s.n>0?s.wins/s.n*100:0,pc=s.pnl>=0?'#2ecc71':'#e74c3c',mkt=s.market?'<td style="padding:6px 10px;text-align:center;font-size:10px;color:#8fa3be">'+s.market+'</td>':'';return'<tr style="border-bottom:1px solid rgba(255,255,255,0.05)"><td style="padding:6px 10px;font-weight:600;font-family:monospace;font-size:12px">'+s.symbol+'</td>'+mkt+'<td style="padding:6px 10px;text-align:right;font-size:12px">'+Math.round(s.n)+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+(swr>=50?'#2ecc71':'#e74c3c')+'">'+swr.toFixed(0)+'%</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+pc+';font-weight:600">'+_fK(s.pnl)+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+(s.avg_pnl>=0?'#2ecc71':'#e74c3c')+'">'+_fK(s.avg_pnl)+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:#2ecc71">+$'+Math.abs(s.best).toFixed(0)+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:#e74c3c">-$'+Math.abs(s.worst).toFixed(0)+'</td></tr>';}).join('');}
 
   var db=document.getElementById(pfx+'-daily-body');
-  if(db&&data.daily){var ca2=0;db.innerHTML=data.daily.slice().reverse().map(function(d){ca2+=d.pnl;var dwr=d.n>0?d.wins/d.n*100:0,rd=d.deployed>0&&d.n>0?(d.pnl/(d.deployed/d.n)*100):0,pc=d.pnl>=0?'#2ecc71':'#e74c3c';return'<tr style="border-bottom:1px solid rgba(255,255,255,0.05)"><td style="padding:6px 10px;font-family:monospace;font-size:11px">'+d.dt+'</td><td style="padding:6px 10px;text-align:right;font-size:12px">'+d.n+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+(dwr>=50?'#2ecc71':'#e74c3c')+'">'+dwr.toFixed(0)+'%</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+pc+';font-weight:600">'+_fK(d.pnl)+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+_pCol(ca2)+'">'+_fK(ca2)+'</td><td style="padding:6px 10px;text-align:right;font-size:11px;color:#8fa3be">$'+fmtNum(d.n>0?d.deployed/d.n:0)+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+(rd>=0?'#2ecc71':'#e74c3c')+'">'+(rd>=0?'+':'')+rd.toFixed(2)+'%</td></tr>';}).join('');}
+  if(db&&data.daily){var ca2=0;db.innerHTML=data.daily.slice().reverse().map(function(d){ca2+=d.pnl;var dwr=d.n>0?d.wins/d.n*100:0,capbase=(d.peak_cap&&d.peak_cap>0)?d.peak_cap:(d.n>0?d.deployed/d.n:0),rd=capbase>0?(d.pnl/capbase*100):0,pc=d.pnl>=0?'#2ecc71':'#e74c3c';return'<tr style="border-bottom:1px solid rgba(255,255,255,0.05)"><td style="padding:6px 10px;font-family:monospace;font-size:11px">'+d.dt+'</td><td style="padding:6px 10px;text-align:right;font-size:12px">'+d.n+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+(dwr>=50?'#2ecc71':'#e74c3c')+'">'+dwr.toFixed(0)+'%</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+pc+';font-weight:600">'+_fK(d.pnl)+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+_pCol(ca2)+'">'+_fK(ca2)+'</td><td style="padding:6px 10px;text-align:right;font-size:11px;color:#8fa3be">$'+fmtNum(capbase)+'</td><td style="padding:6px 10px;text-align:right;font-size:12px;color:'+(rd>=0?'#2ecc71':'#e74c3c')+'">'+(rd>=0?'+':'')+rd.toFixed(2)+'%</td></tr>';}).join('');}
 
   _buildPerfCharts(pfx, data.daily||[], accent, data.by_reason||[], data.by_symbol||[]);
 }

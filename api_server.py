@@ -7788,6 +7788,22 @@ def fetch_fx_rates():
               Fallbacks: AwesomeAPI puro -> frankfurter.dev (ECB, marcado STALE).
       Demais (GBPUSD/EURUSD/CADUSD/HKDUSD): AwesomeAPI -> frankfurter.dev.
     fx_meta registra fonte + idade por par (exposto em /api/fx-rates)."""
+    # [v2 29-jul] Delegado ao modules/fx_feed: contratos DOL/WDO reais na Cedro
+    # (DOLFUT continuo retornava null), brapi com token como spot (Awesome deu
+    # 429 QuotaExceeded), throttles e backoff. Fallback: logica inline antiga.
+    try:
+        from modules.fx_feed import get_rates as _fx_get
+        _r, _m = _fx_get(globals().get('_cedro_socket'))
+        if _r.get('USDBRL'):
+            fx_rates.update(_r)
+            fx_meta.update(_m)
+            _src = (_m.get('USDBRL') or {}).get('source')
+            log.info(f"FX USDBRL={fx_rates.get('USDBRL')} ({_src}) | pares={list(_r)}")
+            if _src and not str(_src).startswith('CEDRO'):
+                log.warning(f'[FX] USDBRL sem Cedro ({_src}) — verificar contratos DOL no socket')
+            return
+    except Exception as _dg:
+        log.warning(f'[FX] fx_feed delegate: {_dg} — usando logica inline')
     global _fx_basis
     now_ts = time.time()
 
@@ -19473,6 +19489,16 @@ def debug_fx_sources():
     except Exception as e:
         out['awesomeapi'] = {'erro': str(e)[:200]}
     try:
+        _tok = os.environ.get('BRAPI_TOKEN', '')
+        if not _tok:
+            out['brapi'] = {'erro': 'BRAPI_TOKEN ausente'}
+        else:
+            r = requests.get('https://brapi.dev/api/v2/currency',
+                             params={'currency': 'USD-BRL', 'token': _tok}, timeout=8)
+            out['brapi'] = {'status': r.status_code, 'body': r.text[:200]}
+    except Exception as e:
+        out['brapi'] = {'erro': str(e)[:200]}
+    try:
         _cs = globals().get('_cedro_socket')
         if not _cs:
             out['cedro'] = {'erro': '_cedro_socket nao existe neste servico'}
@@ -19480,9 +19506,17 @@ def debug_fx_sources():
             out['cedro'] = {'erro': 'cedro socket DESABILITADO neste servico'}
         else:
             q = {}
-            for s in ('DOLFUT', 'WDOFUT'):
+            try:
+                from modules.fx_feed import _dollar_contract_candidates
+                _cands = _dollar_contract_candidates()
+                try: _cs.subscribe(_cands)
+                except Exception: pass
+                import time as _tt; _tt.sleep(1.0)
+            except Exception:
+                _cands = ['DOLFUT', 'WDOFUT']
+            for s in _cands:
                 try:
-                    q[s] = _cs.get_price(s, wait_ms=1500)
+                    q[s] = _cs.get_price(s, wait_ms=1200)
                 except Exception as e:
                     q[s] = f'erro: {str(e)[:120]}'
             try:

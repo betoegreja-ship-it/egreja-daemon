@@ -1,0 +1,182 @@
+"""
+═══════════════════════════════════════════════════════════════════════════
+FX FEED — cambio real-time institucional  [29-jul-2026, ordem Beto]
+═══════════════════════════════════════════════════════════════════════════
+Prioridade USDBRL:
+  1. CEDRO dolar futuro (tick real-time). 'DOLFUT'/'WDOFUT' continuo pode nao
+     existir no plano — tentamos tambem os CONTRATOS reais (DOL<letra><aa>,
+     WDO<letra><aa>) do mes da frente, assinando-os no socket na primeira vez.
+     Ajuste de BASIS vs spot comercial (EWMA, clamp 0..0.6%).
+  2. Spot comercial: BRAPI (token, quota folgada, cache 120s)
+                     -> AwesomeAPI (cache 600s + backoff 30min em HTTP 429).
+  3. frankfurter.dev (ECB diario) — marcado STALE.
+Demais pares (EURUSD/GBPUSD/CADUSD/HKDUSD): BRAPI -> AwesomeAPI -> ECB.
+ZERO Yahoo em qualquer etapa.
+"""
+import os, time, logging, requests
+from datetime import date
+
+log = logging.getLogger('egreja.fx')
+
+_MONTH_CODES = ['F', 'G', 'H', 'J', 'K', 'M', 'N', 'Q', 'U', 'V', 'X', 'Z']
+_awes = {'ts': 0, 'data': {}, 'backoff_until': 0}
+_brapi = {'ts': 0, 'data': {}}
+_basis = {'val': None, 'ts': 0}
+_dol_subscribed = False
+
+
+def _dollar_contract_candidates():
+    """['DOLFUT','WDOFUT','DOLQ26','WDOQ26','DOLU26','WDOU26'] p/ hoje."""
+    t = date.today()
+    out = ['DOLFUT', 'WDOFUT']
+    for k in (1, 2):   # frente = mes+1 (DOL vence no 1o dia util do mes)
+        mth = (t.month - 1 + k) % 12
+        yy = (t.year + ((t.month - 1 + k) // 12)) % 100
+        out += [f'DOL{_MONTH_CODES[mth]}{yy:02d}', f'WDO{_MONTH_CODES[mth]}{yy:02d}']
+    return out
+
+
+def cedro_dollar(cedro):
+    """Preco do dolar via Cedro (futuro, em R$/US$). None se indisponivel."""
+    global _dol_subscribed
+    if not cedro or not getattr(cedro, 'enabled', False):
+        return None, None
+    cands = _dollar_contract_candidates()
+    try:
+        if not _dol_subscribed:
+            cedro.subscribe(cands)
+            _dol_subscribed = True
+            time.sleep(1.0)  # da tempo do primeiro tick chegar
+    except Exception as e:
+        log.debug(f'[FX] subscribe dol: {e}')
+    for sym in cands:
+        try:
+            p = cedro.get_price(sym, wait_ms=700)
+            if p and float(p) > 0:
+                p = float(p)
+                if p > 1000: p = p / 1000.0     # cotado em R$/US$1000
+                if 3.0 < p < 9.0:
+                    return p, sym
+        except Exception:
+            continue
+    return None, None
+
+
+def _brapi_rates():
+    """Spot via brapi (token). {'USDBRL':x,'EURUSD':y,...} cache 120s."""
+    now = time.time()
+    if now - _brapi['ts'] < 120 and _brapi['data']:
+        return _brapi['data']
+    tok = os.environ.get('BRAPI_TOKEN', '')
+    if not tok: return _brapi['data']
+    try:
+        r = requests.get('https://brapi.dev/api/v2/currency',
+                         params={'currency': 'USD-BRL,EUR-USD,GBP-USD,USD-CAD,USD-HKD',
+                                 'token': tok}, timeout=8)
+        if r.status_code == 200:
+            out = {}
+            for c in (r.json() or {}).get('currency', []) or []:
+                try:
+                    key = (c.get('fromCurrency', '') + c.get('toCurrency', '')).upper()
+                    px = float(c.get('bidPrice') or c.get('askPrice') or 0)
+                    if px > 0: out[key] = px
+                except Exception:
+                    continue
+            if out:
+                _brapi.update({'ts': now, 'data': out})
+    except Exception as e:
+        log.debug(f'[FX] brapi: {e}')
+    return _brapi['data']
+
+
+def _awesome_rates():
+    """Spot via AwesomeAPI. Cache 600s; backoff 30min em 429 (QuotaExceeded)."""
+    now = time.time()
+    if now < _awes['backoff_until']: return _awes['data']
+    if now - _awes['ts'] < 600 and _awes['data']: return _awes['data']
+    try:
+        r = requests.get('https://economia.awesomeapi.com.br/last/'
+                         'USD-BRL,EUR-USD,GBP-USD,USD-CAD,USD-HKD',
+                         headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+        if r.status_code == 429:
+            _awes['backoff_until'] = now + 1800
+            log.warning('[FX] AwesomeAPI 429 — backoff 30min')
+            return _awes['data']
+        if r.status_code == 200:
+            out = {}
+            for k, v in (r.json() or {}).items():
+                try:
+                    bid, ask = float(v.get('bid', 0)), float(v.get('ask', 0))
+                    mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else (bid or ask)
+                    if mid > 0: out[k] = mid
+                except Exception:
+                    continue
+            if out: _awes.update({'ts': now, 'data': out})
+    except Exception as e:
+        log.debug(f'[FX] awesome: {e}')
+    return _awes['data']
+
+
+def get_rates(cedro=None):
+    """Retorna (rates: dict, meta: dict). Nunca levanta excecao."""
+    now = time.time()
+    rates, meta = {}, {}
+
+    br = _brapi_rates()
+    aw = _awesome_rates()
+    spot = br.get('USDBRL') or aw.get('USDBRL')
+    spot_src = 'BRAPI' if br.get('USDBRL') else ('AWESOMEAPI' if aw.get('USDBRL') else None)
+
+    dol, dol_sym = cedro_dollar(cedro)
+    if dol and spot:
+        b = max(0.0, min(dol - spot, 0.006 * dol))   # clamp 0..0.6%
+        _basis['val'] = b if _basis['val'] is None else 0.7 * _basis['val'] + 0.3 * b
+        _basis['ts'] = now
+        rates['USDBRL'] = round(dol - _basis['val'], 4)
+        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}+basis({spot_src})', 'ts': now,
+                          'dolfut': round(dol, 4), 'basis': round(_basis['val'], 4)}
+    elif dol and _basis['val'] is not None:
+        rates['USDBRL'] = round(dol - _basis['val'], 4)
+        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}+basis_cache', 'ts': now,
+                          'dolfut': round(dol, 4), 'basis': round(_basis['val'], 4)}
+    elif dol:
+        rates['USDBRL'] = round(dol, 4)
+        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}_raw', 'ts': now, 'dolfut': round(dol, 4)}
+    elif spot:
+        rates['USDBRL'] = round(spot, 4)
+        meta['USDBRL'] = {'source': f'{spot_src}_spot', 'ts': now}
+
+    # demais pares (brapi > awesome), mantendo formatos historicos do fx_rates
+    def _pick(*keys):
+        for src_name, src in (('BRAPI', br), ('AWESOMEAPI', aw)):
+            for k in keys:
+                if src.get(k): return src_name, src[k]
+        return None, None
+    s, v = _pick('EURUSD');  0
+    if v: rates['EURUSD'] = round(v, 4); meta['EURUSD'] = {'source': s, 'ts': now}
+    s, v = _pick('GBPUSD')
+    if v: rates['GBPUSD'] = round(v, 4); meta['GBPUSD'] = {'source': s, 'ts': now}
+    s, v = _pick('USDCAD')
+    if v and v > 0: rates['CADUSD'] = round(1.0 / v, 4); meta['CADUSD'] = {'source': s, 'ts': now}
+    s, v = _pick('USDHKD')
+    if v: rates['HKDUSD'] = round(v, 4); meta['HKDUSD'] = {'source': s, 'ts': now}  # USD/HKD
+
+    if rates.get('USDBRL'):
+        return rates, meta
+
+    # ultimo recurso: ECB diario
+    try:
+        r = requests.get('https://api.frankfurter.dev/v1/latest',
+                         params={'base': 'USD', 'symbols': 'BRL,GBP,HKD,CAD,EUR'}, timeout=8)
+        if r.status_code == 200:
+            rr = r.json().get('rates', {})
+            if rr.get('BRL'): rates['USDBRL'] = round(rr['BRL'], 4)
+            if rr.get('GBP'): rates['GBPUSD'] = round(1.0 / rr['GBP'], 4)
+            if rr.get('HKD'): rates['HKDUSD'] = round(rr['HKD'], 4)
+            if rr.get('CAD'): rates['CADUSD'] = round(1.0 / rr['CAD'], 4)
+            if rr.get('EUR'): rates['EURUSD'] = round(1.0 / rr['EUR'], 4)
+            for k in rates: meta.setdefault(k, {'source': 'ECB_DIARIO_STALE', 'ts': now})
+            log.warning('[FX] todas as fontes real-time falharam — ECB diario STALE')
+    except Exception as e:
+        log.warning(f'[FX] frankfurter.dev: {e}')
+    return rates, meta

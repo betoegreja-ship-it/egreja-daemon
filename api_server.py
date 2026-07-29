@@ -19391,6 +19391,17 @@ def debug_longleg_open():
                         return v
                 except Exception:
                     continue
+            # [29-jul] fallback: ADRs NYSE fora do cache local -> Polygon last trade
+            if POLYGON_API_KEY and str(mkt or '').upper() not in ('B3', 'BOVESPA'):
+                try:
+                    _r = requests.get(
+                        f'https://api.polygon.io/v2/last/trade/{sym.replace(".SA", "")}',
+                        params={'apiKey': POLYGON_API_KEY}, timeout=4)
+                    _p = ((_r.json() or {}).get('results') or {}).get('p')
+                    if _p and float(_p) > 0:
+                        return float(_p)
+                except Exception:
+                    pass
             return None
 
         c = _llconn(); cur = c.cursor()

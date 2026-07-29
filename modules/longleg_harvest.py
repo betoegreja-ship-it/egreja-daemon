@@ -443,7 +443,14 @@ def summary():
     # [v4 GPT] READ-ONLY: nao finaliza aqui (isso e do scheduler/monitor).
     create_tables()
     c = _conn(); cur = c.cursor(pymysql.cursors.DictCursor)
-    cur.execute("SELECT * FROM longleg_harvest WHERE status='CLOSED'")
+    # [29-jul, decisao Beto] EXCLUI da fonte tudo marcado fx_suspect=1 (janelas de
+    # cambio defasado 09/13/28/29-jul). Trade contaminada nao entra na estatistica —
+    # nem com lucro, nem com prejuizo. Coluna criada; guard p/ bases antigas.
+    try:
+        cur.execute("SELECT * FROM longleg_harvest WHERE status='CLOSED' "
+                    "AND (fx_suspect IS NULL OR fx_suspect=0)")
+    except Exception:
+        cur.execute("SELECT * FROM longleg_harvest WHERE status='CLOSED'")
     rows = cur.fetchall(); c.close()
 
     # [decisao Beto] P&L em US$ a NOTIONAL/posicao, mas retorno sobre a CAPACIDADE real:

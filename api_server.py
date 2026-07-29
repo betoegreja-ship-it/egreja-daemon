@@ -19603,7 +19603,8 @@ def debug_longleg_open():
         c = _llconn(); cur = c.cursor()
         cur.execute("""SELECT arbi_id, pair, long_leg, long_mkt, long_px_entry,
                        opened_at, opened_epoch FROM longleg_harvest
-                       WHERE status='OPEN' ORDER BY opened_at DESC LIMIT 30""")
+                       WHERE status='OPEN' AND (fx_suspect IS NULL OR fx_suspect=0)
+                       ORDER BY opened_at DESC LIMIT 30""")
         abertas = []
         parcial_tot = 0.0
         import time as _t
@@ -19623,6 +19624,7 @@ def debug_longleg_open():
         cur.execute("""SELECT pair, long_leg, ROUND(long_ret_pct,3), ROUND(dir_exit_ret_pct,3),
                        dir_exit_reason, closed_at FROM longleg_harvest
                        WHERE status='CLOSED' AND long_ret_pct IS NOT NULL
+                       AND (fx_suspect IS NULL OR fx_suspect=0)
                        ORDER BY closed_at DESC LIMIT 12""")
         fechadas = [{'par': r[0], 'perna_long': r[1], 'ret_all_pct': float(r[2]) if r[2] is not None else None,
                      'ret_dir_pct': float(r[3]) if r[3] is not None else None,

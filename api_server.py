@@ -2482,6 +2482,7 @@ def auth_check():
         '/debug/spreads',
         '/debug/ib-quote-test',
         '/debug/zombie',
+        '/debug/fx-sources',
         '/public/shadow',
     }
     _public_read_prefixes = ('/static/', '/assets/')
@@ -7794,7 +7795,8 @@ def fetch_fx_rates():
     awes = {}
     try:
         r = requests.get('https://economia.awesomeapi.com.br/last/'
-                         'USD-BRL,EUR-USD,GBP-USD,USD-CAD,USD-HKD', timeout=6)
+                         'USD-BRL,EUR-USD,GBP-USD,USD-CAD,USD-HKD',
+                         headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
         if r.status_code == 200:
             j = r.json()
             for k, v in j.items():
@@ -19457,6 +19459,43 @@ def debug_ib_quote_test():
                         'papeis': out})
     except Exception as e:
         return jsonify({'ok': False, 'erro': str(e)}), 500
+
+
+@app.route('/debug/fx-sources')
+def debug_fx_sources():
+    """[29-jul] Testa cada fonte de FX individualmente e mostra o erro real.
+    Serve pra diagnosticar por que caimos no fallback ECB."""
+    out = {}
+    try:
+        r = requests.get('https://economia.awesomeapi.com.br/last/USD-BRL',
+                         headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+        out['awesomeapi'] = {'status': r.status_code, 'body': r.text[:200]}
+    except Exception as e:
+        out['awesomeapi'] = {'erro': str(e)[:200]}
+    try:
+        _cs = globals().get('_cedro_socket')
+        if not _cs:
+            out['cedro'] = {'erro': '_cedro_socket nao existe neste servico'}
+        elif not getattr(_cs, 'enabled', False):
+            out['cedro'] = {'erro': 'cedro socket DESABILITADO neste servico'}
+        else:
+            q = {}
+            for s in ('DOLFUT', 'WDOFUT'):
+                try:
+                    q[s] = _cs.get_price(s, wait_ms=1500)
+                except Exception as e:
+                    q[s] = f'erro: {str(e)[:120]}'
+            try:
+                out['cedro_health'] = _cs.healthcheck()
+            except Exception as e:
+                out['cedro_health'] = str(e)[:150]
+            out['cedro'] = q
+    except Exception as e:
+        out['cedro'] = {'erro': str(e)[:200]}
+    out['fx_atual'] = dict(fx_rates)
+    out['fx_meta'] = {k: {'fonte': m.get('source'), 'idade_s': int(time.time() - m.get('ts', time.time()))}
+                      for k, m in fx_meta.items()}
+    return jsonify(out)
 
 
 @app.route('/debug/zombie')

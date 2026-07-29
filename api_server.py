@@ -7827,6 +7827,9 @@ def fetch_fx_rates():
     awes_spot = awes.get('USDBRL')
     if dolfut and awes_spot:
         b = dolfut - awes_spot             # basis futuro-vs-spot (juros ate vcto)
+        # CLAMP de sanidade: basis legitimo e >=0 (juro BR>US) e <=0.6% do spot
+        # (~1 mes de diferencial). Protege contra a propria ancora divergir.
+        b = max(0.0, min(b, 0.006 * dolfut))
         if _fx_basis.get('val') is None: _fx_basis['val'] = b
         else: _fx_basis['val'] = 0.7 * _fx_basis['val'] + 0.3 * b
         _fx_basis['ts'] = now_ts
@@ -12754,6 +12757,20 @@ def start_background_threads():
             log.info('[ZOMBIE-SHADOW] observador passivo adicionado (NYSE)')
     except Exception as _zse:
         log.warning(f'[ZOMBIE-SHADOW] setup: {_zse}')
+
+    # [FX-REFRESH 29-jul-2026] O core so buscava FX no BOOT (updates viviam nos
+    # loops da Arbi, que rodam no servico dedicado) — por isso o dashboard
+    # congelou no cambio de ontem. Refresher dedicado: a cada 2min.
+    def _fx_refresh_loop():
+        while True:
+            try:
+                beat('fx_refresh_loop')
+                fetch_fx_rates()
+            except Exception as _fe:
+                log.debug(f'[FX-REFRESH] {_fe}')
+            time.sleep(120)
+    defs['fx_refresh_loop'] = _fx_refresh_loop
+    log.info('[FX-REFRESH] loop de cambio adicionado (2min, Cedro/Awesome)')
 
     # [v12-CALIBRATOR 24-jun-2026] Worker que recalibra brain a cada hora
     # Lê os 12k+ trades historicos, calcula pesos data-driven, atualiza MySQL.

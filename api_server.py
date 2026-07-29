@@ -2195,6 +2195,8 @@ crypto_tickers  = {}   # [v10.4] dados extras Binance: high_24h, low_24h, vol_qu
 market_regime   = {'mode':'UNKNOWN','volatility':'NORMAL','avg_change_pct':0,'updated_at':''}
 arbi_spreads    = {}
 fx_rates        = {}
+fx_meta         = {}   # [29-jul] fonte + timestamp por par (CEDRO/AWESOME/ECB_STALE)
+_fx_basis       = {'val': None, 'ts': 0}  # basis DOLFUT - spot comercial (EWMA)
 
 symbol_cooldown = {}
 _trailing_stop_cooldown = {}  # sym → timestamp do último trailing stop
@@ -7770,58 +7772,102 @@ def is_momentum_positive(trade):
 # FX RATES
 # ═══════════════════════════════════════════════════════════════
 def fetch_fx_rates():
-    """[FIX 06/mai/2026] Yahoo Finance intraday PRIMARY (real-time tick) → frankfurter.app
-    fallback (ECB diario). Era o oposto antes — frankfurter primary forcava ECB diario,
-    causando defasagem em arbi B3-NYSE. Auditoria mostrou +0.65% diff medio em FX entry
-    e $64k subestimacao de PnL acumulado.
+    """[29-jul-2026, ORDEM BETO — urgente] FX real-time via CEDRO, ZERO Yahoo.
 
-    Para arbi institucional precisa de FX intraday. Yahoo da candles 1m do USDBRL=X,
-    EURUSD=X, GBPUSD=X etc. Real-time, free, sem key.
-    """
-    pairs = {'USDBRL': 'USDBRL=X', 'GBPUSD': 'GBPUSD=X', 'HKDUSD': 'HKD=X',
-             'CADUSD': 'CAD=X', 'EURUSD': 'EURUSD=X'}
-    yahoo_ok = 0
-    for key, sym in pairs.items():
-        try:
-            # Pegar last candle 1m (real-time intraday)
-            r = requests.get(
-                f'https://query1.finance.yahoo.com/v8/finance/chart/{sym}',
-                params={'interval': '1m', 'range': '1d'},
-                headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
-            if r.status_code == 200:
-                _res = r.json().get('chart', {}).get('result', [{}])[0]
-                _meta = _res.get('meta', {})
-                _closes = _res.get('indicators', {}).get('quote', [{}])[0].get('close', []) or []
-                _closes_clean = [c for c in _closes if c]
-                # Priorizar last candle 1m, depois meta regularMarketPrice
-                _price = _closes_clean[-1] if _closes_clean else _meta.get('regularMarketPrice', 0)
-                # Yahoo retorna BRL=X como 1 USD = X BRL (ex: 4.92), exatamente como queremos USDBRL
-                # Mesma logica para outros pares: GBPUSD=X já vem na direção certa
-                # MAS HKD=X e CAD=X retornam USD->moeda; precisamos inverter para moeda->USD
-                if _price and _price > 0:
-                    if key == 'HKDUSD':
-                        # HKD=X = USD/HKD (ex: 7.83); HKDUSD nominal = 1 HKD em USD (ex: 0.128)
-                        # Mas no codigo arbi (calc_spread): pa = pa_raw/rate, ou seja rate = USD/HKD
-                        # Manter formato original: HKDUSD = USD/HKD (mesmo do frankfurter HKD)
-                        fx_rates[key] = round(_price, 4)
-                    elif key == 'CADUSD':
-                        # CAD=X = USD/CAD (ex: 1.36); CADUSD nominal = 1 CAD em USD = 1/USD/CAD = 0.735
-                        # No frankfurter o codigo faz: 1.0 / rates['CAD'] = inverte. Manter inversao
-                        fx_rates[key] = round(1.0 / _price, 4)
-                    else:
-                        # USDBRL, GBPUSD, EURUSD: ja vem direto na direcao certa
-                        fx_rates[key] = round(_price, 4)
-                    yahoo_ok += 1
-        except Exception as _ye:
-            log.debug(f'[FX-YAHOO] {key}: {_ye}')
-    if yahoo_ok >= 1:
-        log.info(f'FX (Yahoo intraday 1m): {fx_rates}')
-        return
-    # Fallback: frankfurter ECB diario
+    Incidente: Yahoo parou de entregar intraday no Railway e o fx_rates ficou
+    CONGELADO no cambio de ontem (5.1256 vs real 5.0969, +0.56%) — todos os
+    spreads ADR<->B3 da Arbi deslocados por ~0.55% em 28-29/jul.
+
+    Novo desenho (sem Yahoo em nenhuma etapa):
+      USDBRL: CEDRO DOLFUT (tick real-time, ja assinado) com AJUSTE DE BASIS
+              — futuro carrega premio de juros sobre o spot; calibramos
+              basis = DOLFUT/1000 - spot_comercial (AwesomeAPI) via EWMA e
+              aplicamos: spot_estimado = DOLFUT/1000 - basis. Assim o tick e
+              da Cedro e a ancora e o dolar comercial.
+              Fallbacks: AwesomeAPI puro -> frankfurter.dev (ECB, marcado STALE).
+      Demais (GBPUSD/EURUSD/CADUSD/HKDUSD): AwesomeAPI -> frankfurter.dev.
+    fx_meta registra fonte + idade por par (exposto em /api/fx-rates)."""
+    global _fx_basis
+    now_ts = time.time()
+
+    # ---- 1. AwesomeAPI (dolar comercial + demais pares) ----
+    awes = {}
     try:
-        r = requests.get(
-            'https://api.frankfurter.app/latest',
-            params={'from': 'USD', 'to': 'BRL,GBP,HKD,CAD,EUR'}, timeout=8)
+        r = requests.get('https://economia.awesomeapi.com.br/last/'
+                         'USD-BRL,EUR-USD,GBP-USD,USD-CAD,USD-HKD', timeout=6)
+        if r.status_code == 200:
+            j = r.json()
+            for k, v in j.items():
+                try:
+                    bid, ask = float(v.get('bid', 0)), float(v.get('ask', 0))
+                    mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else (bid or ask)
+                    if mid > 0: awes[k] = mid
+                except Exception:
+                    continue
+    except Exception as _ae:
+        log.debug(f'[FX-AWESOME] {_ae}')
+
+    # ---- 2. USDBRL: Cedro DOLFUT (primario) com basis-anchor ----
+    usd_src = None
+    dolfut = None
+    try:
+        if _cedro_socket and _cedro_socket.enabled:
+            for _sym in ('DOLFUT', 'WDOFUT'):
+                _p = _cedro_socket.get_price(_sym, wait_ms=800)
+                if _p and float(_p) > 0:
+                    dolfut = float(_p)
+                    break
+            if dolfut and dolfut > 1000:   # cotado em R$/US$1000 (ex.: 5110.5)
+                dolfut = dolfut / 1000.0
+            if dolfut and not (3.0 < dolfut < 9.0):
+                dolfut = None              # sanidade: fora da faixa plausivel
+    except Exception as _ce:
+        log.debug(f'[FX-CEDRO] DOLFUT: {_ce}')
+
+    awes_spot = awes.get('USDBRL')
+    if dolfut and awes_spot:
+        b = dolfut - awes_spot             # basis futuro-vs-spot (juros ate vcto)
+        if _fx_basis.get('val') is None: _fx_basis['val'] = b
+        else: _fx_basis['val'] = 0.7 * _fx_basis['val'] + 0.3 * b
+        _fx_basis['ts'] = now_ts
+        fx_rates['USDBRL'] = round(dolfut - _fx_basis['val'], 4)
+        usd_src = 'CEDRO_DOLFUT+basis'
+    elif dolfut and _fx_basis.get('val') is not None:
+        fx_rates['USDBRL'] = round(dolfut - _fx_basis['val'], 4)
+        usd_src = 'CEDRO_DOLFUT+basis_cache'
+    elif dolfut:
+        fx_rates['USDBRL'] = round(dolfut, 4)
+        usd_src = 'CEDRO_DOLFUT_raw'
+    elif awes_spot:
+        fx_rates['USDBRL'] = round(awes_spot, 4)
+        usd_src = 'AWESOMEAPI_spot'
+
+    # ---- 3. Demais pares via AwesomeAPI (invertendo onde preciso) ----
+    others = {}
+    if awes.get('EURUSD'): others['EURUSD'] = ('AWESOMEAPI', round(awes['EURUSD'], 4))
+    if awes.get('GBPUSD'): others['GBPUSD'] = ('AWESOMEAPI', round(awes['GBPUSD'], 4))
+    if awes.get('USDCAD') and awes['USDCAD'] > 0:
+        others['CADUSD'] = ('AWESOMEAPI', round(1.0 / awes['USDCAD'], 4))
+    if awes.get('USDHKD'):
+        others['HKDUSD'] = ('AWESOMEAPI', round(awes['USDHKD'], 4))  # formato USD/HKD (como antes)
+    for k, (src, v) in others.items():
+        fx_rates[k] = v
+        fx_meta[k] = {'source': src, 'ts': now_ts}
+
+    if usd_src:
+        fx_meta['USDBRL'] = {'source': usd_src, 'ts': now_ts,
+                             'dolfut': round(dolfut, 4) if dolfut else None,
+                             'basis': round(_fx_basis['val'], 4) if _fx_basis.get('val') is not None else None}
+        log.info(f"FX USDBRL={fx_rates.get('USDBRL')} ({usd_src}) | "
+                 f"dolfut={dolfut} basis={_fx_basis.get('val')} | outros={list(others)}")
+        if usd_src not in ('CEDRO_DOLFUT+basis', 'CEDRO_DOLFUT+basis_cache'):
+            log.warning(f'[FX] USDBRL sem Cedro ({usd_src}) — verificar socket DOLFUT')
+        return
+
+    # ---- 4. Ultimo recurso: frankfurter.dev (ECB DIARIO — marcado STALE) ----
+    try:
+        r = requests.get('https://api.frankfurter.dev/v1/latest',
+                         params={'base': 'USD', 'symbols': 'BRL,GBP,HKD,CAD,EUR'}, timeout=8)
         if r.status_code == 200:
             rates = r.json().get('rates', {})
             if rates.get('BRL', 0) > 0: fx_rates['USDBRL'] = round(rates['BRL'], 4)
@@ -7829,11 +7875,13 @@ def fetch_fx_rates():
             if rates.get('HKD', 0) > 0: fx_rates['HKDUSD'] = round(rates['HKD'], 4)
             if rates.get('CAD', 0) > 0: fx_rates['CADUSD'] = round(1.0 / rates['CAD'], 4)
             if rates.get('EUR', 0) > 0: fx_rates['EURUSD'] = round(1.0 / rates['EUR'], 4)
-            log.info(f'FX (frankfurter ECB fallback): {fx_rates}')
+            for k in ('USDBRL', 'GBPUSD', 'HKDUSD', 'CADUSD', 'EURUSD'):
+                fx_meta[k] = {'source': 'ECB_DIARIO_STALE', 'ts': now_ts}
+            log.warning(f'[FX] TODAS as fontes real-time falharam — ECB diario STALE: {fx_rates}')
             return
     except Exception as e:
-        log.warning(f'frankfurter.app: {e}')
-    log.warning(f'FX update FAILED — usando ultimo cached: {fx_rates}')
+        log.warning(f'frankfurter.dev: {e}')
+    log.warning(f'[FX] update FAILED — usando ultimo cached: {fx_rates}')
 
 # ═══════════════════════════════════════════════════════════════
 # MONITOR TRADES
@@ -17001,6 +17049,13 @@ def fx_rates_endpoint():
     # Derivar EURBRL para conveniência do frontend (EUR em BRL)
     if out.get('EURUSD') and out.get('USDBRL'):
         out['EURBRL'] = round(out['EURUSD'] * out['USDBRL'], 4)
+    # [29-jul] transparencia: fonte + idade de cada par (detecta stale na hora)
+    try:
+        _now = time.time()
+        out['_meta'] = {k: {'fonte': m.get('source'), 'idade_s': int(_now - m.get('ts', _now))}
+                        for k, m in fx_meta.items()}
+    except Exception:
+        pass
     if out.get('GBPUSD') and out.get('USDBRL'):
         out['GBPBRL'] = round(out['GBPUSD'] * out['USDBRL'], 4)
     return jsonify({'fx': out, 'ts': datetime.utcnow().isoformat()})

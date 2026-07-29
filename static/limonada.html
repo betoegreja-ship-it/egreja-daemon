@@ -47,6 +47,19 @@
   </tr></thead><tbody></tbody></table>
   <div class="muted" id="capnote"></div>
 
+  <h2 style="color:#ffd35a">🍋 Trades abertas agora (ALL &amp; Directional Exit)</h2>
+  <div class="muted">Mesma perna long nas duas: ALL sai quando a Arbi fecha; Directional Exit tem saída própria (stop/trail) calculada depois. Parcial = mark-to-market sobre US$100k.</div>
+  <table id="llopen"><thead><tr>
+    <th>Par</th><th>Perna long</th><th>Mercado</th><th>Entrada</th><th>Atual</th>
+    <th>Parcial %</th><th>Parcial US$</th><th>Idade (h)</th><th>Aberta em</th>
+  </tr></thead><tbody></tbody></table>
+  <div class="muted" id="llopen_tot"></div>
+
+  <h2 style="color:#ffd35a">Últimas fechadas — ALL vs Directional Exit</h2>
+  <table id="llclosed"><thead><tr>
+    <th>Par</th><th>Perna long</th><th>Ret ALL %</th><th>Ret DIR %</th><th>Saída DIR</th><th>Fechada em</th>
+  </tr></thead><tbody></tbody></table>
+
   <h2>Execução viva no IB (paper) — saída pela Arbi</h2>
   <div class="row" id="ibcards"></div>
   <table id="ibtrades"><thead><tr>
@@ -79,15 +92,41 @@ async function jget(u){const r=await fetch(API_BASE+u,{credentials:'omit'});if(!
 
 async function load(){
   try{
-    const [ll,ib,sp]=await Promise.allSettled([jget('/debug/longleg'),jget('/debug/longleg-ib'),jget('/debug/spreads')]);
+    const [ll,ib,sp,lo]=await Promise.allSettled([jget('/debug/longleg'),jget('/debug/longleg-ib'),jget('/debug/spreads'),jget('/debug/longleg-open')]);
     if(ll.status==='fulfilled') renderLL(ll.value); else showWarn('Shadow (/debug/longleg) indisponível: '+ll.reason.message);
     if(ib.status==='fulfilled') renderIB(ib.value);
     if(sp.status==='fulfilled') renderSP(sp.value);
+    if(lo.status==='fulfilled') renderLO(lo.value);
     $('#sub').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR')+' · atualiza sozinho a cada 45s';
     $('#foot').textContent='Fonte: /debug/longleg · /debug/longleg-ib · /debug/spreads · P&L bruto, US$100k/posição · retorno % independe do notional';
   }catch(e){showWarn('Erro: '+e.message);}
 }
 function showWarn(m){const w=$('#warn');w.style.display='block';w.textContent=m;}
+
+function renderLO(d){
+  const tb=$('#llopen tbody'); tb.innerHTML='';
+  (d.abertas||[]).forEach(t=>{
+    tb.insertAdjacentHTML('beforeend',`<tr style="background:#14213a">
+      <td>${t.par||''}</td><td><b>${t.perna_long||''}</b></td><td>${t.mkt||''}</td>
+      <td>${t.entrada!=null?(+t.entrada).toFixed(2):'—'}</td>
+      <td>${t.atual!=null?(+t.atual).toFixed(2):'—'}</td>
+      <td class="${cls(t.parcial_pct||0)}">${t.parcial_pct!=null?fmtPct(t.parcial_pct,2):'—'}</td>
+      <td class="${cls(t.parcial_usd||0)}">${t.parcial_usd!=null?fmtUsd(t.parcial_usd):'—'}</td>
+      <td>${t.idade_h!=null?t.idade_h:'—'}</td><td>${(t.aberta_em||'').slice(0,16)}</td></tr>`);});
+  if(!(d.abertas||[]).length)
+    tb.innerHTML='<tr><td colspan="9" class="muted">nenhuma trade aberta agora — abre junto com a próxima Arbi</td></tr>';
+  $('#llopen_tot').textContent=(d.abertas||[]).length
+    ? `parcial total das abertas: ${fmtUsd(d.parcial_total_usd||0)} (sobre US$100k/posição)` : '';
+  const tc=$('#llclosed tbody'); tc.innerHTML='';
+  (d.ultimas_fechadas||[]).forEach(t=>{
+    tc.insertAdjacentHTML('beforeend',`<tr>
+      <td>${t.par||''}</td><td>${t.perna_long||''}</td>
+      <td class="${cls(t.ret_all_pct||0)}">${t.ret_all_pct!=null?fmtPct(t.ret_all_pct,2):'—'}</td>
+      <td class="${cls(t.ret_dir_pct||0)}">${t.ret_dir_pct!=null?fmtPct(t.ret_dir_pct,2):'aguardando cálculo'}</td>
+      <td>${t.dir_motivo||'—'}</td><td>${(t.fechada_em||'').slice(0,16)}</td></tr>`);});
+  if(!(d.ultimas_fechadas||[]).length)
+    tc.innerHTML='<tr><td colspan="6" class="muted">sem fechadas ainda</td></tr>';
+}
 
 function renderLL(d){
   const b=d.books||{}, cap=d.capital||{}, lift=b._LIFT_dir_vs_matched||{};

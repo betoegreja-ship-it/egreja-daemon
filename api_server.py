@@ -2475,6 +2475,7 @@ def auth_check():
         # de estatisticas AGREGADAS e trades dos books shadow (paper). Sem credencial,
         # sem dinheiro real, sem dado pessoal — mesma info do relatorio ao conselho.
         '/debug/longleg',
+        '/debug/longleg-open',
         '/debug/longleg-ib',
         '/debug/spreads',
         '/debug/ib-quote-test',
@@ -19367,6 +19368,64 @@ def debug_ib_quote_test():
                         'papeis': out})
     except Exception as e:
         return jsonify({'ok': False, 'erro': str(e)}), 500
+
+
+@app.route('/debug/longleg-open')
+def debug_longleg_open():
+    """[29-jul, pedido Beto] Trades ABERTAS da limonada (books ALL e DIRECTIONAL_EXIT)
+    com P&L parcial mark-to-market, + ultimas fechadas de cada book. Leitura publica."""
+    try:
+        from modules.longleg_harvest import _conn as _llconn
+        _LLNOT = float(os.environ.get('LL_NOTIONAL_USD', 100000))
+
+        def _px_ll(sym, mkt):
+            sym = str(sym or '').upper()
+            keys = [sym, sym.replace('.SA', ''), sym + '.SA']
+            for k in keys:
+                v = stock_prices.get(k)
+                if isinstance(v, dict):
+                    v = v.get('price') or v.get('last') or v.get('close')
+                try:
+                    v = float(v)
+                    if v > 0:
+                        return v
+                except Exception:
+                    continue
+            return None
+
+        c = _llconn(); cur = c.cursor()
+        cur.execute("""SELECT arbi_id, pair, long_leg, long_mkt, long_px_entry,
+                       opened_at, opened_epoch FROM longleg_harvest
+                       WHERE status='OPEN' ORDER BY opened_at DESC LIMIT 30""")
+        abertas = []
+        parcial_tot = 0.0
+        import time as _t
+        for aid, pair, leg, mkt, pxe, oat, oep in cur.fetchall():
+            pxe = float(pxe or 0)
+            cur_px = _px_ll(leg, mkt)
+            ret_pct = round((cur_px / pxe - 1) * 100, 3) if (cur_px and pxe > 0) else None
+            parcial_usd = round(ret_pct / 100 * _LLNOT, 0) if ret_pct is not None else None
+            if parcial_usd: parcial_tot += parcial_usd
+            idade_h = round((_t.time() - float(oep)) / 3600, 1) if oep else None
+            abertas.append({'arbi_id': aid, 'par': pair, 'perna_long': leg, 'mkt': mkt,
+                            'entrada': pxe, 'atual': cur_px, 'parcial_pct': ret_pct,
+                            'parcial_usd': parcial_usd, 'aberta_em': str(oat),
+                            'idade_h': idade_h,
+                            'nota': 'ALL sai no fechamento da Arbi; DIR_EXIT tem saida propria'})
+        # ultimas fechadas: retorno do book ALL (long_ret_pct) e do DIRECTIONAL_EXIT
+        cur.execute("""SELECT pair, long_leg, ROUND(long_ret_pct,3), ROUND(dir_exit_ret_pct,3),
+                       dir_exit_reason, closed_at FROM longleg_harvest
+                       WHERE status='CLOSED' AND long_ret_pct IS NOT NULL
+                       ORDER BY closed_at DESC LIMIT 12""")
+        fechadas = [{'par': r[0], 'perna_long': r[1], 'ret_all_pct': float(r[2]) if r[2] is not None else None,
+                     'ret_dir_pct': float(r[3]) if r[3] is not None else None,
+                     'dir_motivo': r[4], 'fechada_em': str(r[5])} for r in cur.fetchall()]
+        cur.close(); c.close()
+        return jsonify({'notional_usd': _LLNOT, 'n_abertas': len(abertas),
+                        'parcial_total_usd': round(parcial_tot, 0),
+                        'abertas': abertas, 'ultimas_fechadas': fechadas})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/debug/longleg')

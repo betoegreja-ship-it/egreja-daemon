@@ -36,30 +36,61 @@ def _dollar_contract_candidates():
     return out
 
 
+from datetime import datetime, timezone
+
+
+def _bmf_open():
+    """Janela de negociacao do DOL futuro (aprox 9:00-18:10 BRT = 12:00-21:10 UTC, dias uteis)."""
+    now = datetime.now(timezone.utc)
+    if now.weekday() >= 5:
+        return False
+    hm = now.hour * 60 + now.minute
+    return (12 * 60) <= hm <= (21 * 60 + 10)
+
+
+def _tick_age_s(q):
+    """Idade do TICK (nao do nosso fetch), a partir do _updated_at do quote Cedro."""
+    ts = (q or {}).get('_updated_at')
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts).replace('Z', ''))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds()
+    except Exception:
+        return None
+
+
 def cedro_dollar(cedro):
-    """Preco do dolar via Cedro (futuro, em R$/US$). None se indisponivel."""
+    """Preco do dolar via Cedro. Retorna (preco, simbolo, idade_tick_s, stale_bool).
+    stale=True quando estamos em horario de pregao MAS o tick esta velho (Cedro travou)."""
     global _dol_subscribed
     if not cedro or not getattr(cedro, 'enabled', False):
-        return None, None
+        return None, None, None, False
     cands = _dollar_contract_candidates()
     try:
         if not _dol_subscribed:
             cedro.subscribe(cands)
             _dol_subscribed = True
-            time.sleep(1.0)  # da tempo do primeiro tick chegar
+            time.sleep(1.0)
     except Exception as e:
         log.debug(f'[FX] subscribe dol: {e}')
+    max_age = float(os.environ.get('FX_DOL_MAX_TICK_AGE_S', 120))
     for sym in cands:
         try:
-            p = cedro.get_price(sym, wait_ms=700)
+            q = cedro.get_quote(sym, wait_ms=700) if hasattr(cedro, 'get_quote') else None
+            p = (q or {}).get('price') if q else cedro.get_price(sym, wait_ms=700)
             if p and float(p) > 0:
                 p = float(p)
-                if p > 1000: p = p / 1000.0     # cotado em R$/US$1000
+                if p > 1000: p = p / 1000.0
                 if 3.0 < p < 9.0:
-                    return p, sym
+                    age = _tick_age_s(q)
+                    stale = bool(_bmf_open() and age is not None and age > max_age)
+                    return p, sym, (round(age, 1) if age is not None else None), stale
         except Exception:
             continue
-    return None, None
+    return None, None, None, False
 
 
 def _brapi_rates():
@@ -127,21 +158,34 @@ def get_rates(cedro=None):
     spot = br.get('USDBRL') or aw.get('USDBRL')
     spot_src = 'BRAPI' if br.get('USDBRL') else ('AWESOMEAPI' if aw.get('USDBRL') else None)
 
-    dol, dol_sym = cedro_dollar(cedro)
-    if dol and spot:
+    dol, dol_sym, tick_age, dol_stale = cedro_dollar(cedro)
+    # GUARD: em pregao, se o tick do DOL estiver velho (Cedro travou), NAO usa o
+    # futuro congelado — cai pro spot e marca STALE. Fora de pregao, o congelamento
+    # e esperado (futuro nao negocia) e usamos o ultimo com fonte CEDRO_CLOSE.
+    if dol and dol_stale and spot:
+        rates['USDBRL'] = round(spot, 4)
+        meta['USDBRL'] = {'source': f'{spot_src}_spot(DOL_STALE_{int(tick_age)}s)', 'ts': now,
+                          'dol_tick_age_s': tick_age, 'stale': True}
+        log.warning(f'[FX] DOL {dol_sym} tick velho ({tick_age}s) EM PREGAO — usando spot {spot_src}')
+    elif dol and spot:
         b = max(0.0, min(dol - spot, 0.006 * dol))   # clamp 0..0.6%
         _basis['val'] = b if _basis['val'] is None else 0.7 * _basis['val'] + 0.3 * b
         _basis['ts'] = now
         rates['USDBRL'] = round(dol - _basis['val'], 4)
-        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}+basis({spot_src})', 'ts': now,
-                          'dolfut': round(dol, 4), 'basis': round(_basis['val'], 4)}
+        _closed = '' if _bmf_open() else '_CLOSE'
+        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}{_closed}+basis({spot_src})', 'ts': now,
+                          'dolfut': round(dol, 4), 'basis': round(_basis['val'], 4),
+                          'dol_tick_age_s': tick_age}
     elif dol and _basis['val'] is not None:
         rates['USDBRL'] = round(dol - _basis['val'], 4)
-        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}+basis_cache', 'ts': now,
-                          'dolfut': round(dol, 4), 'basis': round(_basis['val'], 4)}
+        _closed = '' if _bmf_open() else '_CLOSE'
+        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}{_closed}+basis_cache', 'ts': now,
+                          'dolfut': round(dol, 4), 'basis': round(_basis['val'], 4),
+                          'dol_tick_age_s': tick_age}
     elif dol:
         rates['USDBRL'] = round(dol, 4)
-        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}_raw', 'ts': now, 'dolfut': round(dol, 4)}
+        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}_raw', 'ts': now, 'dolfut': round(dol, 4),
+                          'dol_tick_age_s': tick_age}
     elif spot:
         rates['USDBRL'] = round(spot, 4)
         meta['USDBRL'] = {'source': f'{spot_src}_spot', 'ts': now}

@@ -5599,6 +5599,7 @@ def run_pattern_discovery():
                        pair_id as symbol, NULL as score, pair_id, entry_spread
                 FROM arbi_trades
                 WHERE status='CLOSED' AND pnl IS NOT NULL
+                  AND (fx_suspect IS NULL OR fx_suspect=0)  -- [29-jul] exclui FX corrompido
                 ORDER BY closed_at DESC LIMIT 500
             """)
             arbi_rows = cursor.fetchall()
@@ -12780,10 +12781,32 @@ def start_background_threads():
     # loops da Arbi, que rodam no servico dedicado) — por isso o dashboard
     # congelou no cambio de ontem. Refresher dedicado: a cada 2min.
     def _fx_refresh_loop():
+        _fx_tbl_ok = [False]
         while True:
             try:
                 beat('fx_refresh_loop')
                 fetch_fx_rates()
+                # [29-jul] grava o tick do dolar (Cedro) — serie propria p/ que
+                # correcoes FUTURAS de trades sejam EXATAS (nao temos historico
+                # intradiario de fontes gratis). So persiste quando vem da Cedro.
+                _mu = fx_meta.get('USDBRL') or {}
+                if str(_mu.get('source', '')).startswith('CEDRO') and _mu.get('dolfut'):
+                    try:
+                        from modules.pairs_engine.persistence import _get_conn as _gc
+                        _c = _gc(); _cur = _c.cursor()
+                        if not _fx_tbl_ok[0]:
+                            _cur.execute("""CREATE TABLE IF NOT EXISTS fx_tick_history (
+                                id BIGINT AUTO_INCREMENT PRIMARY KEY, ts DATETIME,
+                                usdbrl DOUBLE, dolfut DOUBLE, basis DOUBLE,
+                                source VARCHAR(48), INDEX ix_ts (ts))""")
+                            _fx_tbl_ok[0] = True
+                        _cur.execute("""INSERT INTO fx_tick_history
+                            (ts, usdbrl, dolfut, basis, source) VALUES (NOW(),%s,%s,%s,%s)""",
+                            (fx_rates.get('USDBRL'), _mu.get('dolfut'), _mu.get('basis'),
+                             _mu.get('source')))
+                        _c.commit(); _cur.close(); _c.close()
+                    except Exception as _pe:
+                        log.debug(f'[FX-TICK] persist: {_pe}')
             except Exception as _fe:
                 log.debug(f'[FX-REFRESH] {_fe}')
             time.sleep(120)

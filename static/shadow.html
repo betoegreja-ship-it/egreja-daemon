@@ -104,8 +104,47 @@ function momentumCard(d){
       <div class="kpi">P&L fechado <b class="${cls(d.pnl_fechado||0)}">${money(d.pnl_fechado||0,'BRL')}</b></div>
       ${d.abertas>0?`<div class="kpi">parcial <b class="${cls(d.pnl_parcial_aberto||0)}">${money(d.pnl_parcial_aberto||0,'BRL')}</b></div>`:''}
     </div>
-    <div class="muted">Abre trade invertida (segue tendência) quando o fade é bloqueado por regime/cooldown. Só shadow — mede se pares que tendem dariam lucro virando o lado.</div>
+    <div class="muted">Abre trade invertida (segue tendência) quando o fade é bloqueado por regime/cooldown. Só shadow. ⚠︎ Não compare P&L fechado com parcial de abertas (coortes diferentes) — veredito só com ~100 fechadas.</div>
     ${(rows||openRows)?`<table><thead><tr><th>Motivo saída / Par aberto</th><th>n / dir</th><th>P&L / z</th><th></th></tr></thead><tbody>${rows}${openRows}</tbody></table>`:''}
+  </div>`;
+}
+function v2Card(d){
+  if(!d||d.error||!d.books) return '';
+  const f=d.formation||{};
+  const funil=(f.pares||[]).filter(p=>p.tier==='NUCLEO'||p.tier==='PROVACAO')
+    .map(p=>`${p.pair}(${p.tier==='NUCLEO'?'N':'P'})`).join(' · ');
+  let rows='';
+  for(const [bk,s] of Object.entries(d.books)){
+    rows+=`<tr><td><b>Book ${bk}</b><br><span class="muted" style="font-size:11px">${s.regra||''}</span></td>
+      <td>${s.abertas||0} abertas / ${s.fechadas||0} fechadas</td>
+      <td>${s.wr!=null?s.wr+'%':'—'}</td>
+      <td class="${cls(s.pnl_fechado||0)}">${money(s.pnl_fechado||0,'BRL')}</td>
+      <td class="${cls(s.parcial_abertas||0)}">${money(s.parcial_abertas||0,'BRL')}</td></tr>`;
+    (s.trades_abertas||[]).forEach(t=>{
+      rows+=`<tr style="background:#0e1c2e"><td style="padding-left:18px">${t.pair}</td><td>${t.dir}</td>
+        <td>z ${t.entry_z!=null?(+t.entry_z).toFixed(2):'—'}</td><td></td>
+        <td class="${cls(t.parcial||0)}">${money(t.parcial||0,'BRL')}</td></tr>`;});
+  }
+  return `<div class="strat" style="border-color:#2e6b4f">
+    <div class="shead"><div class="nome">🧪 Pairs B3 v2 (desenho do conselho)</div>
+      <div class="kpi">funil <b>${f.n_nucleo||0}N + ${f.n_provacao||0}P</b></div>
+      <div class="kpi muted" style="font-size:11px">${f.fonte||''}</div>
+    </div>
+    <div class="muted">Universo vivo (formação semanal) · saída ±0,5 · stop de tese · timeout 3×half-life (teto 5 pregões). Pares: ${funil||'—'}</div>
+    <table><thead><tr><th>Book / regra</th><th>Trades</th><th>WR</th><th>P&L fechado</th><th>Parcial</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+  </div>`;
+}
+function swapCfCard(d){
+  if(!d||d.error) return '';
+  return `<div class="strat" style="border-color:#6b5a2e">
+    <div class="shead"><div class="nome">⚖️ Swap: teste do contrafactual</div>
+      <div class="kpi">abertos <b>${d.abertos||0}</b></div>
+      <div class="kpi">fechados <b>${d.fechados||0}</b></div>
+      <div class="kpi">swap venceu <b>${d.swap_adicionou_valor_n||0}/${d.fechados||0}</b></div>
+      <div class="kpi">Δ total <b class="${cls(d.delta_total||0)}">${money(d.delta_total||0,'BRL')}</b></div>
+    </div>
+    <div class="muted">Toda trade fechada por SWAP ganha uma cópia virtual que continua até a saída original. Δ>0 = trocar foi melhor que segurar (teste do viés apontado pelo GPT).</div>
   </div>`;
 }
 async function load(){
@@ -119,7 +158,7 @@ async function load(){
       ['Trades abertas agora',openTot],
       ['Trades fechadas (total)',closedTot.toLocaleString('pt-BR')],
     ].map(c=>`<div class="tcard"><div class="l">${c[0]}</div><div class="v">${c[1]}</div></div>`).join('');
-    let html=limonadaCard(d.limonada)+momentumCard(d.pairs_momentum);
+    let html=v2Card(d.pairs_v2)+limonadaCard(d.limonada)+momentumCard(d.pairs_momentum)+swapCfCard(d.swap_counterfactual);
     (d.strategies||[]).sort((a,b)=>(b.abertas||0)-(a.abertas||0)).forEach(s=>html+=stratCard(s));
     $('#strats').innerHTML=html;
     $('#sub').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR')+' · atualiza sozinho a cada 45s · linhas azuladas = trades ABERTAS';

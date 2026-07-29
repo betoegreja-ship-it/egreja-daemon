@@ -377,6 +377,17 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
                      f"{_w/max(_n,1)*100:.0f}% em {_n} trades, pnl R${_pnl:,.0f}) — sem entrada")
             return None
 
+        # ═══ [29-jul, conselho GPT+Grok+Kimi] BLACKLIST DURA: o rastreio ═══
+        # independente do Kimi (2 anos, dados reais) confirmou que estes pares
+        # NUNCA tiveram cointegracao (MULT3-ITSA4 p=0.28, MULT3-VBBR3 p=0.52,
+        # RENT3-* nem correlacao). Aposentadoria definitiva, nao estatistica.
+        _bl = set(x.strip().upper() for x in os.environ.get('PAIRS_HARD_BLACKLIST',
+                  'MULT3-ITSA4,MULT3-VBBR3,RENT3-EQTL3,RENT3-RDOR3').split(',') if x.strip())
+        if signal['pair_id'].upper() in _bl:
+            log.info(f"[PAIRS-BLACKLIST] {signal['pair_id']}: aposentado por rastreio "
+                     f"independente (sem cointegracao em 2 anos) — sem entrada")
+            return None
+
         # ═══ [PAIRS-DIVERGENCE-FIX 28-jul] Fix 2a: gate de regime ═══
         # Nao fadear par que a recalibracao classificou como sem cointegracao.
         # Sinal de entrada continua sendo gerado (vira alimento do shadow momentum).
@@ -614,6 +625,14 @@ def close_pair_trade(trade: Dict, signal: Dict, reason: str, audit_fn=None):
 
     log.info(f'[PAIRS] CLOSE {trade["id"]} {trade["pair_id"]} reason={reason} '
              f'pnl=${pnl:+,.2f} ({pnl_pct:+.3f}%) entry_z={trade["entry_z"]:+.2f} exit_z={signal["z_score"]:+.2f}')
+    # [29-jul, teste do vies do GPT] SWAPPED_OUT arma o contrafactual: uma copia
+    # virtual continua ate a saida original, pra medir se o swap adicionou valor.
+    if reason == 'SWAPPED_OUT':
+        try:
+            from . import swap_counterfactual as _swapcf
+            _swapcf.feed(trade)
+        except Exception as e:
+            log.debug(f'[SWAPCF] feed hook: {e}')
     # PERSIST close + pattern stats — historia desta trade preservada pra sempre
     try: _persist.persist_trade_close(trade)
     except Exception as e: log.warning(f'[PAIRS] persist CLOSE failed: {e}')
@@ -706,6 +725,13 @@ def pairs_scan_loop(beat_fn=None, audit_fn=None, enqueue_fn=None):
                     _mom.monitor(signal)
                 except Exception as e:
                     log.debug(f'[MOM] monitor hook: {e}')
+
+                # [29-jul] contrafactual do swap: acompanha copias virtuais
+                try:
+                    from . import swap_counterfactual as _swapcf
+                    _swapcf.monitor(signal)
+                except Exception as e:
+                    log.debug(f'[SWAPCF] monitor hook: {e}')
 
                 # PERSIST signal periodicamente (todo signal vai pro DB pra learning)
                 # Sempre persiste se for ENTRY/CONVERGED/AVOID (eventos importantes)

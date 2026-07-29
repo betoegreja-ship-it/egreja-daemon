@@ -12661,6 +12661,34 @@ def start_background_threads():
             except Exception as _le:
                 log.warning(f'[v11-PAIRS-LEARNING] worker setup: {_le}')
 
+    # [PAIRS-V2 29-jul-2026, decisao Beto pos-conselho GPT+Grok+Kimi]
+    # 1) formation loop: rastreio semanal do universo (EG+ADF multi-janela +
+    #    estabilidade por metades) → tiers NUCLEO/PROVACAO/MONITOR
+    # 2) v2 loop: books shadow A (Kimi) e B (GPT) operando so o funil vivo.
+    # Ambos shadow puro; desligam com PAIRS_V2_ENABLED=false / PAIRS_FORMATION_ENABLED=false
+    if _pairs_engine_loaded and not _disable_pairs:
+        try:
+            if os.environ.get('PAIRS_FORMATION_ENABLED', 'true').lower() != 'false':
+                from modules.pairs_engine.formation import pairs_formation_loop as _pf_loop
+                def _pairs_formation_wrapper():
+                    try: _pf_loop(beat_fn=beat)
+                    except Exception as _fe:
+                        log.error(f'[pairs.formation] crash: {_fe}')
+                        import traceback; traceback.print_exc()
+                defs['pairs_formation_loop'] = _pairs_formation_wrapper
+                log.info('[PAIRS-V2] formation loop adicionado (rastreio semanal do universo)')
+            if os.environ.get('PAIRS_V2_ENABLED', 'true').lower() != 'false':
+                from modules.pairs_engine.v2_shadow import pairs_v2_loop as _pv2_loop
+                def _pairs_v2_wrapper():
+                    try: _pv2_loop(beat_fn=beat)
+                    except Exception as _ve:
+                        log.error(f'[pairs.v2] crash: {_ve}')
+                        import traceback; traceback.print_exc()
+                defs['pairs_v2_loop'] = _pairs_v2_wrapper
+                log.info('[PAIRS-V2] books shadow A (Kimi) e B (GPT) adicionados')
+        except Exception as _v2e:
+            log.warning(f'[PAIRS-V2] setup: {_v2e}')
+
     # [v12-CALIBRATOR 24-jun-2026] Worker que recalibra brain a cada hora
     # Lê os 12k+ trades historicos, calcula pesos data-driven, atualiza MySQL.
     # Default ENABLED. Desliga via DISABLE_BRAIN_CALIBRATOR=true
@@ -19294,6 +19322,16 @@ def public_shadow():
             out['pairs_momentum'] = _momsum()
         except Exception as _e:
             out['pairs_momentum'] = {'error': str(_e)[:100]}
+        try:
+            from modules.pairs_engine.v2_shadow import summary as _v2sum
+            out['pairs_v2'] = _v2sum()
+        except Exception as _e:
+            out['pairs_v2'] = {'error': str(_e)[:100]}
+        try:
+            from modules.pairs_engine.swap_counterfactual import summary as _cfsum
+            out['swap_counterfactual'] = _cfsum()
+        except Exception as _e:
+            out['swap_counterfactual'] = {'error': str(_e)[:100]}
         c.close(); conn.close()
         return jsonify(out)
     except Exception as e:

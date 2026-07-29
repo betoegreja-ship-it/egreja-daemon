@@ -555,6 +555,25 @@ def evaluate_pair_trade_exit(trade: Dict, signal: Dict, audit_fn=None) -> Option
     except Exception as e:
         log.debug(f'[pairs] timeout check failed: {e}')
 
+    # ═══ [29-jul-2026, decisao Beto pos-conselho] STOP DE TESE ═══
+    # Recomendacao unanime GPT/Grok/Kimi: posicao cujo par nao esta no funil
+    # vivo da formacao (NUCLEO/PROVACAO, janelas longas + estabilidade) esta
+    # com a tese morta — sai a mercado independente do P&L. Fail-safe: se a
+    # formacao nao tem dados, nao fecha nada. Compara por CONJUNTO de pernas
+    # (EGIE3-EQTL3 == EQTL3-EGIE3). Desliga com PAIRS_LIVE_THESIS_STOP=false.
+    if os.environ.get('PAIRS_LIVE_THESIS_STOP', 'true').lower() != 'false':
+        try:
+            from .formation import current_tiers as _ct
+            _tiers = _ct()
+            if _tiers:
+                _alive = {frozenset((m['leg_a'], m['leg_b']))
+                          for m in _tiers.values() if m['tier'] in ('NUCLEO', 'PROVACAO')}
+                _legs = frozenset(trade['pair_id'].upper().split('-'))
+                if _legs not in _alive:
+                    return 'THESIS_STOP'
+        except Exception as _te:
+            log.debug(f'[pairs] thesis stop check: {_te}')
+
     # ═══ [PAIRS-v2 18-jul-2026] Cointegracao quebrada: correlacao viva ═══
     # abaixo do piso => sair AGORA em vez de marinar 15 dias ate TIMEOUT
     # (5 zumbis = -R$9.1k). O sinal traz correlation_60d recalculada.

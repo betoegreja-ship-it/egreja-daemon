@@ -129,9 +129,11 @@ def _ask_one(name, pergunta, dados):
     t0 = time.time()
     base_url, api_key, model, provider = _resolve(name)
     user = pergunta if not dados else f"{pergunta}\n\n--- DADOS PARA ESTA ANALISE ---\n{dados}"
-    # [FIX 30-jul] gpt-5 e o-series da OpenAI exigem 'max_completion_tokens'
-    # (rejeitam 'max_tokens'). Demais provedores usam 'max_tokens'.
-    _tok_param = 'max_completion_tokens' if provider.startswith('direct:OPENAI') else 'max_tokens'
+    # [FIX 30-jul] gpt-5/o-series (OpenAI) E a familia Kimi K (k3, k2.x) exigem
+    # 'max_completion_tokens' (rejeitam/ignoram 'max_tokens'). Grok e Gemini
+    # via compat usam o classico 'max_tokens'.
+    _needs_mct = provider.startswith('direct:OPENAI') or str(model).lower().startswith('kimi-')
+    _tok_param = 'max_completion_tokens' if _needs_mct else 'max_tokens'
     payload = {'model': model,
                'messages': [{'role': 'system', 'content': PERSONA},
                             {'role': 'user', 'content': user}]}

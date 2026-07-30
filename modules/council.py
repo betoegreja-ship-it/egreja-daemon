@@ -129,14 +129,19 @@ def _ask_one(name, pergunta, dados):
     t0 = time.time()
     base_url, api_key, model, provider = _resolve(name)
     user = pergunta if not dados else f"{pergunta}\n\n--- DADOS PARA ESTA ANALISE ---\n{dados}"
+    # [FIX 30-jul] gpt-5 e o-series da OpenAI exigem 'max_completion_tokens'
+    # (rejeitam 'max_tokens'). Demais provedores usam 'max_tokens'.
+    _tok_param = 'max_completion_tokens' if provider.startswith('direct:OPENAI') else 'max_tokens'
+    payload = {'model': model,
+               'messages': [{'role': 'system', 'content': PERSONA},
+                            {'role': 'user', 'content': user}]}
+    payload[_tok_param] = MAX_TOKENS
     try:
         r = requests.post(base_url, timeout=TIMEOUT_S,
             headers={'Authorization': f'Bearer {api_key}',
                      'HTTP-Referer': 'https://egreja.net',
                      'X-Title': 'Egreja Council'},
-            json={'model': model, 'max_tokens': MAX_TOKENS,
-                  'messages': [{'role': 'system', 'content': PERSONA},
-                               {'role': 'user', 'content': user}]})
+            json=payload)
         lat = int((time.time() - t0) * 1000)
         if r.status_code != 200:
             return {'consultant': name, 'model': model, 'erro': f'HTTP {r.status_code}: {r.text[:160]}',

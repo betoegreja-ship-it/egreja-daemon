@@ -33,6 +33,18 @@ ZC4_H, ZC4_PNL = 4.0, 0.0
 LOOP_S = int(os.environ.get('ZOMBIE_SHADOW_LOOP_S', 240))
 EQUITY_EVERY_S = 900
 
+# [30-jul-2026, consenso 3 consultores] ZombieCut B3 — parametrizado por
+# mercado (corrige a divida tecnica do hardcode NYSE apontada pelo Kimi).
+# B3: corte por TEMPO DE VIDA puro (o vazamento se espalha pelo dia, nao se
+# concentra no fechamento) + trava de pico; execucao ate 16h30 BRT (19:30
+# UTC) para nao brigar com o leilao de fechamento. Regra validada no livro:
+# 18 elegiveis = -R$14,9k estancados; pico max entre perdedores +0,39%.
+#   B3ZC3: vida >= 3h E pnl <= 0 E pico < +0.5%   (regra validada Kimi)
+#   B3ZC4: vida >= 4h E pnl <= 0 E pico < +0.5%   (variante A/B de idade)
+ZB3_ENABLED = os.environ.get('ZOMBIE_B3_ENABLED', 'true').lower() != 'false'
+B3ZC3_H, B3ZC4_H = 3.0, 4.0
+B3_EXEC_UNTIL_UTC = 19.5  # 16h30 BRT — depois disso so observa, nao "corta"
+
 _peaks = {}        # trade_id -> max pnl_pct visto por este observador
 _flagged = {}      # trade_id -> set(rules ja registradas)
 _last_equity = 0
@@ -79,56 +91,82 @@ def _et_hour(now_utc):
     return (now_utc.hour - 4) % 24 + now_utc.minute / 60.0
 
 
+def _scan_market(cur, now, market, rules_fn):
+    """Varre trades OPEN de um mercado, avalia regras e registra hits.
+    Retorna (unrealized_total, n_open). rules_fn(age_h, pnl_pct, peak, oat, _hit)."""
+    cur.execute("""SELECT id, symbol, direction, entry_price, position_value,
+                   opened_at, COALESCE(peak_pnl_pct,0)
+                   FROM trades WHERE market=%s AND status='OPEN'""", (market,))
+    rows = cur.fetchall()
+    unreal_tot = 0.0
+    for tid, sym, direction, entry, posval, oat, db_peak in rows:
+        entry = float(entry or 0); posval = float(posval or 0)
+        if entry <= 0: continue
+        px = _px(sym)
+        if not px: continue
+        sign = 1 if str(direction).upper() in ('LONG', 'BUY') else -1
+        pnl_pct = sign * (px / entry - 1) * 100
+        pnl_ccy = pnl_pct / 100 * posval
+        unreal_tot += pnl_ccy
+        peak = max(_peaks.get(tid, float(db_peak or 0)), pnl_pct)
+        _peaks[tid] = peak
+        age_h = (now.replace(tzinfo=None) - oat).total_seconds() / 3600 if oat else 0
+        flags = _flagged.setdefault(tid, set())
+
+        def _hit(rule):
+            if rule in flags: return
+            flags.add(rule)
+            try:
+                cur.execute("""INSERT IGNORE INTO zombie_shadow_events
+                    (trade_id, symbol, rule, cut_at, age_h, pnl_pct_cut,
+                     pnl_usd_cut, peak_at_cut, status)
+                    VALUES (%s,%s,%s,NOW(),%s,%s,%s,%s,'PENDING')""",
+                    (str(tid), sym, rule, round(age_h, 2), round(pnl_pct, 4),
+                     round(pnl_ccy, 2), round(peak, 4)))
+                log.info(f'[ZOMBIE-SHADOW] {rule} teria cortado {sym} ({market}) '
+                         f'(vida {age_h:.1f}h, pnl {pnl_pct:+.2f}%, pico {peak:+.2f}%)')
+            except Exception as e:
+                log.debug(f'[ZOMBIE] insert: {e}')
+
+        rules_fn(age_h, pnl_pct, peak, oat, _hit)
+    return unreal_tot, len(rows)
+
+
 def _cycle():
     now = datetime.now(timezone.utc)
     if now.weekday() >= 5: return
     h_et = _et_hour(now)
-    if not (9.5 <= h_et <= 16.2): return
+    h_utc = now.hour + now.minute / 60.0
+    nyse_open = 9.5 <= h_et <= 16.2
+    b3_open = ZB3_ENABLED and 13.0 <= h_utc <= 20.0  # 10h-17h BRT
+    if not (nyse_open or b3_open): return
     c = _conn()
     if not c: return
     try:
         cur = c.cursor(); _ensure_tables(cur)
-        cur.execute("""SELECT id, symbol, direction, entry_price, position_value,
-                       opened_at, COALESCE(peak_pnl_pct,0)
-                       FROM trades WHERE market='NYSE' AND status='OPEN'""")
-        rows = cur.fetchall()
-        unreal_tot = 0.0
-        for tid, sym, direction, entry, posval, oat, db_peak in rows:
-            entry = float(entry or 0); posval = float(posval or 0)
-            if entry <= 0: continue
-            px = _px(sym)
-            if not px: continue
-            sign = 1 if str(direction).upper() in ('LONG', 'BUY') else -1
-            pnl_pct = sign * (px / entry - 1) * 100
-            pnl_usd = pnl_pct / 100 * posval
-            unreal_tot += pnl_usd
-            peak = max(_peaks.get(tid, float(db_peak or 0)), pnl_pct)
-            _peaks[tid] = peak
-            age_h = (now.replace(tzinfo=None) - oat).total_seconds() / 3600 if oat else 0
-            flags = _flagged.setdefault(tid, set())
+        unreal_nyse = n_nyse = 0
+        unreal_b3 = n_b3 = 0
 
-            def _hit(rule):
-                if rule in flags: return
-                flags.add(rule)
-                try:
-                    cur.execute("""INSERT IGNORE INTO zombie_shadow_events
-                        (trade_id, symbol, rule, cut_at, age_h, pnl_pct_cut,
-                         pnl_usd_cut, peak_at_cut, status)
-                        VALUES (%s,%s,%s,NOW(),%s,%s,%s,%s,'PENDING')""",
-                        (str(tid), sym, rule, round(age_h, 2), round(pnl_pct, 4),
-                         round(pnl_usd, 2), round(peak, 4)))
-                    log.info(f'[ZOMBIE-SHADOW] {rule} teria cortado {sym} '
-                             f'(vida {age_h:.1f}h, pnl {pnl_pct:+.2f}%, pico {peak:+.2f}%)')
-                except Exception as e:
-                    log.debug(f'[ZOMBIE] insert: {e}')
+        if nyse_open:
+            def _rules_nyse(age_h, pnl_pct, peak, oat, _hit):
+                if peak < PEAK_GUARD:
+                    if age_h >= ZC3_H and pnl_pct <= ZC3_PNL: _hit('ZC3')
+                    if age_h >= ZC4_H and pnl_pct <= ZC4_PNL: _hit('ZC4')
+                    if oat is not None and h_et >= 13.5:
+                        o_et = _et_hour(oat.replace(tzinfo=timezone.utc))
+                        if o_et < 11.0: _hit('MIDDAY')
+            unreal_nyse, n_nyse = _scan_market(cur, now, 'NYSE', _rules_nyse)
 
-            if peak < PEAK_GUARD:
-                if age_h >= ZC3_H and pnl_pct <= ZC3_PNL: _hit('ZC3')
-                if age_h >= ZC4_H and pnl_pct <= ZC4_PNL: _hit('ZC4')
-                # MIDDAY (Kimi): aberta antes de 11h ET, sem +0.5% ate 13h30 ET
-                if oat is not None and h_et >= 13.5:
-                    o_et = _et_hour(oat.replace(tzinfo=timezone.utc))
-                    if o_et < 11.0: _hit('MIDDAY')
+        if b3_open:
+            # [30-jul] B3: tempo de vida puro + trava de pico; "execucao"
+            # hipotetica so ate 16h30 BRT (depois o corte real nao seria
+            # enviado — nao brigar com o leilao). Observacao segue o dia todo.
+            _exec_ok = h_utc <= B3_EXEC_UNTIL_UTC
+            def _rules_b3(age_h, pnl_pct, peak, oat, _hit):
+                if peak < PEAK_GUARD and _exec_ok:
+                    if age_h >= B3ZC3_H and pnl_pct <= 0: _hit('B3ZC3')
+                    if age_h >= B3ZC4_H and pnl_pct <= 0: _hit('B3ZC4')
+            unreal_b3, n_b3 = _scan_market(cur, now, 'B3', _rules_b3)
 
         # reconciliacao: eventos PENDING de trades ja fechadas
         cur.execute("""SELECT e.id, e.trade_id, e.pnl_usd_cut FROM zombie_shadow_events e
@@ -147,18 +185,32 @@ def _cycle():
                 (fpnl, fpct, round(delta, 2), 1 if fpct > 1.0 else 0, eid))
             _peaks.pop(tid, None); _flagged.pop(tid, None)
 
-        # equity intradiaria (pedido GPT) a cada 15min
+        # equity intradiaria (pedido GPT — "para as duas bolsas") a cada 15min
         global _last_equity
         if time.time() - _last_equity >= EQUITY_EVERY_S:
             _last_equity = time.time()
-            cur.execute("""SELECT COALESCE(SUM(pnl),0) FROM trades
-                           WHERE market='NYSE' AND status='CLOSED' AND DATE(closed_at)=CURDATE()""")
-            realized = float(cur.fetchone()[0] or 0)
-            cur.execute("""INSERT INTO nyse_equity_curve
-                (ts, realized_today_usd, unrealized_usd, equity_usd, n_open)
-                VALUES (NOW(),%s,%s,%s,%s)""",
-                (round(realized, 2), round(unreal_tot, 2),
-                 round(realized + unreal_tot, 2), len(rows)))
+            if nyse_open:
+                cur.execute("""SELECT COALESCE(SUM(pnl),0) FROM trades
+                               WHERE market='NYSE' AND status='CLOSED' AND DATE(closed_at)=CURDATE()""")
+                realized = float(cur.fetchone()[0] or 0)
+                cur.execute("""INSERT INTO nyse_equity_curve
+                    (ts, realized_today_usd, unrealized_usd, equity_usd, n_open)
+                    VALUES (NOW(),%s,%s,%s,%s)""",
+                    (round(realized, 2), round(unreal_nyse, 2),
+                     round(realized + unreal_nyse, 2), n_nyse))
+            if b3_open:
+                cur.execute("""CREATE TABLE IF NOT EXISTS b3_equity_curve (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY, ts DATETIME,
+                    realized_today_brl DECIMAL(14,2), unrealized_brl DECIMAL(14,2),
+                    equity_brl DECIMAL(14,2), n_open INT, INDEX ix_ts (ts))""")
+                cur.execute("""SELECT COALESCE(SUM(pnl),0) FROM trades
+                               WHERE market='B3' AND status='CLOSED' AND DATE(closed_at)=CURDATE()""")
+                realized_b3 = float(cur.fetchone()[0] or 0)
+                cur.execute("""INSERT INTO b3_equity_curve
+                    (ts, realized_today_brl, unrealized_brl, equity_brl, n_open)
+                    VALUES (NOW(),%s,%s,%s,%s)""",
+                    (round(realized_b3, 2), round(unreal_b3, 2),
+                     round(realized_b3 + unreal_b3, 2), n_b3))
         c.commit(); cur.close(); c.close()
     except Exception as e:
         log.debug(f'[ZOMBIE] cycle: {e}')

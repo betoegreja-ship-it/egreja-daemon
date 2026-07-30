@@ -28,7 +28,11 @@ import pymysql
 
 log = logging.getLogger('egreja.scorev4')
 
-WEIGHTS_VERSION = 'v4_2026-07-24'
+# [V4-SCOPE-FIX 30-jul-2026] bump de versao marca o corte de dados limpos:
+# tudo com weights_version anterior teve votos/regime do simbolo errado
+# (vazamento de variavel no loop de scan — confirmado por votes_json identico
+# entre simbolos do mesmo ciclo). Analises devem filtrar por esta versao.
+WEIGHTS_VERSION = 'v4_2026-07-30-scopefix'
 SCHEMA_VERSION = 'score_log_v4_1'
 
 # pesos de FAMILIA por mercado/regime. MIXED/CHOPPY = fallback explicito

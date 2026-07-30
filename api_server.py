@@ -2484,6 +2484,7 @@ def auth_check():
         '/debug/zombie',
         '/debug/fx-sources',
         '/debug/ib-balance',
+        '/debug/entry-observer',
         '/public/shadow',
     }
     _public_read_prefixes = ('/static/', '/assets/')
@@ -8043,6 +8044,15 @@ def monitor_trades():
                             reason = 'BREAKEVEN_PROTECT'
                             log.info(f"[BE-PROTECT] {trade['symbol']}(stock): peak={peak:+.2f}% "
                                      f"pnl={trade['pnl_pct']:+.2f}% — protegendo (devolveu {peak - trade['pnl_pct']:.2f}pp)")
+                            # [BE-AUDIT 30-jul-2026, achado GPT] anatomia do disparo:
+                            # −R$22,7k B3 + −US$9,2k NYSE no mes vieram deste motivo.
+                            try:
+                                from modules.entry_observer import log_breakeven as _be_aud
+                                _be_aud(trade.get('id'), trade['symbol'], mkt, 'stock',
+                                        peak, trade['pnl_pct'], _be_floor, _be_trigger,
+                                        peak >= _be_step_trigger, trade.get('current_price'))
+                            except Exception:
+                                pass
                     # ═══ FIM BREAKEVEN PROTECT ═══════════════════════════════
 
                     # ═══ [REVERTIDO 13-jul-2026] HARD STOP -0.5% stocks removido ═══
@@ -8354,6 +8364,14 @@ def monitor_trades():
                             reason = 'BREAKEVEN_PROTECT'
                             log.info(f"[BE-PROTECT] {trade['symbol']}(crypto): peak={peak:+.2f}% "
                                      f"pnl={trade['pnl_pct']:+.2f}% — protegendo (devolveu {peak - trade['pnl_pct']:.2f}pp)")
+                            # [BE-AUDIT 30-jul-2026, achado GPT] anatomia do disparo
+                            try:
+                                from modules.entry_observer import log_breakeven as _be_audc
+                                _be_audc(trade.get('id'), trade['symbol'], 'CRYPTO', 'crypto',
+                                         peak, trade['pnl_pct'], _be_floor_c, _be_trigger_c,
+                                         peak >= _be_step_trigger_c, trade.get('current_price'))
+                            except Exception:
+                                pass
                     # ═══ FIM BREAKEVEN PROTECT CRYPTO ════════════════════════
 
                     # ═══ [REVERTIDO 12-jul-2026] HARD STOP CRYPTO -0.5% removido. ═══
@@ -8971,6 +8989,12 @@ def stock_execution_worker():
                     'score_v2': score,  # [v10.47] sempre v3
                     'regime_v2': regime_v2_val,
                     'signal_v2': signal_v2_val,
+                    # [V4-SCOPE-FIX 30-jul-2026] resultado v3 COMPLETO por simbolo.
+                    # Bug grave: o _v4log usava _v4_v3res_s/regime_v2_val vazados do
+                    # loop de scan (ultimo simbolo escaneado) — todas as trades do
+                    # ciclo recebiam votos/regime do simbolo ERRADO (votes_json
+                    # identico confirmado no banco). Agora viaja no sig.
+                    '_v3res': _r,
                     '_temporal_adj': float(_st_adj_effective or 0),  # [FIX 10-jul-2026] simetria entrada/recheck
                     'market_type': mkt_type, 'asset_type': 'stock',
                     'rsi': rsi, 'ema9': ema9, 'ema21': ema21,
@@ -9936,15 +9960,43 @@ def stock_execution_worker():
                         trade['strategy'] = f'directional_{mkt.lower()}'
                         stocks_open.append(trade)
                         # [P1 v4] snapshot imutavel na decisao (shadow puro, fail-open)
+                        # [V4-SCOPE-FIX 30-jul-2026] usa o v3res e o regime DO PROPRIO
+                        # sig (antes vazava o do ultimo simbolo do scan — bug que
+                        # contaminou os 84 sinais stocks de 25-29/jul e gerou a falsa
+                        # "divergencia de regime" que o Kimi flagrou).
                         try:
-                            if _v4_v3res_s:
+                            _v4res_sig = sig.get('_v3res')
+                            if _v4res_sig:
                                 from modules.score_v4_shadow import log_decision as _v4log
                                 _v4log(pre_trade_id, signal_id, trade['strategy'], sym, mkt,
-                                       direction, _v4_v3res_s, score,
-                                       regime_v2_val, get_score_sizing_mult(score),
+                                       direction, _v4res_sig, score,
+                                       sig.get('regime_v2'), get_score_sizing_mult(score),
                                        trade['position_value'], sig.get('atr_pct'))
                         except Exception as _v4e:
                             log.debug(f'[V4] stocks open log: {_v4e}')
+                        # ═══ [ENTRY-OBSERVER 30-jul-2026, consenso 3 consultores] ═══
+                        # Pulse por trade + gate B3 shadow + flags P1 por regra.
+                        # Instrumentacao pura: nada aqui muda a decisao. Fail-open.
+                        try:
+                            from modules.entry_observer import log_entry as _obs_log
+                            _obs_pulse = {}
+                            try:
+                                _obs_pulse = dict(market_pulse(mkt) or {})
+                            except Exception:
+                                pass
+                            _obs_gate = None
+                            if mkt == 'B3':
+                                try:
+                                    from modules.b3_regime_gate import evaluate as _gate_eval
+                                    _obs_gate = _gate_eval(_obs_pulse.get('state'),
+                                                           _obs_pulse.get('breadth_up_pct'))
+                                except Exception:
+                                    pass
+                            _obs_log(pre_trade_id, sym, mkt, direction,
+                                     sig.get('signal'), score, sig.get('regime_v2'),
+                                     pulse=_obs_pulse, gate=_obs_gate)
+                        except Exception as _obse:
+                            log.debug(f'[ENTRY-OBS] hook: {_obse}')
                         # [IB-EXEC 23-jul, decisao Beto] Execucao real NYSE via ponte
                         # IB (ghost/paper/live). So NYSE (B3 sera ProfitDLL). Fail-open.
                         try:
@@ -10086,6 +10138,9 @@ def auto_trade_crypto():
                     vol_ratio_c = round(ticker_data.get('vol_quote', 0) / avg_vol20_c, 3) if avg_vol20_c > 0 else 0.0
                 else:
                     # Fallback sem dados Binance
+                    # [V4-SCOPE-FIX 30-jul] zera vars do v4 tambem neste ramo —
+                    # sem isso, _v4_v3res_c/regime_v2_c vazavam do simbolo anterior
+                    regime_v2_c = None; signal_v2_c = None; _v4_v3res_c = None
                     score = min(50 + int(abs(change_24h) * 5), 95)
                     if direction == 'SHORT': score = 100 - score
                     atr_pct_c = 0.0; vol_ratio_c = 0.0
@@ -19793,6 +19848,23 @@ def debug_scorev4():
                 FROM score_log_v4 WHERE DATE(decision_timestamp)=UTC_DATE() GROUP BY market""")
             out['saude_hoje'] = list(c.fetchall())
             c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/entry-observer')
+def debug_entry_observer():
+    """[30-jul] Instrumentacao P0: pulse por trade, gate B3 shadow, flags P1,
+    auditoria breakeven. Contrafactual por regra (atribuicao do GPT)."""
+    try:
+        from modules.entry_observer import summary as _obs_sum
+        out = _obs_sum()
+        try:
+            from modules.b3_regime_gate import get_structural as _gs
+            out['gate_estrutural_agora'] = _gs()
+        except Exception as _ge:
+            out['gate_estrutural_agora'] = {'erro': str(_ge)[:80]}
         return jsonify(out)
     except Exception as e:
         return jsonify({'error': str(e)}), 500

@@ -9370,7 +9370,13 @@ def stock_execution_worker():
                         if _strength_b3 < _thr_open:
                             log.info(f'[B3-PULSE] {sym}: 1a hora exige forca >= {_thr_open:.0f} (forca={_strength_b3:.0f})')
                             continue
-                        _b3_entry_times.append(_now_b3p)
+                        # [B3-FLOOD-FIX 30-jul-2026, BUG] o append acontecia AQUI
+                        # (candidato aprovado no score), mas gates posteriores podiam
+                        # matar o candidato — a vaga do conta-gotas ficava consumida
+                        # por uma entrada FANTASMA. 30/07: 3 fantasmas na abertura
+                        # travaram a mesa B3 inteira em lockout (zero trades, universo
+                        # todo em [B3-FLOOD]). Agora o contador so incrementa na
+                        # CRIACAO REAL da trade (junto do stocks_open.append).
 
                 # ═══ [NYSE-PULSE 18-jul-2026, recalibracao Beto+Claude] ═══
                 # Dissecacao (164 trades): 74% das perdas em clusters (squeeze
@@ -9961,6 +9967,15 @@ def stock_execution_worker():
                         # [P1 v4 24-jul, decisao Beto] strategy_id obrigatorio + log v4
                         trade['strategy'] = f'directional_{mkt.lower()}'
                         stocks_open.append(trade)
+                        # [B3-FLOOD-FIX 30-jul-2026] conta-gotas conta ENTRADA REAL:
+                        # so aqui, com a trade efetivamente criada, a vaga e consumida.
+                        try:
+                            if mkt == 'B3':
+                                _mso_ff = _mp_minutes_since_open('B3')
+                                if _mso_ff is not None and _mso_ff < float(os.environ.get('B3_OPEN_WINDOW_MIN', 60)):
+                                    _b3_entry_times.append(datetime.utcnow())
+                        except Exception:
+                            pass
                         # [P1 v4] snapshot imutavel na decisao (shadow puro, fail-open)
                         # [V4-SCOPE-FIX 30-jul-2026] usa o v3res e o regime DO PROPRIO
                         # sig (antes vazava o do ultimo simbolo do scan — bug que

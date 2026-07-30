@@ -138,12 +138,17 @@ def _ask_one(name, pergunta, dados):
                'messages': [{'role': 'system', 'content': PERSONA},
                             {'role': 'user', 'content': user}]}
     payload[_tok_param] = MAX_TOKENS
+    hdr = {'Authorization': f'Bearer {api_key}',
+           'HTTP-Referer': 'https://egreja.net', 'X-Title': 'Egreja Council'}
     try:
-        r = requests.post(base_url, timeout=TIMEOUT_S,
-            headers={'Authorization': f'Bearer {api_key}',
-                     'HTTP-Referer': 'https://egreja.net',
-                     'X-Title': 'Egreja Council'},
-            json=payload)
+        # [30-jul] retry em sobrecarga transitoria (429/5xx) — ex.: Kimi
+        # "engine overloaded". Ate 2 tentativas extras com backoff curto.
+        r = None
+        for _attempt in range(3):
+            r = requests.post(base_url, timeout=TIMEOUT_S, headers=hdr, json=payload)
+            if r.status_code not in (429, 500, 502, 503, 529):
+                break
+            time.sleep(2.5 * (_attempt + 1))
         lat = int((time.time() - t0) * 1000)
         if r.status_code != 200:
             return {'consultant': name, 'model': model, 'erro': f'HTTP {r.status_code}: {r.text[:160]}',

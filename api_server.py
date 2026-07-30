@@ -2520,6 +2520,12 @@ def auth_check():
     _sync_key = os.environ.get('SYNC_API_KEY', '').strip()
     if _sync_key and key == _sync_key and request.path.startswith('/sync/'):
         return None
+    # [COUNCIL 30-jul-2026] Chave de ESCOPO MINIMO: COUNCIL_API_KEY so autoriza
+    # /council/*. Risco baixo (pior caso: gasto de API capado); nunca abre
+    # purge/config/kill-switch. Permite o lider rodar o painel sem a chave-mestra.
+    _council_key = os.environ.get('COUNCIL_API_KEY', '').strip()
+    if _council_key and key == _council_key and request.path.startswith('/council/'):
+        return None
     if key != API_SECRET_KEY:
         log.warning(f'[SECURITY-P0] Unauthorized: {request.remote_addr} {request.method} {request.path}')
         return jsonify({'error': 'Unauthorized - login session or X-API-Key required'}), 401

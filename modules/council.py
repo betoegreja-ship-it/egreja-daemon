@@ -37,14 +37,40 @@ MAX_TOKENS = int(os.environ.get('COUNCIL_MAX_TOKENS', 1200))
 MAX_ROUND_TOKENS = int(os.environ.get('COUNCIL_MAX_ROUND_TOKENS', 60000))
 TIMEOUT_S = int(os.environ.get('COUNCIL_TIMEOUT_S', 90))
 
-# Slugs OpenRouter — CONFIRMAR os exatos em openrouter.ai/models ao plugar a
-# chave (mudam de versao). Todos overridaveis por env.
-CONSULTANTS = {
-    'GPT':    os.environ.get('COUNCIL_MODEL_GPT',    'openai/gpt-5'),
-    'Grok':   os.environ.get('COUNCIL_MODEL_GROK',   'x-ai/grok-4'),
-    'Gemini': os.environ.get('COUNCIL_MODEL_GEMINI', 'google/gemini-2.5-pro'),
-    'Kimi':   os.environ.get('COUNCIL_MODEL_KIMI',   'moonshotai/kimi-k3'),
-}
+# ── PROVEDORES ────────────────────────────────────────────────────────────
+# Cada consultor resolve sua rota em tempo de chamada:
+#  - se tiver chave DIRETA propria no env (ex.: KIMI_API_KEY), usa o provedor
+#    dele (compativel com OpenAI: base_url + key + model);
+#  - senao, cai no OpenRouter (uma chave p/ todos).
+# Assim da p/ comecar so com a chave do Kimi que o Beto ja tem, e adicionar
+# os outros depois (OpenRouter OU chave direta de cada um).
+def _resolve(name):
+    """Retorna (base_url, api_key, model, provider) para um consultor."""
+    direct = {
+        'Kimi':   ('KIMI_API_KEY',   os.environ.get('KIMI_BASE_URL', 'https://api.moonshot.ai/v1'),
+                   os.environ.get('KIMI_MODEL', 'kimi-k2-0711-preview')),
+        'GPT':    ('OPENAI_API_KEY', os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
+                   os.environ.get('OPENAI_MODEL', 'gpt-5')),
+        'Grok':   ('XAI_API_KEY',    os.environ.get('XAI_BASE_URL', 'https://api.x.ai/v1'),
+                   os.environ.get('XAI_MODEL', 'grok-4')),
+        'Gemini': ('GEMINI_API_KEY', os.environ.get('GEMINI_BASE_URL',
+                   'https://generativelanguage.googleapis.com/v1beta/openai'),
+                   os.environ.get('GEMINI_MODEL', 'gemini-2.5-pro')),
+    }
+    keyenv, base, model = direct[name]
+    kv = os.environ.get(keyenv, '')
+    if kv:
+        return base.rstrip('/') + '/chat/completions', kv, model, f'direct:{keyenv}'
+    # fallback OpenRouter (slugs overridaveis; confirmar em openrouter.ai/models)
+    or_models = {
+        'GPT':    os.environ.get('COUNCIL_MODEL_GPT',    'openai/gpt-5'),
+        'Grok':   os.environ.get('COUNCIL_MODEL_GROK',   'x-ai/grok-4'),
+        'Gemini': os.environ.get('COUNCIL_MODEL_GEMINI', 'google/gemini-2.5-pro'),
+        'Kimi':   os.environ.get('COUNCIL_MODEL_KIMI',   'moonshotai/kimi-k2'),
+    }
+    return OR_URL, OR_KEY, or_models[name], 'openrouter'
+
+CONSULTANTS = ['GPT', 'Grok', 'Gemini', 'Kimi']
 
 # Persona compartilhada + fatos-nucleo da casa (enxuto de proposito p/ custo).
 # Contexto especifico da pergunta vai no campo "dados" da chamada.
@@ -88,13 +114,24 @@ def _ensure(cur):
     _table_ok['v'] = True
 
 
-def _ask_one(name, model, pergunta, dados):
-    """Chama um consultor via OpenRouter. Retorna dict com resposta ou erro."""
+def _available():
+    """Consultores que tem rota valida (chave direta OU OpenRouter setado)."""
+    out = []
+    for nm in CONSULTANTS:
+        _, key, _, _ = _resolve(nm)
+        if key:
+            out.append(nm)
+    return out
+
+
+def _ask_one(name, pergunta, dados):
+    """Chama um consultor (provedor direto ou OpenRouter). Retorna dict."""
     t0 = time.time()
+    base_url, api_key, model, provider = _resolve(name)
     user = pergunta if not dados else f"{pergunta}\n\n--- DADOS PARA ESTA ANALISE ---\n{dados}"
     try:
-        r = requests.post(OR_URL, timeout=TIMEOUT_S,
-            headers={'Authorization': f'Bearer {OR_KEY}',
+        r = requests.post(base_url, timeout=TIMEOUT_S,
+            headers={'Authorization': f'Bearer {api_key}',
                      'HTTP-Referer': 'https://egreja.net',
                      'X-Title': 'Egreja Council'},
             json={'model': model, 'max_tokens': MAX_TOKENS,
@@ -122,9 +159,11 @@ def ask_council(pergunta, dados=None, only=None):
     only: lista opcional de nomes p/ subconjunto (ex.: ['Gemini','Kimi'])."""
     if not ENABLED:
         return {'error': 'council desabilitado (COUNCIL_ENABLED != true)'}
-    if not OR_KEY:
-        return {'error': 'OPENROUTER_API_KEY nao configurada'}
-    targets = {k: v for k, v in CONSULTANTS.items() if (only is None or k in only)}
+    avail = _available()
+    targets = [n for n in avail if (only is None or n in only)]
+    if not targets:
+        return {'error': 'nenhum consultor com chave configurada (KIMI_API_KEY, '
+                         'OPENAI_API_KEY, XAI_API_KEY, GEMINI_API_KEY ou OPENROUTER_API_KEY)'}
     # teto de rodada (estimativa grosseira: 4 chars/token do input compartilhado)
     est_in = (len(PERSONA) + len(pergunta) + len(dados or '')) // 4 * len(targets)
     est_out = MAX_TOKENS * len(targets)
@@ -135,11 +174,11 @@ def ask_council(pergunta, dados=None, only=None):
     results = {}
     threads = []
 
-    def _run(nm, md):
-        results[nm] = _ask_one(nm, md, pergunta, dados)
+    def _run(nm):
+        results[nm] = _ask_one(nm, pergunta, dados)
 
-    for nm, md in targets.items():
-        t = threading.Thread(target=_run, args=(nm, md))
+    for nm in targets:
+        t = threading.Thread(target=_run, args=(nm,))
         t.start()
         threads.append(t)
     for t in threads:
@@ -172,7 +211,8 @@ def ask_council(pergunta, dados=None, only=None):
 
 
 def history(limit=20):
-    out = {'enabled': ENABLED, 'key_set': bool(OR_KEY), 'modelos': CONSULTANTS,
+    out = {'enabled': ENABLED, 'consultores_disponiveis': _available(),
+           'rotas': {n: {'provider': _resolve(n)[3], 'model': _resolve(n)[2]} for n in CONSULTANTS},
            'max_tokens_resposta': MAX_TOKENS, 'teto_rodada_tokens': MAX_ROUND_TOKENS}
     c = _conn()
     if not c:

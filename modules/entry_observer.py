@@ -184,6 +184,48 @@ def log_breakeven(trade_id, symbol, market, asset_type, peak, pnl_at_trigger,
         log.debug(f'[ENTRY-OBS] log_breakeven: {e}')
 
 
+def write_manifest():
+    """[30-jul, recomendacao GPT] Manifesto diario de pesquisa: grava no boot
+    commit, versoes, hash e status — cada pregao vira experimento reproduzivel."""
+    try:
+        c = _conn()
+        if not c:
+            return
+        cur = c.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS run_manifest (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY, boot_ts DATETIME,
+            git_commit VARCHAR(50), obs_params_version VARCHAR(30),
+            v4_weights_version VARCHAR(40), v4_config_hash VARCHAR(20),
+            n_contaminated_excluded INT, notes VARCHAR(200),
+            INDEX ix_boot (boot_ts))""")
+        _commit = (os.environ.get('RAILWAY_GIT_COMMIT_SHA') or
+                   os.environ.get('GIT_COMMIT') or 'unknown')[:48]
+        _v4w, _v4h = '', ''
+        try:
+            from modules.score_v4_shadow import WEIGHTS_VERSION as _w, CONFIG_HASH as _h
+            _v4w, _v4h = _w, _h
+        except Exception:
+            pass
+        _ncont = 0
+        try:
+            cur.execute("SELECT COUNT(*) FROM score_log_v4 WHERE is_contaminated=1")
+            _ncont = int(cur.fetchone()[0] or 0)
+        except Exception:
+            pass
+        cur.execute("""INSERT INTO run_manifest (boot_ts, git_commit,
+            obs_params_version, v4_weights_version, v4_config_hash,
+            n_contaminated_excluded, notes) VALUES (NOW(),%s,%s,%s,%s,%s,%s)""",
+            (_commit, PARAMS_VERSION, _v4w, _v4h, _ncont,
+             'boot ok; observador shadow; parametros congelados'))
+        c.commit()
+        cur.close()
+        c.close()
+        log.info(f'[MANIFEST] pregao registrado: commit={_commit[:10]} '
+                 f'obs={PARAMS_VERSION} v4={_v4w} contaminados_excluidos={_ncont}')
+    except Exception as e:
+        log.debug(f'[MANIFEST] {e}')
+
+
 def summary():
     """Resumo para /debug/entry-observer: contagens por flag + gate + breakeven."""
     out = {'params_version': PARAMS_VERSION}
@@ -193,6 +235,35 @@ def summary():
     try:
         cur = c.cursor()
         _ensure(cur)
+        # [30-jul, pedido Kimi] COBERTURA por status: producao vs observador.
+        # Escopo do observador = trades ABERTAS (rejeicoes nunca viram trade;
+        # elas ja tem trilha propria em shadow_decisions/audit_events). Aqui:
+        # toda trade criada apos o deploy DEVE ter registro — faltante = erro.
+        try:
+            cur.execute("""SELECT t.market, COUNT(*) tot,
+                SUM(e.trade_id IS NOT NULL) capturadas
+                FROM trades t LEFT JOIN entry_observer_log e ON e.trade_id=t.id
+                WHERE t.market IN ('B3','NYSE')
+                  AND t.opened_at >= (SELECT MIN(ts) FROM entry_observer_log)
+                GROUP BY t.market""")
+            _cov = []
+            for r in cur.fetchall():
+                tot, cap = int(r[1] or 0), int(r[2] or 0)
+                _cov.append({'market': r[0], 'trades_producao': tot,
+                             'capturadas': cap,
+                             'faltantes': tot - cap,
+                             'cobertura_pct': round(100 * cap / tot, 1) if tot else None})
+            out['cobertura'] = _cov
+            cur.execute("""SELECT t.id, t.symbol, t.market, t.opened_at
+                FROM trades t LEFT JOIN entry_observer_log e ON e.trade_id=t.id
+                WHERE t.market IN ('B3','NYSE') AND e.trade_id IS NULL
+                  AND t.opened_at >= (SELECT MIN(ts) FROM entry_observer_log)
+                ORDER BY t.opened_at DESC LIMIT 10""")
+            out['faltantes_detalhe'] = [
+                {'trade_id': str(r[0]), 'symbol': r[1], 'market': r[2],
+                 'opened_at': str(r[3])} for r in cur.fetchall()]
+        except Exception:
+            pass
         # [30-jul, pedido GPT] reconciliacao do BE-audit: resultado final +
         # atraso gatilho->saida (separa "piso frouxo" de "atraso de execucao")
         try:

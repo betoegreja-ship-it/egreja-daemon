@@ -12831,9 +12831,18 @@ def start_background_threads():
                     log.error(f'[zombie.shadow] crash: {_ze}')
                     import traceback; traceback.print_exc()
             defs['zombie_shadow_loop'] = _zombie_wrapper
-            log.info('[ZOMBIE-SHADOW] observador passivo adicionado (NYSE)')
+            log.info('[ZOMBIE-SHADOW] observador passivo adicionado (NYSE+B3)')
     except Exception as _zse:
         log.warning(f'[ZOMBIE-SHADOW] setup: {_zse}')
+
+    # [MANIFEST 30-jul-2026, recomendacao GPT] Manifesto diario de pesquisa no
+    # boot: commit, versoes congeladas, hash de config, contaminados excluidos.
+    # Cada pregao vira um experimento reproduzivel.
+    try:
+        from modules.entry_observer import write_manifest as _wm
+        _wm()
+    except Exception as _wme:
+        log.debug(f'[MANIFEST] boot: {_wme}')
 
     # [FX-REFRESH 29-jul-2026] O core so buscava FX no BOOT (updates viviam nos
     # loops da Arbi, que rodam no servico dedicado) — por isso o dashboard

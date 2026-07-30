@@ -2484,7 +2484,9 @@ def auth_check():
         '/debug/zombie',
         '/debug/fx-sources',
         '/debug/ib-balance',
-        '/debug/entry-observer',
+        # [30-jul, determinacao GPT] /debug/entry-observer REMOVIDO do publico:
+        # expoe simbolos, thresholds e logica de conversao (IP da casa).
+        # Acesso via API key como os demais endpoints internos.
         '/public/shadow',
     }
     _public_read_prefixes = ('/static/', '/assets/')
@@ -19823,14 +19825,18 @@ def debug_scorev4():
                       "SUM(audit_ok=0) audit_fail, SUM(regime_status='QUARANTINE') quarantine "
                       "FROM score_log_v4 GROUP BY market, trade_status")
             out['resumo'] = list(c.fetchall())
+            # [30-jul, determinacao GPT] dados contaminados pelo V4_SYMBOL_SCOPE_BUG
+            # NUNCA entram em analise — nem em grafico exploratorio.
             c.execute("SELECT market, CASE WHEN trade_quality_v4>=60 THEN 'q60+' "
                       "WHEN trade_quality_v4>=50 THEN 'q50-60' ELSE 'q<50' END b, COUNT(*) n, "
                       "ROUND(100*SUM(pnl_real>0)/COUNT(*),1) wr, ROUND(AVG(pnl_real),1) avg_pnl "
                       "FROM score_log_v4 WHERE trade_status='CLOSED' AND pnl_real IS NOT NULL "
+                      "AND COALESCE(is_contaminated,0)=0 "
                       "GROUP BY market, b ORDER BY market, b")
             out['quality_vs_outcome'] = list(c.fetchall())
             c.execute("SELECT book_trade_id,symbol,market,direction,trade_quality_v4,direction_score_v4,"
-                      "strength_v4,regime_status,trade_status,pnl_real FROM score_log_v4 ORDER BY id DESC LIMIT 12")
+                      "strength_v4,regime_status,trade_status,pnl_real FROM score_log_v4 "
+                      "WHERE COALESCE(is_contaminated,0)=0 ORDER BY id DESC LIMIT 12")
             out['ultimos'] = list(c.fetchall())
             # [revisao 24-jul] painel de saude diario da implementacao (nao e performance)
             c.execute("""SELECT market, COUNT(*) sinais, SUM(score_v4_valid=1) validos,

@@ -205,6 +205,7 @@ def create_table():
         mfe DECIMAL(9,4) NULL, mae DECIMAL(9,4) NULL,
         hold_min INT NULL, close_reason VARCHAR(40) NULL,
         audit_ok TINYINT DEFAULT 1,
+        is_contaminated TINYINT DEFAULT 0, contamination_reason VARCHAR(40) NULL,
         weights_version VARCHAR(24), config_hash VARCHAR(20),
         votes_json TEXT, families_json TEXT, audit_errors_json TEXT,
         counterfactuals_json TEXT, feature_snapshot_json MEDIUMTEXT,

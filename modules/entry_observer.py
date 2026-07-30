@@ -45,7 +45,8 @@ def _ensure(cur):
         regime_v2 VARCHAR(12),
         pulse_state VARCHAR(10), pulse_detail VARCHAR(160),
         breadth_up DECIMAL(6,2), breadth_dn DECIMAL(6,2),
-        index_chg_pct DECIMAL(8,3), aligned TINYINT NULL,
+        index_chg_pct DECIMAL(8,3), pulse_age_s DECIMAL(8,1) NULL,
+        aligned TINYINT NULL,
         conversion_reason VARCHAR(30),
         gate_estrutural VARCHAR(12), gate_final VARCHAR(12),
         gate_ibov_close DECIMAL(12,0), gate_ibov_ema50 DECIMAL(12,0),
@@ -65,6 +66,7 @@ def _ensure(cur):
         step_active TINYINT, price_at_trigger DECIMAL(20,8),
         devolvido_pp DECIMAL(9,4), ts DATETIME,
         final_pnl DECIMAL(14,2) NULL, final_pnl_pct DECIMAL(9,4) NULL,
+        exit_delay_s INT NULL,
         INDEX ix_trade (trade_id), INDEX ix_ts (ts))""")
     _tables_ok['v'] = True
 
@@ -123,22 +125,30 @@ def log_entry(trade_id, symbol, market, direction, signal_orig, score,
                 wb = 1 if wb_b else 0
             except Exception:
                 pass
+        # [30-jul, pedido GPT] idade do dado do Pulse no momento da decisao
+        pulse_age = None
+        try:
+            import time as _t
+            if pu.get('ts'):
+                pulse_age = round(max(0.0, _t.time() - float(pu['ts'])), 1)
+        except Exception:
+            pass
         cur.execute("""INSERT IGNORE INTO entry_observer_log
             (trade_id,symbol,market,direction,signal_orig,score,regime_v2,
              pulse_state,pulse_detail,breadth_up,breadth_dn,index_chg_pct,
-             aligned,conversion_reason,gate_estrutural,gate_final,
+             pulse_age_s,aligned,conversion_reason,gate_estrutural,gate_final,
              gate_ibov_close,gate_ibov_ema50,gate_ibov_ret20d,
              gate_would_block,gate_block_reason,
              flag_curfew,flag_mixed,flag_short_restrito,flag_neutral_short_nyse,
              params_version,ts)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                    %s,%s,%s,%s,%s,%s,%s,%s)""",
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (str(trade_id), symbol, mkt, d, sig_o, int(score or 0), reg or None,
              p_state, str(pu.get('detail') or '')[:158],
              pu.get('breadth_up_pct'), pu.get('breadth_dn_pct'),
              pu.get('index_chg_pct') if pu.get('index_chg_pct') is not None
              else pu.get('avg_change_pct'),
-             aligned, conv,
+             pulse_age, aligned, conv,
              g.get('estrutural'), g.get('final'), g.get('ibov_close'),
              g.get('ibov_ema50'), g.get('ibov_ret20d'), wb, wb_reason[:118],
              flag_curfew, flag_mixed, flag_short_r, flag_nns,
@@ -183,6 +193,15 @@ def summary():
     try:
         cur = c.cursor()
         _ensure(cur)
+        # [30-jul, pedido GPT] reconciliacao do BE-audit: resultado final +
+        # atraso gatilho->saida (separa "piso frouxo" de "atraso de execucao")
+        try:
+            cur.execute("""UPDATE breakeven_audit ba JOIN trades t ON t.id=ba.trade_id
+                SET ba.final_pnl=t.pnl, ba.final_pnl_pct=t.pnl_pct,
+                    ba.exit_delay_s=TIMESTAMPDIFF(SECOND, ba.ts, t.closed_at)
+                WHERE ba.final_pnl IS NULL AND t.status='CLOSED'""")
+        except Exception:
+            pass
         cur.execute("""SELECT market, COUNT(*),
             SUM(aligned=1), SUM(aligned=0),
             SUM(flag_curfew), SUM(flag_mixed), SUM(flag_short_restrito),

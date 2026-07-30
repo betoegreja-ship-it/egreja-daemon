@@ -19883,6 +19883,31 @@ def debug_scorev4():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/council/ask', methods=['POST'])
+def council_ask():
+    """[30-jul] Painel de consultores automatizado (OpenRouter). PROTEGIDO
+    (custa dinheiro). Body: {"pergunta": "...", "dados": "opcional", "only": [...]}."""
+    try:
+        from modules.council import ask_council
+        d = request.get_json(force=True) or {}
+        if not d.get('pergunta'):
+            return jsonify({'error': 'campo pergunta obrigatorio'}), 400
+        out = ask_council(d['pergunta'], d.get('dados'), d.get('only'))
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/council/history')
+def council_history():
+    """[30-jul] Historico e config do painel (nao dispara chamada paga)."""
+    try:
+        from modules.council import history
+        return jsonify(history(int(request.args.get('limit', 20))))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/debug/entry-observer')
 def debug_entry_observer():
     """[30-jul] Instrumentacao P0: pulse por trade, gate B3 shadow, flags P1,

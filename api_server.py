@@ -18533,9 +18533,22 @@ def arbi_force_close():
         pnl = float(trade.get('pnl', 0) or 0)
         pos = float(trade.get('position_size', 0) or 0)
         arbi_capital += pos + pnl
+        # [FIX 31-jul-2026] Antes o force-close nao gravava preco de saida nem o
+        # realized liquido -> book "no escuro": price_a/b_exit ficavam NULL e o
+        # pos-processador recalculava realized a partir de saida nula (= so -fees),
+        # zerando ganhos de trades vencedoras fechadas na mao (ex: +23.830 -> -2.124).
+        # Agora captura o snapshot de saida do arbi_spreads (mesma via do fechamento
+        # automatico) e persiste realized = pnl - fees.
+        _sd_fc = arbi_spreads.get(trade.get('pair_id')) or {}
+        _pa_exit_fc = _sd_fc.get('price_a') if _sd_fc.get('price_a') is not None else trade.get('price_a_exit')
+        _pb_exit_fc = _sd_fc.get('price_b') if _sd_fc.get('price_b') is not None else trade.get('price_b_exit')
+        _fees_fc = float(trade.get('total_cost_estimated') or trade.get('fees_total') or 0)
+        _realized_fc = round(pnl - _fees_fc, 2)
         closed = dict(trade)
         closed.update({'status': 'CLOSED', 'close_reason': 'MANUAL_CLOSE', 
-                       'closed_at': datetime.utcnow().isoformat(), 'pnl': pnl})
+                       'closed_at': datetime.utcnow().isoformat(), 'pnl': pnl,
+                       'price_a_exit': _pa_exit_fc, 'price_b_exit': _pb_exit_fc,
+                       'fees_total': _fees_fc, 'realized_pnl_post_fees': _realized_fc})
         arbi_closed.insert(0, closed)
         arbi_open[:] = [t for t in arbi_open if t['id'] != trade_id]
     # Fechar no banco
@@ -18546,9 +18559,12 @@ def arbi_force_close():
             # [16-jul-2026, revisao Beto] persistir o PnL REAL do fechamento —
             # antes so status/motivo iam ao DB e o reboot zerava os valores no painel.
             c.execute("UPDATE arbi_trades SET status='CLOSED', close_reason='MANUAL_CLOSE', closed_at=NOW(), "
-                      "pnl=%s, pnl_pct=%s, current_spread=%s WHERE id=%s",
+                      "pnl=%s, pnl_pct=%s, current_spread=%s, "
+                      "price_a_exit=%s, price_b_exit=%s, fees_total=%s, realized_pnl_post_fees=%s, "
+                      "exit_ts=NOW(), close_processed_flag=1, close_processed_at=NOW() WHERE id=%s",
                       (pnl, round(pnl / max(pos, 1) * 100, 4),
-                       float(trade.get('current_spread') or trade.get('entry_spread') or 0), trade_id))
+                       float(trade.get('current_spread') or trade.get('entry_spread') or 0),
+                       _pa_exit_fc, _pb_exit_fc, _fees_fc, _realized_fc, trade_id))
             conn.commit()
         except Exception as e:
             log.error(f'arbi_force_close db: {e}')

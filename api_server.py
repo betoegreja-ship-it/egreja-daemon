@@ -7053,15 +7053,35 @@ def _fetch_brapi_batch(tickers: list) -> dict:
                 price = float(_last_candle_price) if _last_candle_price else _rm_price
                 prev  = float(q.get('regularMarketPreviousClose') or 0)
                 if price <= 0: continue
-                # [STALE-DETECT v2 06/mai] Verificar age do LAST CANDLE (mais confiavel)
+                # [STALE-DETECT v3 31-jul] brapi as vezes serve 1m candles travados
+                # no close de ontem enquanto regularMarketPrice/Time seguem live
+                # (bug espelhado do de 06/mai). Antes: descartava tudo -> book B3
+                # congelava e caia no Cedro. Agora: se o candle 1m esta velho MAS
+                # regularMarketTime esta fresco, usa regularMarketPrice (live).
+                # So descarta de fato se AMBAS as fontes estiverem velhas.
                 if _last_candle_ts:
                     try:
                         _age_min = (time.time() - float(_last_candle_ts)) / 60
-                        if _age_min > 30 and is_b3_open():
-                            log.warning(f'[BRAPI-STALE] {sym}: last candle eh {_age_min:.1f}min velho '
-                                        f'— descartando, fallback Cedro')
+                    except Exception:
+                        _age_min = 0.0
+                    if _age_min > 30 and is_b3_open():
+                        _rt_age_min = 9e9
+                        _rt_str = q.get('regularMarketTime') or ''
+                        if _rt_str:
+                            try:
+                                _rtp = datetime.fromisoformat(str(_rt_str).replace('Z', '+00:00'))
+                                _rtn = _rtp.replace(tzinfo=None) if _rtp.tzinfo else _rtp
+                                _rt_age_min = (datetime.utcnow() - _rtn).total_seconds() / 60
+                            except Exception:
+                                pass
+                        if _rm_price > 0 and _rt_age_min <= float(os.environ.get('BRAPI_RT_MAX_MIN', 20)):
+                            price = _rm_price
+                            log.info(f'[BRAPI-RT-FALLBACK] {sym}: 1m candle {_age_min:.0f}min velho '
+                                     f'-> usando regularMarketPrice live (rmTime {_rt_age_min:.0f}min)')
+                        else:
+                            log.warning(f'[BRAPI-STALE] {sym}: last candle {_age_min:.1f}min velho + '
+                                        f'rmTime {_rt_age_min:.0f}min — descartando, fallback Cedro')
                             continue
-                    except Exception: pass
                 else:
                     # Sem candles intraday: cair pra check antigo de regularMarketTime
                     _market_time_str = q.get('regularMarketTime') or ''

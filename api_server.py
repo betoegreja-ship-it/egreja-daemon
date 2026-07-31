@@ -19899,6 +19899,20 @@ def debug_cedro_stocks():
         out = {'enabled': bool(_cedro_socket and getattr(_cedro_socket, 'enabled', False))}
         if not _cedro_socket:
             return jsonify({'error': 'cedro socket nao inicializado'})
+        # [31-jul] ?action=reconnect: fecha o socket LIMPO (Cedro solta a sessao)
+        # e reconecta com login+subscribe fresco. Alternativa ao restart de
+        # container (que mata abrupto e deixa fantasma). Requer ?key=API p/ agir.
+        if request.args.get('action') == 'reconnect':
+            if request.args.get('key', '') != os.environ.get('COUNCIL_API_KEY', 'x'):
+                return jsonify({'error': 'reconnect exige ?key=COUNCIL_API_KEY'}), 401
+            try:
+                _cedro_socket.stop()
+                import time as _t; _t.sleep(3)
+                _cedro_socket.start()
+                out['reconnect'] = 'stop+start executado — aguarde ~10s e recarregue'
+            except Exception as _re:
+                out['reconnect_erro'] = str(_re)[:150]
+            return jsonify(out)
         # 1) cache interno bruto — quais simbolos tem dado e o preco
         try:
             with _cedro_socket._cache_lock:

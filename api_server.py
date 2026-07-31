@@ -2484,6 +2484,7 @@ def auth_check():
         '/debug/zombie',
         '/debug/fx-sources',
         '/debug/ib-balance',
+        '/debug/cedro-stocks',
         # [30-jul, determinacao GPT] /debug/entry-observer REMOVIDO do publico:
         # expoe simbolos, thresholds e logica de conversao (IP da casa).
         # Acesso via API key como os demais endpoints internos.
@@ -19884,6 +19885,53 @@ def debug_scorev4():
                 FROM score_log_v4 WHERE DATE(decision_timestamp)=UTC_DATE() GROUP BY market""")
             out['saude_hoje'] = list(c.fetchall())
             c.close(); conn.close()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/cedro-stocks')
+def debug_cedro_stocks():
+    """[31-jul] Diagnostico URGENTE: o socket Cedro esta entregando ticks das
+    ACOES B3 (nao so o DOL)? Lista o cache interno + testa get_quote das
+    posicoes B3 abertas. Publico (so preco de mercado, sem segredo)."""
+    try:
+        out = {'enabled': bool(_cedro_socket and getattr(_cedro_socket, 'enabled', False))}
+        if not _cedro_socket:
+            return jsonify({'error': 'cedro socket nao inicializado'})
+        # 1) cache interno bruto — quais simbolos tem dado e o preco
+        try:
+            with _cedro_socket._cache_lock:
+                cache_keys = sorted(_cedro_socket._cache.keys())
+                sample = {k: {'price': _cedro_socket._cache[k].get('price')}
+                          for k in cache_keys}
+            out['cache_total'] = len(cache_keys)
+            out['cache_symbols'] = cache_keys
+            # separa acoes B3 (padrao ^[A-Z]{4}[0-9]{1,2}) de DOL/indices
+            import re as _re
+            _b3re = _re.compile(r'^[A-Z]{4}[0-9]{1,2}$')
+            out['acoes_b3_no_cache'] = {k: v for k, v in sample.items() if _b3re.match(k)}
+            out['outros_no_cache'] = {k: v for k, v in sample.items() if not _b3re.match(k)}
+        except Exception as _ce:
+            out['cache_erro'] = str(_ce)[:120]
+        # 2) posicoes B3 abertas: get_quote ao vivo
+        try:
+            with state_lock:
+                b3_open_syms = sorted({t['symbol'] for t in stocks_open
+                                       if str(t.get('market')) == 'B3'})
+            out['b3_abertas'] = b3_open_syms
+            quotes = {}
+            for s in b3_open_syms[:15]:
+                q = _cedro_socket.get_quote(s, wait_ms=1500)
+                quotes[s] = {'tem_quote': bool(q),
+                             'price': (q or {}).get('price') if q else None}
+            out['get_quote_das_abertas'] = quotes
+        except Exception as _qe:
+            out['quote_erro'] = str(_qe)[:120]
+        try:
+            out['health'] = _cedro_socket.status()
+        except Exception:
+            pass
         return jsonify(out)
     except Exception as e:
         return jsonify({'error': str(e)}), 500

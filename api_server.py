@@ -2237,6 +2237,8 @@ thread_heartbeat     = {}
 # ── [v10.16] State: daily drawdown per strategy ──────────────────────────
 _daily_dd_stocks = {'date': '', 'pnl': 0.0, 'blocked': False}
 _daily_dd_crypto = {'date': '', 'pnl': 0.0, 'blocked': False}
+# [ATA-D7 01-ago-2026] buffer de precos p/ gate open-momentum (sombra): sym -> [(ts, px)]
+_open_momentum_hist: dict = {}
 # ── [v10.16] Auto-blacklist state ─────────────────────────────────────────
 _symbol_blacklist: dict = {}       # symbol → {'reason': str, 'until': float(timestamp), 'stats': dict}
 _blacklist_last_eval: float = 0.0  # timestamp da última avaliação
@@ -9165,6 +9167,47 @@ def stock_execution_worker():
                 if is_short and not _allow_short:
                     log.info(f'[SHORT-BLOCK] {sym}: ALLOW_SHORT_STOCKS=false — trade vetada')
                     is_short = False
+                # ═══ [ATA-D3 01-ago-2026, conselho 4/4] B3 direcional live OFF ═══
+                # Capital real B3 = zero ate o gate estrutural provar valor.
+                # B3_LIVE_ENABLED=false bloqueia TODA entrada live B3 (long e short);
+                # sinais/score/V4/observabilidade continuam rodando (shadow intacto).
+                if mkt_type == 'B3' and os.environ.get('B3_LIVE_ENABLED', 'true').lower() == 'false':
+                    log.info(f'[B3-LIVE-OFF] {sym}: entrada live B3 bloqueada (ATA D3) — sinal segue em shadow')
+                    continue
+                # ═══ [ATA-D7 01-ago-2026] GATE OPEN-MOMENTUM — SOMBRA (so loga) ═══
+                # Regra Grok: bloquear LONG se preco < abertura do dia E ret15min
+                # < -0,15% (simetrico p/ short). Ataca born-dead (86% das EARLY_STOP).
+                # NAO bloqueia nada: registra would_block + dados p/ contrafactual.
+                try:
+                    _omg_px = float(data.get('price') or 0)
+                    _omg_hist = _open_momentum_hist.setdefault(sym, [])
+                    _omg_now = time.time()
+                    _omg_ref = None
+                    for _ts_h, _px_h in _omg_hist:
+                        if _omg_now - _ts_h >= 14 * 60:
+                            _omg_ref = _px_h  # ultimo preco com >=14min de idade
+                    # alimenta o buffer (apos escolher ref) e poda >30min
+                    if _omg_px > 0:
+                        _omg_hist.append((_omg_now, _omg_px))
+                        _open_momentum_hist[sym] = [(t, p) for (t, p) in _omg_hist if _omg_now - t <= 30 * 60]
+                    _omg_ret15 = ((_omg_px / _omg_ref - 1) * 100) if (_omg_ref and _omg_px > 0) else None
+                    _omg_open = data.get('open')
+                    _omg_below_open = (float(_omg_open) > 0 and _omg_px < float(_omg_open)) if _omg_open else (float(data.get('change_pct') or 0) < 0)
+                    _omg_basis = 'open' if _omg_open else 'prev_close'
+                    _omg_would = False
+                    if _omg_ret15 is not None:
+                        if is_long and _omg_below_open and _omg_ret15 < -0.15:
+                            _omg_would = True
+                        elif is_short and (not _omg_below_open) and _omg_ret15 > 0.15:
+                            _omg_would = True
+                    if _omg_would:
+                        log.info(f'[OPEN-MOMENTUM-SHADOW] {sym}({mkt_type}) {"LONG" if is_long else "SHORT"}: '
+                                 f'would_block ret15m={_omg_ret15:+.2f}% below_open={_omg_below_open} '
+                                 f'basis={_omg_basis} score={score} — SOMBRA, trade segue')
+                        sig['_omg_would_block'] = True
+                        sig['_omg_ret15'] = round(_omg_ret15, 3)
+                except Exception as _omge:
+                    log.debug(f'[OPEN-MOMENTUM-SHADOW] {sym}: {_omge}')
                 if is_short:
                     log.info(f'[SHORT-DBG] {sym} score={score} _eff_min={_eff_min} is_short={is_short} signal_val={signal_val}')
                 if not (is_long or is_short): continue
@@ -19801,6 +19844,37 @@ def debug_zombie():
         return jsonify(_zsum())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/loop-health')
+def debug_loop_health():
+    """[ATA-D11 01-ago-2026, pedido Kimi] Health-check diario do loop de aprendizado
+    em uma linha: fechadas X / com resultado X / NULLs Y. Leitura publica."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        out = {}
+        cur.execute("SELECT COUNT(*) FROM trades WHERE status='CLOSED' AND closed_at >= UTC_DATE()")
+        out['trades_fechadas_hoje'] = int(cur.fetchone()[0])
+        cur.execute("SELECT COUNT(*), SUM(pnl_pct IS NULL) FROM score_log_v4 WHERE closed_logged_at >= UTC_DATE()")
+        _r = cur.fetchone()
+        out['v4_logadas_hoje'] = int(_r[0] or 0)
+        out['v4_sem_resultado'] = int(_r[1] or 0)
+        cur.execute("""SELECT COUNT(*) FROM trades WHERE status='CLOSED' AND closed_at >= UTC_DATE()
+                       AND (exit_price IS NULL OR pnl IS NULL)""")
+        out['fechadas_com_NULL'] = int(cur.fetchone()[0])
+        try:
+            cur.execute("SELECT MAX(created_at) FROM run_manifest")
+            out['ultimo_manifest'] = str(cur.fetchone()[0])
+        except Exception:
+            out['ultimo_manifest'] = None
+        conn.close()
+        out['linha'] = (f"fechadas {out['trades_fechadas_hoje']} / v4 {out['v4_logadas_hoje']} "
+                        f"(sem resultado {out['v4_sem_resultado']}) / NULLs {out['fechadas_com_NULL']}")
+        out['ok'] = out['fechadas_com_NULL'] == 0
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e), 'ok': False}), 500
 
 
 @app.route('/debug/longleg-open')

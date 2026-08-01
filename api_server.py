@@ -2487,6 +2487,9 @@ def auth_check():
         '/debug/fx-sources',
         '/debug/ib-balance',
         '/debug/cedro-stocks',
+        # [01-ago, ATA D11/Kimi] health-check diario do loop: apenas contagens
+        # agregadas (fechadas/logadas/NULLs) — sem simbolo, sem preco, sem IP.
+        '/debug/loop-health',
         # [30-jul, determinacao GPT] /debug/entry-observer REMOVIDO do publico:
         # expoe simbolos, thresholds e logica de conversao (IP da casa).
         # Acesso via API key como os demais endpoints internos.

@@ -18571,6 +18571,21 @@ def arbi_force_close():
         finally:
             try: conn.close()
             except: pass
+    # [FIX 31-jul-2026] Propagar o fechamento manual para os trackers da perna
+    # long (harvest shadow + IB). Antes o force-close NAO chamava esses hooks,
+    # entao a perna long ficava orfa OPEN pra sempre no painel Limonada
+    # (ex: ABEV3-ABEV #30 e CSNA3-SID #22 presas dias). Usa `closed` que ja tem
+    # price_a_exit/price_b_exit/closed_at populados acima.
+    try:
+        from modules.longleg_harvest import on_arbi_close as _ll_close_mc
+        _ll_close_mc(closed)
+    except Exception as _lle:
+        log.debug(f'[MANUAL] longleg harvest close: {_lle}')
+    try:
+        from modules.longleg_ib import on_arbi_close as _llib_close_mc
+        _llib_close_mc(closed)
+    except Exception as _llie:
+        log.debug(f'[MANUAL] longleg-ib close: {_llie}')
     audit('ARBI_CLOSED', {'id': trade_id, 'pair': trade.get('pair_id'), 'pnl': pnl, 'reason': 'MANUAL_CLOSE'})
     log.info(f'[MANUAL] Arbi trade {trade_id} fechada: pos=${pos:,.0f} pnl={pnl:>+,.0f} capital_adj={pos+pnl:>+,.0f}')
     return jsonify({'ok': True, 'trade_id': trade_id, 'pnl': pnl, 'position': pos, 'capital_returned': pos + pnl})

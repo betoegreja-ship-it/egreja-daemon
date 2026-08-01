@@ -8169,6 +8169,19 @@ def monitor_trades():
                     # ledger, cooldown, persistencia). Sobrepoe qualquer outro motivo.
                     if trade.get('_manual_close_req'):
                         reason = 'MANUAL_CLOSE'
+                    # [OVERNIGHT-GUARD 31-jul-2026, pedido Beto] Mercado FECHADO:
+                    # nenhuma saida automatica pode ser TIMEOUT/FLAT/STOP em preco
+                    # velho de madrugada. Caso real: crash do pool as 17h impediu o
+                    # MARKET_CLOSE; no restart 00:33 UTC, 8 posicoes B3/NYSE foram
+                    # varridas por TIMEOUT com bolsa fechada e cairam no dia UTC
+                    # errado (P&L fantasma "de hoje" as 21h33 BRT). Regra: mercado
+                    # fechado -> vira MARKET_CLOSE e o closed_at e datado no
+                    # fechamento oficial da sessao (20:00 UTC), nao em now().
+                    if reason and reason != 'MANUAL_CLOSE' and not market_open_for(mkt):
+                        if reason != 'MARKET_CLOSE':
+                            log.info(f'[OVERNIGHT-GUARD] {sym}: {reason} com mercado fechado -> MARKET_CLOSE')
+                            reason = 'MARKET_CLOSE'
+                        trade['_close_at_session_end'] = True
                     # [EXIT-FRESH 15-jul-2026] cotacao velha: so TIMEOUT/MARKET_CLOSE passam
                     if reason and _px_stale_s and reason not in ('TIMEOUT', 'MARKET_CLOSE', 'MANUAL_CLOSE'):
                         log.warning(f'[EXIT-FRESH] {sym}: {reason} suprimido (cotacao stale) — aguardando preco fresco')
@@ -8276,7 +8289,19 @@ def monitor_trades():
                                     log.info(f"[FAST-STOP-COOLDOWN] {sym}: {reason} em {_dur_sec:.0f}s — cooldown {_fast_cd//60}min total")
                         except Exception as _ce:
                             log.debug(f'fast_stop_cooldown {sym}: {_ce}')
-                        c=dict(trade); c.update({'exit_price':price,'closed_at':now.isoformat(),'close_reason':reason,'status':'CLOSED'})
+                        # [OVERNIGHT-GUARD 31-jul] fechamento pos-pregao: datar no
+                        # fechamento oficial da sessao (20:00 UTC) p/ nao vazar
+                        # P&L para o dia UTC seguinte (bug das 8 trades de 00:33).
+                        _closed_at_iso = now.isoformat()
+                        if trade.get('_close_at_session_end'):
+                            try:
+                                _sess_end = now.replace(hour=20, minute=0, second=0, microsecond=0)
+                                if now.hour < 20:  # madrugada UTC: sessao foi ONTEM
+                                    _sess_end -= timedelta(days=1)
+                                _closed_at_iso = _sess_end.isoformat()
+                            except Exception:
+                                pass
+                        c=dict(trade); c.update({'exit_price':price,'closed_at':_closed_at_iso,'close_reason':reason,'status':'CLOSED'})
                         try:
                             apply_fee_to_trade(c)  # [v10.14] fee simulado
                         except Exception as _fe:

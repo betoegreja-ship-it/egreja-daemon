@@ -60,7 +60,7 @@ import re        # [adaptive-v1] pattern matching B3 ticker classification
 import os, sys, time, queue, json, uuid, threading, itertools, requests, logging, hashlib, math
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
-from flask import Flask, jsonify, request, send_from_directory, session, redirect, make_response
+from flask import Flask, jsonify, request, send_from_directory, session, redirect, make_response, Response
 from flask_cors import CORS
 import mysql.connector
 
@@ -2490,6 +2490,10 @@ def auth_check():
         # [01-ago, ATA D11/Kimi] health-check diario do loop: apenas contagens
         # agregadas (fechadas/logadas/NULLs) — sem simbolo, sem preco, sem IP.
         '/debug/loop-health',
+        # [02-ago] painel de acompanhamento dos books RV em sombra (US Pairs,
+        # Cross-asset RV, Crypto RV). Paper, agregado — mesma info do conselho.
+        '/shadow/rv',
+        '/shadow/rv-status',
         # [30-jul, determinacao GPT] /debug/entry-observer REMOVIDO do publico:
         # expoe simbolos, thresholds e logica de conversao (IP da casa).
         # Acesso via API key como os demais endpoints internos.
@@ -19391,6 +19395,157 @@ def debug_spreads():
                         'nota': 'spread em bps; amostrado a cada ~5min em pregao. NYSE=Polygon NBBO, B3=Cedro'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+_RV_DASHBOARD_HTML = r"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Books RV em Sombra — Egreja Investment AI</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--bd:#21262d;--tx:#c9d1d9;--mut:#7d8590;--grn:#2ea043;--red:#f85149;--yel:#d29922;--blu:#388bfd}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;padding:16px}
+h1{font-size:18px;margin:0 0 2px}.sub{color:var(--mut);font-size:12px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px}
+.ch{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.ch h2{font-size:15px;margin:0}.scan{color:var(--mut);font-size:11px}
+.kpis{display:flex;gap:14px;margin:8px 0 10px;flex-wrap:wrap}
+.kpi{flex:1;min-width:90px}.kpi .v{font-size:19px;font-weight:700}.kpi .l{color:var(--mut);font-size:11px}
+.pos{color:var(--grn)}.neg{color:var(--red)}.mut{color:var(--mut)}
+table{width:100%;border-collapse:collapse;margin-top:4px}
+th,td{text-align:right;padding:4px 6px;border-bottom:1px solid var(--bd);font-size:12px;white-space:nowrap}
+th{color:var(--mut);font-weight:600}td.l,th.l{text-align:left}
+.sec{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin:12px 0 2px}
+.tag{font-size:10px;padding:1px 6px;border-radius:20px;border:1px solid var(--bd)}
+.b-short{color:var(--red)}.b-long{color:var(--grn)}
+.badge{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;background:#21262d;color:var(--mut)}
+.tot{border-top:1px solid var(--bd);margin-top:10px;padding-top:8px;display:flex;justify-content:space-between;font-weight:700}
+.foot{color:var(--mut);font-size:11px;margin-top:16px;line-height:1.6}
+#err{color:var(--red);font-size:12px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--grn);margin-right:5px;vertical-align:middle}
+</style></head><body>
+<h1><span class="dot"></span>Books RV em Sombra <span class="badge">PAPER</span></h1>
+<div class="sub">US Pairs · Cross-asset RV · Crypto RV — marcação a mercado ao vivo. Atualiza a cada 60s · <span id="upd"></span> <span id="err"></span></div>
+<div class="grid" id="grid"></div>
+<div class="foot" id="foot"></div>
+<script>
+var CUR={uspairs:'US$',crossasset:'US$',cryptorv:'US$'};
+function money(v,c){if(v===null||v===undefined)return '<span class=mut>—</span>';var s=(v>=0?'+':'')+ (c||'US$')+' '+Math.abs(v).toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0});return '<span class="'+(v>=0?'pos':'neg')+'">'+s+'</span>';}
+function num(v,d){if(v===null||v===undefined)return '—';return v.toFixed?v.toFixed(d):Number(v).toFixed(d);}
+function fdir(d){var s=String(d||'');var c=s.indexOf('SHORT')>=0?'b-short':'b-long';return '<span class="'+c+'">'+s+'</span>';}
+function fscan(s){if(!s)return '—';var t=new Date(s);if(isNaN(t))return s;return t.toLocaleString('pt-BR');}
+function bookCard(key,b){
+ if(b.error)return '<div class=card><h2>'+key+'</h2><div class=err>'+b.error+'</div></div>';
+ var c=CUR[key]||'US$';
+ var h='<div class=card><div class=ch><h2>'+b.name+'</h2><span class=scan>últ. leitura '+fscan(b.last_scan)+'</span></div>';
+ h+='<div class=kpis>';
+ h+='<div class=kpi><div class="v">'+money(b.total,c)+'</div><div class=l>Total (real+aberto)</div></div>';
+ h+='<div class=kpi><div class="v">'+money(b.realized,c)+'</div><div class=l>Realizado ('+b.n_closed+')</div></div>';
+ h+='<div class=kpi><div class="v">'+money(b.unreal,c)+'</div><div class=l>Aberto ('+b.n_open+')</div></div>';
+ h+='<div class=kpi><div class="v">'+(b.wr!==null?b.wr+'%':'—')+'</div><div class=l>Acerto</div></div>';
+ h+='</div>';
+ if(b.open&&b.open.length){h+='<div class=sec>Posições abertas</div><table><tr><th class=l>Par</th><th>Dir</th><th>z ent→atual</th><th>Tempo</th><th>P&L aberto</th></tr>';
+  b.open.forEach(function(o){h+='<tr><td class=l>'+o.pair+'</td><td>'+fdir(o.dir)+'</td><td>'+num(o.entry_z,2)+' → '+num(o.cur_z,2)+'</td><td>'+o.held+'</td><td>'+money(o.mtm,c)+'</td></tr>';});
+  h+='</table>';}
+ if(b.closed&&b.closed.length){h+='<div class=sec>Fechadas (recentes)</div><table><tr><th class=l>Par</th><th>Dir</th><th>P&L</th><th>%</th><th class=l>Motivo</th></tr>';
+  b.closed.slice(0,6).forEach(function(o){h+='<tr><td class=l>'+o.pair+'</td><td>'+fdir(o.dir)+'</td><td>'+money(o.pnl,c)+'</td><td class="'+((o.pnl_pct||0)>=0?'pos':'neg')+'">'+num(o.pnl_pct,2)+'%</td><td class=l><span class=mut>'+(o.reason||'')+'</span></td></tr>';});
+  h+='</table>';}
+ if(b.watch&&b.watch.length){h+='<div class=sec>Watchlist (perto de sinal)</div><table><tr><th class=l>Par</th><th>z</th><th class=l>Sinal</th><th>Pos</th></tr>';
+  b.watch.forEach(function(w){h+='<tr><td class=l>'+w.pair+'</td><td>'+num(w.z,2)+'</td><td class=l><span class=mut>'+w.signal+'</span></td><td>'+(w.pos==1?'●':'')+'</td></tr>';});
+  h+='</table>';}
+ h+='</div>';return h;
+}
+function grand(d){var t=0;['uspairs','crossasset','cryptorv'].forEach(function(k){if(d[k]&&!d[k].error)t+=(d[k].total||0);});return t;}
+function load(){
+ fetch('/shadow/rv-status',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+  document.getElementById('err').textContent='';
+  var g='';['uspairs','crossasset','cryptorv'].forEach(function(k){if(d[k])g+=bookCard(k,d[k]);});
+  document.getElementById('grid').innerHTML=g;
+  var gt=grand(d);
+  document.getElementById('foot').innerHTML='<b>Total consolidado dos 3 books:</b> '+money(gt,'US$')+
+   ' &nbsp;·&nbsp; Books em <b>paper</b> (sombra). P&L aberto = marcação a mercado pelo último preço de leitura de cada par. '+
+   'US Pairs e Cross-asset varrem 1×/pregão; Crypto RV varre de hora em hora. z = desvios-padrão do spread (|z| alto = esticado; ~0 = convergido).';
+  document.getElementById('upd').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR');
+ }).catch(function(e){document.getElementById('err').textContent=' · falha ao atualizar ('+e+')';});
+}
+load();setInterval(load,60000);
+</script></body></html>"""
+
+
+def _rv_shadow_status():
+    """[02-ago] Estado ao vivo dos 3 books RV em sombra (US Pairs, Cross-asset, Crypto RV).
+    Realizado (trades fechadas) + nao-realizado (marcacao a mercado das abertas via
+    ultimo preco de snapshot) + watchlist de pares perto de entrada/saida. Paper, agregado."""
+    def _f(x):
+        try: return float(x)
+        except Exception: return None
+    conn = get_db()
+    if not conn: return {'error': 'db'}
+    c = conn.cursor(dictionary=True)
+    def latest_prices(snap_tbl, pair_col='pair'):
+        c.execute(f"SELECT {pair_col} pair, price_a, price_b, z, signal_hyp, position_open "
+                  f"FROM {snap_tbl} WHERE id IN (SELECT MAX(id) FROM {snap_tbl} GROUP BY {pair_col})")
+        return {r['pair']: r for r in c.fetchall()}
+    def mtm(tr, px):
+        p = px.get(tr['pair'])
+        if not p: return None
+        pae, pbe = _f(tr['price_a_entry']), _f(tr['price_b_entry'])
+        pan, pbn = _f(p['price_a']), _f(p['price_b'])
+        na, nb = _f(tr['notional_a']), _f(tr['notional_b'])
+        if None in (pae, pbe, pan, pbn, na, nb) or not pae or not pbe: return None
+        sA = 1 if str(tr['direction']).startswith('LONG_A') else -1
+        return round(na*(pan/pae-1)*sA + nb*(pbn/pbe-1)*(-sA), 2)
+    def book(name, meta_t, snap_t, trades_t, held_col):
+        c.execute(f"SELECT v FROM {meta_t} WHERE k='last_scan_at'"); r = c.fetchone()
+        last = r['v'] if r else None
+        px = latest_prices(snap_t)
+        c.execute(f"SELECT * FROM {trades_t}"); trs = c.fetchall()
+        closed = [t for t in trs if t['status'] == 'CLOSED']
+        opn = [t for t in trs if t['status'] == 'OPEN']
+        realized = round(sum(_f(t['pnl_net']) or 0 for t in closed), 2)
+        wins = sum(1 for t in closed if (_f(t['pnl_net']) or 0) > 0)
+        unreal = 0.0; open_rows = []
+        for t in opn:
+            m = mtm(t, px); unreal += (m or 0)
+            pc = px.get(t['pair'], {})
+            open_rows.append({'pair': t['pair'], 'book': t['book'], 'dir': t['direction'],
+                'entry_z': _f(t['entry_z']), 'cur_z': _f(pc.get('z')),
+                'held': t[held_col], 'mtm': m, 'signal': pc.get('signal_hyp')})
+        closed_rows = [{'pair': t['pair'], 'dir': t['direction'], 'pnl': _f(t['pnl_net']),
+            'pnl_pct': _f(t.get('pnl_pct')), 'reason': t['close_reason'], 'held': t[held_col]}
+            for t in sorted(closed, key=lambda x: str(x.get('updated_at')), reverse=True)]
+        watch = []
+        for pr, p in px.items():
+            z = _f(p['z'])
+            if z is not None and (abs(z) >= 1.8 or p['signal_hyp'] not in ('HOLD',)):
+                watch.append({'pair': pr, 'z': z, 'signal': p['signal_hyp'], 'pos': p['position_open']})
+        watch.sort(key=lambda x: -abs(x['z'] or 0))
+        return {'name': name, 'last_scan': last, 'n_closed': len(closed), 'wins': wins,
+            'wr': round(100*wins/len(closed), 1) if closed else None,
+            'realized': realized, 'unreal': round(unreal, 2), 'n_open': len(opn),
+            'total': round(realized+unreal, 2), 'open': open_rows,
+            'closed': closed_rows, 'watch': watch[:8]}
+    try:
+        out = {
+            'uspairs': book('US Pairs', 'uspairs_shadow_meta', 'uspairs_shadow_snapshots', 'uspairs_shadow_trades', 'pregoes_held'),
+            'crossasset': book('Cross-asset RV', 'crossasset_rv_shadow_meta', 'crossasset_rv_shadow_snapshots', 'crossasset_rv_shadow_trades', 'days_held'),
+            'cryptorv': book('Crypto RV (BTC-ETH)', 'crypto_rv_shadow_meta', 'crypto_rv_shadow_snapshots', 'crypto_rv_shadow_trades', 'bars_held'),
+        }
+    finally:
+        c.close(); conn.close()
+    return out
+
+
+@app.route('/shadow/rv-status')
+def shadow_rv_status():
+    try:
+        return jsonify(_rv_shadow_status())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/shadow/rv')
+def shadow_rv_page():
+    return Response(_RV_DASHBOARD_HTML, mimetype='text/html')
 
 
 @app.route('/debug/dualmatch-stats')

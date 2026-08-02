@@ -147,9 +147,56 @@ function swapCfCard(d){
     <div class="muted">Toda trade fechada por SWAP ganha uma cópia virtual que continua até a saída original. Δ>0 = trocar foi melhor que segurar (teste do viés apontado pelo GPT).</div>
   </div>`;
 }
+function fdur(m){ if(m==null) return '—'; if(m>=1440){var d=Math.floor(m/1440),h=Math.floor((m%1440)/60);return d+'d'+(h?' '+h+'h':'');} if(m>=60){var h=Math.floor(m/60);return h+'h'+(m%60?' '+(m%60)+'m':'');} return m+'m'; }
+function rvPct(p){ if(p==null) return '—'; return '<span class="'+(p>=0?'g':'r')+'">'+(p>=0?'+':'')+p.toFixed(2)+'%</span>'; }
+function rvTradeRows(b){
+  var rows='';
+  (b.open||[]).forEach(function(o){
+    rows+='<tr class="open"><td>'+o.pair+'</td><td>'+(o.dir||'')+'</td>'+
+      '<td><span class="pill open">ABERTA</span></td>'+
+      '<td>'+(o.entry_z!=null?(+o.entry_z).toFixed(2):'—')+'→'+(o.cur_z!=null?(+o.cur_z).toFixed(2):'—')+'</td>'+
+      '<td class="muted">'+fdur(o.dur_min)+'</td>'+
+      '<td class="'+cls(o.mtm||0)+'">'+(o.mtm!=null?money(o.mtm,'USD'):'<span class="muted">sem preço</span>')+'</td>'+
+      '<td>'+rvPct(o.pnl_pct)+'</td></tr>';
+  });
+  (b.closed||[]).forEach(function(o){
+    rows+='<tr><td>'+o.pair+' <span class="muted" style="font-size:10px">'+(o.reason||'')+'</span></td><td>'+(o.dir||'')+'</td>'+
+      '<td><span class="pill closed">FECHADA</span></td>'+
+      '<td class="muted">—</td>'+
+      '<td class="muted">'+fdur(o.dur_min)+'</td>'+
+      '<td class="'+cls(o.pnl||0)+'">'+(o.pnl!=null?money(o.pnl,'USD'):'—')+'</td>'+
+      '<td>'+rvPct(o.pnl_pct)+'</td></tr>';
+  });
+  return rows||'<tr><td colspan="7" class="muted">nenhuma trade</td></tr>';
+}
+function rvBookCard(b){
+  if(!b||b.error) return '';
+  var capTxt=b.capital!=null?'US$ '+Math.round(b.capital).toLocaleString('pt-BR')+'/perna':'';
+  var scan=b.last_scan?new Date(b.last_scan).toLocaleString('pt-BR'):'—';
+  return '<div class="strat" style="border-color:#2e5a7a">'+
+    '<div class="shead"><div class="nome">'+b.name+'</div>'+
+    '<div class="kpi">abertas <b class="'+(b.n_open>0?'g':'')+'">'+b.n_open+'</b></div>'+
+    '<div class="kpi">fechadas <b>'+b.n_closed+'</b></div>'+
+    '<div class="kpi">WR <b>'+(b.wr!=null?b.wr+'%':'—')+'</b></div>'+
+    '<div class="kpi">P&L realizado <b class="'+cls(b.realized||0)+'">'+money(b.realized||0,'USD')+'</b></div>'+
+    (b.n_open>0?'<div class="kpi">P&L parcial <b class="'+cls(b.unreal||0)+'">'+money(b.unreal||0,'USD')+'</b></div>':'')+
+    '<div class="kpi">Total <b class="'+cls(b.total||0)+'">'+money(b.total||0,'USD')+'</b></div>'+
+    '<div class="kpi">% s/ capital <b class="'+cls(b.total_pct||0)+'">'+(b.total_pct!=null?(b.total_pct>=0?'+':'')+b.total_pct.toFixed(2)+'%':'—')+'</b></div>'+
+    '</div>'+
+    '<div class="muted">'+capTxt+' · última leitura '+scan+'</div>'+
+    '<table><thead><tr><th>Par</th><th>Dir</th><th>Status</th><th>z ent→atual</th><th>Duração</th><th>P&amp;L</th><th>% s/ cap</th></tr></thead>'+
+    '<tbody>'+rvTradeRows(b)+'</tbody></table>'+
+    '</div>';
+}
+function rvBooksSection(rv){
+  if(!rv||rv.error) return '';
+  var head='<div style="margin:22px 0 10px;color:#7db8ff;font-weight:700;font-size:14px">Arbitragem Estatística (Relative Value) — books em sombra</div>';
+  return head+rvBookCard(rv.uspairs)+rvBookCard(rv.crossasset)+rvBookCard(rv.cryptorv);
+}
 async function load(){
   try{
     const d=await jget('/public/shadow');
+    let rv=null; try{ rv=await jget('/shadow/rv-status'); }catch(e){ rv=null; }
     // totais
     let openTot=0,closedTot=0;
     (d.strategies||[]).forEach(s=>{openTot+=(s.abertas||0);closedTot+=(s.fechadas||0);});
@@ -158,7 +205,7 @@ async function load(){
       ['Trades abertas agora',openTot],
       ['Trades fechadas (total)',closedTot.toLocaleString('pt-BR')],
     ].map(c=>`<div class="tcard"><div class="l">${c[0]}</div><div class="v">${c[1]}</div></div>`).join('');
-    let html=v2Card(d.pairs_v2)+limonadaCard(d.limonada)+momentumCard(d.pairs_momentum)+swapCfCard(d.swap_counterfactual);
+    let html=rvBooksSection(rv)+v2Card(d.pairs_v2)+limonadaCard(d.limonada)+momentumCard(d.pairs_momentum)+swapCfCard(d.swap_counterfactual);
     (d.strategies||[]).sort((a,b)=>(b.abertas||0)-(a.abertas||0)).forEach(s=>html+=stratCard(s));
     $('#strats').innerHTML=html;
     $('#sub').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR')+' · atualiza sozinho a cada 45s · linhas azuladas = trades ABERTAS';

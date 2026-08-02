@@ -19494,6 +19494,15 @@ def _rv_shadow_status():
         if None in (pae, pbe, pan, pbn, na, nb) or not pae or not pbe: return None
         sA = 1 if str(tr['direction']).startswith('LONG_A') else -1
         return round(na*(pan/pae-1)*sA + nb*(pbn/pbe-1)*(-sA), 2)
+    _now = datetime.utcnow()
+    def _durmin(a, b):
+        try: return int((b - a).total_seconds() // 60)
+        except Exception: return None
+    def _pct(pnl, notional):
+        try:
+            if pnl is None or not notional: return None
+            return round(pnl / notional * 100.0, 3)
+        except Exception: return None
     def book(name, meta_t, snap_t, trades_t, held_col):
         c.execute(f"SELECT v FROM {meta_t} WHERE k='last_scan_at'"); r = c.fetchone()
         last = r['v'] if r else None
@@ -19503,27 +19512,37 @@ def _rv_shadow_status():
         opn = [t for t in trs if t['status'] == 'OPEN']
         realized = round(sum(_f(t['pnl_net']) or 0 for t in closed), 2)
         wins = sum(1 for t in closed if (_f(t['pnl_net']) or 0) > 0)
+        capital = None  # capital por perna do book (notional_a) — base do % s/ capital
         unreal = 0.0; open_rows = []
         for t in opn:
             m = mtm(t, px); unreal += (m or 0)
             pc = px.get(t['pair'], {})
+            na = _f(t['notional_a']); capital = capital or na
             open_rows.append({'pair': t['pair'], 'book': t['book'], 'dir': t['direction'],
                 'entry_z': _f(t['entry_z']), 'cur_z': _f(pc.get('z')),
-                'held': t[held_col], 'mtm': m, 'signal': pc.get('signal_hyp')})
-        closed_rows = [{'pair': t['pair'], 'dir': t['direction'], 'pnl': _f(t['pnl_net']),
-            'pnl_pct': _f(t.get('pnl_pct')), 'reason': t['close_reason'], 'held': t[held_col]}
-            for t in sorted(closed, key=lambda x: str(x.get('updated_at')), reverse=True)]
+                'held': t[held_col], 'mtm': m, 'signal': pc.get('signal_hyp'),
+                'pnl_pct': _pct(m, na), 'dur_min': _durmin(t.get('created_at'), _now),
+                'notional': na})
+        closed_rows = []
+        for t in sorted(closed, key=lambda x: str(x.get('updated_at')), reverse=True):
+            na = _f(t['notional_a']); capital = capital or na
+            closed_rows.append({'pair': t['pair'], 'dir': t['direction'], 'pnl': _f(t['pnl_net']),
+                'pnl_pct': _f(t.get('pnl_pct')) if t.get('pnl_pct') is not None else _pct(_f(t['pnl_net']), na),
+                'reason': t['close_reason'], 'held': t[held_col],
+                'dur_min': _durmin(t.get('created_at'), t.get('updated_at')), 'notional': na})
         watch = []
         for pr, p in px.items():
             z = _f(p['z'])
             if z is not None and (abs(z) >= 1.8 or p['signal_hyp'] not in ('HOLD',)):
                 watch.append({'pair': pr, 'z': z, 'signal': p['signal_hyp'], 'pos': p['position_open']})
         watch.sort(key=lambda x: -abs(x['z'] or 0))
+        total = round(realized + unreal, 2)
         return {'name': name, 'last_scan': last, 'n_closed': len(closed), 'wins': wins,
             'wr': round(100*wins/len(closed), 1) if closed else None,
             'realized': realized, 'unreal': round(unreal, 2), 'n_open': len(opn),
-            'total': round(realized+unreal, 2), 'open': open_rows,
-            'closed': closed_rows, 'watch': watch[:8]}
+            'total': total, 'capital': capital,
+            'total_pct': _pct(total, capital), 'realized_pct': _pct(realized, capital),
+            'open': open_rows, 'closed': closed_rows, 'watch': watch[:8]}
     try:
         out = {
             'uspairs': book('US Pairs', 'uspairs_shadow_meta', 'uspairs_shadow_snapshots', 'uspairs_shadow_trades', 'pregoes_held'),
@@ -19545,7 +19564,9 @@ def shadow_rv_status():
 
 @app.route('/shadow/rv')
 def shadow_rv_page():
-    return Response(_RV_DASHBOARD_HTML, mimetype='text/html')
+    # [02-ago] painel integrado na aba Shadow (static/shadow.html). Mantido como
+    # atalho -> redireciona para a pagina principal de shadow.
+    return redirect('/shadow.html', code=302)
 
 
 @app.route('/debug/dualmatch-stats')

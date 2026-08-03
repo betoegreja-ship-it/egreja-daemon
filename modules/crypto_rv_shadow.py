@@ -281,6 +281,14 @@ def scan_once():
                     open_now.discard(pair)
                     log.info(f'[CRYPTO-RV] CLOSE {pair} {direction} {reason} '
                              f'z={z:+.2f} pnl=${pnl_net:.2f} ({pnl_pct:+.2f}%, {held} barras)')
+                    # [03-ago, decisao Beto] espelha o fechamento na Binance
+                    # (Binance passou a ser exclusiva do Crypto RV). Fail-open.
+                    try:
+                        from modules.binance_exec import exec_cryptorv
+                        exec_cryptorv(pair, direction, r['price_a'], r['price_b'],
+                                      'CLOSE', ref_id=str(tid))
+                    except Exception as _xe:
+                        log.debug(f'[CRYPTO-RV] exec CLOSE {pair}: {_xe}')
                 else:
                     cur.execute("UPDATE crypto_rv_shadow_trades SET bars_held=%s "
                                 "WHERE id=%s", (held, tid))
@@ -302,6 +310,16 @@ def scan_once():
                 open_now.add(pair)
                 log.info(f'[CRYPTO-RV] OPEN {pair} {direction} z={z:+.2f} '
                          f'beta={r["beta"]} notional=${na:.0f}/${nb:.0f}')
+                # [03-ago, decisao Beto] espelha a abertura na Binance com as
+                # DUAS pernas (tamanho proprio CRYPTORV_ORDER_USDT, maior que o
+                # direcional). Fail-open: se a corretora falhar, o book shadow
+                # segue normal — a execucao real e observacao, nao gate.
+                try:
+                    from modules.binance_exec import exec_cryptorv
+                    exec_cryptorv(pair, direction, r['price_a'], r['price_b'],
+                                  'OPEN', ref_id=str(cur.lastrowid))
+                except Exception as _xe:
+                    log.debug(f'[CRYPTO-RV] exec OPEN {pair}: {_xe}')
 
             cur.execute(
                 "INSERT IGNORE INTO crypto_rv_shadow_snapshots (bar, pair, book, "

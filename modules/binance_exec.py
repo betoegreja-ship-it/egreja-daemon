@@ -253,6 +253,102 @@ def exec_on_close(trade):
         log.debug(f'[EXEC] on_close: {e}')
 
 
+def exec_cryptorv(pair, direction, price_a, price_b, event, ref_id=None):
+    """[03-ago-2026, decisao Beto] Executa as DUAS pernas de um par do Crypto RV
+    na Binance. A partir de hoje a Binance e EXCLUSIVA desta estrategia — o
+    direcional de cripto saiu (pior familia: -0,77%/semana).
+
+    Diferencas para o direcional (de proposito):
+      - tamanho MAIOR e proprio: CRYPTORV_ORDER_USDT (default 2000, teto 5000)
+        contra EXEC_ORDER_USDT=500 do direcional. O book RV tem edge melhor e
+        precisa de nocional que faca o custo (~0,075%/perna) pesar menos.
+      - as duas pernas sao enviadas juntas; se a perna A falhar, a B NAO e
+        enviada (evita ficar com uma perna solta = risco direcional puro).
+      - spot nao tem short: em modo REAL (testnet/live) so a perna comprada
+        e executada; a perna vendida fica registrada como MEDIDA (ghost),
+        igual ao tratamento do direcional. Em ghost, as duas sao simuladas.
+
+    pair: 'ETH-BTC'  | direction: 'LONG_A' (compra A, vende B) ou 'SHORT_A'
+    event: 'OPEN' | 'CLOSE'
+    """
+    if os.environ.get('EXEC_ENGINE_ENABLED', 'true').lower() == 'false':
+        return
+    if os.environ.get('BINANCE_CRYPTORV_ENABLED', 'true').lower() == 'false':
+        return
+    mode = _mode()
+    tid = ref_id or f'CRV-{pair}'
+    try:
+        sa, sb = str(pair).split('-')[0], str(pair).split('-')[1]
+    except Exception:
+        return
+    pa = sa if sa.endswith('USDT') else sa + 'USDT'
+    pb = sb if sb.endswith('USDT') else sb + 'USDT'
+    long_a = str(direction).upper().startswith('LONG_A')
+    # OPEN: LONG_A => compra A, vende B. CLOSE inverte os dois lados.
+    if event.upper() == 'OPEN':
+        side_a, side_b = ('BUY', 'SELL') if long_a else ('SELL', 'BUY')
+    else:
+        side_a, side_b = ('SELL', 'BUY') if long_a else ('BUY', 'SELL')
+    quote = min(_env_f('CRYPTORV_ORDER_USDT', 2000), _env_f('CRYPTORV_MAX_ORDER_USDT', 5000))
+    fee_pct = _env_f('EXEC_TAKER_FEE_PCT', 0.075) / 100.0
+
+    def _leg(sym_pair, side, px_ref, is_first):
+        """Retorna True se executou/simulou; False se falhou (aborta o par)."""
+        if mode == 'ghost':
+            _day_count['n'] += 1
+            _record({'trade_id': tid, 'symbol': sym_pair, 'side': side,
+                     'event': f'CRYPTORV_{event}', 'mode': 'ghost', 'status': 'SIMULATED',
+                     'quote_usdt': quote, 'price_ref': px_ref, 'price_fill': px_ref,
+                     'fee_usdt': round(quote * fee_pct, 4)})
+            log.info(f'[CRYPTORV-GHOST] {event} {pair} {sym_pair} {side} ${quote:.0f} @ ~{px_ref}')
+            return True
+        if side == 'SELL':
+            # spot nao vende a descoberto: mede, nao envia.
+            _record({'trade_id': tid, 'symbol': sym_pair, 'side': side,
+                     'event': f'CRYPTORV_{event}', 'mode': mode, 'status': 'MEASURED_SHORT',
+                     'quote_usdt': quote, 'price_ref': px_ref,
+                     'error': 'spot sem short — perna vendida apenas medida'})
+            return True
+        if mode == 'live':
+            ok, why = check_key_safety()
+            if not ok:
+                _record({'trade_id': tid, 'symbol': sym_pair, 'side': side,
+                         'event': f'CRYPTORV_{event}', 'mode': mode, 'status': 'BLOCKED',
+                         'error': why})
+                return False
+        d, err = _api('POST', '/api/v3/order', {
+            'symbol': sym_pair, 'side': side, 'type': 'MARKET',
+            'quoteOrderQty': f'{quote:.2f}'})
+        if err:
+            _record({'trade_id': tid, 'symbol': sym_pair, 'side': side,
+                     'event': f'CRYPTORV_{event}', 'mode': mode, 'status': 'ERROR',
+                     'quote_usdt': quote, 'error': err[:200]})
+            log.warning(f'[CRYPTORV-{mode.upper()}] {sym_pair} {side} ERRO: {err}')
+            return False
+        fills = d.get('fills') or []
+        fq = sum(float(f['qty']) for f in fills) if fills else float(d.get('executedQty') or 0)
+        fx = (sum(float(f['price']) * float(f['qty']) for f in fills) / fq) if (fills and fq) else None
+        fee = sum(float(f.get('commission') or 0) for f in fills)
+        _day_count['n'] += 1
+        _record({'trade_id': tid, 'symbol': sym_pair, 'side': side,
+                 'event': f'CRYPTORV_{event}', 'mode': mode, 'status': d.get('status', 'FILLED'),
+                 'qty': fq, 'quote_usdt': quote, 'price_ref': px_ref, 'price_fill': fx,
+                 'fee_usdt': fee, 'binance_order_id': str(d.get('orderId')), 'resp': d})
+        log.warning(f'[CRYPTORV-{mode.upper()}] {event} {pair} {sym_pair} {side} '
+                    f'qty={fq} @ {fx} fee={fee}')
+        return True
+
+    try:
+        if not _leg(pa, side_a, price_a, True):
+            _record({'trade_id': tid, 'symbol': f'{pa}/{pb}', 'side': '-',
+                     'event': f'CRYPTORV_{event}', 'mode': mode, 'status': 'ABORTED',
+                     'error': 'perna A falhou — perna B nao enviada (evita perna solta)'})
+            return
+        _leg(pb, side_b, price_b, False)
+    except Exception as e:
+        log.debug(f'[CRYPTORV] {pair}: {e}')
+
+
 def summary():
     global _tbl_ready
     try:

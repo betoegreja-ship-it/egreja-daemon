@@ -8549,9 +8549,16 @@ def monitor_trades():
                         except Exception as _v4cec:
                             log.debug(f'[V4] crypto close log: {_v4cec}')
                         # [EXEC 23-jul] fechamento espelhado no adaptador real (fail-open)
+                        # [03-ago] Direcional saiu da Binance (ver nota na abertura).
+                        # Fecha SO as legadas (abertas antes do corte): um CLOSE sem
+                        # OPEN correspondente venderia cripto que a conta nao comprou.
                         try:
-                            from modules.binance_exec import exec_on_close
-                            exec_on_close(trade)
+                            _bn_cut = os.environ.get('BINANCE_DIRECIONAL_CUTOFF', '2026-08-03T22:30:00')
+                            _bn_legada = str(trade.get('opened_at', '')) < _bn_cut
+                            if (_bn_legada
+                                    or os.environ.get('BINANCE_DIRECIONAL_ENABLED', 'false').lower() == 'true'):
+                                from modules.binance_exec import exec_on_close
+                                exec_on_close(trade)
                         except Exception:
                             pass
                         # [v10.18] Ledger: RELEASE margin first, then PNL_CREDIT
@@ -10978,9 +10985,16 @@ def auto_trade_crypto():
                         # [EXEC 23-jul, decisao Beto] Adaptador de execucao real
                         # (ghost/testnet/live). Em ghost: so loga+registra a ordem
                         # que seria enviada com taxas reais. Fail-open total.
+                        # [03-ago, decisao Beto] Binance passa a ser EXCLUSIVA do
+                        # Crypto RV (arbitragem de pares). O direcional de cripto
+                        # sai da execucao real: e a pior familia do sistema
+                        # (-0,77%/semana, -164k acumulado em 9.808 trades).
+                        # Mesma logica da IB: a corretora serve a estrategia que
+                        # funciona. Religar: BINANCE_DIRECIONAL_ENABLED=true.
                         try:
-                            from modules.binance_exec import exec_on_open
-                            exec_on_open(trade)
+                            if os.environ.get('BINANCE_DIRECIONAL_ENABLED', 'false').lower() == 'true':
+                                from modules.binance_exec import exec_on_open
+                                exec_on_open(trade)
                         except Exception:
                             pass
                         # [DUALMATCH-SHADOW 16-jul-2026] veredito-sombra (nao bloqueia)

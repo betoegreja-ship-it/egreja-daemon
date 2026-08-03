@@ -46,6 +46,20 @@ PAIRS = {
     'CI-ELV':   'CORE_SECT', 'KLAC-STX': 'CORE_SECT', 'ADI-STX': 'CORE_SECT',
     'COP-OXY':  'CORE_SECT', 'MAR-DAL':  'CORE_SECT', 'UNP-UPS':  'CORE_SECT',
     'NOW-PYPL': 'WATCH', 'SHOP-COF': 'WATCH', 'BLK-CCL': 'WATCH', 'MDLZ-AMT': 'WATCH',
+    # ═══ [03-ago-2026, expansao Beto] Aprovados em screening quantitativo ═══
+    # Regua: 2 anos diarios, beta rolante 120d, z 2.0/0.4, custo 20bps RT.
+    # Aprovacao = WR>=55% E PnL>0 E corr>=0.6 E vinculo economico direto.
+    # Reprovados (registrar p/ nao readicionar): HD-LOW, KO-PEP, V-MA, GM-F,
+    # DAL-UAL, VZ-T, TGT-WMT.
+    'GS-MS':    'CORE_FIN',   # ibanks gemeos: WR 100%, corr .88
+    'CVX-XOM':  'CORE_SECT',  # oil majors: WR 55.6%, +
+    'SLB-HAL':  'CORE_SECT',  # oil services: WR 57.1%, +
+    'AMAT-LRCX':'CORE_SECT',  # semicap twins: WR 83.3%, corr .90
+    'ADI-TXN':  'CORE_SECT',  # analog semis: WR 62.5%, +
+    'MU-WDC':   'CORE_SECT',  # memoria: WR 75%, +
+    'UNP-CSX':  'CORE_SECT',  # ferrovias (melhor que UNP-UPS): WR 83.3%
+    'FDX-UPS':  'WATCH',      # parcel: aprovado marginal (WR 55.6, PnL baixo)
+    'CAT-DE':   'WATCH',      # maquinario: PnL forte mas corr .52 — observar
 }
 OPERABLE = {p for p, b in PAIRS.items() if b != 'WATCH'}
 TICKERS = sorted({t for p in PAIRS for t in p.split('-')})

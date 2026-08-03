@@ -45,6 +45,16 @@ PAIRS = {
     'URA-URNM':  {'a': 'URA',       'b': 'URNM',      'book': 'ENERGIA',   'kind': 'commodity'},
     'XLE-XOP':   {'a': 'XLE',       'b': 'XOP',       'book': 'ENERGIA',   'kind': 'commodity'},
     'SOYB-CORN': {'a': 'SOYB',      'b': 'CORN',      'book': 'AGRO',      'kind': 'commodity'},
+    # ═══ [03-ago-2026, expansao Beto] Aprovados em screening quantitativo ═══
+    # Regua: 2 anos diarios, beta 120d, z 2.0/0.4, custo 20bps RT;
+    # aprovacao = WR>=55% E PnL>0. Reprovados: IWM-SPY, KWEB-FXI, XLU-TLT,
+    # DBA-CORN, AUD-NZD (nao readicionar sem novo estudo).
+    'GLD-SLV':   {'a': 'GLD',       'b': 'SLV',       'book': 'METAIS',    'kind': 'commodity'},  # ratio ouro/prata: WR 83.3
+    'USO-XLE':   {'a': 'USO',       'b': 'XLE',       'book': 'ENERGIA',   'kind': 'commodity'},  # petroleo vs acoes energia: WR 77.8
+    'OIH-XLE':   {'a': 'OIH',       'b': 'XLE',       'book': 'ENERGIA',   'kind': 'commodity'},  # oil services vs energia: WR 75
+    'EWZ-ILF':   {'a': 'EWZ',       'b': 'ILF',       'book': 'EM_LATAM',  'kind': 'equity'},     # Brasil vs LatAm: corr .94, WR 87.5
+    'COPX-CPER': {'a': 'COPX',      'b': 'CPER',      'book': 'METAIS',    'kind': 'commodity'},  # mineradoras cobre vs cobre: WR 71.4
+    'EUR-CHF':   {'a': 'C:EURUSD',  'b': 'C:CHFUSD',  'book': 'FX_MAJORS', 'kind': 'fx'},         # bloco europeu: WR 100 (n=6)
 }
 
 

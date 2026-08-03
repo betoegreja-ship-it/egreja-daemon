@@ -47,6 +47,14 @@ PAIRS = {
     'ETH-BTC':  {'a': 'ETHUSDT',  'b': 'BTCUSDT',  'book': 'CORE_MAJORS'},   # +7.7% WR62
     'BNB-BTC':  {'a': 'BNBUSDT',  'b': 'BTCUSDT',  'book': 'CORE_MAJORS'},   # +15.4% WR64
     'UNI-AAVE': {'a': 'UNIUSDT',  'b': 'AAVEUSDT', 'book': 'DEFI'},          # +12.8% WR55
+    # ═══ [03-ago-2026, expansao Beto] Aprovados em NOVO screening (mesma regua
+    # do original): 166 dias de barras 4h Binance, beta rolante 180 barras,
+    # z 2.0/0.4, custo 20bps RT; aprovacao = WR>=55% E PnL>0.
+    # Reprovados agora (nao readicionar sem novo estudo): SOL-ETH, LINK-ETH,
+    # LTC-ETH, OP-ARB, AVAX-SOL, NEAR-AVAX, FIL-ICP, ATOM-DOT (corr .56).
+    'DOGE-SHIB': {'a': 'DOGEUSDT', 'b': 'SHIBUSDT', 'book': 'MEME'},         # WR 83.3, PnL forte
+    'XRP-ADA':   {'a': 'XRPUSDT',  'b': 'ADAUSDT',  'book': 'ALT_MAJORS'},   # WR 70
+    'ADA-DOT':   {'a': 'ADAUSDT',  'b': 'DOTUSDT',  'book': 'ALT_MAJORS'},   # WR 60 (marginal — vigiar)
 }
 
 _BINANCE_HOSTS = [

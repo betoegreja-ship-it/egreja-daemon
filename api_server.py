@@ -8233,8 +8233,18 @@ def monitor_trades():
                         except Exception as _v4ce:
                             log.debug(f'[V4] stocks close log: {_v4ce}')
                         # [IB-EXEC 23-jul] fechamento real NYSE via ponte IB (fail-open)
+                        # [03-ago] O direcional saiu da IB (ver nota na abertura). O
+                        # fechamento so vale para as posicoes LEGADAS (abertas ANTES
+                        # do corte) — senao um CLOSE sem OPEN correspondente criaria
+                        # posicao espuria na corretora (fechar um LONG = SELL; sem
+                        # posicao, vira short). Por isso a checagem e por data de
+                        # abertura, nao por flag: e o unico dado confiavel aqui.
                         try:
-                            if trade.get('market') == 'NYSE':
+                            _ib_cut = os.environ.get('IB_DIRECIONAL_CUTOFF', '2026-08-03T22:30:00')
+                            _ib_legada = str(trade.get('opened_at', '')) < _ib_cut
+                            if (trade.get('market') == 'NYSE'
+                                    and (_ib_legada
+                                         or os.environ.get('IB_DIRECIONAL_ENABLED', 'false').lower() == 'true')):
                                 from modules.ib_exec import exec_on_close as _ib_close
                                 _ib_close(trade)
                         except Exception:
@@ -10121,8 +10131,16 @@ def stock_execution_worker():
                             log.debug(f'[ENTRY-OBS] hook: {_obse}')
                         # [IB-EXEC 23-jul, decisao Beto] Execucao real NYSE via ponte
                         # IB (ghost/paper/live). So NYSE (B3 sera ProfitDLL). Fail-open.
+                        # [03-ago, decisao Beto] IB passa a ser EXCLUSIVA da familia
+                        # Arbi (Arbi mae + Limonada/perna long + US Pairs). O book
+                        # DIRECIONAL sai da IB: em 5 dias levou a conta de 983,7k
+                        # para 956,1k (-2,80%), enquanto a Arbi rende +2,55%/semana.
+                        # A IB e nosso unico teste de execucao REAL (book, latencia,
+                        # fill) — deve servir a estrategia que funciona.
+                        # Religar: IB_DIRECIONAL_ENABLED=true.
                         try:
-                            if trade.get('market') == 'NYSE':
+                            if (trade.get('market') == 'NYSE'
+                                    and os.environ.get('IB_DIRECIONAL_ENABLED', 'false').lower() == 'true'):
                                 from modules.ib_exec import exec_on_open as _ib_open
                                 _ib_open(trade)
                         except Exception:

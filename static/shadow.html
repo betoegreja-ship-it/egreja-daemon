@@ -156,7 +156,8 @@ function rvTradeRows(b){
       '<td><span class="pill open">ABERTA</span></td>'+
       '<td>'+(o.entry_z!=null?(+o.entry_z).toFixed(2):'—')+'→'+(o.cur_z!=null?(+o.cur_z).toFixed(2):'—')+'</td>'+
       '<td class="muted">'+fdur(o.dur_min)+'</td>'+
-      '<td class="'+cls(o.mtm||0)+'">'+(o.mtm!=null?money(o.mtm,'USD'):'<span class="muted">sem preço</span>')+'</td>'+
+      '<td class="'+cls(o.mtm||0)+'">'+(o.mtm!=null?money(o.mtm,'USD'):'<span class="muted">sem preço</span>')+
+        (o.px_live?' <span class="muted" style="font-size:9px" title="cotação ao vivo">•live</span>':' <span class="muted" style="font-size:9px" title="preço da última varredura do motor">•scan</span>')+'</td>'+
       '<td>'+rvPct(o.pnl_pct)+'</td></tr>';
   });
   (b.closed||[]).forEach(function(o){
@@ -183,7 +184,9 @@ function rvBookCard(b){
     '<div class="kpi">Total <b class="'+cls(b.total||0)+'">'+money(b.total||0,'USD')+'</b></div>'+
     '<div class="kpi">% s/ capital <b class="'+cls(b.total_pct||0)+'">'+(b.total_pct!=null?(b.total_pct>=0?'+':'')+b.total_pct.toFixed(2)+'%':'—')+'</b></div>'+
     '</div>'+
-    '<div class="muted">'+capTxt+' · última leitura '+scan+'</div>'+
+    '<div class="muted">'+capTxt+' · última varredura do motor '+scan+
+      (b.n_open>0?' · P&L marcado a mercado: <b>'+(b.px_live_n||0)+'/'+b.n_open+' ao vivo</b>':'')+
+      ' <span style="font-size:10px">(a decisão de abrir/fechar segue a varredura; o P&L acompanha o preço atual)</span></div>'+
     '<table><thead><tr><th>Par</th><th>Dir</th><th>Status</th><th>z ent→atual</th><th>Duração</th><th>P&amp;L</th><th>% s/ cap</th></tr></thead>'+
     '<tbody>'+rvTradeRows(b)+'</tbody></table>'+
     '</div>';

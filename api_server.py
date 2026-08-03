@@ -19488,15 +19488,58 @@ def _rv_shadow_status():
         c.execute(f"SELECT {pair_col} pair, price_a, price_b, z, signal_hyp, position_open "
                   f"FROM {snap_tbl} WHERE id IN (SELECT MAX(id) FROM {snap_tbl} GROUP BY {pair_col})")
         return {r['pair']: r for r in c.fetchall()}
-    def mtm(tr, px):
+
+    # ── [03-ago] preco AO VIVO para o MTM do painel ────────────────────────
+    # US Pairs e Cross-asset so tiram snapshot 1x/dia (a DECISAO e diaria de
+    # proposito — z-score de fechamento). Mas o painel mostrava o P&L parado
+    # no preco da varredura da manha. Aqui buscamos a ultima cotacao real
+    # (Polygon p/ acoes-ETF-FX, Binance p/ cripto) SO para marcar a mercado;
+    # nada disso altera entrada/saida das trades.
+    _live_px_cache = {}
+    def _live_px(sym):
+        if not sym: return None
+        s = str(sym).upper()
+        if s in _live_px_cache: return _live_px_cache[s]
+        px = None
+        try:
+            if s.endswith('USDT'):          # cripto (Binance)
+                r = requests.get('https://data-api.binance.vision/api/v3/ticker/price',
+                                 params={'symbol': s}, timeout=6)
+                if r.ok: px = float(r.json().get('price') or 0) or None
+            else:                            # acoes / ETFs / FX (Polygon)
+                k = os.environ.get('POLYGON_API_KEY', '')
+                if k:
+                    r = requests.get(f'https://api.polygon.io/v2/aggs/ticker/{s}/prev',
+                                     params={'adjusted': 'true', 'apiKey': k}, timeout=6)
+                    if r.ok:
+                        res = (r.json() or {}).get('results') or []
+                        if res: px = float(res[0].get('c') or 0) or None
+                    # intraday mais fresco que o 'prev' (ultimo minuto negociado)
+                    r2 = requests.get(f'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{s}',
+                                      params={'apiKey': k}, timeout=6)
+                    if r2.ok:
+                        t = ((r2.json() or {}).get('ticker') or {})
+                        lp = (t.get('lastTrade') or {}).get('p') or (t.get('day') or {}).get('c')
+                        if lp: px = float(lp)
+        except Exception:
+            px = None
+        _live_px_cache[s] = px
+        return px
+    def mtm(tr, px, syms=None):
         p = px.get(tr['pair'])
-        if not p: return None
+        if not p: return None, False
         pae, pbe = _f(tr['price_a_entry']), _f(tr['price_b_entry'])
         pan, pbn = _f(p['price_a']), _f(p['price_b'])
         na, nb = _f(tr['notional_a']), _f(tr['notional_b'])
-        if None in (pae, pbe, pan, pbn, na, nb) or not pae or not pbe: return None
+        # tenta preco AO VIVO das duas pernas; so usa se conseguir as duas
+        live = False
+        if syms:
+            la, lb = _live_px(syms[0]), _live_px(syms[1])
+            if la and lb:
+                pan, pbn, live = la, lb, True
+        if None in (pae, pbe, pan, pbn, na, nb) or not pae or not pbe: return None, False
         sA = 1 if str(tr['direction']).startswith('LONG_A') else -1
-        return round(na*(pan/pae-1)*sA + nb*(pbn/pbe-1)*(-sA), 2)
+        return round(na*(pan/pae-1)*sA + nb*(pbn/pbe-1)*(-sA), 2), live
     _now = datetime.utcnow()
     def _durmin(a, b):
         try: return int((b - a).total_seconds() // 60)
@@ -19506,7 +19549,23 @@ def _rv_shadow_status():
             if pnl is None or not notional: return None
             return round(pnl / notional * 100.0, 3)
         except Exception: return None
-    def book(name, meta_t, snap_t, trades_t, held_col):
+    # mapa par -> (simbolo_A, simbolo_B) real de cada motor, p/ cotar ao vivo
+    def _sym_map(mod_name):
+        try:
+            import importlib
+            P = importlib.import_module('modules.' + mod_name).PAIRS
+            out = {}
+            for k, v in P.items():
+                if isinstance(v, dict):
+                    out[k] = (v.get('a'), v.get('b'))
+                else:                       # uspairs: 'WFC-COF' -> book
+                    parts = k.split('-')
+                    if len(parts) == 2: out[k] = (parts[0], parts[1])
+            return out
+        except Exception:
+            return {}
+
+    def book(name, meta_t, snap_t, trades_t, held_col, mod_name=None):
         c.execute(f"SELECT v FROM {meta_t} WHERE k='last_scan_at'"); r = c.fetchone()
         last = r['v'] if r else None
         px = latest_prices(snap_t)
@@ -19516,16 +19575,19 @@ def _rv_shadow_status():
         realized = round(sum(_f(t['pnl_net']) or 0 for t in closed), 2)
         wins = sum(1 for t in closed if (_f(t['pnl_net']) or 0) > 0)
         capital = None  # capital por perna do book (notional_a) — base do % s/ capital
+        smap = _sym_map(mod_name) if mod_name else {}
+        n_live = 0
         unreal = 0.0; open_rows = []
         for t in opn:
-            m = mtm(t, px); unreal += (m or 0)
+            m, is_live = mtm(t, px, smap.get(t['pair']))
+            unreal += (m or 0); n_live += 1 if is_live else 0
             pc = px.get(t['pair'], {})
             na = _f(t['notional_a']); capital = capital or na
             open_rows.append({'pair': t['pair'], 'book': t['book'], 'dir': t['direction'],
                 'entry_z': _f(t['entry_z']), 'cur_z': _f(pc.get('z')),
                 'held': t[held_col], 'mtm': m, 'signal': pc.get('signal_hyp'),
                 'pnl_pct': _pct(m, na), 'dur_min': _durmin(t.get('created_at'), _now),
-                'notional': na})
+                'notional': na, 'px_live': is_live})
         closed_rows = []
         for t in sorted(closed, key=lambda x: str(x.get('updated_at')), reverse=True):
             na = _f(t['notional_a']); capital = capital or na
@@ -19545,12 +19607,15 @@ def _rv_shadow_status():
             'realized': realized, 'unreal': round(unreal, 2), 'n_open': len(opn),
             'total': total, 'capital': capital,
             'total_pct': _pct(total, capital), 'realized_pct': _pct(realized, capital),
+            # px_live_n: quantas abertas foram marcadas com cotacao AO VIVO
+            # (o resto usa o preco da ultima varredura do motor).
+            'px_live_n': n_live,
             'open': open_rows, 'closed': closed_rows, 'watch': watch[:8]}
     try:
         out = {
-            'uspairs': book('US Pairs', 'uspairs_shadow_meta', 'uspairs_shadow_snapshots', 'uspairs_shadow_trades', 'pregoes_held'),
-            'crossasset': book('Cross-asset RV', 'crossasset_rv_shadow_meta', 'crossasset_rv_shadow_snapshots', 'crossasset_rv_shadow_trades', 'days_held'),
-            'cryptorv': book('Crypto RV (BTC-ETH)', 'crypto_rv_shadow_meta', 'crypto_rv_shadow_snapshots', 'crypto_rv_shadow_trades', 'bars_held'),
+            'uspairs': book('US Pairs', 'uspairs_shadow_meta', 'uspairs_shadow_snapshots', 'uspairs_shadow_trades', 'pregoes_held', 'uspairs_shadow'),
+            'crossasset': book('Cross-asset RV', 'crossasset_rv_shadow_meta', 'crossasset_rv_shadow_snapshots', 'crossasset_rv_shadow_trades', 'days_held', 'crossasset_rv_shadow'),
+            'cryptorv': book('Crypto RV (BTC-ETH)', 'crypto_rv_shadow_meta', 'crypto_rv_shadow_snapshots', 'crypto_rv_shadow_trades', 'bars_held', 'crypto_rv_shadow'),
         }
     finally:
         c.close(); conn.close()

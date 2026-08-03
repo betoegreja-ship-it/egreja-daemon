@@ -35,7 +35,7 @@ OR_KEY = os.environ.get('OPENROUTER_API_KEY', '')
 OR_URL = 'https://openrouter.ai/api/v1/chat/completions'
 MAX_TOKENS = int(os.environ.get('COUNCIL_MAX_TOKENS', 1200))
 MAX_ROUND_TOKENS = int(os.environ.get('COUNCIL_MAX_ROUND_TOKENS', 60000))
-TIMEOUT_S = int(os.environ.get('COUNCIL_TIMEOUT_S', 90))
+TIMEOUT_S = int(os.environ.get('COUNCIL_TIMEOUT_S', 240))  # [03-ago] 90->240: Kimi K3 estoura 90s em perguntas densas
 
 # ── PROVEDORES ────────────────────────────────────────────────────────────
 # Cada consultor resolve sua rota em tempo de chamada:
@@ -137,7 +137,11 @@ def _ask_one(name, pergunta, dados):
     payload = {'model': model,
                'messages': [{'role': 'system', 'content': PERSONA},
                             {'role': 'user', 'content': user}]}
-    payload[_tok_param] = MAX_TOKENS
+    # [03-ago] modelos com reasoning interno (gpt-5, kimi-k*) queimam o budget
+    # em raciocinio ANTES do texto: com 4000 o gpt-5 devolveu resposta vazia e
+    # depois HTTP 400 "max_tokens reached". Piso de 12k so p/ esses modelos;
+    # o custo real continua limitado pelo que o modelo efetivamente gera.
+    payload[_tok_param] = max(MAX_TOKENS, 12000) if _needs_mct else MAX_TOKENS
     hdr = {'Authorization': f'Bearer {api_key}',
            'HTTP-Referer': 'https://egreja.net', 'X-Title': 'Egreja Council'}
     try:

@@ -314,23 +314,109 @@ def exec_arbi(pair, direction, price_a, price_b, event, ref_id=None):
         log.debug(f'[IB-ARBI] exec {e}')
 
 
-def _has_open_exec(tid):
-    """True se ja houve um USPAIRS_OPEN executado (nao ERROR/BLOCKED) para este
-    trade_id. Evita disparar CLOSE de posicoes legadas sem perna real no IB."""
+def _has_open_exec(tid, event_open='USPAIRS_OPEN'):
+    """True se ja houve um OPEN executado (nao ERROR/BLOCKED) para este trade_id.
+    Evita disparar CLOSE de posicoes legadas sem perna real no IB.
+    [03-ago] parametrizado por evento: serve USPAIRS_OPEN e CROSSASSET_OPEN."""
     if not tid:
         return False
     try:
         from modules.binance_exec import _conn
         c = _conn()
         cur = c.cursor()
-        cur.execute("SELECT COUNT(*) FROM exec_orders WHERE venue='IB' AND event='USPAIRS_OPEN' "
-                    "AND trade_id=%s AND status NOT IN ('ERROR','BLOCKED')", (str(tid),))
+        cur.execute("SELECT COUNT(*) FROM exec_orders WHERE venue='IB' AND event=%s "
+                    "AND trade_id=%s AND status NOT IN ('ERROR','BLOCKED')",
+                    (event_open, str(tid)))
         n = cur.fetchone()[0]
         c.close()
         return n > 0
     except Exception as e:
-        log.debug(f'[IB-USPAIRS] _has_open_exec: {e}')
+        log.debug(f'[IB-EXEC] _has_open_exec: {e}')
         return False  # em duvida, NAO fecha (fail-safe: evita ordem naked)
+
+
+def exec_crossasset(pair, sym_a, sym_b, direction, price_a, price_b,
+                    notional_a, notional_b, event, ref_id=None):
+    """[03-ago-2026, decisao Beto] Espelha um trade do Cross-asset RV (shadow) no
+    IB paper. As pernas sao ETFs americanos (GLD, SLV, XLE, USO, EWZ, TLT, IEF...)
+    — todos SMART/USD, nativamente negociaveis na IB.
+
+    Por que IB: e a unica corretora do stack que cobre a cesta inteira (ETFs de
+    metais, energia, agro, EM e renda fixa) num so lugar. A IB foi liberada do
+    direcional hoje e passa a ser a casa da familia Arbi + Cross-asset.
+
+    LIMITE CONHECIDO: pares de FX (ticker Polygon 'C:EURUSD') NAO sao enviados —
+    exigem contrato CASH/IDEALPRO, que a ponte atual nao monta. Ficam registrados
+    como SKIPPED_FX para nao sumir da auditoria. Sao 2 dos 17 pares (EUR-GBP,
+    EUR-CHF); os outros 15 executam normal.
+
+    Mesmo padrao do US Pairs: 2 pernas, tif=OPG (motor decide no fechamento
+    diario -> enche na abertura seguinte = slippage honesto), teto por perna, e
+    trava _has_open_exec no CLOSE (nunca fecha o que nao abriu aqui).
+    O book shadow NAO e tocado — isto e ledger paralelo de execucao."""
+    try:
+        if os.environ.get('IB_CROSSASSET_ENABLED', 'true').lower() == 'false':
+            return
+        _tid = ref_id or pair
+        a, b = str(sym_a or ''), str(sym_b or '')
+        if a.upper().startswith('C:') or b.upper().startswith('C:'):
+            _record({'trade_id': _tid, 'symbol': f'{a}/{b}', 'side': '-',
+                     'event': f'CROSSASSET_{event}', 'mode': _mode(), 'status': 'SKIPPED_FX',
+                     'error': 'perna FX exige IDEALPRO/CASH — ponte atual so faz SMART/USD'})
+            return
+        pa, pb = float(price_a or 0), float(price_b or 0)
+        if pa <= 0 or pb <= 0:
+            return
+        _cap = _f('IB_EXEC_MAX_USD', 150000)
+        na = min(float(notional_a or 0), _cap)
+        nb = min(float(notional_b or 0), _cap)
+        qa = max(1, int(round(na / pa)))
+        qb = max(1, int(round(nb / pb)))
+        if str(direction).upper() == 'SHORT_A':
+            act_a, act_b = 'SELL', 'BUY'
+        else:
+            act_a, act_b = 'BUY', 'SELL'
+        if str(event).upper() == 'CLOSE':
+            if not _has_open_exec(_tid, 'CROSSASSET_OPEN'):
+                log.info(f'[IB-CROSSASSET] CLOSE {pair} ignorado: sem OPEN no IB (trade legado)')
+                return
+            act_a = 'SELL' if act_a == 'BUY' else 'BUY'
+            act_b = 'SELL' if act_b == 'BUY' else 'BUY'
+        mode = _mode()
+        tif = os.environ.get('IB_CROSSASSET_TIF', 'OPG').upper()
+        for leg_sym, qty, act, notion, pref in ((a, qa, act_a, na, pa), (b, qb, act_b, nb, pb)):
+            g = _guard(min(notion, _cap))
+            if g:
+                _record({'trade_id': _tid, 'symbol': leg_sym, 'side': act,
+                         'event': f'CROSSASSET_{event}', 'mode': mode, 'status': 'BLOCKED',
+                         'usd': notion, 'error': g})
+                continue
+            if mode == 'ghost':
+                _day['n'] += 1
+                _record({'trade_id': _tid, 'symbol': leg_sym, 'side': act,
+                         'event': f'CROSSASSET_{event}', 'mode': 'ghost', 'status': 'SIMULATED',
+                         'qty': qty, 'usd': notion, 'price_ref': pref})
+                log.info(f'[IB-GHOST-CROSSASSET] {event} {pair} {leg_sym} {act} {qty}sh (tif={tif})')
+                continue
+            d, err = _bridge({'symbol': leg_sym, 'action': act, 'quantity': qty,
+                              'exchange': 'SMART', 'currency': 'USD', 'tif': tif,
+                              'mode': mode, 'trade_id': _tid})
+            if err:
+                _record({'trade_id': _tid, 'symbol': leg_sym, 'side': act,
+                         'event': f'CROSSASSET_{event}', 'mode': mode, 'status': 'ERROR',
+                         'qty': qty, 'usd': notion, 'error': err[:200]})
+                log.warning(f'[IB-CROSSASSET] {pair} {leg_sym} {act} ERRO: {err}')
+                continue
+            _day['n'] += 1
+            _record({'trade_id': _tid, 'symbol': leg_sym, 'side': act,
+                     'event': f'CROSSASSET_{event}', 'mode': mode,
+                     'status': d.get('status', 'SENT'), 'qty': d.get('filled', qty),
+                     'usd': notion, 'price_ref': pref, 'price_fill': d.get('avg_price'),
+                     'fee': d.get('commission'), 'ib_order_id': d.get('order_id'), 'resp': d})
+            log.warning(f'[IB-CROSSASSET] {event} {pair} {leg_sym} {act} {qty} (tif={tif}) -> '
+                        f'{d.get("status")} @ {d.get("avg_price")} id={d.get("order_id")}')
+    except Exception as e:
+        log.debug(f'[IB-CROSSASSET] {pair}: {e}')
 
 
 def exec_uspairs(pair, direction, price_a, price_b, notional_a, notional_b, event, ref_id=None):

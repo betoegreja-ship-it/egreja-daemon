@@ -280,6 +280,16 @@ def scan_once():
                     open_now.discard(pair)
                     log.info(f'[CROSSASSET-RV] CLOSE {pair} {direction} {reason} '
                              f'z={z:+.2f} pnl=${pnl_net:.2f} ({pnl_pct:+.2f}%, {held}d)')
+                    # [03-ago, decisao Beto] espelha o fechamento no IB paper.
+                    # Fail-open: corretora fora do ar nao afeta o book shadow.
+                    try:
+                        from modules.ib_exec import exec_crossasset
+                        exec_crossasset(pair, cfg.get('a'), cfg.get('b'), direction,
+                                        r['price_a'], r['price_b'],
+                                        float(na or 0), float(nb or 0),
+                                        'CLOSE', ref_id=str(tid))
+                    except Exception as _xe:
+                        log.debug(f'[CROSSASSET-RV] exec CLOSE {pair}: {_xe}')
                 else:
                     cur.execute("UPDATE crossasset_rv_shadow_trades SET days_held=%s "
                                 "WHERE id=%s", (held, tid))
@@ -300,6 +310,16 @@ def scan_once():
                 open_now.add(pair)
                 log.info(f'[CROSSASSET-RV] OPEN {pair} {direction} z={z:+.2f} '
                          f'beta={r["beta"]} notional=${na:.0f}/${nb:.0f}')
+                # [03-ago, decisao Beto] espelha a abertura no IB paper (2 pernas,
+                # ETFs SMART/USD, tif=OPG). Pares de FX sao registrados como
+                # SKIPPED_FX (exigem IDEALPRO). Fail-open.
+                try:
+                    from modules.ib_exec import exec_crossasset
+                    exec_crossasset(pair, cfg.get('a'), cfg.get('b'), direction,
+                                    r['price_a'], r['price_b'], na, nb,
+                                    'OPEN', ref_id=str(cur.lastrowid))
+                except Exception as _xe:
+                    log.debug(f'[CROSSASSET-RV] exec OPEN {pair}: {_xe}')
 
             cur.execute(
                 "INSERT IGNORE INTO crossasset_rv_shadow_snapshots (day, pair, book, "

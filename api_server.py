@@ -2494,6 +2494,8 @@ def auth_check():
         # Cross-asset RV, Crypto RV). Paper, agregado — mesma info do conselho.
         '/shadow/rv',
         '/shadow/rv-status',
+        # [03-ago] comparacao ProfitDLL (Nelogica) vs Cedro — so precos de mercado
+        '/debug/profit',
         # [30-jul, determinacao GPT] /debug/entry-observer REMOVIDO do publico:
         # expoe simbolos, thresholds e logica de conversao (IP da casa).
         # Acesso via API key como os demais endpoints internos.
@@ -19568,6 +19570,56 @@ def shadow_rv_page():
     # [02-ago] painel integrado na aba Shadow (static/shadow.html). Mantido como
     # atalho -> redireciona para a pagina principal de shadow.
     return redirect('/shadow.html', code=302)
+
+
+@app.route('/debug/profit')
+def debug_profit():
+    """[03-ago] Ponte ProfitDLL (Nelogica, VPS) vs Cedro: saude + comparacao de
+    precos da B3. Base do veredito dos 14 dias. Publico (so preco de mercado).
+    Le PROFIT_BRIDGE_URL / PROFIT_BRIDGE_TOKEN do env do Railway."""
+    import statistics as _st
+    url = (os.environ.get('PROFIT_BRIDGE_URL', '') or '').rstrip('/')
+    tok = os.environ.get('PROFIT_BRIDGE_TOKEN', '')
+    if not url:
+        return jsonify({'error': 'PROFIT_BRIDGE_URL nao configurado no Railway'}), 503
+    out = {'bridge_url': url}
+    try:
+        h = requests.get(url + '/health', timeout=8)
+        out['health'] = h.json()
+    except Exception as e:
+        return jsonify({'error': 'bridge inalcancavel: ' + str(e)[:150], 'bridge_url': url}), 502
+    try:
+        q = requests.get(url + '/quotes', headers={'X-Bridge-Token': tok}, timeout=8)
+        pq = (q.json() or {}).get('quotes', {})
+    except Exception as e:
+        out['quotes_erro'] = str(e)[:150]
+        return jsonify(out), 200
+    cedro = {}
+    try:
+        if _cedro_socket:
+            with _cedro_socket._cache_lock:
+                for k, v in _cedro_socket._cache.items():
+                    p = v.get('price')
+                    if p:
+                        cedro[k] = float(p)
+    except Exception as e:
+        out['cedro_erro'] = str(e)[:120]
+    rows = []; diffs = []
+    for sym, pd in pq.items():
+        pl = pd.get('last') or pd.get('close')
+        cp = cedro.get(sym)
+        if pl and cp and cp > 0:
+            d = round((float(pl) / cp - 1) * 100, 3)
+            diffs.append(abs(d))
+            rows.append({'sym': sym, 'profit': round(float(pl), 4), 'cedro': cp, 'diff_pct': d})
+    rows.sort(key=lambda r: -abs(r['diff_pct']))
+    out['n_profit_quotes'] = len(pq)
+    out['n_cedro'] = len(cedro)
+    out['n_comparados'] = len(rows)
+    out['abs_diff_mediana_pct'] = round(_st.median(diffs), 4) if diffs else None
+    out['abs_diff_max_pct'] = round(max(diffs), 4) if diffs else None
+    out['amostra'] = rows[:40]
+    return jsonify(out)
 
 
 @app.route('/debug/dualmatch-stats')

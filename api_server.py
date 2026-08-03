@@ -9174,13 +9174,14 @@ def stock_execution_worker():
                 if is_short and not _allow_short:
                     log.info(f'[SHORT-BLOCK] {sym}: ALLOW_SHORT_STOCKS=false — trade vetada')
                     is_short = False
-                # ═══ [ATA-D3 01-ago-2026, conselho 4/4] B3 direcional live OFF ═══
-                # Capital real B3 = zero ate o gate estrutural provar valor.
-                # B3_LIVE_ENABLED=false bloqueia TODA entrada live B3 (long e short);
-                # sinais/score/V4/observabilidade continuam rodando (shadow intacto).
-                if mkt_type == 'B3' and os.environ.get('B3_LIVE_ENABLED', 'true').lower() == 'false':
-                    log.info(f'[B3-LIVE-OFF] {sym}: entrada live B3 bloqueada (ATA D3) — sinal segue em shadow')
-                    continue
+                # ═══ [REVERTIDO 03-ago-2026, decisao do fundador] B3 volta a simular ═══
+                # A D3 (conselho) tratou "B3 live OFF" como proteger capital REAL.
+                # Mas a plataforma inteira e PAPER: nao ha capital real a proteger.
+                # Desligar a B3 nao evita perda — apenas para a SIMULACAO, que e a
+                # fonte de dados/aprendizado. Gate removido; a B3 volta a operar em
+                # paper. (B3_LIVE_ENABLED no Railway ficou inerte e pode ser deletado.)
+                # Reabrir a discussao no conselho: o freeze so faz sentido quando
+                # houver dinheiro real; ate la, nunca parar a simulacao.
                 # ═══ [ATA-D7 01-ago-2026] GATE OPEN-MOMENTUM — SOMBRA (so loga) ═══
                 # Regra Grok: bloquear LONG se preco < abertura do dia E ret15min
                 # < -0,15% (simetrico p/ short). Ataca born-dead (86% das EARLY_STOP).

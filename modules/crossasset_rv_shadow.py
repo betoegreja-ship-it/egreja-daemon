@@ -55,6 +55,14 @@ PAIRS = {
     'EWZ-ILF':   {'a': 'EWZ',       'b': 'ILF',       'book': 'EM_LATAM',  'kind': 'equity'},     # Brasil vs LatAm: corr .94, WR 87.5
     'COPX-CPER': {'a': 'COPX',      'b': 'CPER',      'book': 'METAIS',    'kind': 'commodity'},  # mineradoras cobre vs cobre: WR 71.4
     'EUR-CHF':   {'a': 'C:EURUSD',  'b': 'C:CHFUSD',  'book': 'FX_MAJORS', 'kind': 'fx'},         # bloco europeu: WR 100 (n=6)
+    # [03-ago] Adicao com CONVICCAO do Kimi: unico par com arbitragem de
+    # substituicao genuina (nao correlacao historica). TLT=20y+, IEF=7-10y,
+    # ambos Treasury dos EUA: o spread e o SLOPE da curva de duration, com
+    # beta teorico ~2.3 vindo de cash flows (nao de correlacao). Drivers
+    # independentes dos clusters atuais (premio de termo, demanda de pensoes
+    # por duration, hedge de convexity de MBS). Poucos sinais/ano, mas cada um
+    # de alta conviccao. Reversao mais lenta => timeout maior que acoes.
+    'TLT-IEF':   {'a': 'TLT',       'b': 'IEF',       'book': 'RATES',     'kind': 'bond'},
 }
 
 

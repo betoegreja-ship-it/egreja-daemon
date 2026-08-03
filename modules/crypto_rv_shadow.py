@@ -52,6 +52,14 @@ PAIRS = {
     # z 2.0/0.4, custo 20bps RT; aprovacao = WR>=55% E PnL>0.
     # Reprovados agora (nao readicionar sem novo estudo): SOL-ETH, LINK-ETH,
     # LTC-ETH, OP-ARB, AVAX-SOL, NEAR-AVAX, FIL-ICP, ATOM-DOT (corr .56).
+    # [03-ago] DOGE-SHIB: Kimi E GPT reprovaram como "artefato de regime unico"
+    # (6 trades em 166d = 1 ciclo de meme; IC95% do WR = [36%,99%]; vinculo e
+    # sentimento de varejo, nao fundamento). MANTIDO em book MEME ISOLADO por
+    # decisao do coordenador — o objetivo do shadow e justamente colher a
+    # evidencia. Regra herdada do parecer: NAO conta como aprovacao do book
+    # principal, exige >=30 trades OOS atravessando 3 regimes (incl. queda de
+    # BTC e colapso de volume meme) e morre se qualquer janela de 30d explicar
+    # >50% do PnL. Zero live sob qualquer hipotese.
     'DOGE-SHIB': {'a': 'DOGEUSDT', 'b': 'SHIBUSDT', 'book': 'MEME'},         # WR 83.3, PnL forte
     'XRP-ADA':   {'a': 'XRPUSDT',  'b': 'ADAUSDT',  'book': 'ALT_MAJORS'},   # WR 70
     'ADA-DOT':   {'a': 'ADAUSDT',  'b': 'DOTUSDT',  'book': 'ALT_MAJORS'},   # WR 60 (marginal — vigiar)

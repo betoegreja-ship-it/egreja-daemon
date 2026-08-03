@@ -46,12 +46,26 @@ PAIRS = {
     'CI-ELV':   'CORE_SECT', 'KLAC-STX': 'CORE_SECT', 'ADI-STX': 'CORE_SECT',
     'COP-OXY':  'CORE_SECT', 'MAR-DAL':  'CORE_SECT', 'UNP-UPS':  'CORE_SECT',
     'NOW-PYPL': 'WATCH', 'SHOP-COF': 'WATCH', 'BLK-CCL': 'WATCH', 'MDLZ-AMT': 'WATCH',
-    # ═══ [03-ago-2026, expansao Beto] Aprovados em screening quantitativo ═══
-    # Regua: 2 anos diarios, beta rolante 120d, z 2.0/0.4, custo 20bps RT.
-    # Aprovacao = WR>=55% E PnL>0 E corr>=0.6 E vinculo economico direto.
-    # Reprovados (registrar p/ nao readicionar): HD-LOW, KO-PEP, V-MA, GM-F,
-    # DAL-UAL, VZ-T, TGT-WMT.
-    'GS-MS':    'CORE_FIN',   # ibanks gemeos: WR 100%, corr .88
+    # ═══ [03-ago-2026] CANDIDATOS EM VALIDACAO — nao sao "aprovados" ═══
+    # Screening inicial: 2 anos diarios, beta rolante 120d, z 2.0/0.4, 20bps RT.
+    # Filtro: WR>=55% E PnL>0 E corr>=0.6 E vinculo economico. n=6-10/par.
+    #
+    # PARECER DO CONSELHO (Kimi + GPT, 03-ago, ambos DUROS e convergentes):
+    #  - "13 hipoteses selecionadas in-sample apos testar 45 pares" (GPT). Sem
+    #    correcao de multiplos testes (FDR 10%/White-SPA), alguns vencedores
+    #    sao acaso garantido. WR nao e edge; correlacao nao e cointegracao.
+    #  - n=8 com WR 100% tem IC95% inferior de apenas 63% (GPT); n=6 cai p/ 36%.
+    #  - PROMOCAO A LIVE exige (regra mais dura, GPT): >=30 trades fechados
+    #    100% OOS por par (ideal 50), PF>=1.25, ganho medio >=2x custo, PnL+
+    #    em >=70% dos folds, maior trade <25% do lucro, half-life estavel.
+    #    Kimi pede ainda Sharpe>=1.0 e MaxDD/PnL<=30%.
+    #  - CLUSTER: energia e semis contam como ~1 observacao efetiva cada
+    #    (n_eff = k / (1+(k-1)*rho_medio)). Teto: 2 pares simultaneos por
+    #    cluster e 25% do gross do book.
+    # Estes pares entram como CANDIDATOS SHADOW EM VALIDACAO. Zero live.
+    # Reprovados (nao readicionar sem novo estudo): HD-LOW, KO-PEP, V-MA,
+    # GM-F, DAL-UAL, VZ-T, TGT-WMT.
+    'GS-MS':    'CORE_FIN',   # ibanks gemeos: WR 100%, corr .88 — SUSPEITO de selection bias (GPT/Kimi): exige walk-forward 2012-2026 sobrevivendo COVID/juros/crise bancaria 2023
     'CVX-XOM':  'CORE_SECT',  # oil majors: WR 55.6%, +
     'SLB-HAL':  'CORE_SECT',  # oil services: WR 57.1%, +
     'AMAT-LRCX':'CORE_SECT',  # semicap twins: WR 83.3%, corr .90
@@ -60,6 +74,12 @@ PAIRS = {
     'UNP-CSX':  'CORE_SECT',  # ferrovias (melhor que UNP-UPS): WR 83.3%
     'FDX-UPS':  'WATCH',      # parcel: aprovado marginal (WR 55.6, PnL baixo)
     'CAT-DE':   'WATCH',      # maquinario: PnL forte mas corr .52 — observar
+    # [03-ago] PAR-CONTROLE exigido pelo GPT. Mesmo emissor (Alphabet), mesmo
+    # fluxo economico e patrimonio; difere so em direito de voto/liquidez.
+    # Vinculo estrutural, edge esperado PEQUENO — serve de sanity check do
+    # motor: se aparecer lucro grande, beta instavel ou stop frequente aqui,
+    # o erro e de execucao/dados, nao de mercado. NAO promover a live.
+    'GOOG-GOOGL': 'WATCH',
 }
 OPERABLE = {p for p, b in PAIRS.items() if b != 'WATCH'}
 TICKERS = sorted({t for p in PAIRS for t in p.split('-')})

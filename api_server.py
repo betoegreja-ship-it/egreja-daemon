@@ -11975,6 +11975,14 @@ def arbi_monitor_loop():
                     sd=arbi_spreads.get(trade['pair_id'])
                     if sd:
                         trade['current_spread']=sd['spread_pct']
+                        # [03-ago] guarda o preco ATUAL de cada perna. Sem isso
+                        # o painel so mostrava o spread agregado: quando uma
+                        # perna trava (ex.: CSNA3 congelada em 4,02 no dia em
+                        # que o app caiu), o spread explode e nao da p/ ver
+                        # QUAL perna causou. Agora da p/ auditar na hora.
+                        trade['price_a'] = sd.get('price_a')
+                        trade['price_b'] = sd.get('price_b')
+                        trade['px_updated_at'] = now.isoformat()
                         ea=abs(float(trade['entry_spread'])); ca=abs(float(trade['current_spread']))
                         trade['pnl_pct']=round(ea-ca,4)
                         # [v10.14-FIX] Sanity check: spread > 20% = preço inválido

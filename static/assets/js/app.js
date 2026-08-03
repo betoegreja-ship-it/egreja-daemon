@@ -1159,11 +1159,25 @@ async function loadArbitrage(){
           var spIn=parseFloat(t.entry_spread||0).toFixed(2);
           var spOut=parseFloat(t.current_spread||0).toFixed(2);
           var spColor=pnl>=0?'#2ecc71':'#e74c3c';
+          // [03-ago] preco POR PERNA: entrada -> atual. Sem isso, um preco
+          // travado numa das pernas (ex.: CSNA3 congelada em 4,02 no dia do
+          // app fora do ar) explode o spread e ninguem ve a causa.
+          var _n=function(v,d){var x=parseFloat(v);return isFinite(x)&&x!==0?x.toFixed(d==null?2:d):null;};
+          var _leg=function(pe,pn){
+            var e=_n(pe), a=_n(pn);
+            if(!e&&!a) return '<span style="color:var(--text3)">—</span>';
+            if(!a) return '<span style="color:var(--text3)">'+e+'</span>';
+            var up=parseFloat(pn)>=parseFloat(pe);
+            return '<span style="color:var(--text3)">'+e+'</span> <span style="color:var(--text3);font-size:9px">→</span> <span style="color:'+(up?'#2ecc71':'#e74c3c')+'">'+a+'</span>';
+          };
+          var pxA=_leg(t.price_a_entry!=null?t.price_a_entry:t.entry_price_a, t.price_a!=null?t.price_a:t.current_price_a);
+          var pxB=_leg(t.price_b_entry!=null?t.price_b_entry:t.entry_price_b, t.price_b!=null?t.price_b:t.current_price_b);
+          var dSp=(parseFloat(t.current_spread||0)-parseFloat(t.entry_spread||0));
           return '<tr style="border-bottom:1px solid var(--line)">'
             +'<td style="padding:10px 14px;font-weight:600">'+t.name+'</td>'
-            +'<td style="padding:10px 14px"><span style="color:#2ecc71;font-weight:600;font-size:11px">COMPRA</span> <span style="font-family:monospace;font-size:11px">'+buyLeg+'</span> <span style="color:var(--text3);font-size:10px;background:var(--navy2);padding:1px 5px;border-radius:2px">'+buyMkt+'</span></td>'
-            +'<td style="padding:10px 14px"><span style="color:#e74c3c;font-weight:600;font-size:11px">VENDA</span> <span style="font-family:monospace;font-size:11px">'+sellLeg+'</span> <span style="color:var(--text3);font-size:10px;background:var(--navy2);padding:1px 5px;border-radius:2px">'+sellMkt+'</span></td>'
-            +'<td style="padding:10px 14px;text-align:right;font-family:monospace"><span style="color:var(--text3)">'+spIn+'%</span> → <span style="color:'+spColor+'">'+spOut+'%</span></td>'
+            +'<td style="padding:10px 14px"><span style="color:#2ecc71;font-weight:600;font-size:11px">COMPRA</span> <span style="font-family:monospace;font-size:11px">'+buyLeg+'</span> <span style="color:var(--text3);font-size:10px;background:var(--navy2);padding:1px 5px;border-radius:2px">'+buyMkt+'</span><br><span style="font-family:monospace;font-size:11px">'+pxA+'</span></td>'
+            +'<td style="padding:10px 14px"><span style="color:#e74c3c;font-weight:600;font-size:11px">VENDA</span> <span style="font-family:monospace;font-size:11px">'+sellLeg+'</span> <span style="color:var(--text3);font-size:10px;background:var(--navy2);padding:1px 5px;border-radius:2px">'+sellMkt+'</span><br><span style="font-family:monospace;font-size:11px">'+pxB+'</span></td>'
+            +'<td style="padding:10px 14px;text-align:right;font-family:monospace"><span style="color:var(--text3)">'+spIn+'%</span> → <span style="color:'+spColor+'">'+spOut+'%</span><br><span style="font-size:10px;color:'+(dSp>=0?'#2ecc71':'#e74c3c')+'">Δ '+(dSp>=0?'+':'')+dSp.toFixed(2)+'pp</span></td>'
             +'<td style="padding:10px 14px;text-align:right;color:'+pc(pnl)+';font-weight:600;font-family:monospace">'+(pnl>=0?'+':'')+fmtBig(pnl)+'</td>'
             +'<td style="padding:10px 14px;text-align:right;font-family:monospace">$'+fmtNum(t.position_size||0)+'</td>'
             +'<td style="padding:10px 14px;text-align:right;color:var(--text3);font-size:11px">'+fmtDT(t.opened_at)+'</td>'

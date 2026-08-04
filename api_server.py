@@ -19614,7 +19614,30 @@ def _rv_shadow_status():
         opn = [t for t in trs if t['status'] == 'OPEN']
         realized = round(sum(_f(t['pnl_net']) or 0 for t in closed), 2)
         wins = sum(1 for t in closed if (_f(t['pnl_net']) or 0) > 0)
-        capital = None  # capital por perna do book (notional_a) — base do % s/ capital
+
+        # ── [04-ago | Beto] CAPITAL BASE DO BOOK ────────────────────────────
+        # ANTES (errado): "capital = capital or na" pegava o notional_a da PRIMEIRA
+        # trade e dividia o P&L do book INTEIRO por ele. Com 6 posicoes abertas
+        # simultaneas, dividia por 1 -> o % s/ capital saia ~6x inflado.
+        # AGORA: varredura de sobreposicao no tempo. capital = maior soma de
+        # notional (perna A + perna B) que esteve viva ao mesmo tempo. E a mesma
+        # regra que a Limonada ja usa (max_concorrentes x notional).
+        def _cap_max(rows):
+            ev = []
+            for t in rows:
+                ini = t.get('created_at')
+                if not ini: continue
+                fim = t.get('updated_at') if t.get('status') == 'CLOSED' else None
+                cap = (_f(t.get('notional_a')) or 0) + (_f(t.get('notional_b')) or 0)
+                ev.append((str(ini), 1, cap)); ev.append((str(fim or _now), -1, cap))
+            if not ev: return None, 0
+            ev.sort(key=lambda x: (x[0], -x[1]))   # empate: abre antes de fechar (conservador)
+            cur_cap = cur_n = 0.0; mx_cap = mx_n = 0.0
+            for _, d, cap in ev:
+                cur_cap += cap * d; cur_n += d
+                mx_cap = max(mx_cap, cur_cap); mx_n = max(mx_n, cur_n)
+            return (round(mx_cap, 2) or None), int(mx_n)
+        capital, max_simult = _cap_max(trs)
         smap = _sym_map(mod_name) if mod_name else {}
         n_live = 0
         unreal = 0.0; open_rows = []
@@ -19622,7 +19645,8 @@ def _rv_shadow_status():
             m, is_live = mtm(t, px, smap.get(t['pair']))
             unreal += (m or 0); n_live += 1 if is_live else 0
             pc = px.get(t['pair'], {})
-            na = _f(t['notional_a']); capital = capital or na
+            # capital DA TRADE = as duas pernas (a posicao ocupa margem nos dois lados)
+            na = (_f(t['notional_a']) or 0) + (_f(t['notional_b']) or 0)
             open_rows.append({'pair': t['pair'], 'book': t['book'], 'dir': t['direction'],
                 'entry_z': _f(t['entry_z']), 'cur_z': _f(pc.get('z')),
                 'held': t[held_col], 'mtm': m, 'signal': pc.get('signal_hyp'),
@@ -19630,9 +19654,9 @@ def _rv_shadow_status():
                 'notional': na, 'px_live': is_live})
         closed_rows = []
         for t in sorted(closed, key=lambda x: str(x.get('updated_at')), reverse=True):
-            na = _f(t['notional_a']); capital = capital or na
+            na = (_f(t['notional_a']) or 0) + (_f(t['notional_b']) or 0)
             closed_rows.append({'pair': t['pair'], 'dir': t['direction'], 'pnl': _f(t['pnl_net']),
-                'pnl_pct': _f(t.get('pnl_pct')) if t.get('pnl_pct') is not None else _pct(_f(t['pnl_net']), na),
+                'pnl_pct': _pct(_f(t['pnl_net']), na),
                 'reason': t['close_reason'], 'held': t[held_col],
                 'dur_min': _durmin(t.get('created_at'), t.get('updated_at')), 'notional': na})
         watch = []
@@ -19645,7 +19669,7 @@ def _rv_shadow_status():
         return {'name': name, 'last_scan': last, 'n_closed': len(closed), 'wins': wins,
             'wr': round(100*wins/len(closed), 1) if closed else None,
             'realized': realized, 'unreal': round(unreal, 2), 'n_open': len(opn),
-            'total': total, 'capital': capital,
+            'total': total, 'capital': capital, 'max_simult': max_simult,
             'total_pct': _pct(total, capital), 'realized_pct': _pct(realized, capital),
             # px_live_n: quantas abertas foram marcadas com cotacao AO VIVO
             # (o resto usa o preco da ultima varredura do motor).

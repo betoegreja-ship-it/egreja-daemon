@@ -1004,6 +1004,7 @@ THREAD_HEARTBEAT_TIMEOUT = {
     'stock_execution_worker': 300,   # [v10.9] 5min — era 150s, loop de 60s + processamento
     'arbi_scan_loop':         600,
     'arbi_monitor_loop':      180,
+    'arbi_reconcile_loop':    900,   # [05-ago] beat antes/depois do passe; ciclo 10min
     'snapshot_loop':          600,
     'persistence_worker':     60,    # [v10.9] 60s
     'alert_worker':           60,
@@ -2479,6 +2480,7 @@ def auth_check():
         # de estatisticas AGREGADAS e trades dos books shadow (paper). Sem credencial,
         # sem dinheiro real, sem dado pessoal — mesma info do relatorio ao conselho.
         '/debug/longleg',
+        '/debug/arbi-reconcile',   # [05-ago] auditoria DB<->memoria da Arbi
         '/debug/longleg-open',
         '/debug/longleg-ib',
         '/debug/spreads',
@@ -11965,6 +11967,117 @@ def arbi_scan_loop():
         time.sleep(300)
         beat('arbi_scan_loop')
 
+def arbi_reconcile(source='loop'):
+    """[05-ago | Beto] RECONCILIACAO DB <-> MEMORIA da Arbi.
+
+    O motor so adotava as trades abertas no BOOT (init_trades_tables). Se uma
+    thread reinicia no meio do pregao, as trades somem da memoria e viram
+    zumbis: ninguem monitora, nunca fecham, o capital nunca e devolvido e o
+    book trava. Foi o que travou a Arbi em 05-ago (9,1MM comprometidos contra
+    capacidade de 6,41MM) e o que gerou as duplicatas de 16-jul (2x CMIG4,
+    2x BBDC4, 2x ABEV3, 2x PETR4) — a trava ARBI_PAIR_OPEN so funciona se a
+    trade estiver NA MEMORIA.
+
+    Faz 3 coisas, nesta ordem:
+      1. ADOTA   — aberta no DB e ausente da memoria -> volta a ser monitorada
+      2. SOLTA   — na memoria mas ja fechada no DB   -> sai e devolve capital
+      3. DEDUP   — 2+ abertas do mesmo par           -> a mais nova vira MANUAL_ORPHAN
+    No fim recalcula o capital por primeiros principios e loga a divergencia.
+    Idempotente e fail-open: se der erro, nao derruba o loop.
+    """
+    global arbi_capital
+    out = {'source': source, 'adotadas': [], 'soltas': [], 'orfas': [], 'erro': None}
+    try:
+        conn = get_db()
+        if not conn:
+            out['erro'] = 'db'; return out
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM arbi_trades WHERE status='OPEN'")
+        db_rows = cur.fetchall()
+        db_by_id = {str(r['id']): r for r in db_rows}
+
+        with state_lock:
+            mem_ids = {str(t.get('id')) for t in arbi_open}
+
+            # 1. ADOTA as que o DB tem abertas e a memoria perdeu
+            _pairs_mem = {t.get('pair_id') for t in arbi_open}
+            for _id, r in sorted(db_by_id.items(), key=lambda kv: str(kv[1].get('opened_at') or '')):
+                if _id in mem_ids:
+                    continue
+                t = _row_to_trade(r)
+                if t.get('pair_id') in _pairs_mem:
+                    # 3. DEDUP: ja existe uma viva desse par -> esta e duplicata
+                    try:
+                        cur.execute("UPDATE arbi_trades SET status='CLOSED', close_reason='MANUAL_ORPHAN', "
+                                    "closed_at=NOW() WHERE id=%s AND status='OPEN'", (r['id'],))
+                        conn.commit()
+                        out['orfas'].append(f"{r['id']}({t.get('pair_id')})")
+                    except Exception as _de:
+                        log.error(f'[ARBI-RECONCILE] dedup {r["id"]}: {_de}')
+                    continue
+                arbi_open.append(t)
+                arbi_capital -= float(t.get('position_size') or 0)
+                _pairs_mem.add(t.get('pair_id'))
+                out['adotadas'].append(f"{r['id']}({t.get('pair_id')})")
+
+            # 2. SOLTA as que a memoria acha abertas mas o DB ja fechou
+            _sobrou = []
+            for t in arbi_open:
+                if str(t.get('id')) in db_by_id:
+                    _sobrou.append(t)
+                else:
+                    arbi_capital += float(t.get('position_size') or 0)
+                    out['soltas'].append(f"{t.get('id')}({t.get('pair_id')})")
+            if len(_sobrou) != len(arbi_open):
+                arbi_open[:] = _sobrou
+
+            _n_mem = len(arbi_open)
+            _comprometido = sum(float(t.get('position_size') or 0) for t in arbi_open)
+
+        # capital por primeiros principios (mesma regra da trava P0 de 14-jul)
+        try:
+            cur.execute("SELECT COALESCE(SUM(pnl),0) p FROM arbi_trades WHERE status='CLOSED' "
+                        "AND (close_reason IS NULL OR close_reason NOT IN "
+                        "('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN'))")
+            _realizado = float(cur.fetchone()['p'] or 0)
+        except Exception:
+            _realizado = 0.0
+        _capacidade = float(os.environ.get('ARBI_CAPITAL_INICIAL', 3_000_000)) + _realizado
+        out.update({'n_memoria': _n_mem, 'comprometido': round(_comprometido, 2),
+                    'capacidade': round(_capacidade, 2),
+                    'livre': round(_capacidade - _comprometido, 2),
+                    'arbi_capital_contador': round(float(arbi_capital), 2)})
+        try: cur.close(); conn.close()
+        except Exception: pass
+
+        if out['adotadas'] or out['soltas'] or out['orfas']:
+            log.warning(f"[ARBI-RECONCILE/{source}] adotadas={out['adotadas']} "
+                        f"soltas={out['soltas']} orfas={out['orfas']} "
+                        f"| memoria={_n_mem} comprometido={_comprometido:,.0f} "
+                        f"capacidade={_capacidade:,.0f}")
+        else:
+            log.info(f"[ARBI-RECONCILE/{source}] OK — {_n_mem} abertas, "
+                     f"comprometido={_comprometido:,.0f}/{_capacidade:,.0f}")
+    except Exception as e:
+        out['erro'] = str(e)
+        log.error(f'[ARBI-RECONCILE/{source}] {e}')
+    return out
+
+
+def arbi_reconcile_loop():
+    """Roda a reconciliacao a cada ARBI_RECONCILE_MIN minutos (default 10).
+    Diaria seria tarde demais: o travamento de 05-ago comeu ~1h de pregao."""
+    _min = float(os.environ.get('ARBI_RECONCILE_MIN', 10))
+    beat('arbi_reconcile_loop')
+    time.sleep(90)                     # deixa o boot terminar antes do 1o passe
+    while True:
+        beat('arbi_reconcile_loop')
+        try: arbi_reconcile('loop')
+        except Exception as e: log.error(f'arbi_reconcile_loop: {e}')
+        beat('arbi_reconcile_loop')
+        time.sleep(_min * 60)
+
+
 def arbi_monitor_loop():
     global arbi_capital
     _fx_refresh_counter = 0
@@ -12914,6 +13027,7 @@ def start_background_threads():
         'stock_execution_worker': stock_execution_worker,
         'arbi_scan_loop':         arbi_scan_loop,
         'arbi_monitor_loop':      arbi_monitor_loop,
+        'arbi_reconcile_loop':    arbi_reconcile_loop,   # [05-ago] DB<->memoria
         'snapshot_loop':          snapshot_loop,
         'persistence_worker':     persistence_worker,
         'alert_worker':           alert_worker,
@@ -12950,8 +13064,10 @@ def start_background_threads():
     # Protecao anti-double-trade: os papeis sao mutuamente exclusivos por env.
     _role = os.environ.get('SERVICE_ROLE', 'all').lower().strip()
     _ARBI_ONLY_KEEP = {'arbi_scan_loop', 'arbi_monitor_loop', 'arbi_learning_loop',
+                       'arbi_reconcile_loop',
                        'watchdog', 'persistence_worker', 'alert_worker', 'snapshot_loop'}
-    _ARBI_THREADS = {'arbi_scan_loop', 'arbi_monitor_loop', 'arbi_learning_loop'}
+    _ARBI_THREADS = {'arbi_scan_loop', 'arbi_monitor_loop', 'arbi_learning_loop',
+                     'arbi_reconcile_loop'}
     if _role == 'arbi':
         defs = {k: v for k, v in defs.items() if k in _ARBI_ONLY_KEEP}
         log.info(f'[ARBI-SPLIT] SERVICE_ROLE=arbi — rodando apenas: {sorted(defs.keys())}')
@@ -20244,6 +20360,48 @@ def debug_zombie():
     try:
         from modules.zombie_shadow import summary as _zsum
         return jsonify(_zsum())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/arbi-reconcile')
+def debug_arbi_reconcile():
+    """[05-ago | Beto] Estado da reconciliacao DB<->memoria da Arbi.
+    Por padrao SO OLHA (dry-run): mostra as divergencias sem tocar em nada.
+    Com ?apply=1 executa a reconciliacao de verdade. Leitura publica."""
+    try:
+        if request.args.get('apply') == '1':
+            return jsonify({'modo': 'APLICADO', **arbi_reconcile('endpoint')})
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT id,pair_id,name,opened_at,position_size FROM arbi_trades WHERE status='OPEN'")
+        db_rows = cur.fetchall()
+        with state_lock:
+            mem = [{'id': str(t.get('id')), 'pair_id': t.get('pair_id'),
+                    'size': float(t.get('position_size') or 0)} for t in arbi_open]
+            _cap = float(arbi_capital)
+        cur.execute("SELECT COALESCE(SUM(pnl),0) p FROM arbi_trades WHERE status='CLOSED' "
+                    "AND (close_reason IS NULL OR close_reason NOT IN "
+                    "('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN'))")
+        _capacidade = float(os.environ.get('ARBI_CAPITAL_INICIAL', 3_000_000)) + float(cur.fetchone()['p'] or 0)
+        try: cur.close(); conn.close()
+        except Exception: pass
+        db_ids = {str(r['id']) for r in db_rows}; mem_ids = {m['id'] for m in mem}
+        _pares = {}
+        for r in db_rows: _pares[r['pair_id']] = _pares.get(r['pair_id'], 0) + 1
+        _comprometido = sum(float(r['position_size'] or 0) for r in db_rows)
+        return jsonify({
+            'modo': 'DRY-RUN (use ?apply=1 para executar)',
+            'abertas_no_banco': len(db_rows), 'abertas_na_memoria': len(mem),
+            'zumbis_banco_sem_memoria': sorted(db_ids - mem_ids),
+            'fantasmas_memoria_sem_banco': sorted(mem_ids - db_ids),
+            'pares_duplicados': {k: v for k, v in _pares.items() if v > 1},
+            'comprometido': round(_comprometido, 2), 'capacidade': round(_capacidade, 2),
+            'livre': round(_capacidade - _comprometido, 2),
+            'contador_arbi_capital': round(_cap, 2),
+            'saudavel': (not (db_ids - mem_ids)) and (not (mem_ids - db_ids))
+                        and not any(v > 1 for v in _pares.values()),
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

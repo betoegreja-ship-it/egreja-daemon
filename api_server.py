@@ -2818,6 +2818,29 @@ def check_risk_arbi(pair_id, position_value):
         return False, f'ARBI_MAX_POSITIONS ({open_count}/{ARBI_MAX_POSITIONS})', 0
     if any(t.get('pair_id')==pair_id for t in a_open):
         return False, f'ARBI_PAIR_OPEN ({pair_id})', 0
+    # ═══ [FIX 05-ago, Beto] A TRAVA DE PAR TAMBEM OLHA O BANCO ═══════════
+    # A checagem acima le SO a memoria. Se a trade cai da memoria (restart de
+    # thread, race de boot), a trava nao ve nada e o motor abre o MESMO par de
+    # novo. Foi assim que a CSNA3-SID acumulou 8 posicoes sobrepostas em 3 dias
+    # e virou 7 anulacoes MANUAL_ORPHAN — todas as anulacoes da semana sao CSN.
+    # O banco e a fonte da verdade: uma consulta a cada 5min (cadencia do scan)
+    # custa nada perto de abrir posicao duplicada. Fail-OPEN de proposito: se o
+    # banco nao responder, nao travamos a operacao por causa da checagem.
+    try:
+        _cn = get_db()
+        if _cn:
+            _cu = _cn.cursor()
+            _cu.execute("SELECT COUNT(*) FROM arbi_trades WHERE pair_id=%s AND status='OPEN'", (pair_id,))
+            _n_db = int(_cu.fetchone()[0] or 0)
+            try: _cu.close(); _cn.close()
+            except Exception: pass
+            if _n_db > 0:
+                log.warning(f'[ARBI-PAIR-DB] {pair_id} ja tem {_n_db} aberta(s) no BANCO '
+                            f'mas nao na memoria — entrada bloqueada (divergencia; '
+                            f'a reconciliacao vai adotar ou deduplicar)')
+                return False, f'ARBI_PAIR_OPEN_DB ({pair_id}/{_n_db})', 0
+    except Exception as _pe:
+        log.debug(f'[ARBI-PAIR-DB] {pair_id}: {_pe}')
     if position_value > cap:
         return False, f'ARBI_INSUFFICIENT_CAPITAL ({cap:.0f})', 0
     # ═══ [P0 14-jul-2026, aprovado Beto] Trava por PRIMEIROS PRINCIPIOS ═══

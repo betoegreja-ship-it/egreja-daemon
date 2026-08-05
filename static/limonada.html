@@ -84,9 +84,15 @@ const fmtPct=(v,d=2)=>(v>=0?'+':'')+Number(v).toFixed(d)+'%';
 const cls=v=>v>=0?'g':'r';
 let chart;
 
-const BOOK_LBL={ALL:'ALL (perna long)',FILTERED_6:'FILTERED_6',FILTERED_10:'FILTERED_10',
-  SHORT_ALL_teorico:'SHORT_ALL (teórico)',SMART_LEG:'SMART_LEG',
-  LIQUID_LEG_BETA_REDUCED:'LIQUID_LEG (hedge)',DIRECTIONAL_EXIT:'DIRECTIONAL_EXIT (trail)'};
+// [05-ago | Beto] Rotulos explicitos: o painel misturava a saida REAL (a perna
+// morre junto com a Arbi) com o trail SIMULADO. Na Gerdau de hoje a saida real
+// foi 5,065 (+2,94%) e o trail simulado deu 5,030 (+2,23%) — o fundador leu o
+// simulado como se fosse o preco de fechamento. Agora cada um diz o que e.
+const BOOK_LBL={ALL:'ALL — saída REAL (fecha com a Arbi)',
+  FILTERED_6:'FILTERED_6 (simulado)',FILTERED_10:'FILTERED_10 (simulado)',
+  SHORT_ALL_teorico:'SHORT_ALL (teórico)',SMART_LEG:'SMART_LEG (simulado)',
+  LIQUID_LEG_BETA_REDUCED:'LIQUID_LEG hedge (simulado)',
+  DIRECTIONAL_EXIT:'DIRECTIONAL_EXIT — trail SIMULADO (não é a saída real)'};
 
 async function jget(u){const r=await fetch(API_BASE+u,{credentials:'omit'});if(!r.ok)throw new Error(u+' '+r.status);return r.json();}
 

@@ -19772,17 +19772,24 @@ def _rv_shadow_status():
         realized = round(sum(_f(t['pnl_net']) or 0 for t in closed), 2)
         wins = sum(1 for t in closed if (_f(t['pnl_net']) or 0) > 0)
 
-        # ── [05-ago | regra do Beto] CAPITAL EXPOSTO ────────────────────────
-        # "6 trades de 10k -> capital exposto 60k; 6k de lucro = 10%."
-        # Ou seja: o denominador e o PICO de capital simultaneamente exposto,
-        # contando o NOTIONAL DA POSICAO (perna A) — nao a soma das 2 pernas.
-        # Historico dos erros aqui:
-        #   v1 (errado): notional_a da PRIMEIRA trade -> dividia o book todo
-        #                por 1 posicao (US Pairs saia 6x inflado, +10,65%)
-        #   v2 (errado): max simultaneas x (perna A + perna B) -> denominador
-        #                inflado ~1,4x, deflacionava o retorno (+1,26%)
-        #   v3 (esta) : max simultaneas x notional da posicao
-        def _cap_max(rows):
+        # ── [05-ago | regra do Beto] CAPITAL EMPREGADO ──────────────────────
+        # "6 trades de 10k -> 60k; 6k de lucro = 10%."
+        # Denominador = SOMA do notional de TODAS as trades do book, fechadas
+        # + abertas. E o capital total que o book empregou na vida dele.
+        # Numerador = P&L TOTAL (realizado das fechadas + marcacao das abertas).
+        # Historico dos erros neste mesmo campo:
+        #   v1: notional_a da PRIMEIRA trade -> dividia o book todo por 1
+        #       posicao (US Pairs saia 6x inflado: +10,65%)
+        #   v2: max simultaneas x (perna A + perna B) -> inflado ~1,4x (+1,81%)
+        #   v3: max simultaneas x notional da posicao (+2,54%)
+        #   v4 (esta, decisao do fundador 05-ago): soma de TODAS as trades
+        # Nota honesta: esta regra PENALIZA reciclagem — um book que gira rapido
+        # e reusa o mesmo caixa aparece pior que um que segura posicao. Por isso
+        # o pico simultaneo continua sendo reportado ao lado (max_simult /
+        # capital_pico), p/ nao perder a outra leitura.
+        def _cap_total(rows):
+            return round(sum((_f(t.get('notional_a')) or 0) for t in rows), 2) or None
+        def _cap_pico(rows):
             ev = []
             for t in rows:
                 ini = t.get('created_at')
@@ -19791,13 +19798,14 @@ def _rv_shadow_status():
                 cap = _f(t.get('notional_a')) or 0
                 ev.append((str(ini), 1, cap)); ev.append((str(fim or _now), -1, cap))
             if not ev: return None, 0
-            ev.sort(key=lambda x: (x[0], -x[1]))   # empate: abre antes de fechar (conservador)
+            ev.sort(key=lambda x: (x[0], -x[1]))   # empate: abre antes de fechar
             cur_cap = cur_n = 0.0; mx_cap = mx_n = 0.0
             for _, d, cap in ev:
                 cur_cap += cap * d; cur_n += d
                 mx_cap = max(mx_cap, cur_cap); mx_n = max(mx_n, cur_n)
             return (round(mx_cap, 2) or None), int(mx_n)
-        capital, max_simult = _cap_max(trs)
+        capital = _cap_total(trs)                    # denominador oficial
+        capital_pico, max_simult = _cap_pico(trs)    # leitura alternativa
         smap = _sym_map(mod_name) if mod_name else {}
         n_live = 0
         unreal = 0.0; open_rows = []
@@ -19829,8 +19837,10 @@ def _rv_shadow_status():
         return {'name': name, 'last_scan': last, 'n_closed': len(closed), 'wins': wins,
             'wr': round(100*wins/len(closed), 1) if closed else None,
             'realized': realized, 'unreal': round(unreal, 2), 'n_open': len(opn),
-            'total': total, 'capital': capital, 'max_simult': max_simult,
+            'total': total, 'capital': capital, 'n_trades': len(trs),
+            'capital_pico': capital_pico, 'max_simult': max_simult,
             'total_pct': _pct(total, capital), 'realized_pct': _pct(realized, capital),
+            'total_pct_pico': _pct(total, capital_pico),
             # px_live_n: quantas abertas foram marcadas com cotacao AO VIVO
             # (o resto usa o preco da ultima varredura do motor).
             'px_live_n': n_live,

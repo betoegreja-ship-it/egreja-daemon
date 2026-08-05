@@ -172,11 +172,17 @@ function rvTradeRows(b){
 }
 function rvBookCard(b){
   if(!b||b.error) return '';
-  // [05-ago | regra do Beto] capital EXPOSTO = pico de posicoes simultaneas
-  // x notional da posicao. Ex.: 6 trades de 10k = 60k expostos; 6k de lucro = 10%.
+  // [05-ago | regra do Beto] capital EMPREGADO = soma do notional de TODAS as
+  // trades (fechadas + abertas). Ex.: 6 trades de 10k = 60k; 6k de lucro = 10%.
+  // O pico simultaneo fica ao lado como leitura alternativa.
   var capTxt=b.capital!=null
-    ? 'capital exposto US$ '+Math.round(b.capital).toLocaleString('pt-BR')
-      +' ('+(b.max_simult||0)+' posições simultâneas no pico × notional da posição)'
+    ? 'capital empregado US$ '+Math.round(b.capital).toLocaleString('pt-BR')
+      +' ('+(b.n_trades||0)+' trades × notional da posição, fechadas + abertas)'
+      +(b.capital_pico!=null
+        ? ' · pico simultâneo US$ '+Math.round(b.capital_pico).toLocaleString('pt-BR')
+          +' ('+(b.max_simult||0)+' ao mesmo tempo) = '
+          +(b.total_pct_pico!=null?(b.total_pct_pico>=0?'+':'')+b.total_pct_pico.toFixed(2)+'%':'—')
+        : '')
     : '';
   var scan=b.last_scan?new Date(b.last_scan).toLocaleString('pt-BR'):'—';
   return '<div class="strat" style="border-color:#2e5a7a">'+

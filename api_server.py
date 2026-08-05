@@ -2481,6 +2481,7 @@ def auth_check():
         # sem dinheiro real, sem dado pessoal — mesma info do relatorio ao conselho.
         '/debug/longleg',
         '/debug/arbi-reconcile',   # [05-ago] auditoria DB<->memoria da Arbi
+        '/debug/arbi-price-audit', # [05-ago] auditoria preco exato vs Polygon
         '/debug/longleg-open',
         '/debug/longleg-ib',
         '/debug/spreads',
@@ -11451,9 +11452,63 @@ ARBI_PAIRS = [
 
 _cedro_relay_cache = {}  # [CEDRO-RELAY 23-jul] {sym: (price, ts)} TTL 2s no servico Arbi
 
+
+# ═══ [05-ago | decisao Beto] ProfitDLL (Nelogica) PRIMARIA para a perna B3 ═══
+# Semana de teste: ProfitDLL -> Cedro (socket/relay) -> brapi. Motivo (forense
+# 05-ago): tick Cedro instavel (CSN 4,87-4,90 no MESMO segundo vs BTG parado
+# em 4,90) + brapi atrasada. A ProfitDLL vem com timestamp por tick (age_s),
+# entao preco velho e DETECTAVEL — se o tick passar de PROFIT_MAX_TICK_AGE_S,
+# cai para a proxima fonte em vez de usar fantasma. Fail-open total.
+# Desligar: B3_DATA_SOURCE=cedro no Railway. Fonte de cada preco fica em
+# _arbi_px_src e vai para price_source_a/b da trade (auditoria).
+_profit_px_cache = {'ts': 0.0, 'data': {}}
+_arbi_px_src = {}   # display_sym -> (fonte, ts)
+
+def _profit_b3_price(display_sym: str):
+    """Preco da ProfitDLL via bridge do VPS. Retorna (preco|None, age_s|None)."""
+    if os.environ.get('B3_DATA_SOURCE', 'profit').lower() != 'profit':
+        return None, None
+    url = (os.environ.get('PROFIT_BRIDGE_URL', '') or '').rstrip('/')
+    if not url:
+        return None, None
+    import time as _t
+    now = _t.time()
+    if now - _profit_px_cache['ts'] > float(os.environ.get('PROFIT_PX_TTL_S', 2)):
+        try:
+            r = requests.get(url + '/quotes',
+                             headers={'X-Bridge-Token': os.environ.get('PROFIT_BRIDGE_TOKEN', '')},
+                             timeout=2.5)
+            if r.status_code == 200:
+                j = r.json() or {}
+                # aceita os dois formatos ({'quotes':{...}} ou dict direto)
+                _profit_px_cache['data'] = j.get('quotes') if isinstance(j.get('quotes'), dict) else j
+                _profit_px_cache['ts'] = now
+        except Exception:
+            pass  # fail-open
+    q = (_profit_px_cache['data'] or {}).get(display_sym)
+    if not isinstance(q, dict):
+        return None, None
+    px = q.get('price') or q.get('last') or q.get('close')
+    age = q.get('age_s')
+    if age is not None:
+        age = float(age) + (now - _profit_px_cache['ts'])   # idade real, contando o cache
+    if px and float(px) > 0 and (age is None or age <= float(os.environ.get('PROFIT_MAX_TICK_AGE_S', 60))):
+        return float(px), age
+    return None, age
+
+def _tag_px_src(display_sym: str, fonte: str):
+    import time as _t
+    _arbi_px_src[display_sym] = (fonte, _t.time())
+
+def _px_src_of(sym: str) -> str:
+    import time as _t
+    t = _arbi_px_src.get(str(sym).replace('.SA', ''))
+    return t[0] if t and _t.time() - t[1] < 60 else 'fallback'
+
+
 def _fetch_arbi_price(symbol: str) -> float:
     """[v10.4][v10.6-P4] Preço para arbitragem com ADR fallback para legs B3.
-    Cadência: Binance (crypto) → Polygon (US + ADR de B3) → brapi (B3) → FMP → Yahoo.
+    Cadência: Binance (crypto) → ProfitDLL (B3) → Cedro → brapi (B3) → FMP → Yahoo.
     """
     display = symbol.replace('.SA', '')
     is_b3_sym = symbol.endswith('.SA') or display in {s.replace('.SA','') for s in STOCK_SYMBOLS_B3}
@@ -11468,10 +11523,18 @@ def _fetch_arbi_price(symbol: str) -> float:
                 if p > 0: return p
         except: pass
 
-    # [v10.31] Cedro socket primário para B3 (real-time streaming)
+    # [05-ago] ProfitDLL PRIMARIA para B3 (tick com idade; velho -> proxima fonte)
+    if is_b3_sym:
+        _pp, _page = _profit_b3_price(display)
+        if _pp:
+            _tag_px_src(display, 'profit')
+            return _pp
+
+    # [v10.31] Cedro socket para B3 (real-time streaming) — agora BACKUP
     if is_b3_sym and _cedro_socket and _cedro_socket.enabled:
         p = _cedro_socket.get_price(display, wait_ms=800)
         if p and p > 0:
+            _tag_px_src(display, 'cedro')
             return float(p)
 
     # ═══ [CEDRO-RELAY 23-jul, decisao Beto] Servico Arbi sem socket proprio ═══
@@ -11493,14 +11556,16 @@ def _fetch_arbi_price(symbol: str) -> float:
                     _rq = (_rr.json().get('quotes') or {}).get(display)
                     if _rq and float(_rq.get('price', 0)) > 0:
                         _cedro_relay_cache[display] = (float(_rq['price']), _tr.time())
+                        _tag_px_src(display, 'cedro-relay')
                         return float(_rq['price'])
             except Exception:
                 pass  # fail-open -> brapi abaixo
 
-    # brapi primário para B3 (snapshot, usa cache)
+    # brapi para B3 (snapshot, usa cache) — ultimo recurso B3
     if is_b3_sym and BRAPI_TOKEN:
         result, _ = _fetch_brapi_stock(display)
         if result and result.get('price', 0) > 0:
+            _tag_px_src(display, 'brapi')
             return result['price']
 
     # [v10.6-P4] Para B3 sem brapi: tentar ADR via Polygon com conversão USD→BRL
@@ -11754,7 +11819,8 @@ def calc_spread(pair):
             # Bid/Ask simulado
             'bid_a':bid_a,'ask_a':ask_a,'bid_b':bid_b,'ask_b':ask_b,
             'spread_bps_a':spread_bps_a,'spread_bps_b':spread_bps_b,
-            'price_source_a':'last','price_source_b':'last',
+            # [05-ago] fonte REAL de cada perna (profit/cedro/cedro-relay/brapi/fallback)
+            'price_source_a':_px_src_of(pair['leg_a']),'price_source_b':_px_src_of(pair['leg_b']),
             # Timestamps
             'signal_ts_a':price_ts_a,'signal_ts_b':price_ts_b,'delta_ts_ms':0,
             # Spread calculado corretamente
@@ -11807,6 +11873,20 @@ def arbi_scan_loop():
                 # p/ fechar direito), mas dali nao passa — nada de entrada nova.
                 if pair['id'] in _freezer:
                     continue
+
+                # ═══ [05-ago | Beto] FX-GATE: dolar suspeito => NAO ABRE B3-NYSE ═══
+                # Forense: 29-jul teve 9 de 9 trades com fx_suspect e -54.898 nos
+                # pares DOL — o sistema entrou com cambio VELHO em dia de cambio
+                # volatil. Antes o stale so era MARCADO; agora BLOQUEIA a entrada.
+                # Monitor/fechamento intocados. ARBI_FX_BLOCK_STALE=false desliga.
+                if pair.get('fx') == 'USDBRL' and \
+                        os.environ.get('ARBI_FX_BLOCK_STALE', 'true').lower() != 'false':
+                    _fm = fx_meta.get('USDBRL') or {}
+                    _fsrc = str(_fm.get('source', '')).upper()
+                    if _fm.get('stale') or 'STALE' in _fsrc:
+                        log.warning(f"[ARBI-FX-GATE] {pair['id']}: entrada bloqueada — "
+                                    f"USDBRL suspeito ({_fm.get('source')})")
+                        continue
 
                 # [v10.14] Threshold dinâmico por par
                 _pair_cfg = ARBI_PAIR_CONFIG.get(pair['id'], ARBI_PAIR_CONFIG['_default'])
@@ -19972,6 +20052,82 @@ def shadow_rv_page():
     # [02-ago] painel integrado na aba Shadow (static/shadow.html). Mantido como
     # atalho -> redireciona para a pagina principal de shadow.
     return redirect('/shadow.html', code=302)
+
+
+@app.route('/debug/arbi-price-audit')
+def debug_arbi_price_audit():
+    """[05-ago | Beto] Auditoria de preco EXATO no minuto: perna NYSE das arbi
+    fechadas vs barra de minuto da Polygon (fonte independente). Params:
+    ?from=2026-07-02&to=...&limit=40&offset=0&tol_bps=30. Leitura publica.
+    (Perna B3 fica p/ fase 2 — historico intraday B3 depende do ProfitDLL.)"""
+    try:
+        d_from = request.args.get('from', '2026-07-02')
+        d_to = request.args.get('to', '2026-12-31')
+        lim = min(int(request.args.get('limit', 40)), 80)
+        off = int(request.args.get('offset', 0))
+        tol = float(request.args.get('tol_bps', 30))
+        conn = get_db(); cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT id,name,leg_b,mkt_b,opened_at,closed_at,
+              price_b_entry,price_b_exit FROM arbi_trades
+              WHERE status='CLOSED' AND opened_at>=%s AND opened_at<%s
+              AND mkt_b IN ('NYSE','NASDAQ')
+              AND (close_reason IS NULL OR close_reason NOT IN
+                   ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN'))
+              ORDER BY opened_at LIMIT %s OFFSET %s""", (d_from, d_to, lim, off))
+        trades = cur.fetchall()
+        try: cur.close(); conn.close()
+        except Exception: pass
+        key = os.environ.get('POLYGON_API_KEY', '')
+        if not key:
+            return jsonify({'error': 'sem POLYGON_API_KEY'}), 503
+
+        def _min_bar(sym, dt):
+            # barra de minuto que contem dt (UTC)
+            import datetime as _dt
+            t0 = dt.replace(second=0, microsecond=0)
+            ms0 = int(t0.timestamp() * 1000); ms1 = ms0 + 60000
+            u = (f'https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/minute/'
+                 f'{ms0}/{ms1}')
+            try:
+                rr = requests.get(u, params={'apiKey': key, 'limit': 2}, timeout=8)
+                res = (rr.json() or {}).get('results') or []
+                if res:
+                    b = res[0]
+                    return b.get('l'), b.get('h'), b.get('c')
+            except Exception:
+                pass
+            return None, None, None
+
+        rows = []; n_fora = 0
+        for t in trades:
+            for lado, px, quando in (('entrada', t['price_b_entry'], t['opened_at']),
+                                     ('saida', t['price_b_exit'], t['closed_at'])):
+                if px is None or quando is None:
+                    continue
+                lo, hi, cl = _min_bar(t['leg_b'], quando)
+                if lo is None:
+                    rows.append({'id': t['id'], 'par': t['name'], 'lado': lado,
+                                 'sym': t['leg_b'], 'gravado': float(px),
+                                 'veredito': 'SEM_BARRA'})
+                    continue
+                px = float(px)
+                dentro = lo <= px <= hi
+                # desvio ate a BORDA da barra (0 se dentro)
+                desv = 0.0 if dentro else min(abs(px - lo), abs(px - hi)) / ((lo + hi) / 2) * 10000
+                ok = dentro or desv <= tol
+                if not ok: n_fora += 1
+                rows.append({'id': t['id'], 'par': t['name'], 'lado': lado,
+                             'sym': t['leg_b'], 'quando': str(quando),
+                             'gravado': px, 'barra_lo': lo, 'barra_hi': hi,
+                             'desvio_bps': round(desv, 1),
+                             'veredito': 'OK' if ok else 'FORA_DA_BARRA'})
+        return jsonify({'de': d_from, 'ate': d_to, 'trades_no_lote': len(trades),
+                        'precos_checados': len(rows), 'fora_da_tolerancia': n_fora,
+                        'tolerancia_bps': tol, 'offset': off,
+                        'proximo_offset': off + lim if len(trades) == lim else None,
+                        'rows': rows})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/debug/profit')

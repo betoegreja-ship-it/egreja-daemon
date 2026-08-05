@@ -23,6 +23,60 @@ _awes = {'ts': 0, 'data': {}, 'backoff_until': 0}
 _brapi = {'ts': 0, 'data': {}}
 _basis = {'val': None, 'ts': 0}
 _dol_subscribed = False
+_profit_dol = {'sub_ts': 0, 'px_ts': 0, 'cache': None}
+
+
+def profit_dollar():
+    """[05-ago | decisao Beto] DOL futuro da B3 via ProfitDLL (bridge do VPS).
+    PRIMARIA do USDBRL na semana de teste: tick com timestamp (age_s), entao
+    cambio parado e DETECTAVEL — exatamente o que faltou em 09/13/20-jul e
+    28-29/jul (9 de 9 trades fx_suspect, -54.898 nos pares DOL).
+    Retorna (preco, simbolo, idade_tick_s, stale) como cedro_dollar. Fail-open.
+    Desligar: FX_USE_PROFIT=false."""
+    if os.environ.get('FX_USE_PROFIT', 'true').lower() == 'false':
+        return None, None, None, False
+    url = (os.environ.get('PROFIT_BRIDGE_URL', '') or '').rstrip('/')
+    tok = os.environ.get('PROFIT_BRIDGE_TOKEN', '')
+    if not url:
+        return None, None, None, False
+    now = time.time()
+    try:
+        # garante a assinatura dos contratos DOL/WDO (bolsa F) a cada 10min
+        if now - _profit_dol['sub_ts'] > 600:
+            for s in _dollar_contract_candidates():
+                try:
+                    requests.post(url + '/subscribe', json={'symbol': s, 'bolsa': 'F'},
+                                  headers={'X-Bridge-Token': tok}, timeout=3)
+                except Exception:
+                    pass
+            _profit_dol['sub_ts'] = now
+        if now - _profit_dol['px_ts'] > 2 or _profit_dol['cache'] is None:
+            r = requests.get(url + '/quotes', headers={'X-Bridge-Token': tok}, timeout=2.5)
+            j = r.json() or {}
+            _profit_dol['cache'] = j.get('quotes') if isinstance(j.get('quotes'), dict) else j
+            _profit_dol['px_ts'] = now
+        best = None
+        for s, q in (_profit_dol['cache'] or {}).items():
+            if not (s.startswith('DOL') or s.startswith('WDO')):
+                continue
+            px = q.get('price') or q.get('last') or q.get('close')
+            if not px:
+                continue
+            age = q.get('age_s')
+            if age is not None:
+                age = float(age) + (now - _profit_dol['px_ts'])
+            if best is None or (age if age is not None else 9e9) < (best[2] if best[2] is not None else 9e9):
+                best = (float(px), s, age)
+        if best:
+            px, sym, age = best
+            if px > 100:          # DOL cota em pontos (R$/US$1000): 5.113,5 -> 5,1135
+                px = px / 1000.0
+            max_age = float(os.environ.get('FX_DOL_MAX_TICK_AGE_S', 120))
+            stale = bool(_bmf_open() and age is not None and age > max_age)
+            return px, f'PROFIT_{sym}', (round(age, 1) if age is not None else None), stale
+    except Exception as e:
+        log.debug(f'[FX] profit_dollar: {e}')
+    return None, None, None, False
 
 
 def _dollar_contract_candidates():
@@ -158,7 +212,12 @@ def get_rates(cedro=None):
     spot = br.get('USDBRL') or aw.get('USDBRL')
     spot_src = 'BRAPI' if br.get('USDBRL') else ('AWESOMEAPI' if aw.get('USDBRL') else None)
 
-    dol, dol_sym, tick_age, dol_stale = cedro_dollar(cedro)
+    # [05-ago] ProfitDLL primeiro (tick com idade); Cedro vira backup do DOL
+    dol, dol_sym, tick_age, dol_stale = profit_dollar()
+    if not dol:
+        dol, dol_sym, tick_age, dol_stale = cedro_dollar(cedro)
+        if dol and dol_sym and not str(dol_sym).startswith('CEDRO_'):
+            dol_sym = f'CEDRO_{dol_sym}'
     # GUARD: em pregao, se o tick do DOL estiver velho (Cedro travou), NAO usa o
     # futuro congelado — cai pro spot e marca STALE. Fora de pregao, o congelamento
     # e esperado (futuro nao negocia) e usamos o ultimo com fonte CEDRO_CLOSE.
@@ -173,18 +232,18 @@ def get_rates(cedro=None):
         _basis['ts'] = now
         rates['USDBRL'] = round(dol - _basis['val'], 4)
         _closed = '' if _bmf_open() else '_CLOSE'
-        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}{_closed}+basis({spot_src})', 'ts': now,
+        meta['USDBRL'] = {'source': f'{dol_sym}{_closed}+basis({spot_src})', 'ts': now,
                           'dolfut': round(dol, 4), 'basis': round(_basis['val'], 4),
                           'dol_tick_age_s': tick_age}
     elif dol and _basis['val'] is not None:
         rates['USDBRL'] = round(dol - _basis['val'], 4)
         _closed = '' if _bmf_open() else '_CLOSE'
-        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}{_closed}+basis_cache', 'ts': now,
+        meta['USDBRL'] = {'source': f'{dol_sym}{_closed}+basis_cache', 'ts': now,
                           'dolfut': round(dol, 4), 'basis': round(_basis['val'], 4),
                           'dol_tick_age_s': tick_age}
     elif dol:
         rates['USDBRL'] = round(dol, 4)
-        meta['USDBRL'] = {'source': f'CEDRO_{dol_sym}_raw', 'ts': now, 'dolfut': round(dol, 4),
+        meta['USDBRL'] = {'source': f'{dol_sym}_raw', 'ts': now, 'dolfut': round(dol, 4),
                           'dol_tick_age_s': tick_age}
     elif spot:
         rates['USDBRL'] = round(spot, 4)

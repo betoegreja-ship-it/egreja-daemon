@@ -12049,6 +12049,49 @@ def arbi_reconcile(source='loop'):
                     except Exception as _de:
                         log.error(f'[ARBI-RECONCILE] dedup {r["id"]}: {_de}')
                     continue
+                # ═══ [FIX 05-ago] ANTI-FANTASMA — nao ressuscitar trade ja fechada ═══
+                # Descoberto hoje: a Arbi fecha na MEMORIA (solta capital, credita
+                # PnL no ledger, fecha a perna long via on_arbi_close) mas o UPDATE
+                # em arbi_trades NAO persiste. A linha fica OPEN no banco eternamente.
+                # Cemig (04-ago 18:40, PnL -10.713,30) e CSN (05-ago 13:49, PnL
+                # -11.001,90) estavam assim: ja liquidadas, mas aparecendo abertas.
+                # Adotar isso de volta seria RESSUSCITAR trade fechada e reservar
+                # capital 2x. Prova de que ja fechou (qualquer uma basta):
+                #   (a) existe RELEASE no ledger depois da abertura
+                #   (b) a perna long dela ja esta CLOSED (so on_arbi_close fecha)
+                _fantasma = False; _pnl_real = None; _quando = None
+                try:
+                    cur.execute("""SELECT ts, amount FROM capital_ledger WHERE strategy='arbi'
+                        AND event='RELEASE' AND symbol=%s AND ts>=%s ORDER BY ts LIMIT 1""",
+                        (t.get('name'), r.get('opened_at')))
+                    _rel = cur.fetchone()
+                    cur.execute("SELECT COUNT(*) c FROM longleg_harvest WHERE arbi_id=%s AND status='CLOSED'",
+                                (r['id'],))
+                    _perna_morta = int((cur.fetchone() or {}).get('c') or 0) > 0
+                    if _rel and _perna_morta:
+                        _fantasma = True; _quando = _rel['ts']
+                        cur.execute("""SELECT amount FROM capital_ledger WHERE strategy='arbi'
+                            AND event='PNL_CREDIT' AND symbol=%s AND ts=%s LIMIT 1""",
+                            (t.get('name'), _rel['ts']))
+                        _pc = cur.fetchone()
+                        _pnl_real = float(_pc['amount']) if _pc else None
+                except Exception as _fe:
+                    log.debug(f'[ARBI-RECONCILE] anti-fantasma {r["id"]}: {_fe}')
+                if _fantasma:
+                    try:
+                        cur.execute("""UPDATE arbi_trades SET status='CLOSED',
+                            close_reason=COALESCE(close_reason,'PERSIST_LOST'), closed_at=%s,
+                            pnl=COALESCE(NULLIF(pnl,0),%s), audit_flag='RECONCILED_FROM_LEDGER'
+                            WHERE id=%s AND status='OPEN'""", (_quando, _pnl_real, r['id']))
+                        conn.commit()
+                        out.setdefault('fantasmas_fechados', []).append(
+                            f"{r['id']}({t.get('name')}) fechou {_quando} pnl={_pnl_real}")
+                        log.warning(f"[ARBI-RECONCILE] FANTASMA {r['id']} ({t.get('name')}): "
+                                    f"ja liquidada em {_quando} (pnl={_pnl_real}) mas OPEN no banco "
+                                    f"— banco corrigido pelo ledger, NAO readotada")
+                    except Exception as _ue:
+                        log.error(f'[ARBI-RECONCILE] fechar fantasma {r["id"]}: {_ue}')
+                    continue
                 arbi_open.append(t)
                 arbi_capital -= float(t.get('position_size') or 0)
                 _pairs_mem.add(t.get('pair_id'))

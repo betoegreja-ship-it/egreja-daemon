@@ -172,11 +172,11 @@ function rvTradeRows(b){
 }
 function rvBookCard(b){
   if(!b||b.error) return '';
-  // [04-ago] capital-base = max de posicoes SIMULTANEAS x (perna A + perna B).
-  // Antes mostrava so o notional de 1 perna e dividia o book inteiro por ele.
+  // [05-ago | regra do Beto] capital EXPOSTO = pico de posicoes simultaneas
+  // x notional da posicao. Ex.: 6 trades de 10k = 60k expostos; 6k de lucro = 10%.
   var capTxt=b.capital!=null
-    ? 'capital-base US$ '+Math.round(b.capital).toLocaleString('pt-BR')
-      +' ('+(b.max_simult||0)+' posições simultâneas no pico × as 2 pernas)'
+    ? 'capital exposto US$ '+Math.round(b.capital).toLocaleString('pt-BR')
+      +' ('+(b.max_simult||0)+' posições simultâneas no pico × notional da posição)'
     : '';
   var scan=b.last_scan?new Date(b.last_scan).toLocaleString('pt-BR'):'—';
   return '<div class="strat" style="border-color:#2e5a7a">'+

@@ -11161,6 +11161,19 @@ def run_arbi_pattern_learning():
                    position_size
             FROM arbi_trades
             WHERE status='CLOSED' AND pnl IS NOT NULL
+              -- [FIX 05-ago | Beto: "a arbi aprendeu errado com esta bagunca?"]
+              -- Sim, aprendia. Esta query nao filtrava motivo, e trade ANULADA
+              -- tem pnl=0.0 — que NAO e NULL, entao passava. Pior: o WR conta
+              -- "pnl > 0", entao cada anulada entrava como DERROTA.
+              -- Medido na janela de 500: 37 contaminadas (7,4%), 35 com pnl=0.
+              -- WR subestimado em TODOS os pares: Suzano -22,2pp, Itau -16,7pp,
+              -- Bradesco -6,1pp, Petrobras -5,9pp, CSN -5,4pp. Como a regra
+              -- SOBE o min_spread quando o WR cai, o motor estava ficando mais
+              -- restritivo com base em derrotas que nunca existiram.
+              -- PERSIST_LOST fica DE FORA do filtro de proposito: essas tem PnL
+              -- REAL recuperado do ledger — sao trades legitimas, nao lixo.
+              AND (close_reason IS NULL OR close_reason NOT IN
+                   ('VOIDED','CORRUPTED_DATA_FIXED','MANUAL_ORPHAN'))
             ORDER BY closed_at DESC
             LIMIT 500
         """)

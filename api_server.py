@@ -12018,12 +12018,26 @@ def arbi_monitor_loop():
                         ea=abs(float(trade['entry_spread'])); ca=abs(float(trade['current_spread']))
                         trade['pnl_pct']=round(ea-ca,4)
                         # [v10.14-FIX] Sanity check: spread > 20% = preço inválido
+                        # [FIX 05-ago | TRAVA DA ARBI] Antes isto fazia `continue` e
+                        # pulava a trade INTEIRA — inclusive MARKET_CLOSE e TIMEOUT.
+                        # Resultado: com preço fantasma (CSN) a trade virava IMORTAL,
+                        # nunca fechava, o capital nunca era liberado e o book chegou a
+                        # 9,1MM reservados contra 3MM (303%) -> o scan parou de abrir.
+                        # Agora: sem preço confiável a gente NÃO decide por preço
+                        # (TP/TRAILING/SL ficam bloqueados), mas as saídas por TEMPO
+                        # (fim de sessão e timeout) continuam valendo. Preço ruim não
+                        # pode virar posição eterna.
                         if abs(float(trade.get('current_spread', 0))) > 20.0:
-                            log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO")
+                            log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO "
+                                        f"— saídas por preço bloqueadas, saídas por tempo mantidas")
                             trade['current_spread'] = trade.get('entry_spread', 0)
                             trade['pnl_pct'] = 0.0
                             trade['pnl'] = 0.0
-                            continue
+                            trade['px_stale'] = True
+                            trade['px_stale_since'] = trade.get('px_stale_since') or now.isoformat()
+                        else:
+                            trade['px_stale'] = False
+                            trade['px_stale_since'] = None
                     trade['pnl']=round(trade['pnl_pct']/100*float(trade['position_size']),2)
                     trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
                     peak=trade['peak_pnl_pct']
@@ -12032,14 +12046,41 @@ def arbi_monitor_loop():
                     reason=None
                     mkt_a=trade.get('mkt_a',''); mkt_b=trade.get('mkt_b','')
                     both_open=(market_open_for(mkt_a) and market_open_for(mkt_b))
-                    if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD:  reason='TAKE_PROFIT'
-                    elif peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
-                    elif trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
+                    # [FIX 05-ago] _stale = preco nao confiavel neste ciclo.
+                    # Com preco ruim NAO se decide por preco (o current_spread foi
+                    # restaurado para o de entrada — deixar o TP ler isso fecharia
+                    # a trade por um "take profit" que nunca existiu). Saidas por
+                    # TEMPO seguem valendo: e o que impede a posicao eterna.
+                    _stale = bool(trade.get('px_stale'))
+                    if   (not _stale) and abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD: reason='TAKE_PROFIT'
+                    elif (not _stale) and peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
+                    elif (not _stale) and trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
                     elif not both_open and age_h>=0.5:                       reason='MARKET_CLOSE'
                     elif age_h>=ARBI_TIMEOUT_H:
                         ext=trade.get('extensions',0)
-                        if is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
+                        # com preco furado nao da p/ medir momentum: nao estende.
+                        if (not _stale) and is_momentum_positive(trade) and ext<3: trade['extensions']=ext+1
                         else: reason='TIMEOUT'
+                    # rede de seguranca: preco furado ha mais de PX_STALE_MAX_H horas
+                    # fecha a trade FLAT (P&L zero) so p/ devolver o capital ao book.
+                    if (not reason) and _stale:
+                        try:
+                            _since = trade.get('px_stale_since') or trade['opened_at']
+                            _h_stale = (now-datetime.fromisoformat(_since)).total_seconds()/3600
+                        except Exception:
+                            _h_stale = 0
+                        # 2h: nao conseguir precificar uma posicao por 2 horas seguidas
+                        # ja e estado de falha — segurar mais tempo nao serve p/ nada
+                        # e o capital fica preso. Ajustavel por env.
+                        if _h_stale >= float(os.environ.get('ARBI_PX_STALE_MAX_H', 2)):
+                            reason='STALE_PRICE_FLAT'
+                    # STALE_PRICE_FLAT e MARKET_CLOSE/TIMEOUT com preco furado NAO
+                    # podem marcar P&L: fechariam num preco fantasma. Vao a zero e
+                    # ficam identificaveis na auditoria.
+                    if reason and _stale:
+                        trade['pnl_pct'] = 0.0
+                        trade['pnl']     = 0.0
+                        trade['audit_flag'] = 'PX_STALE_FLAT_CLOSE'
                     if reason:
                         # [AUDIT-RESTORE 04/mai] Snapshot de SAIDA — preco, FX, bid/ask,
                         # qty e spread_bps no momento exato do close. Sem isso a trade

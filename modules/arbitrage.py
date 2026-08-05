@@ -826,12 +826,17 @@ def arbi_monitor_loop(ctx):
                         ea=abs(float(trade['entry_spread'])); ca=abs(float(trade['current_spread']))
                         trade['pnl_pct']=round(ea-ca,4)
                         # [v10.14-FIX] Sanity check: spread > 20% = preço inválido
+                        # [FIX 05-ago] ver api_server.arbi_monitor_loop: o `continue`
+                        # daqui pulava MARKET_CLOSE/TIMEOUT e tornava a trade eterna.
                         if abs(float(trade.get('current_spread', 0))) > 20.0:
-                            log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO")
+                            log.warning(f"[ARBI-SANITY] {trade.get('pair_id')} spread={trade.get('current_spread')} INVÁLIDO "
+                                        f"— saídas por preço bloqueadas, saídas por tempo mantidas")
                             trade['current_spread'] = trade.get('entry_spread', 0)
                             trade['pnl_pct'] = 0.0
                             trade['pnl'] = 0.0
-                            continue
+                            trade['px_stale'] = True
+                        else:
+                            trade['px_stale'] = False
                     trade['pnl']=round(trade['pnl_pct']/100*float(trade['position_size']),2)
                     trade['peak_pnl_pct']=round(max(trade.get('peak_pnl_pct',0),trade['pnl_pct']),2)
                     peak=trade['peak_pnl_pct']
@@ -840,9 +845,10 @@ def arbi_monitor_loop(ctx):
                     reason=None
                     mkt_a=trade.get('mkt_a',''); mkt_b=trade.get('mkt_b','')
                     both_open=(market_open_for(mkt_a) and market_open_for(mkt_b))
-                    if abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD:  reason='TAKE_PROFIT'
-                    elif peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
-                    elif trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
+                    _stale = bool(trade.get('px_stale'))
+                    if   (not _stale) and abs(trade.get('current_spread',99))<=ARBI_TP_SPREAD: reason='TAKE_PROFIT'
+                    elif (not _stale) and peak>=2.0 and trade['pnl_pct']<=peak-1.0:           reason='TRAILING_STOP'
+                    elif (not _stale) and trade['pnl_pct']<=-ARBI_SL_PCT:                     reason='STOP_LOSS'
                     elif not both_open and age_h>=0.5:                       reason='MARKET_CLOSE'
                     elif age_h>=ARBI_TIMEOUT_H:
                         ext=trade.get('extensions',0)

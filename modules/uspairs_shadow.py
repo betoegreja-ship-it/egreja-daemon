@@ -205,7 +205,19 @@ def scan_once():
     z_entry = _env_f('USPAIRS_Z_ENTRY', 2.0)
     z_exit = _env_f('USPAIRS_Z_EXIT', 0.4)
     z_stop = _env_f('USPAIRS_Z_STOP', 3.5)
-    timeout_p = int(_env_f('USPAIRS_TIMEOUT_PREGOES', 25))
+    # [05-ago | decisao Beto] 25 -> 5 pregoes (~1 semana). Motivo: em 25 dias o
+    # book abriu 6 posicoes e fechou ZERO; as 2 mais velhas (13 e 14 pregoes) sao
+    # justamente as que devolveram lucro (UNP-UPS 153% do pico, SCHW-COF 53%).
+    # O fundador optou por cortar a cauda no tempo em vez de construir leitura
+    # intradiaria: com 5 pregoes a trade nao tem espaco para virar eterna nem
+    # para devolver muito, e o capital gira 5x mais rapido.
+    # Contrafactual medido na amostra atual (6 trades): +1.076 contra +1.406 de
+    # hoje. E um custo ACEITO conscientemente — troca retorno de cauda por giro
+    # e por limite de risco. Amostra pequena demais para ser conclusiva.
+    timeout_p = int(_env_f('USPAIRS_TIMEOUT_PREGOES', 5))
+    # [05-ago] trailing estilo Arbi (la: arma em 2,0% e sai se cair 1,0pp)
+    trail_arm = _env_f('USPAIRS_TRAIL_ARM_PCT', 2.0)
+    trail_drop = _env_f('USPAIRS_TRAIL_DROP_PCT', 1.0)
     max_per_sym = int(_env_f('USPAIRS_MAX_PER_SYMBOL', 2))
     capital = _env_f('USPAIRS_SHADOW_CAPITAL', 100000)
     pos_pct = _env_f('USPAIRS_POSITION_PCT', 10)
@@ -240,9 +252,18 @@ def scan_once():
         if last and str(last) >= pregao:
             return None  # sem pregao novo
 
+        # [05-ago | Beto] coluna do PICO de P&L — o book nao guardava isso, entao
+        # nao havia como armar trailing. Criada aqui (idempotente) p/ nao exigir
+        # migracao manual.
+        try:
+            cur.execute("ALTER TABLE uspairs_shadow_trades "
+                        "ADD COLUMN peak_pnl_pct DECIMAL(10,4) DEFAULT 0")
+        except Exception:
+            pass  # ja existe
         cur.execute("SELECT id, pair, direction, opened_pregao, entry_z, entry_spread, "
                     "beta_entry, price_a_entry, price_b_entry, notional_a, notional_b, "
-                    "pregoes_held FROM uspairs_shadow_trades WHERE status='OPEN'")
+                    "pregoes_held, COALESCE(peak_pnl_pct,0) FROM uspairs_shadow_trades "
+                    "WHERE status='OPEN'")
         open_rows = cur.fetchall()
         open_by_pair = {r[1]: r for r in open_rows}
         sym_count = {}
@@ -266,33 +287,53 @@ def scan_once():
             # ── fechar posicao aberta?
             if pair in open_by_pair:
                 (tid, _, direction, opened_pg, ez, espread, beta_e, pa_e, pb_e,
-                 na, nb, held) = open_by_pair[pair]
+                 na, nb, held, peak_ant) = open_by_pair[pair]
                 held = int(held or 0) + 1
+
+                # ── [05-ago | Beto] P&L CORRENTE e PICO, avaliados a cada varredura.
+                # Antes o P&L so era calculado NO FECHAMENTO — por isso nao existia
+                # trailing: ninguem sabia por onde a trade tinha passado. Agora o
+                # pico e persistido a cada pregao.
+                spread_e_beta = float(espread)
+                spread_x_beta = (math.log(r['price_a']) -
+                                 float(beta_e) * math.log(r['price_b']))
+                dlt = spread_x_beta - spread_e_beta
+                sign = -1.0 if direction == 'SHORT_A' else 1.0
+                pnl_gross = sign * dlt * float(na)
+                pnl_pct = pnl_gross / float(na) * 100.0 if float(na) else 0.0
+                peak = max(float(peak_ant or 0), pnl_pct)
+
                 reason = None
                 if abs(z) <= z_exit:
                     reason = 'CONVERGED'
                 elif abs(z) >= z_stop:
                     reason = 'STOP_REGIME'
+                # ── TRAILING no estilo da Arbi: arma no pico e protege a queda.
+                # Regra da Arbi: peak>=2.0 e pnl<=peak-1.0. Aqui em pontos de %.
+                # Motivo (medido 05-ago): a UNP-UPS foi de +2,42% para -1,29% —
+                # devolveu 153% do pico. A SCHW-COF devolveu 53%. O book nao tinha
+                # NENHUMA protecao de lucro; so saia por convergencia ou timeout.
+                elif peak >= trail_arm and pnl_pct <= peak - trail_drop:
+                    reason = 'TRAILING_STOP'
                 elif held >= timeout_p:
                     reason = 'TIMEOUT'
+
+                if not reason:
+                    # nao fechou: so atualiza o contador e o pico
+                    cur.execute("UPDATE uspairs_shadow_trades SET pregoes_held=%s, "
+                                "peak_pnl_pct=%s WHERE id=%s",
+                                (held, round(peak, 4), tid))
                 if reason:
-                    # PnL no espaco log-spread com o beta DE ENTRADA (posicao real)
-                    spread_e_beta = float(espread)
-                    spread_x_beta = (math.log(r['price_a']) -
-                                     float(beta_e) * math.log(r['price_b']))
-                    dlt = spread_x_beta - spread_e_beta
-                    sign = -1.0 if direction == 'SHORT_A' else 1.0
-                    pnl_gross = sign * dlt * float(na)
                     fees = (cost_bps / 10000.0) * (float(na) + abs(float(nb))) * 2
                     pnl_net = pnl_gross - fees
                     cur.execute(
                         "UPDATE uspairs_shadow_trades SET status='CLOSED', "
                         "closed_pregao=%s, exit_z=%s, exit_spread=%s, price_a_exit=%s, "
                         "price_b_exit=%s, pnl_gross=%s, fees=%s, pnl_net=%s, "
-                        "close_reason=%s, pregoes_held=%s WHERE id=%s",
+                        "close_reason=%s, pregoes_held=%s, peak_pnl_pct=%s WHERE id=%s",
                         (pregao, round(z, 3), round(spread_x_beta, 5), r['price_a'],
                          r['price_b'], round(pnl_gross, 2), round(fees, 2),
-                         round(pnl_net, 2), reason, held, tid))
+                         round(pnl_net, 2), reason, held, round(peak, 4), tid))
                     n_closed += 1
                     # [REAL-EXEC 24-jul] fecha as duas pernas no IB paper (Market-on-Open,
                     # invertendo os lados). Fail-open. Book shadow intacto.

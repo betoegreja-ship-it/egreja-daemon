@@ -11874,6 +11874,24 @@ def arbi_scan_loop():
                 if pair['id'] in _freezer:
                     continue
 
+                # ═══ [05-ago noite | Beto] B3-SOURCE-GATE ═══════════════════════
+                # Auditoria minuto-a-minuto (02/07->05/08, 273 checagens B3):
+                # 17,9% dos precos B3 gravados estavam FORA da barra real do
+                # minuto (mediana 72bp, max 523bp), em TODOS os periodos e em
+                # 10 pares — nao so CSN. Casos: CSNA3 gravada 5,06 quando o real
+                # era 5,34; GGBR4 HOJE entrou a 26,12 com real 25,09-25,19
+                # (preco de ONTEM). Padrao = fonte B3 congelada (brapi/Cedro).
+                # Regra: perna B3 sem fonte com IDADE confiavel (profit/cedro
+                # tick) => NAO ABRE. brapi vira fonte só de monitoramento.
+                # ARBI_B3_SOURCE_GATE=false desliga.
+                if pair.get('mkt_a') == 'B3' and \
+                        os.environ.get('ARBI_B3_SOURCE_GATE', 'true').lower() != 'false':
+                    _sa = _px_src_of(pair['leg_a'])
+                    if _sa not in ('profit', 'cedro', 'cedro-relay'):
+                        log.info(f"[ARBI-B3-GATE] {pair['id']}: entrada bloqueada — "
+                                 f"perna B3 servida por '{_sa}' (sem tick confiavel)")
+                        continue
+
                 # ═══ [05-ago | Beto] FX-GATE: dolar suspeito => NAO ABRE B3-NYSE ═══
                 # Forense: 29-jul teve 9 de 9 trades com fx_suspect e -54.898 nos
                 # pares DOL — o sistema entrou com cambio VELHO em dia de cambio

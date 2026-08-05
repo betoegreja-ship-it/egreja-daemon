@@ -11722,10 +11722,55 @@ def arbi_get_smart_direction(pair, abs_spread):
         return None, 'no_entry_zone'
 
 
+def _polygon_lagged_price(sym: str, lag_min: float):
+    """[SYNC-CLOCK 05-ago | decisao Beto] Close da barra de minuto de (agora - lag)
+    na Polygon. Usado p/ ATRASAR deliberadamente a perna US dos pares cujo outro
+    lado vem de fonte atrasada (LSE/XETRA/AMS/TSX via FMP/Yahoo ~15min).
+    Auditoria provou: 31/31 precos europeus 'errados' eram REAIS com 9-16min de
+    atraso — o defeito era MISTURAR relogios (US ao vivo x EU atrasada), que
+    fabrica spread que nunca existiu. Relogios iguais = spread real, defasado."""
+    try:
+        if not POLYGON_API_KEY:
+            return None
+        import time as _t
+        t0 = int((_t.time() - lag_min * 60) // 60 * 60) * 1000
+        r = requests.get(f'https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/minute/'
+                         f'{t0}/{t0 + 60000}',
+                         params={'apiKey': POLYGON_API_KEY, 'limit': 2}, timeout=6)
+        res = (r.json() or {}).get('results') or []
+        if res and res[0].get('c'):
+            return float(res[0]['c'])
+    except Exception:
+        pass
+    return None
+
+
 def calc_spread(pair):
     try:
         pa_raw=_fetch_arbi_price(pair['leg_a']); pb_raw=_fetch_arbi_price(pair['leg_b'])
         if pa_raw<=0 or pb_raw<=0: return None
+        # ═══ [SYNC-CLOCK 05-ago | Beto: "corrija e atrase a perna"] ═══════════
+        # Par com perna nao-US/nao-B3 (LSE/XETRA/AMS/TSX): a perna estrangeira
+        # chega ~15min atrasada (FMP/Yahoo). Em vez de congelar o par, ATRASAMOS
+        # a perna US pro MESMO relogio: Polygon na barra de (agora-15min).
+        # O book vira "defasado declarado": spread real, so que de 15min atras.
+        # price_source marca 'polygon-lag15' p/ auditoria distinguir.
+        # Desligar: ARBI_SYNC_CLOCK=false. Lag: ARBI_SYNC_LAG_MIN (15).
+        _clock = 'live'
+        _mkts_atrasados = {'LSE', 'XETRA', 'AMS', 'EU', 'TSX'}
+        if os.environ.get('ARBI_SYNC_CLOCK', 'true').lower() != 'false' and \
+                (pair.get('mkt_a') in _mkts_atrasados or pair.get('mkt_b') in _mkts_atrasados):
+            _lag = float(os.environ.get('ARBI_SYNC_LAG_MIN', 15))
+            if pair.get('mkt_a') in ('NYSE', 'NASDAQ'):
+                _lp = _polygon_lagged_price(pair['leg_a'], _lag)
+                if _lp:
+                    pa_raw = _lp; _tag_px_src(pair['leg_a'], f'polygon-lag{int(_lag)}')
+                    _clock = f'SYNC_DELAYED_{int(_lag)}M'
+            if pair.get('mkt_b') in ('NYSE', 'NASDAQ'):
+                _lp = _polygon_lagged_price(pair['leg_b'], _lag)
+                if _lp:
+                    pb_raw = _lp; _tag_px_src(pair['leg_b'], f'polygon-lag{int(_lag)}')
+                    _clock = f'SYNC_DELAYED_{int(_lag)}M'
         fx=pair['fx']; ra=pair.get('ratio_a',1); rb=pair.get('ratio_b',1)
         if fx=='USDBRL':
             # [v10.14-Audit] Fórmula unificada correta:
@@ -11821,6 +11866,8 @@ def calc_spread(pair):
             'spread_bps_a':spread_bps_a,'spread_bps_b':spread_bps_b,
             # [05-ago] fonte REAL de cada perna (profit/cedro/cedro-relay/brapi/fallback)
             'price_source_a':_px_src_of(pair['leg_a']),'price_source_b':_px_src_of(pair['leg_b']),
+            # [SYNC-CLOCK] 'live' ou 'SYNC_DELAYED_15M' (book defasado declarado)
+            'clock':_clock,
             # Timestamps
             'signal_ts_a':price_ts_a,'signal_ts_b':price_ts_b,'delta_ts_ms':0,
             # Spread calculado corretamente

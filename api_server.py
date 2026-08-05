@@ -12012,6 +12012,17 @@ def arbi_reconcile(source='loop'):
                                     "closed_at=NOW() WHERE id=%s AND status='OPEN'", (r['id'],))
                         conn.commit()
                         out['orfas'].append(f"{r['id']}({t.get('pair_id')})")
+                        # [FIX 05-ago] a perna long TEM que morrer junto. Sem isto o
+                        # dedup fechava a Arbi e deixava a perna long viva sozinha —
+                        # foi o que criou a CSNA3 orfa de 16:09 (entrada 4,8012).
+                        # Mesmo cuidado do fix db05219 (force-close chama on_arbi_close).
+                        for _mod, _nome in (('modules.longleg_harvest', 'harvest'),
+                                            ('modules.longleg_ib', 'ib')):
+                            try:
+                                _m = __import__(_mod, fromlist=['on_arbi_close'])
+                                _m.on_arbi_close(t)
+                            except Exception as _le:
+                                log.debug(f'[ARBI-RECONCILE] longleg {_nome} {r["id"]}: {_le}')
                     except Exception as _de:
                         log.error(f'[ARBI-RECONCILE] dedup {r["id"]}: {_de}')
                     continue

@@ -11787,6 +11787,15 @@ def arbi_scan_loop():
         beat('arbi_scan_loop')
         try:
             fetch_fx_rates()
+            # ═══ [GELADEIRA 05-ago | decisao Beto] pares pausados ═══════════
+            # CSNA3-SID: -106.807 em 18 trades na janela 28/jul-05/ago (WR 33%)
+            # — mais que o prejuizo da janela inteira; sem ela o periodo e ~+12k.
+            # Feed doente confirmado (preco fantasma flagrado pelo fundador em
+            # 03-ago), spread de entrada dos stops caiu de 2,84% p/ 1,50%.
+            # Volta SO depois de validar o feed contra a ProfitDLL, mudando o
+            # env ARBI_PAIR_FREEZER (sem precisar de deploy).
+            _freezer = {p.strip() for p in os.environ.get(
+                'ARBI_PAIR_FREEZER', 'CSNA3-SID').split(',') if p.strip()}
             for pair in ARBI_PAIRS:
                 beat('arbi_scan_loop')
                 spread=calc_spread(pair)
@@ -11794,6 +11803,10 @@ def arbi_scan_loop():
                     time.sleep(1); continue
 
                 with state_lock: arbi_spreads[pair['id']]=spread
+                # GELADEIRA: continua COTANDO (a posicao aberta precisa de preco
+                # p/ fechar direito), mas dali nao passa — nada de entrada nova.
+                if pair['id'] in _freezer:
+                    continue
 
                 # [v10.14] Threshold dinâmico por par
                 _pair_cfg = ARBI_PAIR_CONFIG.get(pair['id'], ARBI_PAIR_CONFIG['_default'])

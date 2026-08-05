@@ -654,6 +654,10 @@ def arbi_scan_loop(ctx):
         beat('arbi_scan_loop')
         try:
             fetch_fx_rates()
+            # [GELADEIRA 05-ago | Beto] ver api_server.arbi_scan_loop
+            import os as _os
+            _freezer = {p.strip() for p in _os.environ.get(
+                'ARBI_PAIR_FREEZER', 'CSNA3-SID').split(',') if p.strip()}
             for pair in ARBI_PAIRS:
                 beat('arbi_scan_loop')
                 spread=calc_spread(ctx, pair)
@@ -661,6 +665,9 @@ def arbi_scan_loop(ctx):
                     time.sleep(1); continue
 
                 with state_lock: arbi_spreads[pair['id']]=spread
+                # GELADEIRA: cota (posicao aberta precisa de preco), nao abre
+                if pair['id'] in _freezer:
+                    continue
 
                 # [v10.14] Threshold dinâmico por par
                 _pair_cfg = ARBI_PAIR_CONFIG.get(pair['id'], ARBI_PAIR_CONFIG['_default'])

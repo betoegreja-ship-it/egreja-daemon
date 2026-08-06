@@ -422,6 +422,17 @@ def finalize_directional(limit=20):
                     mc = statistics.median(ctrl_rets); mc_n = len(ctrl_rets)
             except Exception:
                 pass
+            # [06-ago | pedido Beto: GGBR4/CMIG4 presas em "aguardando calculo"]
+            # NO_BARS costuma ser Yahoo AINDA sem as barras da janela (trade
+            # recem-fechada, ex.: fechou durante deploy) — nao e falha
+            # definitiva. Se a entrada tem <6h, DEVOLVE para PENDING (retry na
+            # proxima rodada, ~30min) em vez de cravar DONE sem resultado.
+            # processing_attempts limita loop infinito (PROC_MAX_ATTEMPTS).
+            _age_h = (int(datetime.now(timezone.utc).timestamp()) - int(oe)) / 3600.0
+            if rsn == 'NO_BARS' and _age_h < 6:
+                cur.execute("UPDATE longleg_harvest SET dir_status='PENDING' WHERE arbi_id=%s", (arbi_id,))
+                log.info(f'[LONGLEG] {arbi_id}: NO_BARS com {_age_h:.1f}h — reagendado p/ retry')
+                continue
             cur.execute("""UPDATE longleg_harvest SET dir_status='DONE',
                 dir_exit_ret_pct=%s, dir_exit_reason=%s, mfe_pct=%s, mae_pct=%s,
                 atr_pct_entry=%s, exit_ambiguous=%s, hedge_beta=%s, hedged_beta_ret_pct=%s,

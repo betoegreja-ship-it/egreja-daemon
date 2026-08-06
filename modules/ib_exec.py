@@ -72,7 +72,10 @@ def _record(row):
              _sf, _tc))
         c.close()
     except Exception as e:
-        log.debug(f'[IB-EXEC] record: {e}')
+        # [06-ago | Beto] era log.debug — engoliu por 2 SEMANAS o erro
+        # "Data too long for column 'event'" (varchar(8) vs 'ARBI_OPEN')
+        # e o executor parecia simplesmente nao existir. NUNCA mais silencioso.
+        log.error(f'[IB-EXEC] record FALHOU ({row.get("event")}/{row.get("symbol")}): {e}')
 
 
 def _guard(usd):

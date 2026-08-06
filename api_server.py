@@ -2149,8 +2149,14 @@ def get_db():
         except Exception as e:
             log.warning(f'Pool get_connection: {e} — tentando conexão direta')
     # Fallback direto (ex.: pool esgotado ou erro de inicialização)
+    # [06-ago | pos-congelamento em massa] connect SEM timeout deixava a thread
+    # pendurada para sempre quando o MySQL batia max_connections — 15 threads
+    # (incluindo o watchdog) congelaram juntas as 16:35. Com timeout, a thread
+    # ERRA rapido em vez de congelar, e o watchdog consegue reinicia-la.
     try:
-        return mysql.connector.connect(**db_config)
+        _cfg = dict(db_config)
+        _cfg['connection_timeout'] = int(os.environ.get('MYSQL_CONNECT_TIMEOUT_S', 8))
+        return mysql.connector.connect(**_cfg)
     except Exception as e:
         log.error(f'MySQL fallback connect: {e}')
         return None
@@ -11491,6 +11497,8 @@ _cedro_relay_cache = {}  # [CEDRO-RELAY 23-jul] {sym: (price, ts)} TTL 2s no ser
 # _arbi_px_src e vai para price_source_a/b da trade (auditoria).
 _profit_px_cache = {'ts': 0.0, 'data': {}}
 _arbi_px_src = {}   # display_sym -> (fonte, ts)
+_ib_eu_cache = {}   # [06-ago] sym europeu -> (preco|None, ts) via bridge IB
+_us_fresh_cache = {}  # [06-ago] sym US -> (age_min|None, ts) frescor do ultimo trade (Polygon)
 
 def _profit_b3_price(display_sym: str):
     """Preco da ProfitDLL via bridge do VPS. Retorna (preco|None, age_s|None)."""
@@ -11557,6 +11565,49 @@ def _fetch_arbi_price(symbol: str) -> float:
         if _pp:
             _tag_px_src(display, 'profit')
             return _pp
+
+    # ═══ [06-ago | pos-assinatura IB LSE/Xetra/Euronext] Perna europeia AO VIVO
+    # via bridge IB (snapshot reqMktData com relogio real). Liga com
+    # IB_EU_QUOTES=true DEPOIS do restart do Gateway (assinaturas ativam na
+    # sessao seguinte). Fonte marcada 'ib' — o SYNC-CLOCK pula o atraso
+    # artificial quando a perna vier daqui (relogio ja e live). Fallback
+    # intacto: FMP/Yahoo delayed + SYNC-CLOCK, como hoje.
+    if (symbol.endswith(('.L', '.DE', '.AS'))
+            and os.environ.get('IB_EU_QUOTES', 'false').lower() == 'true'):
+        import time as _teu
+        _euc = _ib_eu_cache.get(symbol)
+        if _euc and _teu.time() - _euc[1] < float(os.environ.get('IB_EU_TTL_S', 3)):
+            if _euc[0]:
+                _tag_px_src(symbol, 'ib')
+                return _euc[0]
+        else:
+            try:
+                from modules.ib_exec import bridge_quote
+                _q, _err = bridge_quote([symbol], md_type=1, timeout=6)
+                _px = None
+                if _q and _q.get(symbol):
+                    _row = _q[symbol]
+                    _px = _row.get('price') or _row.get('bid')
+                    # ATENCAO escala .L: interno espera PENCE (calc divide /100).
+                    # Se a IB entregar em LIBRAS (~100x menor que FMP/Yahoo),
+                    # normaliza comparando com o ultimo preco conhecido.
+                    if _px and symbol.endswith('.L'):
+                        _px = float(_px)
+                        _ref = stock_prices.get(symbol)
+                        if isinstance(_ref, dict):
+                            _ref = _ref.get('price')
+                        try:
+                            if _ref and float(_ref) / _px > 30:   # veio em libras
+                                _px *= 100.0
+                        except Exception:
+                            pass
+                _ib_eu_cache[symbol] = (float(_px) if _px else None, _teu.time())
+                if _px:
+                    _tag_px_src(symbol, 'ib')
+                    return float(_px)
+            except Exception as _eeu:
+                log.debug(f'[IB-EU] {symbol}: {_eeu}')
+                _ib_eu_cache[symbol] = (None, _teu.time())
 
     # [v10.31] Cedro socket para B3 (real-time streaming) — agora BACKUP
     if is_b3_sym and _cedro_socket and _cedro_socket.enabled:
@@ -11773,6 +11824,29 @@ def _polygon_lagged_price(sym: str, lag_min: float):
     return None
 
 
+def _us_trade_age_min(sym: str):
+    """[06-ago] Idade (min) do ULTIMO TRADE real do papel US na Polygon.
+    Para o US-FRESH-GATE dos ADRs finos (BBDO, CIG.C, LND...): quote existe
+    sempre, trade nao — e a Arbi so realiza no trade. None = nao sabe (fail-open:
+    o gate nao bloqueia sem informacao). Cache 30s por simbolo."""
+    import time as _t
+    _c = _us_fresh_cache.get(sym)
+    if _c and _t.time() - _c[1] < 30:
+        return _c[0]
+    age = None
+    try:
+        if POLYGON_API_KEY:
+            r = requests.get(f'https://api.polygon.io/v2/last/trade/{sym}',
+                             params={'apiKey': POLYGON_API_KEY}, timeout=5)
+            ts_ns = ((r.json() or {}).get('results') or {}).get('t')
+            if ts_ns:
+                age = max(0.0, (_t.time() - ts_ns / 1e9) / 60.0)
+    except Exception:
+        pass
+    _us_fresh_cache[sym] = (age, _t.time())
+    return age
+
+
 def calc_spread(pair):
     try:
         pa_raw=_fetch_arbi_price(pair['leg_a']); pb_raw=_fetch_arbi_price(pair['leg_b'])
@@ -11786,8 +11860,15 @@ def calc_spread(pair):
         # Desligar: ARBI_SYNC_CLOCK=false. Lag: ARBI_SYNC_LAG_MIN (15).
         _clock = 'live'
         _mkts_atrasados = {'LSE', 'XETRA', 'AMS', 'EU', 'TSX'}
+        # [06-ago] Se a perna estrangeira veio da IB (IB_EU_QUOTES=true, apos
+        # assinatura LSE/Xetra/Euronext), ela e AO VIVO — atrasar a perna US
+        # recriaria o defeito de relogios mistos ao contrario. Pula o lag.
+        _leg_ext = pair['leg_a'] if pair.get('mkt_a') in _mkts_atrasados else \
+                   (pair['leg_b'] if pair.get('mkt_b') in _mkts_atrasados else None)
+        _ext_live = bool(_leg_ext) and _px_src_of(_leg_ext) == 'ib'
         if os.environ.get('ARBI_SYNC_CLOCK', 'true').lower() != 'false' and \
-                (pair.get('mkt_a') in _mkts_atrasados or pair.get('mkt_b') in _mkts_atrasados):
+                (pair.get('mkt_a') in _mkts_atrasados or pair.get('mkt_b') in _mkts_atrasados) \
+                and not _ext_live:
             _lag = float(os.environ.get('ARBI_SYNC_LAG_MIN', 15))
             if pair.get('mkt_a') in ('NYSE', 'NASDAQ'):
                 _lp = _polygon_lagged_price(pair['leg_a'], _lag)
@@ -11977,6 +12058,22 @@ def arbi_scan_loop():
                     if _sa not in ('profit', 'cedro', 'cedro-relay'):
                         log.info(f"[ARBI-B3-GATE] {pair['id']}: entrada bloqueada — "
                                  f"perna B3 servida por '{_sa}' (sem tick confiavel)")
+                        continue
+
+                # ═══ [06-ago | analise da expansao] US-FRESH-GATE: ADR fino ═══
+                # BBDO/CIG.C/LND etc. negociam poucas vezes por dia; o "ultimo
+                # preco" da Polygon pode ter HORAS. Spread contra perna B3
+                # fresca = oportunidade fantasma (mesmo mecanismo do LSE de
+                # julho, no lado americano). Entrada exige ultimo trade da
+                # perna US com <= ARBI_US_MAX_TRADE_AGE_MIN (default 10).
+                # So checa quando ha oportunidade (economiza chamada Polygon).
+                if (spread.get('opportunity') and pair.get('mkt_b') in ('NYSE', 'NASDAQ')
+                        and os.environ.get('ARBI_US_FRESH_GATE', 'true').lower() != 'false'):
+                    _fage = _us_trade_age_min(pair['leg_b'])
+                    _fmax = float(os.environ.get('ARBI_US_MAX_TRADE_AGE_MIN', 10))
+                    if _fage is not None and _fage > _fmax:
+                        log.info(f"[ARBI-US-FRESH] {pair['id']}: entrada bloqueada — "
+                                 f"ultimo trade de {pair['leg_b']} tem {_fage:.0f}min (max {_fmax:.0f})")
                         continue
 
                 # ═══ [05-ago | Beto] FX-GATE: dolar suspeito => NAO ABRE B3-NYSE ═══

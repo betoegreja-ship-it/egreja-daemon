@@ -20939,6 +20939,26 @@ def debug_longleg_open():
                         return v
                 except Exception:
                     continue
+            # [06-ago | Beto: "no perna long nao aparece os dados" (GGBR4)]
+            # Perna long B3 nao tinha fonte de preco no painel — usa as MESMAS
+            # fontes da Arbi: tick ProfitDLL -> socket Cedro. Fail-open.
+            if str(mkt or '').upper() in ('B3', 'BOVESPA'):
+                _b3s = sym.replace('.SA', '')
+                try:
+                    _pp, _page = _profit_b3_price(_b3s)
+                    _pmax = float(os.environ.get('PROFIT_MAX_TICK_AGE_S', 60))
+                    if _pp and (_page is None or float(_page) <= _pmax):
+                        return float(_pp)
+                except Exception:
+                    pass
+                try:
+                    if _cedro_socket:
+                        with _cedro_socket._cache_lock:
+                            _cv = (_cedro_socket._cache.get(_b3s) or {}).get('price')
+                        if _cv and float(_cv) > 0:
+                            return float(_cv)
+                except Exception:
+                    pass
             # [29-jul] fallback: ADRs NYSE fora do cache local -> Polygon last trade
             if POLYGON_API_KEY and str(mkt or '').upper() not in ('B3', 'BOVESPA'):
                 try:

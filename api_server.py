@@ -9500,6 +9500,15 @@ def arbi_scan_loop():
                     audit('ARBI_OPENED',{'id':trade_id,'pair':pair['id'],'spread':spread['abs_spread']})
                     enqueue_persist('arbi',trade)
                     send_whatsapp(f"ARBI: {pair['name']} spread {spread['abs_spread']:.2f}% ${pos:,.0f}")
+                    # [ARBI-SHADOW-0107 06-ago | Beto] Limonada observadora:
+                    # registra a perna long nos books shadow. Fail-open, zero
+                    # efeito na Arbi (modulo identico ao da producao).
+                    if os.environ.get('ARBI_SHADOW_0107', 'false').lower() == 'true':
+                        try:
+                            from modules.longleg_harvest import on_arbi_open as _ll_open
+                            _ll_open(trade, pulse=None)
+                        except Exception as _lle:
+                            log.debug(f'longleg open: {_lle}')
 
                 time.sleep(1.5)
         except Exception as e: log.error(f'arbi_scan: {e}')
@@ -9620,6 +9629,14 @@ def arbi_monitor_loop():
 
             for c in closed_trades:
                 audit('ARBI_CLOSED',{'id':c['id'],'pair':c['pair_id'],'pnl':c['pnl'],'reason':c['close_reason']})
+                # [ARBI-SHADOW-0107 06-ago | Beto] Limonada: fecha a perna long
+                # no book ALL junto com a Arbi. Fail-open.
+                if os.environ.get('ARBI_SHADOW_0107', 'false').lower() == 'true':
+                    try:
+                        from modules.longleg_harvest import on_arbi_close as _ll_close
+                        _ll_close(c)
+                    except Exception as _lle:
+                        log.debug(f'longleg close: {_lle}')
                 # [v10.14] Aprendizado por par — ajusta threshold após cada fechamento
                 _pair_recent = [t for t in list(arbi_closed)[:20] if t.get('pair_id')==c['pair_id']]
                 if len(_pair_recent) >= 3:
@@ -10029,6 +10046,19 @@ def start_background_threads():
         _keep = {'arbi_scan_loop', 'arbi_monitor_loop', 'arbi_learning_loop',
                  'persistence_worker', 'snapshot_loop', 'watchdog'}
         defs = {k: v for k, v in defs.items() if k in _keep}
+        # [06-ago | Beto] Limonada observadora: worker que calcula a saida
+        # direcional simulada (trail) das pernas long fechadas. Fail-open.
+        def _ll_finalize_loop():
+            import time as _t
+            _t.sleep(120)
+            while True:
+                try:
+                    from modules.longleg_harvest import finalize_directional
+                    finalize_directional(limit=20)
+                except Exception as _e:
+                    log.debug(f'[LL-0107] finalize: {_e}')
+                _t.sleep(1800)
+        defs['ll_finalize_loop'] = _ll_finalize_loop
         log.info(f'[ARBI-SHADOW-0107] threads ativas: {sorted(defs.keys())}')
     # [LIMPEZA 24-jun-2026] DISABLE_LONG_HORIZON tira monthly_picks_worker (depende de
     # long_horizon que tem candidate_expansion.py com syntax error desde abril e nunca rodou).
@@ -15267,6 +15297,33 @@ def arbi_trades_route():
         'parameters':{'min_spread':ARBI_MIN_SPREAD,'tp_spread':ARBI_TP_SPREAD,
             'sl_pct':ARBI_SL_PCT,'timeout_h':ARBI_TIMEOUT_H,
             'position_size':ARBI_POS_SIZE,'max_positions':ARBI_MAX_POSITIONS}})
+
+@app.route('/arbitrage/longleg')
+def arbi_longleg_route():
+    """[ARBI-SHADOW-0107 06-ago | Beto] Limonada observadora da Arbi de 01/jul.
+    Books da perna long (ALL, DIRECTIONAL_EXIT etc.) do modulo longleg_harvest."""
+    try:
+        from modules.longleg_harvest import summary, _conn as _llc
+        out = {'books': None, 'abertas': []}
+        try:
+            out['books'] = summary()
+        except Exception as _e:
+            out['books_erro'] = str(_e)[:120]
+        try:
+            c = _llc(); cur = c.cursor()
+            cur.execute("""SELECT arbi_id, pair, long_leg, long_mkt, long_px_entry,
+                           opened_at FROM longleg_harvest WHERE status='OPEN'
+                           ORDER BY opened_at DESC LIMIT 20""")
+            out['abertas'] = [{'arbi_id': r[0], 'par': r[1], 'perna_long': r[2],
+                               'mkt': r[3], 'entrada': float(r[4] or 0),
+                               'aberta_em': str(r[5])} for r in cur.fetchall()]
+            c.close()
+        except Exception as _e:
+            out['abertas_erro'] = str(_e)[:120]
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/orders')
 def orders_route():

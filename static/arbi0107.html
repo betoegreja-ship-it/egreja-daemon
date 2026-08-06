@@ -32,6 +32,9 @@
 <table><thead><tr><th>Par</th><th>Dir</th><th>P&L</th><th>Motivo</th><th>Fechada em (UTC)</th></tr></thead><tbody id="closed"></tbody></table>
 <div class="sec">Spreads monitorados agora</div>
 <table><thead><tr><th>Par</th><th>Spread</th><th>Dir</th><th>FX</th><th>Oportunidade?</th></tr></thead><tbody id="spreads"></tbody></table>
+<div class="sec">🍋 Limonada (perna long) — observadora</div>
+<table><thead><tr><th>Book</th><th>N</th><th>WR</th><th>Ret médio</th><th>P&L (US$100k/pos)</th><th>Ret s/ capital</th></tr></thead><tbody id="llbooks"></tbody></table>
+<table><thead><tr><th>Perna long ABERTA</th><th>Mercado</th><th>Entrada</th><th>Aberta em (UTC)</th></tr></thead><tbody id="llopen"></tbody></table>
 <div class="muted">Comparação: a Arbi ATUAL roda em diligent-spirit (egreja.com). Esta página atualiza sozinha a cada 30s.</div>
 <script>
 const $=id=>document.getElementById(id);
@@ -68,6 +71,21 @@ async function load(){
        <td>${o.direction||''}</td><td>${o.fx_rate||'—'}</td>
        <td>${Math.abs(o.abs_spread||0)>=0.8?'SIM':'—'}</td></tr>`
     ).join('')||'<tr><td colspan="5" class="muted">aquecendo…</td></tr>';
+    try{
+      const ll=await (await fetch('/arbitrage/longleg')).json();
+      const bks=ll.books||{};
+      $('llbooks').innerHTML=Object.keys(bks).filter(k=>!k.startsWith('_')&&bks[k]&&typeof bks[k]==='object'&&'n' in bks[k]).map(k=>{
+        const b=bks[k];
+        return `<tr><td>${k}</td><td>${b.n||0}</td><td>${b.wr!=null?b.wr+'%':'—'}</td>
+          <td class="${cls(b.ret_med||0)}">${b.ret_med!=null?(b.ret_med>=0?'+':'')+b.ret_med+'%':'—'}</td>
+          <td class="${cls(b.pnl_usd||0)}">${usd(b.pnl_usd)}</td>
+          <td>${b.ret_sobre_capital_pct!=null?(b.ret_sobre_capital_pct>=0?'+':'')+b.ret_sobre_capital_pct+'%':'—'}</td></tr>`;
+      }).join('')||'<tr><td colspan="6" class="muted">nenhuma perna fechada ainda</td></tr>';
+      $('llopen').innerHTML=(ll.abertas||[]).map(a=>
+        `<tr><td>${a.par} <span class="pill">${a.perna_long}</span></td><td>${a.mkt||''}</td>
+         <td>${a.entrada||'—'}</td><td class="muted">${(a.aberta_em||'').slice(0,16)}</td></tr>`
+      ).join('')||'<tr><td colspan="4" class="muted">nenhuma</td></tr>';
+    }catch(e){ $('llbooks').innerHTML='<tr><td colspan="6" class="muted">limonada: '+e.message+'</td></tr>'; }
     $('upd').textContent=' · atualizado '+new Date().toLocaleTimeString('pt-BR');
   }catch(e){ $('upd').textContent=' · erro: '+e.message; }
 }

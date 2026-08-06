@@ -73,8 +73,11 @@ async function load(){
     ).join('')||'<tr><td colspan="5" class="muted">aquecendo…</td></tr>';
     try{
       const ll=await (await fetch('/arbitrage/longleg')).json();
-      const bks=ll.books||{};
-      $('llbooks').innerHTML=Object.keys(bks).filter(k=>!k.startsWith('_')&&bks[k]&&typeof bks[k]==='object'&&'n' in bks[k]).map(k=>{
+      const bks=(ll.books&&ll.books.books)||ll.books||{};
+      // [decisao Beto 06-ago] so os books que interessam na analise:
+      // ALL (fecha com a Arbi) e DIRECTIONAL_EXIT (trail simulado)
+      const _SHOW=['ALL','DIRECTIONAL_EXIT'];
+      $('llbooks').innerHTML=Object.keys(bks).filter(k=>_SHOW.includes(k)&&bks[k]&&typeof bks[k]==='object'&&'n' in bks[k]).map(k=>{
         const b=bks[k];
         return `<tr><td>${k}</td><td>${b.n||0}</td><td>${b.wr!=null?b.wr+'%':'—'}</td>
           <td class="${cls(b.ret_med||0)}">${b.ret_med!=null?(b.ret_med>=0?'+':'')+b.ret_med+'%':'—'}</td>

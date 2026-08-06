@@ -170,42 +170,68 @@ function rvTradeRows(b){
   });
   return rows||'<tr><td colspan="7" class="muted">nenhuma trade</td></tr>';
 }
+function fmtPct(p){ return p!=null ? (p>=0?'+':'')+(+p).toFixed(2)+'%' : '—'; }
 function rvBookCard(b){
   if(!b||b.error) return '';
-  // [05-ago | regra do Beto] capital EMPREGADO = soma do notional de TODAS as
-  // trades (fechadas + abertas). Ex.: 6 trades de 10k = 60k; 6k de lucro = 10%.
-  // O pico simultaneo fica ao lado como leitura alternativa.
+  // [05-ago noite | spec formal do Beto] capital-base = PICO de capital
+  // simultaneamente comprometido (notional por posição, sem somar 2 pernas).
+  // Retorno = (realizado + MTM aberto) / base. MTD por NAV virtual.
+  // Run-rate mensal só aparece enquanto o mês está incompleto.
   var capTxt=b.capital!=null
-    ? 'capital empregado US$ '+Math.round(b.capital).toLocaleString('pt-BR')
-      +' ('+(b.n_trades||0)+' trades × notional da posição, fechadas + abertas)'
-      +(b.capital_pico!=null
-        ? ' · pico simultâneo US$ '+Math.round(b.capital_pico).toLocaleString('pt-BR')
-          +' ('+(b.max_simult||0)+' ao mesmo tempo) = '
-          +(b.total_pct_pico!=null?(b.total_pct_pico>=0?'+':'')+b.total_pct_pico.toFixed(2)+'%':'—')
-        : '')
+    ? 'capital-base US$ '+Math.round(b.capital).toLocaleString('pt-BR')
+      +' (pico: '+(b.max_simult||0)+' posições simultâneas × notional)'
+      +(b.capital_girado!=null?' · girado US$ '+Math.round(b.capital_girado).toLocaleString('pt-BR')+' (diagnóstico)':'')
     : '';
+  var metrTxt='início '+(b.inicio_book?new Date(b.inicio_book).toLocaleDateString('pt-BR'):'—')
+    +' ('+(b.dias_corridos!=null?b.dias_corridos:'—')+' dias corridos)'
+    +' · máx. drawdown '+(b.max_dd_pct!=null?b.max_dd_pct.toFixed(2)+'%':'—')
+    +' · utilização média '+(b.util_media_pct!=null?b.util_media_pct+'%':'—')
+    +' / máx '+(b.util_max_pct!=null?b.util_max_pct+'%':'—');
+  var flagTxt=b.inicio_flag?'<div style="color:#e0a95e;font-size:11px">⚠ '+b.inicio_flag+'</div>':'';
   var scan=b.last_scan?new Date(b.last_scan).toLocaleString('pt-BR'):'—';
   return '<div class="strat" style="border-color:#2e5a7a">'+
     '<div class="shead"><div class="nome">'+b.name+'</div>'+
     '<div class="kpi">abertas <b class="'+(b.n_open>0?'g':'')+'">'+b.n_open+'</b></div>'+
     '<div class="kpi">fechadas <b>'+b.n_closed+'</b></div>'+
     '<div class="kpi">WR <b>'+(b.wr!=null?b.wr+'%':'—')+'</b></div>'+
-    '<div class="kpi">P&L realizado <b class="'+cls(b.realized||0)+'">'+money(b.realized||0,'USD')+'</b></div>'+
-    (b.n_open>0?'<div class="kpi">P&L parcial <b class="'+cls(b.unreal||0)+'">'+money(b.unreal||0,'USD')+'</b></div>':'')+
-    '<div class="kpi">Total <b class="'+cls(b.total||0)+'">'+money(b.total||0,'USD')+'</b></div>'+
-    '<div class="kpi">% s/ capital <b class="'+cls(b.total_pct||0)+'">'+(b.total_pct!=null?(b.total_pct>=0?'+':'')+b.total_pct.toFixed(2)+'%':'—')+'</b></div>'+
+    '<div class="kpi">realizado <b class="'+cls(b.realized||0)+'">'+money(b.realized||0,'USD')+'</b></div>'+
+    '<div class="kpi">aberto/MTM <b class="'+cls(b.unreal||0)+'">'+money(b.unreal||0,'USD')+'</b></div>'+
+    '<div class="kpi">P&L total <b class="'+cls(b.total||0)+'">'+money(b.total||0,'USD')+'</b></div>'+
+    '<div class="kpi">desde o início <b class="'+cls(b.ret_inicio_pct||0)+'">'+fmtPct(b.ret_inicio_pct)+'</b></div>'+
+    '<div class="kpi">MTD real <b class="'+cls(b.mtd_pct||0)+'">'+fmtPct(b.mtd_pct)+'</b></div>'+
+    (b.equiv_mensal_pct!=null
+      ? '<div class="kpi" title="extrapolação composta — NÃO é retorno realizado">run-rate mensal <b class="'+cls(b.equiv_mensal_pct)+'">'+fmtPct(b.equiv_mensal_pct)+'*</b></div>'
+      : '')+
     '</div>'+
-    '<div class="muted">'+capTxt+' · última varredura do motor '+scan+
+    '<div class="muted">'+capTxt+'</div>'+
+    '<div class="muted">'+metrTxt+'</div>'+flagTxt+
+    '<div class="muted">última varredura do motor '+scan+
       (b.n_open>0?' · P&L marcado a mercado: <b>'+(b.px_live_n||0)+'/'+b.n_open+' ao vivo</b>':'')+
       ' <span style="font-size:10px">(a decisão de abrir/fechar segue a varredura; o P&L acompanha o preço atual)</span></div>'+
-    '<table><thead><tr><th>Par</th><th>Dir</th><th>Status</th><th>z ent→atual</th><th>Duração</th><th>P&amp;L</th><th>% s/ cap</th></tr></thead>'+
+    '<table><thead><tr><th>Par</th><th>Dir</th><th>Status</th><th>z ent→atual</th><th>Duração</th><th>P&amp;L</th><th>% s/ notional (diagnóstico)</th></tr></thead>'+
     '<tbody>'+rvTradeRows(b)+'</tbody></table>'+
+    '</div>';
+}
+function rvConsolCard(k){
+  if(!k) return '';
+  return '<div class="strat" style="border-color:#4a7a2e">'+
+    '<div class="shead"><div class="nome">'+k.name+'</div>'+
+    '<div class="kpi">capital-base <b>US$ '+(k.capital!=null?Math.round(k.capital).toLocaleString('pt-BR'):'—')+'</b></div>'+
+    '<div class="kpi">realizado <b class="'+cls(k.realized||0)+'">'+money(k.realized||0,'USD')+'</b></div>'+
+    '<div class="kpi">aberto/MTM <b class="'+cls(k.unreal||0)+'">'+money(k.unreal||0,'USD')+'</b></div>'+
+    '<div class="kpi">P&L total <b class="'+cls(k.total||0)+'">'+money(k.total||0,'USD')+'</b></div>'+
+    '<div class="kpi">desde o início <b class="'+cls(k.ret_inicio_pct||0)+'">'+fmtPct(k.ret_inicio_pct)+'</b></div>'+
+    '<div class="kpi">MTD real <b class="'+cls(k.mtd_pct||0)+'">'+fmtPct(k.mtd_pct)+'</b></div>'+
+    (k.equiv_mensal_pct!=null?'<div class="kpi">run-rate mensal <b class="'+cls(k.equiv_mensal_pct)+'">'+fmtPct(k.equiv_mensal_pct)+'*</b></div>':'')+
+    '</div>'+
+    '<div class="muted">'+(k.nota||'')+' · '+(k.dias_corridos!=null?k.dias_corridos+' dias corridos (book mais antigo)':'')+'</div>'+
     '</div>';
 }
 function rvBooksSection(rv){
   if(!rv||rv.error) return '';
   var head='<div style="margin:22px 0 10px;color:#7db8ff;font-weight:700;font-size:14px">Arbitragem Estatística (Relative Value) — books em sombra</div>';
-  return head+rvBookCard(rv.uspairs)+rvBookCard(rv.crossasset)+rvBookCard(rv.cryptorv);
+  var foot='<div class="muted" style="font-size:10px;margin:-4px 0 12px">* run-rate mensal composto = (1+ret)^(30,4375/dias)−1 — extrapolação matemática claramente NÃO realizada; não é previsão nem retorno mensal efetivo.</div>';
+  return head+rvConsolCard(rv.consolidado)+rvBookCard(rv.uspairs)+rvBookCard(rv.crossasset)+rvBookCard(rv.cryptorv)+foot;
 }
 async function load(){
   try{

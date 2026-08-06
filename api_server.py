@@ -20032,40 +20032,55 @@ def _rv_shadow_status():
         realized = round(sum(_f(t['pnl_net']) or 0 for t in closed), 2)
         wins = sum(1 for t in closed if (_f(t['pnl_net']) or 0) > 0)
 
-        # ── [05-ago | regra do Beto] CAPITAL EMPREGADO ──────────────────────
-        # "6 trades de 10k -> 60k; 6k de lucro = 10%."
-        # Denominador = SOMA do notional de TODAS as trades do book, fechadas
-        # + abertas. E o capital total que o book empregou na vida dele.
-        # Numerador = P&L TOTAL (realizado das fechadas + marcacao das abertas).
-        # Historico dos erros neste mesmo campo:
-        #   v1: notional_a da PRIMEIRA trade -> dividia o book todo por 1
-        #       posicao (US Pairs saia 6x inflado: +10,65%)
-        #   v2: max simultaneas x (perna A + perna B) -> inflado ~1,4x (+1,81%)
-        #   v3: max simultaneas x notional da posicao (+2,54%)
-        #   v4 (esta, decisao do fundador 05-ago): soma de TODAS as trades
-        # Nota honesta: esta regra PENALIZA reciclagem — um book que gira rapido
-        # e reusa o mesmo caixa aparece pior que um que segura posicao. Por isso
-        # o pico simultaneo continua sendo reportado ao lado (max_simult /
-        # capital_pico), p/ nao perder a outra leitura.
-        def _cap_total(rows):
+        # ── [05-ago noite | SPEC FORMAL do Beto — v5 definitiva] ────────────
+        # CAPITAL-BASE = maior capital SIMULTANEAMENTE comprometido no periodo
+        # (pico da soma dos notionals das posicoes abertas ao mesmo tempo).
+        # Notional = capital reservado POR POSICAO — NAO soma as duas pernas.
+        # Ex.: US Pairs 6 simultaneas x 10k = 60k. O mesmo caixa e reciclado,
+        # entao a soma historica de todos os notionals ("capital girado") NAO
+        # e denominador — fica so como diagnostico.
+        # Historico das versoes: v1 notional de 1 trade (6x inflado);
+        # v2 pico x 2 pernas; v3 pico x 1 perna; v4 soma historica;
+        # v5 (spec 05-ago) = v3: pico simultaneo, 1 perna.
+        def _cap_girado(rows):
             return round(sum((_f(t.get('notional_a')) or 0) for t in rows), 2) or None
-        def _cap_pico(rows):
+        def _dt(x):
+            if isinstance(x, datetime): return x
+            try: return datetime.strptime(str(x)[:19], '%Y-%m-%d %H:%M:%S')
+            except Exception: return None
+        def _cap_events(rows):
             ev = []
             for t in rows:
-                ini = t.get('created_at')
+                ini = _dt(t.get('created_at'))
                 if not ini: continue
-                fim = t.get('updated_at') if t.get('status') == 'CLOSED' else None
+                fim = (_dt(t.get('updated_at')) if t.get('status') == 'CLOSED' else None) or _now
                 cap = _f(t.get('notional_a')) or 0
-                ev.append((str(ini), 1, cap)); ev.append((str(fim or _now), -1, cap))
-            if not ev: return None, 0
+                ev.append((ini, 1, cap)); ev.append((fim, -1, cap))
             ev.sort(key=lambda x: (x[0], -x[1]))   # empate: abre antes de fechar
+            return ev
+        def _cap_pico(rows):
             cur_cap = cur_n = 0.0; mx_cap = mx_n = 0.0
-            for _, d, cap in ev:
+            for _, d, cap in _cap_events(rows):
                 cur_cap += cap * d; cur_n += d
                 mx_cap = max(mx_cap, cur_cap); mx_n = max(mx_n, cur_n)
             return (round(mx_cap, 2) or None), int(mx_n)
-        capital = _cap_total(trs)                    # denominador oficial
-        capital_pico, max_simult = _cap_pico(trs)    # leitura alternativa
+        capital, max_simult = _cap_pico(trs)         # DENOMINADOR OFICIAL (pico)
+        capital_pico = capital                        # alias p/ compatibilidade
+        capital_girado = _cap_girado(trs)             # diagnostico (nao e base)
+
+        # Inicio OFICIAL do book = primeiro snapshot do motor (validacao da
+        # data exigida na spec: trade anterior ao 1o snapshot = importada
+        # retroativamente -> flag; o periodo conta do inicio oficial).
+        c.execute(f"SELECT MIN(created_at) m FROM {snap_t}")
+        _r0 = c.fetchone()
+        inicio_book = _dt(_r0['m']) if _r0 and _r0.get('m') else None
+        _t0 = min((_dt(t.get('created_at')) for t in trs if _dt(t.get('created_at'))), default=None)
+        inicio_flag = None
+        if inicio_book and _t0 and _t0 < inicio_book - timedelta(hours=24):
+            inicio_flag = ('ha trades anteriores ao inicio oficial do book '
+                           '(carga retroativa?) — mensalizacao usa o inicio oficial')
+        if not inicio_book:
+            inicio_book = _t0
         smap = _sym_map(mod_name) if mod_name else {}
         n_live = 0
         unreal = 0.0; open_rows = []
@@ -20094,13 +20109,102 @@ def _rv_shadow_status():
                 watch.append({'pair': pr, 'z': z, 'signal': p['signal_hyp'], 'pos': p['position_open']})
         watch.sort(key=lambda x: -abs(x['z'] or 0))
         total = round(realized + unreal, 2)
+
+        # ── NAV VIRTUAL DIARIO (spec item 3) ────────────────────────────────
+        # NAV(d) = capital-base + P&L realizado acumulado ate d + MTM das
+        # abertas na ultima foto de preco do dia d. pnl_net ja e pos-custos.
+        def _mtm_at(t, pa, pb):
+            pae, pbe = _f(t['price_a_entry']), _f(t['price_b_entry'])
+            na, nb = _f(t['notional_a']), _f(t['notional_b'])
+            if None in (pae, pbe, pa, pb, na, nb) or not pae or not pbe: return 0.0
+            sA = 1 if str(t['direction']).startswith('LONG_A') else -1
+            return na*(pa/pae-1)*sA + nb*(pb/pbe-1)*(-sA)
+        base = capital or 0
+        nav_series = []
+        if base:
+            c.execute(f"SELECT pair, DATE(created_at) d, price_a, price_b FROM {snap_t} "
+                      f"WHERE id IN (SELECT MAX(id) FROM {snap_t} GROUP BY pair, DATE(created_at))")
+            _marks = {}
+            for r in c.fetchall():
+                _marks.setdefault(str(r['d']), {})[r['pair']] = (_f(r['price_a']), _f(r['price_b']))
+            _last_px = {}
+            for d in sorted(_marks):
+                _last_px.update(_marks[d])
+                _eod = datetime.strptime(d, '%Y-%m-%d') + timedelta(days=1)
+                _rea = sum((_f(t['pnl_net']) or 0) for t in closed
+                           if (_dt(t.get('updated_at')) or _now) < _eod)
+                _mo = 0.0
+                for t in trs:
+                    _ini = _dt(t.get('created_at'))
+                    _fim = _dt(t.get('updated_at')) if t.get('status') == 'CLOSED' else None
+                    if not _ini or _ini >= _eod: continue
+                    if _fim and _fim < _eod: continue
+                    _p = _last_px.get(t['pair'])
+                    if _p and _p[0] and _p[1]: _mo += _mtm_at(t, _p[0], _p[1])
+                nav_series.append({'d': d, 'nav': round(base + _rea + _mo, 2)})
+        nav_now = round(base + realized + unreal, 2) if base else None
+
+        # MTD real = NAV atual / NAV no fechamento do mes anterior - 1.
+        # Book nascido dentro do mes: referencia = base (NAV inicial) e o
+        # MTD real coincide com o retorno desde o inicio.
+        mtd_pct = None; nav_ref_mes = None
+        if base and nav_now is not None:
+            _m0 = _now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            _prev = [p for p in nav_series
+                     if datetime.strptime(p['d'], '%Y-%m-%d') + timedelta(days=1) <= _m0]
+            nav_ref_mes = _prev[-1]['nav'] if _prev else base
+            if nav_ref_mes:
+                mtd_pct = round((nav_now / nav_ref_mes - 1) * 100, 2)
+
+        # Max drawdown sobre a serie de NAV (incluindo a marcacao de agora)
+        max_dd_pct = None
+        if base:
+            _seq = [p['nav'] for p in nav_series] + ([nav_now] if nav_now is not None else [])
+            _pk = float('-inf'); _dd = 0.0
+            for _v in _seq:
+                _pk = max(_pk, _v)
+                if _pk > 0: _dd = min(_dd, _v/_pk - 1)
+            max_dd_pct = round(_dd * 100, 2)
+
+        # Utilizacao do capital (media ponderada no tempo e maxima, % da base)
+        util_media_pct = util_max_pct = None
+        if base and inicio_book:
+            _area = 0.0; _cur = 0.0; _mx = 0.0; _pt = inicio_book
+            for _ts, _d, _cap in _cap_events(trs):
+                _ts = max(_ts, inicio_book)
+                if _ts > _pt: _area += _cur * (_ts - _pt).total_seconds()
+                _cur += _cap * _d; _mx = max(_mx, _cur); _pt = max(_pt, _ts)
+            if _now > _pt: _area += _cur * (_now - _pt).total_seconds()
+            _tot_s = max((_now - inicio_book).total_seconds(), 1.0)
+            util_media_pct = round(_area / _tot_s / base * 100, 1)
+            util_max_pct = round(_mx / base * 100, 1)
+
+        # Dias corridos exatos + equivalente mensal composto (so mes incompleto)
+        dias_corridos = round((_now - inicio_book).total_seconds() / 86400, 1) if inicio_book else None
+        ret_inicio_pct = _pct(total, base) if base else None
+        equiv_mensal_pct = None
+        if ret_inicio_pct is not None and dias_corridos and 0 < dias_corridos < 30.4375:
+            try:
+                equiv_mensal_pct = round(((1 + ret_inicio_pct/100) ** (30.4375/dias_corridos) - 1) * 100, 2)
+            except Exception:
+                pass
+
         return {'name': name, 'last_scan': last, 'n_closed': len(closed), 'wins': wins,
             'wr': round(100*wins/len(closed), 1) if closed else None,
             'realized': realized, 'unreal': round(unreal, 2), 'n_open': len(opn),
             'total': total, 'capital': capital, 'n_trades': len(trs),
             'capital_pico': capital_pico, 'max_simult': max_simult,
+            'capital_girado': capital_girado,
             'total_pct': _pct(total, capital), 'realized_pct': _pct(realized, capital),
             'total_pct_pico': _pct(total, capital_pico),
+            'ret_inicio_pct': ret_inicio_pct, 'mtd_pct': mtd_pct,
+            'equiv_mensal_pct': equiv_mensal_pct, 'dias_corridos': dias_corridos,
+            'max_dd_pct': max_dd_pct, 'util_media_pct': util_media_pct,
+            'util_max_pct': util_max_pct,
+            'inicio_book': inicio_book.isoformat() if inicio_book else None,
+            'inicio_flag': inicio_flag,
+            'nav_now': nav_now, 'nav_ref_mes': nav_ref_mes,
+            'nav_series': nav_series[-45:],
             # px_live_n: quantas abertas foram marcadas com cotacao AO VIVO
             # (o resto usa o preco da ultima varredura do motor).
             'px_live_n': n_live,
@@ -20111,6 +20215,34 @@ def _rv_shadow_status():
             'crossasset': book('Cross-asset RV', 'crossasset_rv_shadow_meta', 'crossasset_rv_shadow_snapshots', 'crossasset_rv_shadow_trades', 'days_held', 'crossasset_rv_shadow'),
             'cryptorv': book('Crypto RV (BTC-ETH)', 'crypto_rv_shadow_meta', 'crypto_rv_shadow_snapshots', 'crypto_rv_shadow_trades', 'bars_held', 'crypto_rv_shadow'),
         }
+        # ── CONSOLIDADO (spec item 2): P&L total somado / capital-base somado.
+        # NUNCA media simples dos percentuais. MTD consolidado = soma dos NAVs
+        # atuais / soma dos NAVs de referencia do mes. Mensalizacao do
+        # consolidado usa os dias do book MAIS ANTIGO (leitura conservadora —
+        # books mais novos diluem o run-rate; identificado no campo nota).
+        _bs = [b for b in out.values() if isinstance(b, dict) and not b.get('error')]
+        _cap = sum(b.get('capital') or 0 for b in _bs)
+        _tot = round(sum(b.get('total') or 0 for b in _bs), 2)
+        _rea = round(sum(b.get('realized') or 0 for b in _bs), 2)
+        _unr = round(sum(b.get('unreal') or 0 for b in _bs), 2)
+        _nnow = sum(b.get('nav_now') or 0 for b in _bs)
+        _nref = sum(b.get('nav_ref_mes') or 0 for b in _bs)
+        _ret = round(_tot / _cap * 100, 2) if _cap else None
+        _mtd = round((_nnow / _nref - 1) * 100, 2) if _nref else None
+        _dias = max([b.get('dias_corridos') or 0 for b in _bs] or [0]) or None
+        _eqm = None
+        if _ret is not None and _dias and 0 < _dias < 30.4375:
+            try: _eqm = round(((1 + _ret/100) ** (30.4375/_dias) - 1) * 100, 2)
+            except Exception: pass
+        out['consolidado'] = {
+            'name': 'Consolidado RV', 'capital': round(_cap, 2) or None,
+            'realized': _rea, 'unreal': _unr, 'total': _tot,
+            'ret_inicio_pct': _ret, 'mtd_pct': _mtd,
+            'equiv_mensal_pct': _eqm, 'dias_corridos': _dias,
+            'n_open': sum(b.get('n_open') or 0 for b in _bs),
+            'n_closed': sum(b.get('n_closed') or 0 for b in _bs),
+            'nota': 'P&L somado / capital-base somado (sem media de %); '
+                    'run-rate usa os dias do book mais antigo'}
     finally:
         c.close(); conn.close()
     return out

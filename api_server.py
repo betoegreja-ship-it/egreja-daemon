@@ -10019,6 +10019,17 @@ def start_background_threads():
         'monthly_picks_worker':   _monthly_picks_worker,    # [v3.2] stock picker mensal + review semanal (modular)
         'deriv_monitor_loop':     deriv_monitor_loop,        # [v10.35] paper MTM + exits (stop/target/expiry)
     }
+    # ═══ [ARBI-SHADOW-0107 | 06-ago-2026, pedido do Beto] ═══════════════════
+    # Restauração da Arbi COMO ERA em 01/jul (commit 610aebe), rodando em
+    # SHADOW num serviço 100% separado (banco próprio, sem exec, sem alertas).
+    # ÚNICO desvio do código original: este filtro de threads — roda SÓ a
+    # Arbi + suporte. A lógica da Arbi em si está intocada.
+    # Ativar com ARBI_SHADOW_0107=true no serviço novo (no prod fica inerte).
+    if os.environ.get('ARBI_SHADOW_0107', 'false').lower() == 'true':
+        _keep = {'arbi_scan_loop', 'arbi_monitor_loop', 'arbi_learning_loop',
+                 'persistence_worker', 'snapshot_loop', 'watchdog'}
+        defs = {k: v for k, v in defs.items() if k in _keep}
+        log.info(f'[ARBI-SHADOW-0107] threads ativas: {sorted(defs.keys())}')
     # [LIMPEZA 24-jun-2026] DISABLE_LONG_HORIZON tira monthly_picks_worker (depende de
     # long_horizon que tem candidate_expansion.py com syntax error desde abril e nunca rodou).
     # Setar env var DISABLE_LONG_HORIZON=true no Railway para limpar threads mortas.

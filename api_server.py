@@ -11391,8 +11391,36 @@ ARBI_PAIRS = [
     # spread estrutural de ~11% que nunca converge. Substituido pelo par CORRETO
     # PETR4-PBR.A (ADR que referencia a PN), em SHADOW (observa/loga, sem capital)
     # ate validar a convergencia. 'shadow':True = nao aloca capital real.
+    # [EXPANSAO 06-ago | memorando Beto] PETR4-PBR.A ATIVADA (sai do shadow) —
+    # ratio 2:1 validado ao vivo (implicito 1,998). Cluster Petrobras PN.
     {'id':'PETR4-PBR.A', 'leg_a':'PETR4.SA','leg_b':'PBR.A', 'mkt_a':'B3','mkt_b':'NYSE',
-     'fx':'USDBRL','name':'Petrobras (PN/ADR-PN)','ratio_a':2,'ratio_b':1, 'shadow':True},
+     'fx':'USDBRL','name':'Petrobras PN','ratio_a':2,'ratio_b':1},
+    # ═══ [EXPANSAO PAPER 06-ago-2026 | memorando executivo do Beto] ═══════════
+    # "Todos os pares economicamente validos e tecnicamente identificaveis
+    #  entram hoje no PAPER; sem shadow-do-shadow." Ratios CONFERIDOS ao vivo
+    # em 06/08 (ratio implicito = ADR_USD / (B3_BRL/USDBRL)); todos <8% de
+    # desvio, exceto onde anotado. Fontes oficiais SEC no memorando (Anexo A).
+    {'id':'PETR3-PBR',   'leg_a':'PETR3.SA', 'leg_b':'PBR',   'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Petrobras ON', 'ratio_a':2,'ratio_b':1},   # impl. 1,996
+    {'id':'EMBJ3-EMBJ',  'leg_a':'EMBJ3.SA', 'leg_b':'EMBJ',  'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Embraer',      'ratio_a':4,'ratio_b':1},   # impl. 4,001 (novo ticker 03/nov/25)
+    {'id':'VIVT3-VIV',   'leg_a':'VIVT3.SA', 'leg_b':'VIV',   'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Telefonica BR','ratio_a':2,'ratio_b':1},   # impl. 1,999
+    {'id':'SANB11-BSBR', 'leg_a':'SANB11.SA','leg_b':'BSBR',  'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Santander BR', 'ratio_a':1,'ratio_b':1},   # impl. 1,009 (unit:ADS)
+    {'id':'CPLE3-ELPC',  'leg_a':'CPLE3.SA', 'leg_b':'ELPC',  'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Copel',        'ratio_a':4,'ratio_b':1},   # impl. 4,011 (substitui CPLE6-ELP morto)
+    {'id':'VALE3-VALE',  'leg_a':'VALE3.SA', 'leg_b':'VALE',  'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Vale',         'ratio_a':1,'ratio_b':1},   # impl. 0,996 (reinstalada)
+    {'id':'BRKM5-BAK',   'leg_a':'BRKM5.SA', 'leg_b':'BAK',   'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Braskem',      'ratio_a':2,'ratio_b':1},   # impl. 2,032 · tag evento/credito
+    {'id':'CSAN3-CSAN',  'leg_a':'CSAN3.SA', 'leg_b':'CSAN',  'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Cosan',        'ratio_a':4,'ratio_b':1},   # impl. 4,015 · tag evento/estrutura
+    {'id':'BBDC3-BBDO',  'leg_a':'BBDC3.SA', 'leg_b':'BBDO',  'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Bradesco ON',  'ratio_a':1,'ratio_b':1},   # impl. 1,047 · ADR fino
+    {'id':'CMIG3-CIG.C', 'leg_a':'CMIG3.SA', 'leg_b':'CIG.C', 'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Cemig ON',     'ratio_a':1,'ratio_b':1},   # impl. 0,984 · ADR fino
+    {'id':'AGRO3-LND',   'leg_a':'AGRO3.SA', 'leg_b':'LND',   'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'BrasilAgro',   'ratio_a':1,'ratio_b':1},   # impl. 1,005 · baixa liquidez
+    {'id':'AZUL3-AZUL',  'leg_a':'AZUL3.SA', 'leg_b':'AZUL',  'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Azul',         'ratio_a':2,'ratio_b':1},   # impl. 2,001 · NYSE American, pos-reestruturacao
+    # BDR x NYSE/Nasdaq (sub-book BDR — custos/liquidez proprios)
+    {'id':'JBSS32-JBS',  'leg_a':'JBSS32.SA','leg_b':'JBS',   'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'JBS (BDR)',    'ratio_a':1,'ratio_b':1},   # impl. 1,004
+    {'id':'XPBR31-XP',   'leg_a':'XPBR31.SA','leg_b':'XP',    'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'XP (BDR)',     'ratio_a':1,'ratio_b':1},   # impl. 1,001
+    {'id':'INBR32-INTR', 'leg_a':'INBR32.SA','leg_b':'INTR',  'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Inter (BDR)',  'ratio_a':1,'ratio_b':1},   # impl. 1,016 — memo pedia validar: e 1:1
+    {'id':'MELI34-MELI', 'leg_a':'MELI34.SA','leg_b':'MELI',  'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'MELI (BDR)',   'ratio_a':120,'ratio_b':1}, # impl. 119,95 — memo dizia 60; medido = 120:1
+    # Monitor SEM fill (identificador/preco pendente — regra do memorando:
+    # cota e registra sinal; fill so com cotacao executavel):
+    {'id':'MBRF3-MRRTY', 'leg_a':'MBRF3.SA', 'leg_b':'MRRTY', 'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'MBRF (suc. BRF, OTC)','ratio_a':1,'ratio_b':1,'shadow':True},  # MRRTY OTC sem preco na Polygon hoje
+    {'id':'NUBR33-NU',   'leg_a':'NUBR33.SA','leg_b':'NU',    'mkt_a':'B3','mkt_b':'NYSE','fx':'USDBRL','name':'Nubank (BDR)', 'ratio_a':6,'ratio_b':1,'shadow':True},         # NUBR33 sem preco brapi hoje; ratio 6:1 a validar
     {'id':'ITUB4-ITUB',  'leg_a':'ITUB4.SA', 'leg_b':'ITUB',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Itaú',        'ratio_a':1,'ratio_b':1},
     {'id':'BBDC4-BBD',   'leg_a':'BBDC4.SA', 'leg_b':'BBD',    'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Bradesco',    'ratio_a':1,'ratio_b':1},
     {'id':'ABEV3-ABEV',  'leg_a':'ABEV3.SA', 'leg_b':'ABEV',   'mkt_a':'B3',  'mkt_b':'NYSE','fx':'USDBRL','name':'Ambev',       'ratio_a':1,'ratio_b':1},

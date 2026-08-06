@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arbi 01/07 — Shadow (restauração)</title>
+<style>
+  body{background:#0d1520;color:#dfe9f5;font:13px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:18px}
+  h1{font-size:17px;color:#ffd24d;margin:0 0 2px}
+  .sub{color:#8aa0b8;font-size:11px;margin-bottom:14px}
+  .cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+  .card{background:#141f2e;border:1px solid #23344a;border-radius:8px;padding:10px 16px;min-width:120px}
+  .card .l{color:#8aa0b8;font-size:10px;text-transform:uppercase}
+  .card .v{font-size:17px;font-weight:700}
+  .g{color:#4cd97b}.r{color:#ff6b6b}.y{color:#ffd24d}
+  table{width:100%;border-collapse:collapse;margin:6px 0 18px}
+  th{color:#8aa0b8;text-align:left;font-size:10px;text-transform:uppercase;padding:5px 8px;border-bottom:1px solid #23344a}
+  td{padding:5px 8px;border-bottom:1px solid #1a2939;font-variant-numeric:tabular-nums}
+  .sec{color:#7db8ff;font-weight:700;font-size:13px;margin:14px 0 4px}
+  .pill{font-size:10px;padding:1px 8px;border-radius:9px;background:#1d3350;color:#7db8ff}
+  .muted{color:#8aa0b8;font-size:11px}
+</style>
+</head>
+<body>
+<h1>🕰️ Arbi 01/07 — restauração em shadow</h1>
+<div class="sub">código congelado do commit 610aebe (01/jul/2026) · banco próprio · sem execução, sem alertas · começou zerada em 06/ago com US$3MM
+  <span id="upd"></span></div>
+<div class="cards" id="cards"></div>
+<div class="sec">Trades ABERTAS</div>
+<table><thead><tr><th>Par (perna comprada)</th><th>Dir</th><th>Spread entrada</th><th>Spread atual</th><th>P&L</th><th>Aberta em (UTC)</th></tr></thead><tbody id="open"></tbody></table>
+<div class="sec">Últimas FECHADAS</div>
+<table><thead><tr><th>Par</th><th>Dir</th><th>P&L</th><th>Motivo</th><th>Fechada em (UTC)</th></tr></thead><tbody id="closed"></tbody></table>
+<div class="sec">Spreads monitorados agora</div>
+<table><thead><tr><th>Par</th><th>Spread</th><th>Dir</th><th>FX</th><th>Oportunidade?</th></tr></thead><tbody id="spreads"></tbody></table>
+<div class="muted">Comparação: a Arbi ATUAL roda em diligent-spirit (egreja.com). Esta página atualiza sozinha a cada 30s.</div>
+<script>
+const $=id=>document.getElementById(id);
+const usd=v=>(v==null?'—':(v<0?'-':'+')+'US$ '+Math.abs(v).toLocaleString('pt-BR',{maximumFractionDigits:0}));
+const cls=v=>v>0?'g':(v<0?'r':'');
+const pct=v=>v==null?'—':(+v).toFixed(2)+'%';
+async function load(){
+  try{
+    const t=await (await fetch('/arbitrage/trades')).json();
+    const s=await (await fetch('/arbitrage/spreads')).json();
+    const total=(t.closed_pnl||0)+(t.open_pnl||0);
+    $('cards').innerHTML=[
+      ['Capital livre','US$ '+(t.capital||0).toLocaleString('pt-BR'),''],
+      ['Book','US$ '+(t.initial_capital||0).toLocaleString('pt-BR'),''],
+      ['Abertas',t.open_count||0,''],
+      ['Fechadas',t.closed_count||0,''],
+      ['WR',(t.win_rate||0)+'%',''],
+      ['P&L realizado',usd(t.closed_pnl),cls(t.closed_pnl)],
+      ['P&L aberto',usd(t.open_pnl),cls(t.open_pnl)],
+      ['Total',usd(total),cls(total)],
+    ].map(c=>`<div class="card"><div class="l">${c[0]}</div><div class="v ${c[2]}">${c[1]}</div></div>`).join('');
+    $('open').innerHTML=(t.open_trades||[]).map(o=>
+      `<tr><td>${o.pair_id||o.id||''} <span class="pill">${o.buy_leg||''}</span></td><td>${o.direction||''}</td>
+       <td>${pct(o.entry_spread)}</td><td>${pct(o.current_spread)}</td>
+       <td class="${cls(o.pnl||0)}">${usd(o.pnl||0)}</td><td class="muted">${(o.opened_at||'').slice(0,16).replace('T',' ')}</td></tr>`
+    ).join('')||'<tr><td colspan="6" class="muted">nenhuma</td></tr>';
+    $('closed').innerHTML=(t.closed_trades||[]).slice(0,15).map(o=>
+      `<tr><td>${o.pair_id||''}</td><td>${o.direction||''}</td>
+       <td class="${cls(o.pnl||0)}">${usd(o.pnl||0)}</td><td>${o.close_reason||''}</td>
+       <td class="muted">${(o.closed_at||'').slice(0,16).replace('T',' ')}</td></tr>`
+    ).join('')||'<tr><td colspan="5" class="muted">nenhuma ainda</td></tr>';
+    $('spreads').innerHTML=(s.opportunities||[]).map(o=>
+      `<tr><td>${o.pair_id||o.pair||o.name||''}</td><td class="${Math.abs(o.abs_spread||0)>=0.8?'y':''}">${pct(o.entry_spread_normalized??o.abs_spread)}</td>
+       <td>${o.direction||''}</td><td>${o.fx_rate||'—'}</td>
+       <td>${Math.abs(o.abs_spread||0)>=0.8?'SIM':'—'}</td></tr>`
+    ).join('')||'<tr><td colspan="5" class="muted">aquecendo…</td></tr>';
+    $('upd').textContent=' · atualizado '+new Date().toLocaleTimeString('pt-BR');
+  }catch(e){ $('upd').textContent=' · erro: '+e.message; }
+}
+load(); setInterval(load,30000);
+</script>
+</body>
+</html>

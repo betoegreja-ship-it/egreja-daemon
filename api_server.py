@@ -11921,6 +11921,18 @@ def arbi_scan_loop():
                 if pair['id'] in _freezer:
                     continue
 
+                # ═══ [05-ago noite | Beto] MKT-FREEZER: Europa/Canada pausadas ══
+                # "enquanto isso nao opera com europa" — deposito p/ assinatura
+                # IB em transito (minimo US$500 de patrimonio na conta live).
+                # Pernas .L/.DE/.AS/.TO seguem defasadas ~15min (FMP/Yahoo +
+                # SYNC-CLOCK): cota normalmente, mas NAO ABRE entrada nova.
+                # Volta: tirar o mercado do env ARBI_MKT_FREEZER (sem deploy).
+                _mkt_frozen = {m.strip().upper() for m in os.environ.get(
+                    'ARBI_MKT_FREEZER', 'LSE,XETRA,AMS,EU,TSX').split(',') if m.strip()}
+                if (str(pair.get('mkt_a', '')).upper() in _mkt_frozen or
+                        str(pair.get('mkt_b', '')).upper() in _mkt_frozen):
+                    continue
+
                 # ═══ [05-ago noite | Beto] B3-SOURCE-GATE ═══════════════════════
                 # Auditoria minuto-a-minuto (02/07->05/08, 273 checagens B3):
                 # 17,9% dos precos B3 gravados estavam FORA da barra real do

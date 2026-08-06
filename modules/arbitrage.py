@@ -669,6 +669,13 @@ def arbi_scan_loop(ctx):
                 if pair['id'] in _freezer:
                     continue
 
+                # [MKT-FREEZER 05-ago | Beto] ver api_server.arbi_scan_loop
+                _mkt_frozen = {m.strip().upper() for m in _os.environ.get(
+                    'ARBI_MKT_FREEZER', 'LSE,XETRA,AMS,EU,TSX').split(',') if m.strip()}
+                if (str(pair.get('mkt_a', '')).upper() in _mkt_frozen or
+                        str(pair.get('mkt_b', '')).upper() in _mkt_frozen):
+                    continue
+
                 # [v10.14] Threshold dinâmico por par
                 _pair_cfg = ARBI_PAIR_CONFIG.get(pair['id'], ARBI_PAIR_CONFIG['_default'])
                 _min_sp   = _pair_cfg['min_spread'] if _pair_cfg['min_spread'] else ARBI_MIN_SPREAD

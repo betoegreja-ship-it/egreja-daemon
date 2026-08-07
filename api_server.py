@@ -20392,12 +20392,20 @@ def shadow_rv_protecao():
     try:
         conn = get_db()
         cur = conn.cursor(dictionary=True)
-        cur.execute("""SELECT id, pair, direction, status, close_reason,
-                       pnl_pct, mtm_pnl_pct, mtm_peak_pct, mtm_min_pct, mtm_marks,
-                       prot_armed_at, prot_pnl_pct, prot_reason,
-                       prot2_pnl_pct, prot2_reason, opened_bar, closed_bar
-                       FROM crypto_rv_shadow_trades ORDER BY id""")
-        rows = cur.fetchall()
+        rows = []
+        for tab, nome in (('crypto_rv_shadow_trades', 'Crypto RV'),
+                          ('crossasset_rv_shadow_trades', 'Cross-asset RV')):
+            try:
+                cur.execute(f"""SELECT id, pair, direction, status, close_reason,
+                               pnl_pct, mtm_pnl_pct, mtm_peak_pct, mtm_min_pct,
+                               mtm_marks, prot_armed_at, prot_pnl_pct, prot_reason,
+                               prot2_pnl_pct, prot2_reason
+                               FROM {tab} ORDER BY id""")
+                for r in cur.fetchall():
+                    r['book'] = nome
+                    rows.append(r)
+            except Exception as _te:
+                log.debug(f'[RV-PROT] {tab}: {_te}')
         cur.close(); conn.close()
 
         def f(x):
@@ -20405,6 +20413,7 @@ def shadow_rv_protecao():
 
         linhas, at, p1, p2 = [], 0.0, 0.0, 0.0
         armadas = salvas1 = salvas2 = 0
+        por_book = {}
         for r in rows:
             atual = f(r['pnl_pct'])
             if atual is None:
@@ -20422,8 +20431,11 @@ def shadow_rv_protecao():
                 salvas1 += 1
             if v2 is not None:
                 salvas2 += 1
+            b = por_book.setdefault(r['book'], {'n': 0, 'atual': 0.0, 'p1': 0.0, 'p2': 0.0})
+            b['n'] += 1; b['atual'] += atual; b['p1'] += r1; b['p2'] += r2
             linhas.append({
-                'id': r['id'], 'par': r['pair'], 'direcao': r['direction'],
+                'id': r['id'], 'book': r['book'],
+                'par': r['pair'], 'direcao': r['direction'],
                 'status': r['status'], 'motivo': r['close_reason'],
                 'pico_%': f(r['mtm_peak_pct']), 'vale_%': f(r['mtm_min_pct']),
                 'marcacoes': r['mtm_marks'],
@@ -20452,6 +20464,11 @@ def shadow_rv_protecao():
                 'prot1_acionou_em': salvas1,
                 'prot2_acionou_em': salvas2,
             },
+            'por_book': {k: {'trades': v['n'],
+                             'atual_%': round(v['atual'], 2),
+                             'prot1_%': round(v['p1'], 2),
+                             'prot2_%': round(v['p2'], 2)}
+                         for k, v in por_book.items()},
             'trades': linhas,
         })
     except Exception as e:

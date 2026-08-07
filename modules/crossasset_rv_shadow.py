@@ -115,6 +115,148 @@ def create_tables():
         cur = c.cursor()
         for ddl in (ddl_trades, ddl_snap, ddl_meta):
             cur.execute(ddl)
+        # ═══ [07-ago-2026 | decisao Beto] MARCACAO A MERCADO 5min + PROTECAO
+        # Aqui o problema era ainda maior que no crypto: este book so reavaliava
+        # UMA VEZ POR DIA (barra diaria). Uma posicao podia marcar +4% e devolver
+        # tudo sem ninguem ver. Agora marca a cada beat; a protecao apenas
+        # REGISTRA o que faria — o book atual continua sendo o controle.
+        for col, ddl_col in (
+            ('mtm_pnl_pct', 'DECIMAL(10,4) NULL'),
+            ('mtm_peak_pct', 'DECIMAL(10,4) NULL'),
+            ('mtm_min_pct', 'DECIMAL(10,4) NULL'),
+            ('mtm_marks', 'INT DEFAULT 0'),
+            ('mtm_updated_at', 'DATETIME NULL'),
+            ('prot_armed_at', 'DATETIME NULL'),
+            ('prot_closed_at', 'DATETIME NULL'),
+            ('prot_pnl_pct', 'DECIMAL(10,4) NULL'),
+            ('prot_reason', 'VARCHAR(24) NULL'),
+            ('prot2_closed_at', 'DATETIME NULL'),
+            ('prot2_pnl_pct', 'DECIMAL(10,4) NULL'),
+            ('prot2_reason', 'VARCHAR(24) NULL'),
+        ):
+            try:
+                cur.execute(f"ALTER TABLE crossasset_rv_shadow_trades ADD COLUMN {col} {ddl_col}")
+                log.info(f'[CROSSASSET-RV] coluna {col} criada')
+            except Exception:
+                pass
+    finally:
+        c.close()
+
+
+def _last_prices(tickers):
+    """Preco corrente dos tickers (ETF/acao e forex) na Polygon, para a
+    marcacao a mercado. Snapshot em lote p/ acoes; forex em chamada propria.
+    Retorna {ticker: preco}. Fail-open: o que nao vier, nao marca."""
+    key = os.environ.get('POLYGON_API_KEY', '')
+    if not key:
+        return {}
+    out = {}
+    acoes = [t for t in tickers if not t.startswith('C:')]
+    fx = [t for t in tickers if t.startswith('C:')]
+    try:
+        if acoes:
+            r = requests.get(
+                'https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers',
+                params={'tickers': ','.join(acoes), 'apiKey': key}, timeout=12)
+            for t in ((r.json() or {}).get('tickers') or []):
+                p = ((t.get('lastTrade') or {}).get('p')
+                     or (t.get('day') or {}).get('c')
+                     or (t.get('prevDay') or {}).get('c'))
+                if t.get('ticker') and p:
+                    out[t['ticker']] = float(p)
+    except Exception as e:
+        log.debug(f'[CROSSASSET-RV] snapshot acoes: {e}')
+    for t in fx:
+        try:
+            par = t[2:]
+            r = requests.get(
+                f'https://api.polygon.io/v1/last_quote/currency/{par[:3]}/{par[3:]}',
+                params={'apiKey': key}, timeout=10)
+            j = r.json() or {}
+            bid = (j.get('last') or {}).get('bid')
+            ask = (j.get('last') or {}).get('ask')
+            if bid and ask:
+                out[t] = (float(bid) + float(ask)) / 2.0
+        except Exception as e:
+            log.debug(f'[CROSSASSET-RV] fx {t}: {e}')
+    return out
+
+
+def mark_open_positions():
+    """[07-ago | Beto] Igual ao crypto RV: marca a mercado as posicoes abertas
+    a cada beat e avalia as duas variantes de protecao de lucro, SEM fechar
+    nada. Envs compartilhadas com o crypto (RV_PROTECT_*)."""
+    if os.environ.get('RV_PROTECT_ENABLED', 'true').lower() == 'false':
+        return None
+    arm = _env_f('RV_PROTECT_ARM_PCT', 1.5)
+    floor = _env_f('RV_PROTECT_FLOOR_PCT', 0.0)
+    give = _env_f('RV_PROTECT_GIVEBACK_PCT', 1.5)
+
+    c = _conn()
+    try:
+        cur = c.cursor()
+        cur.execute("SELECT id, pair, direction, entry_spread, beta_entry, "
+                    "notional_a, mtm_peak_pct, mtm_min_pct, mtm_marks, "
+                    "prot_armed_at, prot_closed_at, prot2_closed_at "
+                    "FROM crossasset_rv_shadow_trades WHERE status='OPEN'")
+        rows = cur.fetchall()
+        if not rows:
+            return 0
+        tick = set()
+        for r in rows:
+            cfg = PAIRS.get(r[1])
+            if cfg:
+                tick.add(cfg['a']); tick.add(cfg['b'])
+        px = _last_prices(tick)
+        if not px:
+            return 0
+
+        agora = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        n = 0
+        for (tid, pair, direction, espread, beta_e, na,
+             peak, vale, marks, armed_at, prot_cl, prot2_cl) in rows:
+            cfg = PAIRS.get(pair)
+            if not cfg or cfg['a'] not in px or cfg['b'] not in px:
+                continue
+            pa, pb = px[cfg['a']], px[cfg['b']]
+            if pa <= 0 or pb <= 0 or not na:
+                continue
+            sx = math.log(pa) - float(beta_e) * math.log(pb)
+            sign = -1.0 if direction == 'SHORT_A' else 1.0
+            pnl_pct = sign * (sx - float(espread)) * 100.0
+
+            peak = max(float(peak) if peak is not None else pnl_pct, pnl_pct)
+            vale = min(float(vale) if vale is not None else pnl_pct, pnl_pct)
+            sets = ["mtm_pnl_pct=%s", "mtm_peak_pct=%s", "mtm_min_pct=%s",
+                    "mtm_marks=%s", "mtm_updated_at=%s"]
+            vals = [round(pnl_pct, 4), round(peak, 4), round(vale, 4),
+                    int(marks or 0) + 1, agora]
+
+            if not armed_at and pnl_pct >= arm:
+                sets.append("prot_armed_at=%s"); vals.append(agora)
+                armed_at = agora
+                log.info(f'[XRV-PROT] #{tid} {pair}: ARMADA em {pnl_pct:+.2f}%')
+
+            if armed_at:
+                if not prot_cl and pnl_pct <= floor:
+                    sets += ["prot_closed_at=%s", "prot_pnl_pct=%s", "prot_reason=%s"]
+                    vals += [agora, round(pnl_pct, 4), 'PROTECAO_PISO']
+                    log.info(f'[XRV-PROT] #{tid} {pair}: PROT-1 fecharia em '
+                             f'{pnl_pct:+.2f}% (pico {peak:+.2f}%)')
+                if not prot2_cl and (peak - pnl_pct) >= give:
+                    sets += ["prot2_closed_at=%s", "prot2_pnl_pct=%s", "prot2_reason=%s"]
+                    vals += [agora, round(pnl_pct, 4), 'PROTECAO_DEVOLUCAO']
+                    log.info(f'[XRV-PROT] #{tid} {pair}: PROT-2 fecharia em '
+                             f'{pnl_pct:+.2f}%')
+
+            vals.append(tid)
+            cur.execute(f"UPDATE crossasset_rv_shadow_trades SET {', '.join(sets)} "
+                        f"WHERE id=%s", vals)
+            n += 1
+        return n
+    except Exception as e:
+        log.error(f'[CROSSASSET-RV] marcacao falhou: {e}')
+        return None
     finally:
         c.close()
 
@@ -357,7 +499,15 @@ def crossasset_rv_shadow_loop(beat_fn=None):
         try:
             if beat_fn:
                 beat_fn('crossasset_rv_shadow_loop')
+            # [07-ago | Beto] marcacao a mercado a cada beat. Antes este book
+            # so olhava as posicoes UMA VEZ POR DIA. Fail-open.
+            try:
+                mark_open_positions()
+            except Exception as _me:
+                log.error(f'[CROSSASSET-RV] marcacao: {_me}')
             scan_once()
         except Exception as e:
             log.error(f'[CROSSASSET-RV] erro no loop: {e}')
-        time.sleep(1800)  # 30min — scan_once deduplica por dia
+        time.sleep(300)  # [07-ago] 30min -> 5min: marcacao a mercado das
+        # posicoes abertas. scan_once continua deduplicando por dia, entao a
+        # logica de entrada/saida por z segue exatamente igual (1x/dia).

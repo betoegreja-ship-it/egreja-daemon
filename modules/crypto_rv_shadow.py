@@ -120,6 +120,31 @@ def create_tables():
         cur = c.cursor()
         for ddl in (ddl_trades, ddl_snap, ddl_meta):
             cur.execute(ddl)
+        # ═══ [07-ago-2026 | decisao Beto] MARCACAO A MERCADO 5min + PROTECAO
+        # DE LUCRO. Motivo (analise 07/ago): o motor so reavaliava no fechamento
+        # da barra de 4h — a trade #9 (ADA-DOT) foi de +0,73% a -7,52% DENTRO de
+        # uma barra e ninguem viu. Agora marcamos a cada beat (5min) e
+        # registramos o que a protecao TERIA feito. Nada fecha de verdade: o
+        # book atual segue intocado como controle.
+        for col, ddl_col in (
+            ('mtm_pnl_pct', 'DECIMAL(10,4) NULL'),
+            ('mtm_peak_pct', 'DECIMAL(10,4) NULL'),
+            ('mtm_min_pct', 'DECIMAL(10,4) NULL'),
+            ('mtm_marks', 'INT DEFAULT 0'),
+            ('mtm_updated_at', 'DATETIME NULL'),
+            ('prot_armed_at', 'DATETIME NULL'),
+            ('prot_closed_at', 'DATETIME NULL'),
+            ('prot_pnl_pct', 'DECIMAL(10,4) NULL'),
+            ('prot_reason', 'VARCHAR(24) NULL'),
+            ('prot2_closed_at', 'DATETIME NULL'),
+            ('prot2_pnl_pct', 'DECIMAL(10,4) NULL'),
+            ('prot2_reason', 'VARCHAR(24) NULL'),
+        ):
+            try:
+                cur.execute(f"ALTER TABLE crypto_rv_shadow_trades ADD COLUMN {col} {ddl_col}")
+                log.info(f'[CRYPTO-RV] coluna {col} criada')
+            except Exception:
+                pass   # ja existe
     finally:
         c.close()
 
@@ -182,6 +207,119 @@ def _compute_pair(series_a, series_b, beta_window, z_window):
     return {'bar_ms': t_last, 'beta': round(beta, 4), 'spread': spread[-1],
             'z': z, 'price_a': da[t_last], 'price_b': db_[t_last],
             'n_bars': len(bars)}
+
+
+def _ticker_prices(symbols):
+    """Preco corrente (ultimo negocio) dos simbolos na Binance. Leve — nao
+    baixa klines. Retorna {symbol: preco}."""
+    out = {}
+    for host in _BINANCE_HOSTS:
+        try:
+            r = requests.get(f'{host}/api/v3/ticker/price', timeout=8)
+            if r.status_code != 200:
+                continue
+            for row in (r.json() or []):
+                s = row.get('symbol')
+                if s in symbols:
+                    out[s] = float(row['price'])
+            if out:
+                return out
+        except Exception as e:
+            log.debug(f'[CRYPTO-RV] ticker {host}: {e}')
+    return out
+
+
+def mark_open_positions():
+    """[07-ago | Beto] Marca a mercado as posicoes ABERTAS a cada beat (5min),
+    SEM esperar barra de 4h, e avalia duas variantes de protecao de lucro:
+
+      PROT-1 (piso): armou ao cruzar RV_PROTECT_ARM_PCT (1,5%) -> fecha se o
+                     P&L voltar a RV_PROTECT_FLOOR_PCT (0,0%) = zero a zero.
+      PROT-2 (devolucao): armou igual -> fecha se devolver
+                     RV_PROTECT_GIVEBACK_PCT (1,5 p.p.) do pico.
+
+    NAO fecha nada de verdade — apenas REGISTRA o que teria feito. O book
+    atual continua sendo o controle. Comparacao honesta trade a trade.
+    Desliga com RV_PROTECT_ENABLED=false.
+    """
+    if os.environ.get('RV_PROTECT_ENABLED', 'true').lower() == 'false':
+        return None
+    arm = _env_f('RV_PROTECT_ARM_PCT', 1.5)
+    floor = _env_f('RV_PROTECT_FLOOR_PCT', 0.0)
+    give = _env_f('RV_PROTECT_GIVEBACK_PCT', 1.5)
+
+    c = _conn()
+    try:
+        cur = c.cursor()
+        cur.execute("SELECT id, pair, direction, entry_spread, beta_entry, "
+                    "notional_a, mtm_peak_pct, mtm_min_pct, mtm_marks, "
+                    "prot_armed_at, prot_closed_at, prot2_closed_at "
+                    "FROM crypto_rv_shadow_trades WHERE status='OPEN'")
+        rows = cur.fetchall()
+        if not rows:
+            return 0
+        syms = set()
+        for r in rows:
+            cfg = PAIRS.get(r[1])
+            if cfg:
+                syms.add(cfg['a']); syms.add(cfg['b'])
+        px = _ticker_prices(syms)
+        if not px:
+            log.debug('[CRYPTO-RV] marcacao: sem precos')
+            return 0
+
+        agora = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        n = 0
+        for (tid, pair, direction, espread, beta_e, na,
+             peak, vale, marks, armed_at, prot_cl, prot2_cl) in rows:
+            cfg = PAIRS.get(pair)
+            if not cfg or cfg['a'] not in px or cfg['b'] not in px:
+                continue
+            pa, pb = px[cfg['a']], px[cfg['b']]
+            if pa <= 0 or pb <= 0 or not na:
+                continue
+            sx = math.log(pa) - float(beta_e) * math.log(pb)
+            sign = -1.0 if direction == 'SHORT_A' else 1.0
+            pnl_pct = sign * (sx - float(espread)) * 100.0
+
+            peak = max(float(peak) if peak is not None else pnl_pct, pnl_pct)
+            vale = min(float(vale) if vale is not None else pnl_pct, pnl_pct)
+            sets = ["mtm_pnl_pct=%s", "mtm_peak_pct=%s", "mtm_min_pct=%s",
+                    "mtm_marks=%s", "mtm_updated_at=%s"]
+            vals = [round(pnl_pct, 4), round(peak, 4), round(vale, 4),
+                    int(marks or 0) + 1, agora]
+
+            # arma a protecao ao cruzar o gatilho
+            if not armed_at and pnl_pct >= arm:
+                sets.append("prot_armed_at=%s"); vals.append(agora)
+                armed_at = agora
+                log.info(f'[RV-PROT] #{tid} {pair}: ARMADA em {pnl_pct:+.2f}% '
+                         f'(gatilho {arm:+.2f}%)')
+
+            if armed_at:
+                # PROT-1: voltou ao piso
+                if not prot_cl and pnl_pct <= floor:
+                    sets += ["prot_closed_at=%s", "prot_pnl_pct=%s", "prot_reason=%s"]
+                    vals += [agora, round(pnl_pct, 4), 'PROTECAO_PISO']
+                    log.info(f'[RV-PROT] #{tid} {pair}: PROT-1 fecharia em '
+                             f'{pnl_pct:+.2f}% (pico {peak:+.2f}%)')
+                # PROT-2: devolveu do pico
+                if not prot2_cl and (peak - pnl_pct) >= give:
+                    sets += ["prot2_closed_at=%s", "prot2_pnl_pct=%s", "prot2_reason=%s"]
+                    vals += [agora, round(pnl_pct, 4), 'PROTECAO_DEVOLUCAO']
+                    log.info(f'[RV-PROT] #{tid} {pair}: PROT-2 fecharia em '
+                             f'{pnl_pct:+.2f}% (devolveu {peak-pnl_pct:.2f} do pico)')
+
+            vals.append(tid)
+            cur.execute(f"UPDATE crypto_rv_shadow_trades SET {', '.join(sets)} "
+                        f"WHERE id=%s", vals)
+            n += 1
+        return n
+    except Exception as e:
+        log.error(f'[CRYPTO-RV] marcacao falhou: {e}')
+        return None
+    finally:
+        c.close()
 
 
 def scan_once():
@@ -358,6 +496,13 @@ def crypto_rv_shadow_loop(beat_fn=None):
         try:
             if beat_fn:
                 beat_fn('crypto_rv_shadow_loop')
+            # [07-ago | Beto] marcacao a mercado a CADA beat (5min), antes do
+            # scan: as posicoes abertas passam a ser vistas de 5 em 5 minutos
+            # em vez de so no fechamento da barra de 4h. Fail-open.
+            try:
+                mark_open_positions()
+            except Exception as _me:
+                log.error(f'[CRYPTO-RV] marcacao: {_me}')
             scan_once()
         except Exception as e:
             log.error(f'[CRYPTO-RV] erro no loop: {e}')

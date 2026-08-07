@@ -20381,6 +20381,83 @@ def shadow_rv_status():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/shadow/rv-protecao')
+def shadow_rv_protecao():
+    """[07-ago | Beto] Compara o book RV atual (saida so por z-score) com as
+    duas variantes de PROTECAO DE LUCRO avaliadas na marcacao de 5 min:
+      PROT-1 piso      : armou em +1,5% -> fecha se voltar a zero
+      PROT-2 devolucao : armou em +1,5% -> fecha se devolver 1,5 p.p. do pico
+    A protecao NAO fecha nada: so registra o que teria feito. Book atual =
+    controle. Aqui so se compara o placar."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT id, pair, direction, status, close_reason,
+                       pnl_pct, mtm_pnl_pct, mtm_peak_pct, mtm_min_pct, mtm_marks,
+                       prot_armed_at, prot_pnl_pct, prot_reason,
+                       prot2_pnl_pct, prot2_reason, opened_bar, closed_bar
+                       FROM crypto_rv_shadow_trades ORDER BY id""")
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+
+        def f(x):
+            return float(x) if x is not None else None
+
+        linhas, at, p1, p2 = [], 0.0, 0.0, 0.0
+        armadas = salvas1 = salvas2 = 0
+        for r in rows:
+            atual = f(r['pnl_pct'])
+            if atual is None:
+                atual = f(r['mtm_pnl_pct'])      # aberta: marca a mercado
+            if atual is None:
+                continue
+            v1 = f(r['prot_pnl_pct'])
+            v2 = f(r['prot2_pnl_pct'])
+            r1 = v1 if v1 is not None else atual
+            r2 = v2 if v2 is not None else atual
+            at += atual; p1 += r1; p2 += r2
+            if r['prot_armed_at']:
+                armadas += 1
+            if v1 is not None:
+                salvas1 += 1
+            if v2 is not None:
+                salvas2 += 1
+            linhas.append({
+                'id': r['id'], 'par': r['pair'], 'direcao': r['direction'],
+                'status': r['status'], 'motivo': r['close_reason'],
+                'pico_%': f(r['mtm_peak_pct']), 'vale_%': f(r['mtm_min_pct']),
+                'marcacoes': r['mtm_marks'],
+                'atual_%': round(atual, 3),
+                'prot1_%': round(r1, 3), 'prot1_agiu': v1 is not None,
+                'prot2_%': round(r2, 3), 'prot2_agiu': v2 is not None,
+                'armada_em': str(r['prot_armed_at']) if r['prot_armed_at'] else None,
+            })
+        return jsonify({
+            'ok': True,
+            'parametros': {
+                'armar_em_%': float(os.environ.get('RV_PROTECT_ARM_PCT', 1.5)),
+                'piso_%': float(os.environ.get('RV_PROTECT_FLOOR_PCT', 0.0)),
+                'devolucao_pp': float(os.environ.get('RV_PROTECT_GIVEBACK_PCT', 1.5)),
+                'ligada': os.environ.get('RV_PROTECT_ENABLED', 'true'),
+                'marcacao_s': 300,
+            },
+            'placar': {
+                'trades': len(linhas),
+                'book_atual_%': round(at, 2),
+                'prot1_piso_%': round(p1, 2),
+                'prot2_devolucao_%': round(p2, 2),
+                'ganho_prot1_pp': round(p1 - at, 2),
+                'ganho_prot2_pp': round(p2 - at, 2),
+                'protecoes_armadas': armadas,
+                'prot1_acionou_em': salvas1,
+                'prot2_acionou_em': salvas2,
+            },
+            'trades': linhas,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/shadow/rv')
 def shadow_rv_page():
     # [02-ago] painel integrado na aba Shadow (static/shadow.html). Mantido como

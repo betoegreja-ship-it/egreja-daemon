@@ -434,38 +434,13 @@ try:
         except Exception as _pwe:
             log.warning(f'[v13-POLYGON-WS] start_worker: {_pwe}')
 except Exception as _pe:
-    # ═══ [08-ago-2026 | BUG ENCONTRADO PELO VIGIA DE SAUDE] ═══════════════
-    # Este try/except abraca CINCO coisas independentes: o import do
-    # pairs_engine, o bootstrap do schema de pares, o bootstrap do calibrator,
-    # o health check de DQ e o start do Polygon WS. Qualquer falha em QUALQUER
-    # uma delas caia aqui e marcava _pairs_engine_loaded=False — matando as
-    # TRES threads de pares (scan, v2, formacao) mesmo com o modulo intacto.
-    # Foi exatamente o que aconteceu: o import funciona (76 pares carregam
-    # localmente), mas as threads nunca subiam em producao.
-    # Mesmo padrao do executor IB (erro real escondido em log.debug) e do
-    # PERSIST_LOST: um except largo demais engolindo a causa.
-    # Agora o log diz ONDE quebrou e so desliga o pairs se o problema for
-    # mesmo o import do modulo.
-    import traceback as _tb
-    _det = _tb.format_exc()
-    _foi_import = 'modules.pairs_engine' in _det and 'import' in _det.lower()
-    log.error(f'[v11-PAIRS] bloco de bootstrap falhou ({type(_pe).__name__}: {_pe}). '
-              f'Era o import do pairs_engine? {_foi_import}')
-    log.error(f'[v11-PAIRS] traceback:\n{_det}')
-    if _foi_import:
-        _pairs_engine_loaded = False
-    else:
-        # o modulo carregou; quem quebrou foi outra etapa do bootstrap.
-        # Nao desliga os pares por causa disso.
-        log.warning('[v11-PAIRS] pairs_engine SEGUE LIGADO — a falha foi em '
-                    'outra etapa do bootstrap, nao no motor de pares')
-    # so zera as estruturas se o motor realmente nao carregou
-    if not _pairs_engine_loaded:
-        _PAIRS_CFG = []
-        _PAIRS_LIST = []
-        _pairs_open = []
-        _pairs_closed = []
-        _pairs_spreads = {}
+    log.warning(f'[v11-PAIRS] pairs_engine module not loaded: {_pe}')
+    _pairs_engine_loaded = False
+    _PAIRS_CFG = []
+    _PAIRS_LIST = []
+    _pairs_open = []
+    _pairs_closed = []
+    _pairs_spreads = {}
 
 # ═══ [v10.31] CEDRO SOCKET PROVIDER — real-time streaming quotes ═══
 # Primary source for B3 quotes (stocks + indices + futures). BRAPI/OpLab used as fallback.

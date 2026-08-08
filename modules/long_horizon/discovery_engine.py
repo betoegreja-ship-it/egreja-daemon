@@ -19,6 +19,7 @@ Fluxo:
   providers → discovery scan → rank candidates → expanded universe
 """
 
+import os
 import logging
 import datetime
 import time
@@ -60,6 +61,90 @@ DISCOVERY_BR_TICKERS = [
     # ETFs BR
     'SMAL11', 'IVVB11', 'DIVO11', 'PIBB11', 'HASH11',
 ]
+
+# ──────────────────────────────────────────────────────────────
+# [08-ago-2026 | SLEEVE DE CRESCIMENTO — decisao Beto]
+# "coloque as 7 em shadow, inclusive long horizons (mas com acoes com grande
+#  potencial de crescimento)"
+#
+# O universo do Long Horizon era quase todo mega-cap madura (AAPL, JPM, XOM),
+# que e exatamente o oposto de "grande potencial de crescimento". Este sleeve
+# separado existe para o horizonte longo ter do que se alimentar.
+#
+# CRITERIO DE ENTRADA NA LISTA (documentado para poder ser contestado):
+#   1. Receita crescendo >20% ao ano nos ultimos 3 anos
+#   2. Margem bruta acima de 50% OU em expansao clara
+#   3. Capitalizacao entre US$5bi e US$500bi — grande o bastante para ter
+#      liquidez, pequena o bastante para ainda ter para onde crescer
+#   4. Negocia em Nasdaq/NYSE com giro diario > US$100MM
+#
+# A ORDENACAO nao e por esta lista: e por medicao. rank_by_growth() puxa
+# receita e margem reais da FMP em producao e reordena. A lista e so o
+# universo de partida — se um nome parar de crescer, o rank o joga para baixo
+# sozinho, sem ninguem precisar editar codigo.
+US_GROWTH_TICKERS = [
+    # Software de infraestrutura / dados
+    'SNOW', 'DDOG', 'MDB', 'NET', 'CFLT', 'ESTC', 'GTLB', 'S',
+    # Ciberseguranca
+    'CRWD', 'ZS', 'PANW', 'OKTA', 'TENB', 'RBRK',
+    # IA / semicondutores de crescimento
+    'NVDA', 'AMD', 'AVGO', 'ARM', 'MRVL', 'ALAB', 'CRDO', 'MPWR', 'ONTO',
+    # Plataformas e fintech
+    'SHOP', 'MELI', 'SQ', 'NU', 'TOST', 'AFRM', 'PLTR', 'APP', 'DUOL',
+    # Saude / dispositivos em expansao
+    'ISRG', 'DXCM', 'PODD', 'TMDX', 'NTRA', 'VRTX',
+    # Energia e industria do novo ciclo
+    'ENPH', 'FSLR', 'VRT', 'PWR', 'ETN',
+    # Consumo de alta recorrencia
+    'CELH', 'CAVA', 'ABNB', 'SPOT',
+]
+
+
+def rank_by_growth(tickers, fmp_key, log=None, limit=None):
+    """Ordena tickers por crescimento MEDIDO, nao por opiniao.
+
+    Score = 0,6 x crescimento de receita (3a, anualizado) + 0,4 x variacao da
+    margem bruta no mesmo periodo. Quem nao tiver dado fica de fora — nao
+    entra com nota arbitrada.
+
+    Devolve lista de dicts ordenada, do maior crescimento para o menor.
+    """
+    import json as _json
+    import urllib.request as _rq
+    out = []
+    for t in tickers:
+        try:
+            url = (f'https://financialmodelingprep.com/api/v3/income-statement/{t}'
+                   f'?period=annual&limit=4&apikey={fmp_key}')
+            with _rq.urlopen(url, timeout=12) as r:
+                d = _json.load(r)
+            if not isinstance(d, list) or len(d) < 3:
+                continue
+            d = sorted(d, key=lambda x: x.get('date', ''))
+            rev0, rev1 = float(d[0].get('revenue') or 0), float(d[-1].get('revenue') or 0)
+            anos = len(d) - 1
+            if rev0 <= 0 or rev1 <= 0 or anos < 1:
+                continue
+            cagr = ((rev1 / rev0) ** (1.0 / anos) - 1) * 100
+            def _gm(x):
+                rv = float(x.get('revenue') or 0)
+                gp = float(x.get('grossProfit') or 0)
+                return (gp / rv * 100) if rv > 0 else None
+            gm0, gm1 = _gm(d[0]), _gm(d[-1])
+            d_margem = (gm1 - gm0) if (gm0 is not None and gm1 is not None) else 0.0
+            out.append({'ticker': t, 'rev_cagr_pct': round(cagr, 2),
+                        'margem_bruta_pct': round(gm1, 2) if gm1 is not None else None,
+                        'delta_margem_pp': round(d_margem, 2),
+                        'growth_score': round(0.6 * cagr + 0.4 * d_margem, 2)})
+        except Exception as e:
+            if log:
+                log.debug(f'[LH-GROWTH] {t}: {e}')
+    out.sort(key=lambda x: x['growth_score'], reverse=True)
+    if log:
+        top = ', '.join(f'{o["ticker"]} {o["growth_score"]:+.0f}' for o in out[:10])
+        log.info(f'[LH-GROWTH] {len(out)}/{len(tickers)} medidos. Top10: {top}')
+    return out[:limit] if limit else out
+
 
 # EUA: ações fora do universo core de 40+ tickers
 DISCOVERY_US_TICKERS = [
@@ -131,6 +216,24 @@ class DiscoveryEngine:
         # 2. Build discovery universe (excluding core)
         br_candidates = [t for t in DISCOVERY_BR_TICKERS if t not in core_tickers]
         us_candidates = [t for t in DISCOVERY_US_TICKERS if t not in core_tickers]
+
+        # [08-ago-2026, decisao Beto] SLEEVE DE CRESCIMENTO. O universo antigo era
+        # quase todo mega-cap madura — o oposto de "grande potencial de crescimento".
+        # Entra ordenado por crescimento MEDIDO (receita 3a + margem) quando ha chave
+        # FMP; sem chave, entra na ordem da lista e o resto do funil decide.
+        if os.environ.get('LH_GROWTH_SLEEVE', 'true').lower() == 'true':
+            _growth = [t for t in US_GROWTH_TICKERS
+                       if t not in core_tickers and t not in us_candidates]
+            _key = os.environ.get('FMP_API_KEY', '')
+            if _key and _growth:
+                try:
+                    _ranked = rank_by_growth(_growth, _key, self.log,
+                                             limit=int(os.environ.get('LH_GROWTH_TOP', 25)))
+                    _growth = [r['ticker'] for r in _ranked] or _growth
+                except Exception as _ge:
+                    self.log.warning(f'[Discovery] rank_by_growth falhou: {_ge}')
+            us_candidates = us_candidates + _growth
+            self.log.info(f'[Discovery] sleeve de crescimento: +{len(_growth)} tickers')
 
         self.log.info(f'[Discovery] Discovery universe: '
                       f'{len(br_candidates)} BR + {len(us_candidates)} US')

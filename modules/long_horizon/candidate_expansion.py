@@ -95,7 +95,12 @@ class CandidateExpansionLayer:
                 AND s.total_score >= 55
                 ORDER BY s.total_score DESC
             """)
-            rows = cursor.fetchall()            candidates = []
+            # [08-ago-2026] Estava "rows = cursor.fetchall()            candidates = []"
+            # numa linha so — SyntaxError desde abril. O modulo inteiro nunca importou,
+            # o Long Horizon nunca produziu uma trade, e a solucao adotada na epoca foi
+            # DISABLE_LONG_HORIZON=true, que escondeu o problema em vez de resolver.
+            rows = cursor.fetchall()
+            candidates = []
             for r in rows:
                 candidates.append({
                     'ticker': r['ticker'],

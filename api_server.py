@@ -20414,6 +20414,34 @@ def shadow_rv_status():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/shadow/saude')
+def shadow_saude():
+    """[08-ago | decisao Beto — "item zero"] VIGIA DE SAUDE DOS SHADOWS.
+
+    Criado depois de TRES falhas silenciosas na mesma semana, nenhuma pega por
+    alarme: (1) executor IB mudo por 2 semanas porque a coluna event era
+    varchar(8) e 'ARBI_OPEN' tem 9 caracteres; (2) tres threads registradas que
+    nunca subiram — o watchdog so vigia quem nasceu; (3) 152 mil opinioes de
+    advisor com a coluna de resultado nula porque o pipeline de resolucao nunca
+    rodou.
+
+    Vigia tres coisas: threads que DEVERIAM existir e nao existem; tabelas que
+    DEVERIAM crescer e pararam; pipelines que DEVERIAM preencher e estao nulos.
+    So le e reporta — nao toca em nada."""
+    try:
+        from modules.shadow_health import checar
+        import time as _t
+        _now = _t.time()
+        reg = {k: {'alive': t.is_alive(),
+                   'hb_age_s': round(_now - thread_heartbeat.get(k, _now), 1)}
+               for k, t in thread_health.items()}
+        out = checar(get_db, reg)
+        codigo = 200 if out['estado_geral'] != 'CRITICO' else 207
+        return jsonify(out), codigo
+    except Exception as e:
+        return jsonify({'estado_geral': 'ERRO', 'error': str(e)}), 500
+
+
 @app.route('/inverse/principal')
 def inverse_principal():
     """[08-ago | decisao Beto] O ESPELHO INVERTIDO VIRA O PRINCIPAL.

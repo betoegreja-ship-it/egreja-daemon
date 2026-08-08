@@ -1,3 +1,4 @@
+import os
 """Configuracao dos pares stat arbi B3.
 
 Versao 2 (25-jun-2026): substitui os 14 pares iniciais (escolhidos por
@@ -462,7 +463,75 @@ PAIRS_CONFIG = [
     # EQTL3-ENGI11 — não aparece no top 60
 ]
 
-PAIRS_LIST = [p['id'] for p in PAIRS_CONFIG if p.get('enabled', True)]
+# ═══════════════════════════════════════════════════════════════════════════
+# [08-ago-2026 | REFUNDACAO DO MOTOR DE PARES B3 — decisao Beto + conselho]
+# ═══════════════════════════════════════════════════════════════════════════
+# EVIDENCIA (119 trades fechadas, 25/jun a 29/jul, -8.354, WR 33,6%):
+#   Apenas 3 CONVERGENCIAS em 119 trades. Saidas: 49 STOP_LOSS, 35 SWAPPED_OUT,
+#   25 THESIS_STOP, 6 TIMEOUT (-10.968), 3 CONVERGED.
+#   Classificando por vinculo economico REAL:
+#     mesmo emissor  n=6   +2.484  WR 83,3%  corr 0,98
+#     mesmo setor    n=5   +1.287  WR 60,0%  corr 0,83
+#     SEM VINCULO    n=108 -12.125 WR 29,6%  corr 0,90  <- 91% das trades
+#   E a correlacao NAO prediz nada: faixa >=0,90 perdeu -2.579 (WR 40,3%),
+#   faixa 0,80-0,90 perdeu -2.133. A correlacao MEDIA dos pares sem vinculo
+#   (0,90) e MAIOR que a dos pares de mesmo setor (0,83) que ganharam.
+#
+# DIAGNOSTICO: correlacao mede que dois papeis seguem o Ibovespa. So o VINCULO
+# ECONOMICO forca convergencia — mesmo fluxo de caixa (classes do mesmo
+# emissor) ou look-through de NAV (holding x operacional). Sem forcador, o
+# spread passeia e o stop leva.
+#
+# CONTRASTE: o US Pairs, mesmo motor conceitual mas pares por vinculo setorial
+# real (GS-MS, AMAT-LRCX, UNP-CSX, SLB-HAL), faz WR 83,3% e +2,69%.
+#
+# REFUNDACAO: dos 76 pares configurados, 64 sao CROSS_SECTOR (a categoria que
+# sangrou). Passam a valer apenas pares que cumpram TRES criterios:
+#   1) vinculo economico em PAIRS_VINCULOS_OK (default CLASSES,HOLDING)
+#   2) estacionariedade: adf_tstat <= PAIRS_ADF_MAX (default -2.9)
+#   3) meia-vida <= PAIRS_HALFLIFE_MAX_D (default 25 dias)
+# Resultado esperado: 6 pares (o conselho estimou 4-6 apos filtro de liquidez).
+# Reverter para o comportamento antigo: PAIRS_VINCULOS_OK=TODOS
+_VINC_OK = os.environ.get('PAIRS_VINCULOS_OK', 'CLASSES,HOLDING').upper()
+_ADF_MAX = float(os.environ.get('PAIRS_ADF_MAX', -2.9))
+_HL_MAX = float(os.environ.get('PAIRS_HALFLIFE_MAX_D', 25))
+
+
+def _tem_vinculo_real(p):
+    """Filtro de refundacao. Devolve (aprovado, motivo)."""
+    if _VINC_OK == 'TODOS':
+        return True, 'filtro desligado (PAIRS_VINCULOS_OK=TODOS)'
+    tipo = str(p.get('pair_type', '')).upper()
+    if tipo not in _VINC_OK.split(','):
+        return False, f'sem vinculo economico forcador (tipo={tipo})'
+    adf = p.get('adf_tstat')
+    if adf is not None and float(adf) > _ADF_MAX:
+        return False, f'spread nao estacionario (adf {adf} > {_ADF_MAX})'
+    hl = p.get('half_life_days')
+    if hl is not None and float(hl) > _HL_MAX:
+        return False, f'meia-vida longa demais ({hl}d > {_HL_MAX}d)'
+    return True, f'{tipo}, adf {adf}, meia-vida {hl}d'
+
+
+PAIRS_APROVADOS = []
+PAIRS_REPROVADOS = []
+for _p in PAIRS_CONFIG:
+    if not _p.get('enabled', True):
+        continue
+    _ok, _motivo = _tem_vinculo_real(_p)
+    (PAIRS_APROVADOS if _ok else PAIRS_REPROVADOS).append(
+        {'id': _p['id'], 'tipo': _p.get('pair_type'), 'motivo': _motivo})
+
+PAIRS_LIST = [p['id'] for p in PAIRS_APROVADOS]
+
+try:
+    import logging as _lg
+    _lg.getLogger('egreja.pairs').info(
+        f'[PAIRS-REFUNDACAO 08-ago] {len(PAIRS_LIST)} pares aprovados de '
+        f'{len(PAIRS_APROVADOS) + len(PAIRS_REPROVADOS)} configurados. '
+        f'Aprovados: {", ".join(PAIRS_LIST)}')
+except Exception:
+    pass
 
 
 def get_pair(pair_id):

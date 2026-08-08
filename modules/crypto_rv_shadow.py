@@ -43,10 +43,35 @@ log = logging.getLogger('egreja.crypto.rv.shadow')
 # edge de 22-jul-2026 (RV z-score 4h, janela 60, entrada 2.0). Somente pares
 # com soma de spread POSITIVA e WR>=55% entraram — os reprovados (LTC-BCH,
 # NEAR-SOL, SOL-BNB, XRP-XLM, etc.) foram descartados de proposito.
+# ═══════════════════════════════════════════════════════════════════════════
+# [08-ago-2026 | VARREDURA POR ESTACIONARIEDADE — decisao Beto: "6 pares nao
+# vai dar volume"]  estudo_pares_b3_0808/cripto_rv.py
+#
+# Os 6 pares abaixo foram escolhidos por BACKTEST (WR>=55% e PnL>0 em 166 dias).
+# E o mesmo criterio que a refundacao dos pares B3 provou nao sobreviver: quem
+# escolhe pelo resultado passado escolhe pelo ruido. Refiz a selecao pelo
+# criterio certo — ESTACIONARIEDADE MEDIDA do spread (ADF + meia-vida) — sobre
+# 18 ativos com giro real, cruzados so DENTRO do mesmo grupo economico.
+#
+# O que a medicao diz dos 6 atuais (1000 barras de 4h, spread em log, beta OLS):
+#   ETH-BTC   ADF -1,41  meia-vida 497h (20 dias)  <- o PIOR spread do screen
+#   UNI-AAVE  ADF -2,49  meia-vida 224h
+#   XRP-ADA   nem foi avaliado: XRP e pagamento, ADA e L1. Nao ha vinculo.
+#   BNB-BTC / DOGE-SHIB / ADA-DOT  reprovados por liquidez ou vinculo.
+# Nenhum dos 6 passaria hoje. NAO estao sendo desligados (decisao Beto:
+# "nunca desligar, nao desistimos nunca, e paper") — ficam com a etiqueta
+# origem='backtest' para o painel separar quem entrou por qual regua.
+#
+# Aprovados pela regua nova (ADF <= -3,0, meia-vida <= 60 barras, amplitude
+# 2sd >= 2%): XLM-LTC, SOL-ADA, SOL-NEAR.
+# ═══════════════════════════════════════════════════════════════════════════
 PAIRS = {
-    'ETH-BTC':  {'a': 'ETHUSDT',  'b': 'BTCUSDT',  'book': 'CORE_MAJORS'},   # +7.7% WR62
-    'BNB-BTC':  {'a': 'BNBUSDT',  'b': 'BTCUSDT',  'book': 'CORE_MAJORS'},   # +15.4% WR64
-    'UNI-AAVE': {'a': 'UNIUSDT',  'b': 'AAVEUSDT', 'book': 'DEFI'},          # +12.8% WR55
+    'ETH-BTC':  {'a': 'ETHUSDT',  'b': 'BTCUSDT',  'book': 'CORE_MAJORS',
+                 'origem': 'backtest', 'adf_medido': -1.41, 'liq_min_mm': 167},
+    'BNB-BTC':  {'a': 'BNBUSDT',  'b': 'BTCUSDT',  'book': 'CORE_MAJORS',
+                 'origem': 'backtest', 'liq_min_mm': 57},
+    'UNI-AAVE': {'a': 'UNIUSDT',  'b': 'AAVEUSDT', 'book': 'DEFI',
+                 'origem': 'backtest', 'adf_medido': -2.49, 'liq_min_mm': 4},
     # ═══ [03-ago-2026, expansao Beto] Aprovados em NOVO screening (mesma regua
     # do original): 166 dias de barras 4h Binance, beta rolante 180 barras,
     # z 2.0/0.4, custo 20bps RT; aprovacao = WR>=55% E PnL>0.
@@ -60,9 +85,23 @@ PAIRS = {
     # principal, exige >=30 trades OOS atravessando 3 regimes (incl. queda de
     # BTC e colapso de volume meme) e morre se qualquer janela de 30d explicar
     # >50% do PnL. Zero live sob qualquer hipotese.
-    'DOGE-SHIB': {'a': 'DOGEUSDT', 'b': 'SHIBUSDT', 'book': 'MEME'},         # WR 83.3, PnL forte
-    'XRP-ADA':   {'a': 'XRPUSDT',  'b': 'ADAUSDT',  'book': 'ALT_MAJORS'},   # WR 70
-    'ADA-DOT':   {'a': 'ADAUSDT',  'b': 'DOTUSDT',  'book': 'ALT_MAJORS'},   # WR 60 (marginal — vigiar)
+    'DOGE-SHIB': {'a': 'DOGEUSDT', 'b': 'SHIBUSDT', 'book': 'MEME',
+                  'origem': 'backtest', 'liq_min_mm': 1},
+    'XRP-ADA':   {'a': 'XRPUSDT',  'b': 'ADAUSDT',  'book': 'ALT_MAJORS',
+                  'origem': 'backtest', 'liq_min_mm': 13},
+    'ADA-DOT':   {'a': 'ADAUSDT',  'b': 'DOTUSDT',  'book': 'ALT_MAJORS',
+                  'origem': 'backtest', 'liq_min_mm': 2},
+    # ── [08-ago-2026] aprovados por ESTACIONARIEDADE (regua nova) ────────────
+    # Todos com vinculo dentro do grupo e amplitude que paga 20bps com folga.
+    'XLM-LTC':  {'a': 'XLMUSDT',  'b': 'LTCUSDT',  'book': 'PAY',
+                 'origem': 'estacionariedade', 'adf_medido': -3.51,
+                 'half_life_h': 102.7, 'amp_2sd_pct': 19.35, 'liq_min_mm': 4},
+    'SOL-ADA':  {'a': 'SOLUSDT',  'b': 'ADAUSDT',  'book': 'L1_ALT',
+                 'origem': 'estacionariedade', 'adf_medido': -3.16,
+                 'half_life_h': 140.2, 'amp_2sd_pct': 9.60, 'liq_min_mm': 13},
+    'SOL-NEAR': {'a': 'SOLUSDT',  'b': 'NEARUSDT', 'book': 'L1_ALT',
+                 'origem': 'estacionariedade', 'adf_medido': -3.16,
+                 'half_life_h': 143.9, 'amp_2sd_pct': 15.91, 'liq_min_mm': 13},
 }
 
 _BINANCE_HOSTS = [
@@ -434,6 +473,17 @@ def scan_once():
             # ── abrir nova? (sem posicao no par)
             elif sig in ('ENTRY_SHORT_A', 'ENTRY_LONG_A') and abs(z) < z_stop:
                 na = capital * pos_pct / 100.0
+                # [08-ago-2026] TETO DE LIQUIDEZ (mesma logica dos pares B3).
+                # Sem ele o book reporta retorno sobre US$500k/perna em pares
+                # que giram US$4MM/dia — 12% do volume diario numa unica ordem.
+                # Com 9 pares e nao 6, o teto e o que separa expandir de inflar.
+                _liq = PAIRS[pair].get('liq_min_mm')
+                if _liq:
+                    _cap_liq = float(_liq) * 1e6 * _env_f('CRYPTO_RV_LIQ_PCT', 0.02)
+                    if _cap_liq < na:
+                        log.info(f'[CRYPTO-RV] {pair}: notional ${na:,.0f} -> '
+                                 f'${_cap_liq:,.0f} (teto de {_liq}MM/24h)')
+                        na = _cap_liq
                 nb = na * abs(r['beta'])
                 direction = 'SHORT_A' if sig == 'ENTRY_SHORT_A' else 'LONG_A'
                 cur.execute(

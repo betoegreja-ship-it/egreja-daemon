@@ -358,6 +358,25 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
         # [25-jun-2026] WATCH tier: nao opera, so observa
         cfg = next((p for p in PAIRS_CONFIG if p['id'] == signal['pair_id']), {})
 
+        # ═══ [08-ago-2026] GATE DA REFUNDACAO — o pedaco que faltava ═══════════
+        # A refundacao de 08/ago calculava PAIRS_LIST (os pares com vinculo
+        # economico real) mas NINGUEM consultava essa lista: o scanner varre
+        # PAIRS_CONFIG inteiro. O filtro existia so no log de boot. Descoberto
+        # minutos depois de religar o motor, quando o painel mostrou ENTRY em
+        # MULT3-ITSA4, BPAC11-MULT3, VIVT3-ITSA4 — exatamente os CROSS_SECTOR
+        # que fizeram -12.125 com WR 29,6% e motivaram a refundacao.
+        # Sinal continua sendo calculado e persistido para todos (o aprendizado
+        # nao perde nada); o que fica bloqueado e ABRIR POSICAO fora da lista.
+        try:
+            from .config import PAIRS_LIST as _APROVADOS
+            if _APROVADOS and signal['pair_id'] not in _APROVADOS:
+                log.info(f"[PAIRS-REFUNDACAO] {signal['pair_id']}: fora da lista "
+                         f"aprovada ({len(_APROVADOS)} pares) — sinal registrado, "
+                         f"sem capital")
+                return None
+        except Exception as _rfe:
+            log.error(f'[PAIRS-REFUNDACAO] gate falhou (deixando passar): {_rfe}')
+
         # ═══ [PAIRS-DYNAMIC 21-jul-2026, revertido] A curadoria economica foi
         # um ERRO: bloqueava CROSS_SECTOR, mas o MELHOR par da casa e cross-sector
         # (ALOS3-EQTL3, 71% WR). Stat-arb e agnostico a logica setorial por desenho.

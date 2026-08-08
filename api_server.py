@@ -467,6 +467,18 @@ except Exception as _pe:
         _pairs_closed = []
         _pairs_spreads = {}
 
+# [08-ago FIX DEFENSIVO] Garante que TODAS as estruturas existam em qualquer
+# caminho de execucao. Sem isto, se o except acima rodar com o import ja
+# concluido, um NameError em _PAIRS_LIST derruba o boot inteiro (foi o que
+# aconteceu no primeiro deploy desta mudanca).
+for _nome, _default in (('_PAIRS_CFG', []), ('_PAIRS_LIST', []),
+                        ('_pairs_open', []), ('_pairs_closed', []),
+                        ('_pairs_spreads', {}), ('_pairs_lock', None),
+                        ('_PAIRS_CAPITAL', 0), ('_PAIRS_MAX_POSITIONS', 0)):
+    if _nome not in globals():
+        globals()[_nome] = _default
+        log.warning(f'[v11-PAIRS] {_nome} ausente — inicializado com fallback')
+
 # ═══ [v10.31] CEDRO SOCKET PROVIDER — real-time streaming quotes ═══
 # Primary source for B3 quotes (stocks + indices + futures). BRAPI/OpLab used as fallback.
 _cedro_socket = None

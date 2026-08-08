@@ -20381,6 +20381,116 @@ def shadow_rv_status():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/inverse/principal')
+def inverse_principal():
+    """[08-ago | decisao Beto] O ESPELHO INVERTIDO VIRA O PRINCIPAL.
+
+    Evidencia que motivou (medida em 07/ago):
+      B3   MIRROR  476 trades  +82.498  WR 60,1%   <-> real  -40.372 WR 25,3% (semana)
+      NYSE shorts  espelhados   +15.238 WR 93,3%   <-> real  -15.238 WR  6,7%
+      CRYPTO MIRROR 708 trades  +17.036 WR 50,6%
+    E o contraste que ensina mais: o gemeo MANAGED (invertido COM as protecoes
+    do sistema) perde -66.101 na B3 enquanto o MIRROR (invertido puro, fecha
+    junto com a real) ganha +82.498. Ou seja: nao e so a direcao que esta
+    trocada — as protecoes tambem destroem valor nos dois lados.
+
+    Este endpoint apresenta o book INVERTIDO como se fosse o principal, e o
+    book real como sombra. Nada muda na execucao: e leitura.
+    ?dias=N limita a janela (default 30)."""
+    try:
+        dias = int(request.args.get('dias', 30))
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+
+        def bloco(sql, args=()):
+            cur.execute(sql, args)
+            return cur.fetchall()
+
+        # ---- placar por mercado: invertido (MIRROR) x real ----
+        inv = bloco("""SELECT market, mode, COUNT(*) n, ROUND(SUM(pnl),2) pnl,
+                       ROUND(100*SUM(pnl>0)/COUNT(*),1) wr,
+                       ROUND(AVG(pnl_pct),4) ret_medio
+                       FROM inverse_shadow_trades
+                       WHERE status='CLOSED' AND closed_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                       GROUP BY market, mode""", (dias,))
+        real = bloco("""SELECT market, COUNT(*) n, ROUND(SUM(pnl),2) pnl,
+                        ROUND(100*SUM(pnl>0)/COUNT(*),1) wr,
+                        ROUND(AVG(pnl_pct),4) ret_medio
+                        FROM trades
+                        WHERE status='CLOSED' AND closed_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                        GROUP BY market""", (dias,))
+
+        por_mkt = {}
+        for r in real:
+            por_mkt[r['market']] = {'mercado': r['market'],
+                                    'PRINCIPAL_invertido': None,
+                                    'sombra_real': {'n': r['n'], 'pnl': float(r['pnl'] or 0),
+                                                    'wr': float(r['wr'] or 0),
+                                                    'ret_medio': float(r['ret_medio'] or 0)},
+                                    'invertido_gerido': None}
+        for r in inv:
+            m = por_mkt.setdefault(r['market'], {'mercado': r['market'],
+                                                 'PRINCIPAL_invertido': None,
+                                                 'sombra_real': None,
+                                                 'invertido_gerido': None})
+            alvo = ('PRINCIPAL_invertido' if r['mode'] == 'MIRROR' else 'invertido_gerido')
+            m[alvo] = {'n': r['n'], 'pnl': float(r['pnl'] or 0),
+                       'wr': float(r['wr'] or 0), 'ret_medio': float(r['ret_medio'] or 0)}
+
+        # ---- foco: shorts da NYSE (o caso mais extremo) ----
+        shorts = bloco("""SELECT i.mode, COUNT(*) n, ROUND(SUM(i.pnl),2) pnl,
+                          ROUND(100*SUM(i.pnl>0)/COUNT(*),1) wr
+                          FROM inverse_shadow_trades i JOIN trades t ON t.id=i.real_trade_id
+                          WHERE i.status='CLOSED' AND t.market='NYSE' AND t.direction='SHORT'
+                          AND t.closed_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                          GROUP BY i.mode""", (dias,))
+        short_real = bloco("""SELECT COUNT(*) n, ROUND(SUM(pnl),2) pnl,
+                              ROUND(100*SUM(pnl>0)/COUNT(*),1) wr FROM trades
+                              WHERE status='CLOSED' AND market='NYSE' AND direction='SHORT'
+                              AND closed_at >= DATE_SUB(NOW(), INTERVAL %s DAY)""", (dias,))
+
+        # ---- ultimas trades do book invertido (as que valem na tela) ----
+        ult = bloco("""SELECT id, real_trade_id, symbol, market, direction, mode,
+                       ROUND(pnl,2) pnl, ROUND(pnl_pct,4) pnl_pct, opened_at, closed_at
+                       FROM inverse_shadow_trades
+                       WHERE status='CLOSED' AND mode='MIRROR'
+                       ORDER BY closed_at DESC LIMIT 40""")
+        abertas = bloco("""SELECT symbol, market, direction, mode, opened_at
+                           FROM inverse_shadow_trades WHERE status='OPEN'
+                           ORDER BY opened_at DESC LIMIT 40""")
+        cur.close(); conn.close()
+
+        tot_inv = sum((v['PRINCIPAL_invertido'] or {}).get('pnl', 0) for v in por_mkt.values())
+        tot_real = sum((v['sombra_real'] or {}).get('pnl', 0) for v in por_mkt.values())
+        tot_ger = sum((v['invertido_gerido'] or {}).get('pnl', 0) for v in por_mkt.values())
+
+        return jsonify({
+            'ok': True,
+            'janela_dias': dias,
+            'leitura': ('O book PRINCIPAL aqui e o INVERTIDO (espelho puro: mesma '
+                        'entrada, direcao oposta, fecha junto com a real). O book '
+                        'real aparece como sombra. Nada muda na execucao.'),
+            'placar': {
+                'PRINCIPAL_invertido_total': round(tot_inv, 2),
+                'sombra_real_total': round(tot_real, 2),
+                'invertido_com_protecoes_total': round(tot_ger, 2),
+                'nota': ('invertido_com_protecoes perde para o invertido puro: '
+                         'as protecoes (early stop / breakeven / trailing) '
+                         'destroem valor tambem no lado invertido'),
+            },
+            'por_mercado': list(por_mkt.values()),
+            'foco_shorts_nyse': {
+                'real': (short_real[0] if short_real else None),
+                'espelhado': {r['mode']: {'n': r['n'], 'pnl': float(r['pnl'] or 0),
+                                          'wr': float(r['wr'] or 0)} for r in shorts},
+            },
+            'ultimas_do_principal': ult,
+            'abertas_agora': abertas,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/shadow/rv-protecao')
 def shadow_rv_protecao():
     """[07-ago | Beto] Compara o book RV atual (saida so por z-score) com as

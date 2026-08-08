@@ -102,6 +102,14 @@ def create_tables():
         "ALTER TABLE longleg_harvest ADD COLUMN ctrl_elig_before INT DEFAULT 0",
         "ALTER TABLE longleg_harvest ADD COLUMN ctrl_excl_arbi INT DEFAULT 0",
         "ALTER TABLE longleg_harvest ADD COLUMN ctrl_excl_atr INT DEFAULT 0",
+        # [08-ago-2026] clones L1/L2/L3 da Limonada (dupla checagem da perna long)
+        "ALTER TABLE longleg_harvest ADD COLUMN acao_subindo TINYINT NULL",
+        "ALTER TABLE longleg_harvest ADD COLUMN dist_ma20_pct DOUBLE NULL",
+        "ALTER TABLE longleg_harvest ADD COLUMN ret5d_pct DOUBLE NULL",
+        "ALTER TABLE longleg_harvest ADD COLUMN mare_ok TINYINT NULL",
+        "ALTER TABLE longleg_harvest ADD COLUMN in_l1 TINYINT DEFAULT 0",
+        "ALTER TABLE longleg_harvest ADD COLUMN in_l2 TINYINT DEFAULT 0",
+        "ALTER TABLE longleg_harvest ADD COLUMN in_l3 TINYINT DEFAULT 0",
     ):
         try:
             cur.execute(ddl)
@@ -187,6 +195,82 @@ def _ex_ante_beta(leg_sym, idx_sym, entry_epoch):
         return 1.0
 
 
+def _acao_subindo(leg_sym, entry_epoch):
+    """[08-ago-2026] DUPLA CHECAGEM DA PERNA LONG (ideia do Beto, medida no estudo
+    de 06/08). A Arbi compra o ativo PRESSIONADO — e a tese de convergencia. A
+    pergunta era se, alem do sinal de spread, exigir que a acao ja esteja subindo
+    melhora a colheita. No horizonte real de saida da Limonada, exigir isso deu
+    +0,751%% com WR 66,7%% contra a media do book.
+
+    Criterio (tudo EX-ANTE, so barras diarias ATE o pregao anterior):
+      fechamento acima da media de 20 e retorno de 5 pregoes positivo.
+    Devolve (subindo: 0/1/None, dist_ma20_pct, ret5d_pct)."""
+    try:
+        t1 = entry_epoch - 86400
+        t0 = t1 - 60 * 86400
+        d = _daily(leg_sym, t0, t1)
+        if len(d) < 21:
+            return None, None, None
+        closes = [c for _, c in d]
+        ma20 = sum(closes[-20:]) / 20.0
+        px = closes[-1]
+        dist = (px / ma20 - 1) * 100 if ma20 else None
+        ret5 = (px / closes[-6] - 1) * 100 if len(closes) >= 6 and closes[-6] else None
+        if dist is None or ret5 is None:
+            return None, dist, ret5
+        return (1 if (dist > 0 and ret5 > 0) else 0), round(dist, 3), round(ret5, 3)
+    except Exception as e:
+        log.debug(f'[LONGLEG] acao_subindo {leg_sym}: {e}')
+        return None, None, None
+
+
+def backfill_clones(limit=15):
+    """Preenche as etiquetas L1/L2/L3 nas linhas antigas (anteriores a 08/ago).
+    Sem isso os clones so teriam amostra daqui para a frente. Roda em lotes
+    pequenos, chamado pelo scheduler junto do finalize_directional. Fail-open."""
+    try:
+        create_tables()
+        if not _schema_ok['v']:
+            return 0
+        c = _conn(); cur = c.cursor()
+        cur.execute("""SELECT id,long_leg,long_mkt,opened_epoch,pulse_at_open,entry_spread_abs
+                       FROM longleg_harvest
+                       WHERE acao_subindo IS NULL AND opened_epoch IS NOT NULL
+                       ORDER BY id DESC LIMIT %s""", (limit,))
+        rows = cur.fetchall()
+        n = 0
+        for rid, ll, lm, oep, pulse, abss in rows:
+            sub, dist, ret5 = _acao_subindo(_ysym(ll, lm), int(oep))
+            if sub is None:
+                # sem barras suficientes: marca -1 para nao reprocessar eternamente
+                cur.execute("UPDATE longleg_harvest SET acao_subindo=-1 WHERE id=%s", (rid,))
+                continue
+            mare = _mare_favoravel(pulse)
+            l1 = 1 if sub == 1 else 0
+            l2 = 1 if (l1 and mare == 1) else 0
+            l3 = 1 if (l2 and float(abss or 0) >= SPREAD_HI) else 0
+            cur.execute("""UPDATE longleg_harvest SET acao_subindo=%s,dist_ma20_pct=%s,
+                           ret5d_pct=%s,mare_ok=%s,in_l1=%s,in_l2=%s,in_l3=%s WHERE id=%s""",
+                        (sub, dist, ret5, mare, l1, l2, l3, rid))
+            n += 1
+        c.close()
+        if n:
+            log.info(f'[LONGLEG] backfill clones L1/L2/L3: {n} linhas')
+        return n
+    except Exception as e:
+        log.error(f'[LONGLEG] backfill clones: {e}')
+        return 0
+
+
+def _mare_favoravel(pulse):
+    """Mare = Market Pulse do mercado da perna long no instante da entrada.
+    Conta como favoravel quando o pulse nao esta em regime de baixa."""
+    p = str(pulse or 'NA').upper()
+    if p in ('NA', '', 'NONE'):
+        return None
+    return 0 if ('BEAR' in p or 'RISK_OFF' in p or 'DOWN' in p) else 1
+
+
 def _atr_pct_cheap(pre_bars, px):
     """[v5 GPT round-7] ATR% ex-ante barato (mesma formula do _simulate_directional)
     para RANKEAR candidatos a controle por distancia, sem simular todos. So leitura."""
@@ -264,15 +348,29 @@ def on_arbi_open(trade, pulse=None):
         notional = float(trade.get('position_size') or 0)
         inw = SPREAD_LO <= abss <= SPREAD_HI
         now = datetime.now(timezone.utc)
+        # [08-ago-2026] CLONES L1/L2/L3 — dupla checagem da perna long.
+        # Tudo ex-ante (barras ate o pregao anterior + pulse do instante da entrada),
+        # so etiquetagem: nao muda entrada nem saida de nada.
+        #   L1 = acao ja subindo (fecho > MA20 e retorno de 5 pregoes > 0)
+        #   L2 = L1 + mare favoravel (Market Pulse)
+        #   L3 = L2 + spread >= 2,0 (a faixa larga, onde o sinal e mais forte)
+        subindo, dist20, ret5 = _acao_subindo(_ysym(ll, lm), int(now.timestamp()))
+        mare = _mare_favoravel(pulse)
+        l1 = 1 if subindo == 1 else 0
+        l2 = 1 if (l1 and mare == 1) else 0
+        l3 = 1 if (l2 and abss >= SPREAD_HI) else 0
         c = _conn(); cur = c.cursor()
         cur.execute("""INSERT IGNORE INTO longleg_harvest (arbi_id,pair,long_leg,long_mkt,
             short_leg,short_mkt,direction,entry_spread_abs,spread_band,pulse_at_open,
-            notional_usd,in_f6,in_f10,long_px_entry,short_px_entry,fx_entry,status,opened_at,opened_epoch)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s,%s)""",
+            notional_usd,in_f6,in_f10,long_px_entry,short_px_entry,fx_entry,status,opened_at,opened_epoch,
+            acao_subindo,dist_ma20_pct,ret5d_pct,mare_ok,in_l1,in_l2,in_l3)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s)""",
             (trade.get('id'), pair, ll, lm, sl, sm, direction, round(abss, 4), _band(abss),
              str(pulse or 'NA'), notional, 1 if (pair in GOOD6 and inw) else 0,
              1 if (pair in GOOD10 and inw) else 0, lpx, spx, fx,
-             now.replace(tzinfo=None), int(now.timestamp())))
+             now.replace(tzinfo=None), int(now.timestamp()),
+             subindo, dist20, ret5, mare, l1, l2, l3))
         c.close()
     except Exception as e:
         log.debug(f'[LONGLEG] open: {e}')
@@ -506,6 +604,16 @@ def summary():
         elif p == 'RISK_OFF' and r['short_ret_pct'] is not None: smart.append(-r['short_ret_pct'])
     b['SMART_LEG'] = stat(smart)
     b['LIQUID_LEG_BETA_REDUCED'] = stat([r['hedged_beta_ret_pct'] for r in rows])
+    # [08-ago-2026] CLONES DA DUPLA CHECAGEM (ideia do Beto). Mesmo book ALL,
+    # so que exigindo condicao adicional NA ENTRADA. Comparar sempre contra ALL:
+    # o clone so vale se bater o pai, e nao se apenas for positivo.
+    b['L1_acao_subindo'] = stat([r['long_ret_pct'] for r in rows if r.get('in_l1')])
+    b['L2_subindo_mais_mare'] = stat([r['long_ret_pct'] for r in rows if r.get('in_l2')])
+    b['L3_subindo_mare_spread_largo'] = stat([r['long_ret_pct'] for r in rows if r.get('in_l3')])
+    # Contrafactual do clone: o que ficou de FORA do L1 (para ver se o filtro
+    # esta cortando perdedor mesmo ou so encolhendo a amostra).
+    b['L1_descartados'] = stat([r['long_ret_pct'] for r in rows
+                                if r.get('acao_subindo') == 0])
     b['DIRECTIONAL_EXIT'] = stat([r['dir_exit_ret_pct'] for r in rows if r['dir_status'] == 'DONE'])
     b['MATCHED_CONTROL'] = stat([r['matched_ctrl_ret_pct'] for r in rows if r['dir_status'] == 'DONE'])
     # [v5 GPT round-6] TESTE DECISIVO — lift PAREADO POR TRADE (nao pooled):

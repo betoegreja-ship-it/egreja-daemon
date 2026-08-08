@@ -12542,6 +12542,13 @@ def arbi_monitor_loop():
             _ll_fin()
         except Exception:
             pass
+        # [LONGLEG 08-ago] etiqueta L1/L2/L3 (dupla checagem) nas linhas antigas,
+        # em lotes pequenos, para os clones nascerem com amostra em vez de zerados.
+        try:
+            from modules.longleg_harvest import backfill_clones as _ll_bf
+            _ll_bf()
+        except Exception:
+            pass
         # [LONGLEG-IB 28-jul] gerencia as posicoes vivas da perna long no IB
         # (trailing + stop 1.5ATR + timeout 90min -> vende no IB). Fail-open.
         try:

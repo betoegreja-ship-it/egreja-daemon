@@ -467,6 +467,27 @@ except Exception as _pe:
         _pairs_closed = []
         _pairs_spreads = {}
 
+# ═══ [08-ago FIX DEFENSIVO — licao do deploy que derrubou o boot] ═══════
+# Na primeira tentativa desta mudanca o processo morreu com 0 threads: o
+# except rodou COM o import ja concluido, entao _pairs_engine_loaded ficou
+# True, as estruturas nao foram criadas, e um NameError em _PAIRS_LIST matou
+# o boot. Este bloco garante que TODA estrutura exista em qualquer caminho.
+# Regra que fica: mudanca em bloco de bootstrap so vai ao ar depois de
+# `python3 -c "import api_server"` passar limpo (o guard __main__ permite
+# exercitar todo o codigo de modulo sem subir thread nenhuma).
+for _nome, _default in (('_PAIRS_CFG', []), ('_PAIRS_LIST', []),
+                        ('_pairs_open', []), ('_pairs_closed', []),
+                        ('_pairs_spreads', {}), ('_pairs_lock', None),
+                        ('_PAIRS_CAPITAL', 0), ('_PAIRS_MAX_POSITIONS', 0),
+                        ('_calc_pair_signal', None), ('_pairs_scan_loop', None),
+                        ('_create_pairs_tables', None)):
+    if _nome not in globals():
+        globals()[_nome] = _default
+        try:
+            log.warning(f'[v11-PAIRS] {_nome} ausente — fallback aplicado')
+        except Exception:
+            pass
+
 # ═══ [v10.31] CEDRO SOCKET PROVIDER — real-time streaming quotes ═══
 # Primary source for B3 quotes (stocks + indices + futures). BRAPI/OpLab used as fallback.
 _cedro_socket = None

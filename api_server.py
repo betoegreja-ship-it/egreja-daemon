@@ -10203,6 +10203,81 @@ def start_background_threads():
         t=threading.Thread(target=fn,daemon=True); t.start()
         thread_health[name]=t
         log.info(f'Thread started: {name} (hb_timeout={THREAD_HEARTBEAT_TIMEOUT.get(name,DEFAULT_HB_TIMEOUT)}s)')
+    # ═══ [08-ago-2026 | decisao Beto] GRAVADOR DE SEGURANCA DA ARBI RAIZ ═══
+    # Problema medido em 07/ago: a tabela arbi_trades deste servico estava com
+    # ZERO linhas apesar de 10 trades terem rodado — o painel lia da memoria e
+    # um restart apagaria o estudo inteiro. O _db_save_arbi_trade original tem
+    # 196 linhas e 8 blocos de except; falha em silencio em algum ponto.
+    # Em vez de depurar o motor (que deve ficar CONGELADO por 20 pregoes),
+    # este gravador roda em thread propria, so LE a memoria e grava o essencial
+    # numa tabela simples. Nao toca em nenhuma regra de entrada ou saida.
+    try:
+        def _raiz_snapshot_loop():
+            import json as _json
+            while True:
+                try:
+                    beat('raiz_snapshot_loop')
+                except Exception:
+                    pass
+                try:
+                    c = get_db()
+                    cur = c.cursor()
+                    cur.execute("""CREATE TABLE IF NOT EXISTS arbi_raiz_snapshot (
+                        id VARCHAR(64) PRIMARY KEY,
+                        pair_id VARCHAR(32), direction VARCHAR(12), status VARCHAR(12),
+                        entry_spread DECIMAL(12,5), current_spread DECIMAL(12,5),
+                        exit_spread DECIMAL(12,5), position_size DECIMAL(16,2),
+                        pnl DECIMAL(16,2), pnl_pct DECIMAL(10,4),
+                        close_reason VARCHAR(32), fx_rate DECIMAL(12,5),
+                        price_a_entry DECIMAL(18,6), price_b_entry DECIMAL(18,6),
+                        opened_at VARCHAR(32), closed_at VARCHAR(32),
+                        capital_livre DECIMAL(16,2),
+                        gravado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                          ON UPDATE CURRENT_TIMESTAMP
+                        ) CHARACTER SET utf8mb4""")
+                    _cap = globals().get('arbi_capital', 0)
+                    _n = 0
+                    for _t_ in (list(arbi_open) + list(arbi_closed)):
+                        try:
+                            cur.execute("""INSERT INTO arbi_raiz_snapshot
+                                (id,pair_id,direction,status,entry_spread,current_spread,
+                                 exit_spread,position_size,pnl,pnl_pct,close_reason,fx_rate,
+                                 price_a_entry,price_b_entry,opened_at,closed_at,capital_livre)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                ON DUPLICATE KEY UPDATE status=VALUES(status),
+                                 current_spread=VALUES(current_spread),
+                                 exit_spread=VALUES(exit_spread), pnl=VALUES(pnl),
+                                 pnl_pct=VALUES(pnl_pct), close_reason=VALUES(close_reason),
+                                 closed_at=VALUES(closed_at), capital_livre=VALUES(capital_livre)""",
+                                (str(_t_.get('id'))[:64], str(_t_.get('pair_id'))[:32],
+                                 str(_t_.get('direction'))[:12], str(_t_.get('status'))[:12],
+                                 _t_.get('entry_spread'), _t_.get('current_spread'),
+                                 _t_.get('exit_spread_pct'), _t_.get('position_size'),
+                                 _t_.get('pnl'), _t_.get('pnl_pct'),
+                                 str(_t_.get('close_reason') or '')[:32], _t_.get('fx_rate'),
+                                 _t_.get('price_a_entry'), _t_.get('price_b_entry'),
+                                 str(_t_.get('opened_at') or '')[:32],
+                                 str(_t_.get('closed_at') or '')[:32], _cap))
+                            _n += 1
+                        except Exception as _ie:
+                            log.error(f'[RAIZ-SNAPSHOT] trade {_t_.get("id")}: {_ie}')
+                    c.commit(); c.close()
+                    if _n:
+                        log.info(f'[RAIZ-SNAPSHOT] {_n} trades gravadas '
+                                 f'({len(arbi_open)} abertas / {len(arbi_closed)} fechadas)')
+                except Exception as _se:
+                    log.error(f'[RAIZ-SNAPSHOT] falhou: {_se}')
+                time.sleep(int(os.environ.get('RAIZ_SNAPSHOT_S', 300)))
+
+        thread_heartbeat['raiz_snapshot_loop'] = time.time()
+        _rst = threading.Thread(target=_raiz_snapshot_loop, daemon=True,
+                                name='raiz-snapshot')
+        _rst.start()
+        thread_health['raiz_snapshot_loop'] = _rst
+        log.info('Thread started: raiz_snapshot_loop (gravador de seguranca, 5min)')
+    except Exception as _e:
+        log.warning(f'raiz_snapshot start failed: {_e}')
+
     # [01-jul-2026] MySQL janitor — mata idle orphans a cada 5min pra evitar
     # acumulo entre deploys que estourava max_connections do Railway (152/151).
     try:

@@ -431,6 +431,19 @@ def open_pair_trade(signal: Dict, beat_fn=None, audit_fn=None, enqueue_fn=None):
         if _sf < 1.0:
             pos_size = max(pos_size * _sf, PAIRS_MIN_INVESTMENT * 0.6)
 
+        # [08-ago-2026] TETO DE LIQUIDEZ. A expansao de 6 para 11 pares so e
+        # honesta se os pares novos entrarem no tamanho que o giro deles aguenta.
+        # leg_size_brl devolve o teto por PERNA; pos_size e o par inteiro (2 pernas).
+        try:
+            from modules.pairs_engine.config import leg_size_brl as _leg_cap
+            _cap_perna = _leg_cap(cfg)
+            if _cap_perna and _cap_perna * 2 < pos_size:
+                log.info(f'[PAIRS-LIQ] {signal["pair_id"]}: pos_size R${pos_size:,.0f} '
+                         f'-> R${_cap_perna * 2:,.0f} (teto de {cfg.get("liq_med_mm")}MM/dia)')
+                pos_size = _cap_perna * 2
+        except Exception as _lqe:
+            log.error(f'[PAIRS-LIQ] falha no teto de liquidez: {_lqe}')
+
         # Ceiling de posicoes (safety) + capital deployed check
         cap_full = (len(pairs_open) >= PAIRS_MAX_POSITIONS) or (available < PAIRS_MIN_INVESTMENT)
         if cap_full:

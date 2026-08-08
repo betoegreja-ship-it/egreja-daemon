@@ -464,6 +464,71 @@ PAIRS_CONFIG = [
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════
+# [08-ago-2026 | EXPANSAO POR VARREDURA DO UNIVERSO — decisao Beto]
+# "6 pares nao vai dar volume, temos que achar mais pares conexos"
+#
+# Os 76 pares configurados vinham de um estudo por CORRELACAO, que e justamente
+# o criterio que a refundacao provou nao funcionar. Entao a busca foi refeita
+# pelo criterio certo: varredura do universo B3 inteiro atras de VINCULO
+# ECONOMICO, sem olhar correlacao. 74 candidatos, 105 papeis, 2 anos de
+# fechamento diario (estudo_pares_b3_0808/universo.py).
+#
+# Entrou uma familia que nao existia na lista: UNIT x PARTE. Uma unit E a cesta
+# das suas partes por construcao (KLBN11 = 1 ON + 4 PN), entao o vinculo e
+# aritmetico, nao estatistico — mais forte ate que classes do mesmo emissor.
+# TAEE11-TAEE4 mede ADF -9,66 e meia-vida de 0,8 dia; KLBN11-KLBN4, ADF -7,04 e
+# meia-vida de 1,3 dia. Sao os dois melhores spreads da B3 inteira.
+#
+# A restricao real nao e achar par: e LIQUIDEZ. Os spreads mais colados vivem em
+# papeis finos (PINE3-PINE4 tem ADF -8,35 e negocia R$20 mil/dia). Por isso os
+# novos pares entram com sizing proporcional ao volume (ver PAIRS_SIZING_LIQ),
+# e nao com perna cheia.
+PAIRS_CONFIG += [
+    {'id': 'TAEE11-TAEE4', 'name': 'Taesa Unit / PN', 'leg_a': 'TAEE11', 'leg_b': 'TAEE4',
+     'pair_type': 'UNIT', 'tier': 'A', 'z_entry': 2.0, 'z_exit': 0.4, 'z_stop': 3.5,
+     'beta_a_to_b': 2.948, 'half_life_days': 0.8, 'adf_tstat': -9.66,
+     'return_corr': 0.94, 'price_corr': 0.99, 'expected_bps': None, 'score': None,
+     'liq_med_mm': 1.77, 'amp_2sd_pct': 1.10,
+     'enabled': True, 'liquidity_tier': 'C'},
+    {'id': 'KLBN11-KLBN4', 'name': 'Klabin Unit / PN', 'leg_a': 'KLBN11', 'leg_b': 'KLBN4',
+     'pair_type': 'UNIT', 'tier': 'A', 'z_entry': 2.0, 'z_exit': 0.4, 'z_stop': 3.5,
+     'beta_a_to_b': 5.204, 'half_life_days': 1.3, 'adf_tstat': -7.04,
+     'return_corr': 0.914, 'price_corr': 0.99, 'expected_bps': None, 'score': None,
+     'liq_med_mm': 8.55, 'amp_2sd_pct': 1.23,
+     'enabled': True, 'liquidity_tier': 'A'},
+    {'id': 'ITSA3-ITSA4', 'name': 'Itausa ON/PN', 'leg_a': 'ITSA3', 'leg_b': 'ITSA4',
+     'pair_type': 'CLASSES', 'tier': 'A', 'z_entry': 2.0, 'z_exit': 0.3, 'z_stop': 3.5,
+     'beta_a_to_b': 0.980, 'half_life_days': 3.2, 'adf_tstat': -4.66,
+     'return_corr': 0.925, 'price_corr': 0.99, 'expected_bps': None, 'score': None,
+     'liq_med_mm': 1.32, 'amp_2sd_pct': 1.83,
+     'enabled': True, 'liquidity_tier': 'C'},
+    {'id': 'SANB11-SANB4', 'name': 'Santander Unit / PN', 'leg_a': 'SANB11', 'leg_b': 'SANB4',
+     'pair_type': 'UNIT', 'tier': 'A', 'z_entry': 2.0, 'z_exit': 0.4, 'z_stop': 3.5,
+     'beta_a_to_b': 2.111, 'half_life_days': 4.5, 'adf_tstat': -3.67,
+     'return_corr': 0.927, 'price_corr': 0.99, 'expected_bps': None, 'score': None,
+     'liq_med_mm': 1.33, 'amp_2sd_pct': 2.65,
+     'enabled': True, 'liquidity_tier': 'C'},
+    {'id': 'KLBN11-KLBN3', 'name': 'Klabin Unit / ON', 'leg_a': 'KLBN11', 'leg_b': 'KLBN3',
+     'pair_type': 'UNIT', 'tier': 'A', 'z_entry': 2.0, 'z_exit': 0.4, 'z_stop': 3.5,
+     'beta_a_to_b': 4.384, 'half_life_days': 7.2, 'adf_tstat': -3.20,
+     'return_corr': 0.878, 'price_corr': 0.98, 'expected_bps': None, 'score': None,
+     'liq_med_mm': 1.81, 'amp_2sd_pct': 3.19,
+     'enabled': True, 'liquidity_tier': 'C'},
+    {'id': 'KLBN3-KLBN4', 'name': 'Klabin ON/PN', 'leg_a': 'KLBN3', 'leg_b': 'KLBN4',
+     'pair_type': 'CLASSES', 'tier': 'A', 'z_entry': 2.0, 'z_exit': 0.3, 'z_stop': 3.5,
+     'beta_a_to_b': 1.137, 'half_life_days': 8.9, 'adf_tstat': -2.91,
+     'return_corr': 0.845, 'price_corr': 0.97, 'expected_bps': None, 'score': None,
+     'liq_med_mm': 1.81, 'amp_2sd_pct': 4.46,
+     'enabled': True, 'liquidity_tier': 'C'},
+    {'id': 'CMIG3-CMIG4', 'name': 'Cemig ON/PN', 'leg_a': 'CMIG3', 'leg_b': 'CMIG4',
+     'pair_type': 'CLASSES', 'tier': 'B', 'z_entry': 2.0, 'z_exit': 0.4, 'z_stop': 3.5,
+     'beta_a_to_b': 0.845, 'half_life_days': 18.2, 'adf_tstat': -3.07,
+     'return_corr': 0.683, 'price_corr': 0.96, 'expected_bps': None, 'score': None,
+     'liq_med_mm': 1.73, 'amp_2sd_pct': 11.12,
+     'enabled': True, 'liquidity_tier': 'C'},
+]
+
+# ═══════════════════════════════════════════════════════════════════════════
 # [08-ago-2026 | REFUNDACAO DO MOTOR DE PARES B3 — decisao Beto + conselho]
 # ═══════════════════════════════════════════════════════════════════════════
 # EVIDENCIA (119 trades fechadas, 25/jun a 29/jul, -8.354, WR 33,6%):
@@ -492,9 +557,35 @@ PAIRS_CONFIG = [
 #   3) meia-vida <= PAIRS_HALFLIFE_MAX_D (default 25 dias)
 # Resultado esperado: 6 pares (o conselho estimou 4-6 apos filtro de liquidez).
 # Reverter para o comportamento antigo: PAIRS_VINCULOS_OK=TODOS
-_VINC_OK = os.environ.get('PAIRS_VINCULOS_OK', 'CLASSES,HOLDING').upper()
+# UNIT entrou em 08/ago com a varredura do universo: a unit E a cesta das partes
+# por construcao, entao o vinculo e mais forte que o de classes do mesmo emissor.
+_VINC_OK = os.environ.get('PAIRS_VINCULOS_OK', 'CLASSES,HOLDING,UNIT').upper()
 _ADF_MAX = float(os.environ.get('PAIRS_ADF_MAX', -2.9))
 _HL_MAX = float(os.environ.get('PAIRS_HALFLIFE_MAX_D', 25))
+
+# ── Sizing por liquidez ─────────────────────────────────────────────────────
+# Perna <= PAIRS_LIQ_PCT_ADV do volume mediano diario da perna MENOS liquida,
+# limitada a PAIRS_LEG_MAX. Abaixo de PAIRS_LEG_MIN o par nem opera: com perna
+# muito pequena o tick e o custo fixo comem qualquer spread.
+# Isso e o que permite dobrar o numero de pares sem fingir que cabe volume neles.
+_LIQ_PCT_ADV = float(os.environ.get('PAIRS_LIQ_PCT_ADV', 0.02))
+_LEG_MAX = float(os.environ.get('PAIRS_LEG_MAX', 100000))
+_LEG_MIN = float(os.environ.get('PAIRS_LEG_MIN', 25000))
+
+
+def leg_size_brl(pair_cfg):
+    """Tamanho maximo da perna, em R$, respeitando a liquidez do par.
+
+    Devolve 0 se o par nao suporta nem a perna minima — nesse caso ele nao
+    deve ser operado, por melhor que seja a estatistica do spread.
+    """
+    liq = pair_cfg.get('liq_med_mm')
+    if liq is None:
+        return _LEG_MAX          # par legado sem medicao: comportamento antigo
+    cap = float(liq) * 1e6 * _LIQ_PCT_ADV
+    if cap < _LEG_MIN:
+        return 0.0
+    return min(cap, _LEG_MAX)
 
 
 def _tem_vinculo_real(p):
@@ -510,8 +601,24 @@ def _tem_vinculo_real(p):
     hl = p.get('half_life_days')
     if hl is not None and float(hl) > _HL_MAX:
         return False, f'meia-vida longa demais ({hl}d > {_HL_MAX}d)'
-    return True, f'{tipo}, adf {adf}, meia-vida {hl}d'
+    perna = leg_size_brl(p)
+    if perna <= 0:
+        return False, (f'iliquido: {p.get("liq_med_mm")}MM/dia nao comporta nem a '
+                       f'perna minima de R${_LEG_MIN:,.0f}')
+    return True, f'{tipo}, adf {adf}, meia-vida {hl}d, perna ate R${perna:,.0f}'
 
+
+# Liquidez MEDIDA (mediana de 2 anos de volume financeiro diario, R$ milhoes, na
+# perna menos liquida). Sem isso os pares legados passavam com perna cheia de
+# R$100 mil em papeis que negociam R$500 mil/dia — 20% do giro, ficcao.
+# Preenchida para os pares ja aprovados; os demais seguem sem cap (legado).
+_LIQ_MEDIDA = {
+    'PETR4-PETR3': 367.25, 'VALE3-BRAP4': 55.90, 'GGBR4-GOAU4': 71.40,
+    'BBDC4-BBDC3': 87.71, 'GGBR4-GGBR3': 0.50, 'GGBR3-GOAU4': 0.50,
+}
+for _p in PAIRS_CONFIG:
+    if _p['id'] in _LIQ_MEDIDA and 'liq_med_mm' not in _p:
+        _p['liq_med_mm'] = _LIQ_MEDIDA[_p['id']]
 
 PAIRS_APROVADOS = []
 PAIRS_REPROVADOS = []

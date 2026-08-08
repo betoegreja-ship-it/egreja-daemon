@@ -230,9 +230,14 @@ def resolve_outcomes(db_fn, log, lookback_hours: int = 168) -> Dict[str, int]:
         c = conn.cursor(dictionary=True)
 
         # 1) Entry shadow: resolver por trade_id quando preenchido
+        # [08-ago-2026 | BUG DE 4 MESES] o JOIN usava t.trade_id, coluna que NAO
+        # existe em `trades` (a chave da tabela e `id`, no formato STK-/CRY-/...).
+        # O UPDATE morria em SQL error engolido por log.debug, e por isso 100% dos
+        # 23.715 registros de entrada e dos 122.200 de saida ficaram sem resultado
+        # desde 22/abr. Encontrado pelo vigia de saude dos shadows.
         c.execute("""
             UPDATE brain_shadow_entry_advisor sa
-            JOIN trades t ON sa.trade_id = t.trade_id
+            JOIN trades t ON sa.trade_id = t.id
             SET sa.actual_pnl = t.pnl,
                 sa.actual_pnl_pct = t.pnl_pct,
                 sa.actual_hold_minutes = TIMESTAMPDIFF(MINUTE, t.opened_at, t.closed_at),
@@ -248,7 +253,7 @@ def resolve_outcomes(db_fn, log, lookback_hours: int = 168) -> Dict[str, int]:
         # 2) Exit shadow: resolver por trade_id
         c.execute("""
             UPDATE brain_shadow_exit_advisor sa
-            JOIN trades t ON sa.trade_id = t.trade_id
+            JOIN trades t ON sa.trade_id = t.id
             SET sa.final_pnl = t.pnl,
                 sa.final_pnl_pct = t.pnl_pct,
                 sa.final_close_reason = t.close_reason,
@@ -259,13 +264,31 @@ def resolve_outcomes(db_fn, log, lookback_hours: int = 168) -> Dict[str, int]:
         """, (lookback_hours,))
         stats['exit_resolved'] = c.rowcount or 0
 
+        # 3) Orfaos: o advisor de ENTRADA e chamado no momento do sinal, com um
+        # trade_id ja sorteado. Se o motor nao abre a posicao, a trade nunca nasce
+        # e o registro fica pendurado para sempre. Isso nao e falha — e um veto.
+        # Marca como resolvido com motivo NO_TRADE (sem P&L) para a metrica de
+        # cobertura parar de acusar 100% de pendencia sobre casos insolvaveis.
+        c.execute("""
+            UPDATE brain_shadow_entry_advisor sa
+            LEFT JOIN trades t ON sa.trade_id = t.id
+            SET sa.actual_close_reason = 'NO_TRADE',
+                sa.resolved_at = NOW()
+            WHERE sa.resolved_at IS NULL
+              AND t.id IS NULL
+              AND sa.created_at < NOW() - INTERVAL 24 HOUR
+        """)
+        stats['entry_no_trade'] = c.rowcount or 0
+
         conn.commit()
         c.close()
-        if stats['entry_resolved'] + stats['exit_resolved'] > 0:
-            log.info(f"[ADVISOR] resolved: entry={stats['entry_resolved']} exit={stats['exit_resolved']}")
+        if sum(stats.values()) > 0:
+            log.info(f"[ADVISOR] resolved: entry={stats['entry_resolved']} "
+                     f"exit={stats['exit_resolved']} sem_trade={stats.get('entry_no_trade', 0)}")
         return stats
     except Exception as e:
-        log.debug(f'[ADVISOR] resolve err: {e}')
+        # Nunca mais em debug: foi um log.debug que escondeu este bug por 4 meses.
+        log.error(f'[ADVISOR] resolve err: {e}')
         return stats
     finally:
         try:
@@ -279,6 +302,13 @@ def start_resolution_worker(db_fn, log, interval_sec: int = 3600):
     def _loop():
         log.info('[ADVISOR] resolution worker started')
         time.sleep(60)  # aguarda startup estabilizar
+        # Backfill unico: o JOIN quebrado deixou 4 meses de registros orfaos.
+        # A janela normal e de 168h, que nunca alcancaria o passivo acumulado.
+        try:
+            bf = resolve_outcomes(db_fn, log, lookback_hours=24 * 200)
+            log.info(f'[ADVISOR] backfill historico concluido: {bf}')
+        except Exception as e:
+            log.error(f'[ADVISOR] backfill err: {e}')
         while True:
             try:
                 resolve_outcomes(db_fn, log)

@@ -8289,6 +8289,14 @@ def monitor_trades():
                                      void_reason=reason if 'VOID' in str(reason).upper() else None)
                         except Exception as _v4ce:
                             log.debug(f'[V4] stocks close log: {_v4ce}')
+                        # [ATR-SIZING 08-ago] contrafactual de tamanho por volatilidade.
+                        # NAO altera ordem nenhuma — determinacao do Beto de deixar B3 e
+                        # short de NYSE intactos para o espelho invertido funcionar.
+                        try:
+                            from modules.atr_sizing_shadow import on_close as _atr_cf
+                            _atr_cf(get_db, trade, trade.get('pnl_pct'), reason)
+                        except Exception as _atre:
+                            log.debug(f'[ATR-SIZING] stocks: {_atre}')
                         # [IB-EXEC 23-jul] fechamento real NYSE via ponte IB (fail-open)
                         # [03-ago] O direcional saiu da IB (ver nota na abertura). O
                         # fechamento so vale para as posicoes LEGADAS (abertas ANTES
@@ -8638,6 +8646,12 @@ def monitor_trades():
                                       void_reason=reason if 'VOID' in str(reason).upper() else None)
                         except Exception as _v4cec:
                             log.debug(f'[V4] crypto close log: {_v4cec}')
+                        # [ATR-SIZING 08-ago] contrafactual de tamanho por volatilidade.
+                        try:
+                            from modules.atr_sizing_shadow import on_close as _atr_cfc
+                            _atr_cfc(get_db, trade, trade.get('pnl_pct'), reason)
+                        except Exception as _atrec:
+                            log.debug(f'[ATR-SIZING] crypto: {_atrec}')
                         # [EXEC 23-jul] fechamento espelhado no adaptador real (fail-open)
                         # [03-ago] Direcional saiu da Binance (ver nota na abertura).
                         # Fecha SO as legadas (abertas antes do corte): um CLOSE sem
@@ -20446,6 +20460,26 @@ def shadow_rv_status():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/shadow/sizing-atr')
+def shadow_sizing_atr():
+    """[08-ago | decisao Beto] Contrafactual do sizing por volatilidade.
+
+    O Beto perguntou direto: "se implementar o sizing atr conforme sua sugestao
+    nao vai atrapalhar a b3 inverse?" — vai. Por isso este experimento nao muda
+    ordem nenhuma. Ele pega as trades REAIS ja fechadas e recalcula o P&L com o
+    tamanho definido por volatilidade em vez de valor fixo.
+
+    Ler junto: pnl_tamanho_por_atr E capital_usado_atr. Ganhar mais usando mais
+    capital nao e ganhar nada."""
+    try:
+        from modules.atr_sizing_shadow import summary as _atr_sum
+        dias = int(request.args.get('dias', 30))
+        return jsonify(_atr_sum(get_db, dias))
+    except Exception as e:
+        log.error(f'[ATR-SIZING] endpoint: {e}')
+        return jsonify({'erro': str(e)}), 500
+
+
 @app.route('/shadow/saude')
 def shadow_saude():
     """[08-ago | decisao Beto — "item zero"] VIGIA DE SAUDE DOS SHADOWS.
@@ -22848,6 +22882,16 @@ if __name__ == '__main__':
             log.info('[v4.0] Brain Advisor workers started (resolution + metrics)')
     except Exception as _av4e:
         log.warning(f'[v4.0] Brain Advisor V4 init warning: {_av4e}')
+
+    # [ATR-SIZING 08-ago] contrafactual de tamanho por volatilidade — reconstroi
+    # as trades ja fechadas (ATR em score_log_v4, notional e retorno em trades)
+    # para o experimento nascer com ~1.200 casos em vez de esperar semanas.
+    # Idempotente (UNIQUE em trade_id). Nunca altera ordem: so calcula.
+    try:
+        from modules.atr_sizing_shadow import backfill as _atr_bf
+        _atr_bf(get_db)
+    except Exception as _atrbe:
+        log.warning(f'[ATR-SIZING] backfill no boot: {_atrbe}')
 
     # [v10.27] Long Horizon tables (lh_assets, lh_scores, etc.)
     try:

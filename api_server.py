@@ -8496,7 +8496,40 @@ def monitor_trades():
                     #   EARLY_STOP_CRYPTO_ENABLED (default true)
                     #   EARLY_STOP_CRYPTO_PCT     (default -0.6)
                     #   EARLY_ALERT_CRYPTO_PCT    (default -0.4)  — só loga, não fecha
-                    if reason is None and os.environ.get('EARLY_STOP_CRYPTO_ENABLED','true').lower()!='false':
+                    # ═══ [08-ago-2026 | decisao Beto] TIME-STOP CURTO NA CRIPTO ═══
+                    # Estudo de 15 semanas (todo o historico, semanas boas E ruins):
+                    #   ate 15min  : +23.730 (sem NEG) e +66.064 (sem POS)  -> ganha SEMPRE
+                    #   15-30min   : +11.109 e +35.570                      -> ganha SEMPRE
+                    #   1-2h       : -92.059 e -39.895                      -> perde SEMPRE
+                    #   >2h        : -43.952 e  -5.900                      -> perde SEMPRE
+                    # Soma: ate 30min +136.473 | acima de 1h -181.806.
+                    # E a linha do tempo confirma: em junho a duracao media era 10-11min
+                    # e a razao ganho/perda 1,8-1,9; nesta semana, 116min e razao 0,94.
+                    # Regra: se passou de CRYPTO_TIME_STOP_MIN sem nunca ter andado
+                    # (pico < CRYPTO_TIME_STOP_PEAK_PCT), fecha no que estiver. Nao e
+                    # stop de perda — e stop de INERCIA. Desliga com =0.
+                    if reason is None:
+                        _ts_min = float(os.environ.get('CRYPTO_TIME_STOP_MIN', 25))
+                        _ts_peak = float(os.environ.get('CRYPTO_TIME_STOP_PEAK_PCT', 0.2))
+                        if _ts_min > 0:
+                            try:
+                                _ts_hold = (now - datetime.fromisoformat(
+                                    str(trade['opened_at']).replace('Z', ''))).total_seconds() / 60
+                            except Exception:
+                                _ts_hold = 0
+                            _ts_pk = float(trade.get('peak_pnl_pct', 0) or 0)
+                            if _ts_hold >= _ts_min and _ts_pk < _ts_peak:
+                                reason = 'TIME_STOP_INERCIA'
+                                log.info(f"[TIME-STOP] {trade['symbol']}: {_ts_hold:.0f}min sem andar "
+                                         f"(pico {_ts_pk:+.2f}% < {_ts_peak}%) pnl={trade['pnl_pct']:+.2f}% "
+                                         f"— cortando inercia, nao perda")
+
+                    # [08-ago | Beto] EARLY_STOP DA CRIPTO DESLIGADO POR PADRAO.
+                    # Medido em 15 semanas: -401.965 nas semanas negativas E -279.608
+                    # nas positivas = -681.573. O TRAILING_STOP, no mesmo periodo, fez
+                    # +398.178 e +334.892 = +733.070. Ou seja: o early stop consumia
+                    # 93% de tudo que o trailing produzia. Religar: =true.
+                    if reason is None and os.environ.get('EARLY_STOP_CRYPTO_ENABLED','false').lower()=='true':
                         _early_stop_pct = float(os.environ.get('EARLY_STOP_CRYPTO_PCT', -0.6))
                         _early_alert_pct = float(os.environ.get('EARLY_ALERT_CRYPTO_PCT', -0.4))
                         _peak_pos = float(trade.get('peak_pnl_pct', 0) or 0)
